@@ -26,13 +26,15 @@ to implement and to stub.
 ### `agtermctl session new [--cwd <path>] [--name <name>] [--command <cmd>]`
 
 - **CONFIRMED**: the subcommand exists and accepts `--cwd`, `--name`, `--command`.
-- **ASSUMED**: it prints the **new row id on stdout**, one token, trailing newline, nothing else.
-- **ASSUMED**: exit 0 on success, non-zero on failure.
+- **CONFIRMED** (2026-07-29, first live run): it prints the **new row id on stdout** and the bridge
+  round-trips it through `--target`. Observed ids `E9E28BA8-C5A6-4664-8E70-D4F06199BA5C` and
+  `46178B23-60AC-4773-B136-EE28F20BFDAD` — uppercase UUIDs, matching the shape `agr`'s target files
+  suggested. This was the single largest assumption in this file; it held.
+- **CONFIRMED**: exit 0 on success, non-zero on failure — a `rename`/`status` naming an id agterm
+  has forgotten exits **1** with `error: no such session: <id>` on stderr.
 
-The id format is **not** assumed to be anything in particular. `agr`'s live target files hold
-uppercase UUIDs (`0E3D894C-7C14-4C45-83FF-5F633A17EE74`, from `~/.cache/agterm/targets/*`
-— **CONFIRMED**), so a UUID is the likely shape, but the bridge must treat the id as an **opaque
-string**: never parsed, never generated, only stored and echoed back via `--target`.
+The bridge nevertheless treats the id as an **opaque string**: never parsed, never generated, only
+stored and echoed back via `--target`. A UUID today is an observation, not a guarantee.
 
 agbridge uses it as:
 
