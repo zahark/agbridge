@@ -174,6 +174,9 @@ environment — several are version- or mount-specific.
   `session split` and `session type` are all **CONFIRMED** — see
   [`docs/agtermctl.md`](docs/agtermctl.md), which tags every clause. `session close`,
   `--blink`/`--auto-reset` and repeated `rename` remain **ASSUMED**, with fallbacks recorded.
+- **`[s] shell` has only been tested against a stub.** The two `agtermctl` calls behind it are
+  `--help`-verified and mutation-tested, but the feature was built after the last live run, so
+  nobody has watched a split pane actually open.
 - **Two doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single door;
   `agb_ops.open_split` is a second one, because `agb pane` runs on the Mac but lives in `agb_ops`,
   which never loads `agb_mac`. Both obey the same rule: a failure is written out and returned,

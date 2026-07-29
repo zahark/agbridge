@@ -200,10 +200,33 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-Working and heavily tested, but **not yet exercised against a live agterm**. The `agtermctl`
-invocation contract is coded against a documented assumption with fallbacks recorded in
-[`docs/agtermctl.md`](docs/agtermctl.md); if your `agtermctl` differs, that file is the one to
-correct.
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1287 tests, no
+network or second machine required to run them.
+
+Verified in real use, not just in tests:
+
+| | |
+|---|---|
+| hooks firing on multiple hosts | ✅ |
+| one shared statedir, cross-host discovery | ✅ |
+| `ssh` feed → bridge → reverse heartbeat | ✅ |
+| rows created and updated in agterm | ✅ |
+| clicking a row runs `agb pane` with the right identity | ✅ |
+| `agtermctl session new` returns the row id on stdout | ✅ — the largest assumption in the design; it held |
+| `session split` / `session type` | ✅ `--help`-verified before being coded against |
+
+Not yet exercised, and worth knowing before you rely on them:
+
+- **`agb close-done`** — `session close` is still `ASSUMED`. If it does not exist, `close-done`
+  degrades to printing the rows you should close by hand.
+- **`[s] shell`** — the split pane was built after the last live run and has only been tested
+  against a stub.
+- **`--blink` / `--auto-reset` spellings**, and whether `session rename` may be called repeatedly on
+  an existing row.
+- **Long-running behaviour** — reconnects, watchdog firing, `prune` against a genuinely dead host.
+
+[`docs/agtermctl.md`](docs/agtermctl.md) tags every clause `CONFIRMED` or `ASSUMED` and records a
+fallback for each assumption. If your `agtermctl` differs, that file is the one to correct.
 
 ## License
 
