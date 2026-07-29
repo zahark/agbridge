@@ -622,6 +622,11 @@ def parse_bridge_args(argv):
     return opts
 
 
+STATEDIR_HINT = (
+    ". This is the path on the FARM, not on this Mac, so there is no default"
+    " that could be right: `agb doctor` on the farm prints the one to use")
+
+
 def bridge_settings(opts, config=None):
     """CLI over config over default, and a **loud** failure when something is
     missing.
@@ -633,6 +638,14 @@ def bridge_settings(opts, config=None):
     The statedir here is a **farm-side** path, never expanded against the Mac's
     `$HOME`: `~` would resolve locally and then be sent to a machine where it
     means something else.
+
+    That is also why it is **required** rather than defaulted. `agb`'s own
+    default is `~/.agbridge`, which is correct for a process running *on* the
+    farm and wrong for this one: the Mac would resolve it against its own home,
+    ship `/Users/<someone>/.agbridge` across in `env AGB_STATEDIR=`, and
+    `cmd_feed` would *create* that directory on the farm and report an empty
+    farm for ever. There is no value this side can invent that is right on the
+    far side, so it asks instead of guessing.
     """
     if config is None:
         config = agb.read_config()
@@ -644,17 +657,18 @@ def bridge_settings(opts, config=None):
         "feed_host": pick("feed_host", "feed_host"),
         "mac_id": pick("mac_id", "mac_id"),
         "statedir": (opts.get("statedir") or os.environ.get("AGB_STATEDIR")
-                     or config.get("statedir") or agb.default_statedir()),
+                     or config.get("statedir")),
         "remote_path": pick("remote_path", "agb_remote_path",
                             DEFAULT_AGB_REMOTE_PATH),
         "remote_python": pick("remote_python", "remote_python",
                               DEFAULT_REMOTE_PYTHON),
     }
-    for name in ("feed_host", "mac_id"):
+    for name in ("feed_host", "mac_id", "statedir"):
         if not settings[name]:
             raise agb.AgbError(
-                "bridge: no %s configured (set it in %s or pass --%s)"
-                % (name, agb.config_path(), name.replace("_", "-")))
+                "bridge: no %s configured (set it in %s or pass --%s)%s"
+                % (name, agb.config_path(), name.replace("_", "-"),
+                   STATEDIR_HINT if name == "statedir" else ""))
     return settings
 
 

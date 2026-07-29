@@ -927,7 +927,8 @@ def test_settings_come_from_the_config_when_the_cli_is_silent(mac,
 
 
 def test_the_cli_overrides_the_config(mac, config_file):
-    config_file("feed_host = vncbox\nmac_id = mac-abc123\n")
+    config_file("feed_host = vncbox\nmac_id = mac-abc123\n"
+                "statedir = /shared/.agbridge\n")
     settings = mac.bridge_settings(mac.parse_bridge_args(
         ["--feed-host", "otherbox", "--mac-id", "mac-zzz"]))
     assert settings["feed_host"] == "otherbox"
@@ -935,18 +936,44 @@ def test_the_cli_overrides_the_config(mac, config_file):
 
 
 def test_the_defaults_are_the_farm_paths(mac, agb, config_file):
-    config_file("feed_host = vncbox\nmac_id = mac-abc123\n")
+    config_file("feed_host = vncbox\nmac_id = mac-abc123\n"
+                "statedir = /shared/.agbridge\n")
     settings = mac.bridge_settings(mac.parse_bridge_args([]))
-    assert settings["statedir"] == agb.default_statedir()
+    assert settings["statedir"] == "/shared/.agbridge"
     assert settings["remote_path"] == mac.DEFAULT_AGB_REMOTE_PATH
     assert settings["remote_python"] == mac.DEFAULT_REMOTE_PYTHON
 
 
-@pytest.mark.parametrize("missing", ["feed_host", "mac_id"])
+def test_the_statedir_is_never_defaulted_from_this_machines_home(
+        mac, agb, config_file, monkeypatch):
+    """The statedir names a directory on the FARM. `agb.default_statedir()` is
+    `~/.agbridge` resolved against **this** process's `$HOME`, so defaulting to
+    it here would ship `/Users/<someone>/.agbridge` across in `env
+    AGB_STATEDIR=`; `cmd_feed` creates whatever it is given, so the farm would
+    grow an empty statedir and report an empty farm for ever -- silently, which
+    is the whole failure class this tool exists to remove.
+
+    Regression guard: this defaulted to `agb.default_statedir()` and shipped a
+    Mac-local path to the farm.
+    """
+    monkeypatch.setenv("HOME", "/Users/somebody")
+    with pytest.raises(agb.AgbError) as excinfo:
+        mac.bridge_settings(mac.parse_bridge_args([]),
+                            {"feed_host": "vncbox", "mac_id": "mac-abc123"})
+    message = str(excinfo.value)
+    assert "statedir" in message
+    # It may name this machine's *config path* -- that is the file to edit. What
+    # it must never do is invent the farm-side statedir from this machine's home.
+    assert agb.default_statedir() not in message
+    assert "farm" in message.lower()             # and says whose path it is
+
+
+@pytest.mark.parametrize("missing", ["feed_host", "mac_id", "statedir"])
 def test_a_missing_essential_setting_is_named(mac, agb, config_file, missing):
     """A bridge that starts, finds no ssh target and quietly never connects is
     `agr` failure mode #1 rebuilt from scratch."""
-    lines = {"feed_host": "feed_host = vncbox\n", "mac_id": "mac_id = m-1\n"}
+    lines = {"feed_host": "feed_host = vncbox\n", "mac_id": "mac_id = m-1\n",
+             "statedir": "statedir = /shared/.agbridge\n"}
     del lines[missing]
     config_file("".join(lines.values()))
     with pytest.raises(agb.AgbError) as excinfo:
