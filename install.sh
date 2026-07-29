@@ -82,6 +82,7 @@ mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/config with a
   --label <name>             launchd label                          (default com.agbridge)
   --farm <ssh-target>        run the farm side over ssh with the minted mac-id
   --no-load                  write the plist but do not load it
+  --no-probe                 do not ssh the feed host to learn its hostname
   --dry-run                  say what would happen; write nothing
 
 farm -- write ~/.config/agbridge/config and merge the hooks into
@@ -194,7 +195,7 @@ esac
 dest=""; python=""; config=""; statedir=""; macid=""; feedhost=""
 remotepath=""; remotepython=""; jumphost=""; hosts=""; agentsdir=""
 logdir=""; launchpath=""; label=""; farm=""; settings=""; agbpath=""
-load=yes; hooks=yes; dry=no
+load=yes; hooks=yes; dry=no; probe=yes
 
 need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
 
@@ -222,6 +223,7 @@ while [ $# -gt 0 ]; do
         --agb) need $# "$1"; agbpath=$2; shift 2 ;;
         --no-load) load=no; shift ;;
         --no-hooks) hooks=no; shift ;;
+        --no-probe) probe=no; shift ;;
         --dry-run) dry=yes; shift ;;
         -h|--help) usage; exit 2 ;;
         *) usage; die "unknown option: $1" ;;
@@ -288,6 +290,30 @@ role_mac() {
         say "copied:   $FILES -> $dest"
         installed="$dest/agb"
         verify_tree "$python" "$installed"
+    fi
+
+    # A record's `host` is the farm's HOSTNAME; `--feed-host` is an ssh ALIAS.
+    # `ssh_target_for` maps one to the other through `host_<name>`, and without
+    # it `agb pane` tries to ssh to a name this Mac cannot resolve -- the row
+    # renders fine and simply refuses to open, which is a confusing place to
+    # land. The feed host is the one mapping we can derive rather than ask for:
+    # ssh to it once and read its hostname back. Read-only, never fatal, and
+    # skipped entirely by --no-probe or by naming that host explicitly.
+    if [ "$probe" = yes ] && [ -n "$feedhost" ]; then
+        farmhost=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$feedhost" \
+                       'hostname -s' 2>/dev/null | tr -d '\r' | head -1) || farmhost=""
+        case "$farmhost" in
+            ""|*[!A-Za-z0-9._-]*)
+                [ -n "$farmhost" ] && farmhost=""
+                say "note:     could not read a hostname back from $feedhost."
+                say "          If a row will not attach, add:  --host <its-hostname>=$feedhost" ;;
+            *)  case " $hosts " in
+                    *" $farmhost="*)
+                        say "probed:   $feedhost is '$farmhost' (already mapped explicitly)" ;;
+                    *)  hosts="$hosts $farmhost=$feedhost"
+                        say "probed:   $feedhost is '$farmhost' -> host_$farmhost = $feedhost" ;;
+                esac ;;
+        esac
     fi
 
     # The config, and with it the mac-id: --print-mac-id puts the id alone on

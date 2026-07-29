@@ -1,0 +1,81 @@
+#!/bin/sh
+# agb-claude -- start Claude Code inside a named tmux session, so agbridge can
+# give it an attachable row.
+#
+# Why this exists: agbridge resolves the tmux session name ONCE, when an agent
+# first fires a hook. An agent started outside tmux gets a status-only row for
+# its whole life -- visible, but nothing to click through to. Naming the session
+# *before* starting the agent is the whole trick, and forgetting is easy, so
+# this wraps it.
+#
+#   agb-claude                  # session named after the current directory
+#   agb-claude api-refactor     # session named explicitly
+#   agb-claude api-refactor -- --model opus
+#
+# Everything after `--` is passed through to `claude` untouched.
+
+set -e
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'agb-claude: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat >&2 <<'EOF'
+usage: agb-claude [name] [-- <claude args>...]
+
+  name        tmux session name (default: the current directory's name)
+  --          everything after this is passed to `claude`
+
+  -h, --help  this message
+
+Re-running with the same name ATTACHES to the existing session rather than
+starting a second agent in it.
+EOF
+}
+
+# tmux session names may not contain "." or ":" -- both are target delimiters,
+# so a name carrying one cannot be addressed by `attach-session -t`. Spaces work
+# but make every command that names the session need quoting, so they go too.
+sanitize() {
+    printf '%s' "$1" | tr ' .:' '---' | tr -cd 'A-Za-z0-9_-' | cut -c1-60
+}
+
+name=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        --)        shift; break ;;
+        -*)        die "unknown option: $1 (use -- to pass options to claude)" ;;
+        *)         [ -n "$name" ] && die "only one name, got '$name' and '$1'"
+                   name=$1; shift ;;
+    esac
+done
+
+command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
+command -v claude >/dev/null 2>&1 \
+    || die "claude is not installed or not on \$PATH"
+
+[ -n "$name" ] || name=$(basename "$(pwd)")
+name=$(sanitize "$name")
+[ -n "$name" ] || die "the name is empty after removing characters tmux cannot address"
+
+# Already inside tmux: a nested session cannot be attached to from the outside,
+# and agbridge would record the OUTER session's name for the inner agent. Making
+# a sibling session and switching to it keeps one agent to one addressable pane.
+if [ -n "${TMUX:-}" ]; then
+    if tmux has-session -t "=$name" 2>/dev/null; then
+        say "agb-claude: switching to existing session '$name'"
+        exec tmux switch-client -t "=$name"
+    fi
+    say "agb-claude: creating '$name' as a sibling session (you are inside tmux)"
+    tmux new-session -d -s "$name" -c "$(pwd)" "$@" claude
+    exec tmux switch-client -t "=$name"
+fi
+
+if tmux has-session -t "=$name" 2>/dev/null; then
+    say "agb-claude: attaching to existing session '$name'"
+    exec tmux attach-session -t "=$name"
+fi
+
+say "agb-claude: starting claude in tmux session '$name'"
+exec tmux new-session -s "$name" -c "$(pwd)" claude "$@"

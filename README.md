@@ -58,6 +58,9 @@ adding checks:
 
 ## Install
 
+**New here? Follow [`docs/cookbook.md`](docs/cookbook.md)** — nothing to working sidebar in about
+ten minutes. The rest of this section is the reference.
+
 `agbridge` is three files that must live in the same directory. `install.sh` has two roles.
 
 **1. On the Mac** — copies the three files, mints a `mac_id`, writes the config, renders and loads
@@ -106,6 +109,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb install-hooks` | cluster | merge the four Claude Code hooks idempotently |
 | `agb install-config` | both | write/merge `~/.config/agbridge/config` |
 | `agb version` | both | load-bearing: both installers probe with it |
+| `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable |
 
 Full flag reference: [`docs/commands.md`](docs/commands.md).
 
@@ -174,6 +178,7 @@ The interesting constraints, all of which the code and tests enforce:
 | [`docs/commands.md`](docs/commands.md) | every command, flag and default |
 | [`docs/tmux.md`](docs/tmux.md) | the status-line segment and its achievable resolution |
 | [`docs/agtermctl.md`](docs/agtermctl.md) | the `agtermctl` contract the bridge codes against |
+| [`docs/cookbook.md`](docs/cookbook.md) | **start here** — step-by-step onboarding and troubleshooting |
 | [`CLAUDE.md`](CLAUDE.md) | architecture and invariants, for working on this codebase |
 
 ## Development
