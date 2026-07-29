@@ -1,0 +1,22 @@
+# build output
+/build/
+*.o
+*.a
+# NOT /dist/: the launchd plist template lives there
+# (dist/com.agbridge.plist). It is source, rendered by install.sh, not output.
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+
+# editor / os
+*.swp
+*.swo
+*~
+.DS_Store
+.nfs*
+
+# local runtime state (never commit live bridge state)
+/state/
+*.local

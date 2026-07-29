@@ -1,0 +1,30 @@
+#!/bin/sh
+# Recording `ssh` stub.
+#
+# `ssh` cannot be exercised for real from the farm box -- there is no Mac, and
+# the whole point of the bridge is that it runs on one. So the transport tests
+# put this on $PATH and assert on what the bridge *asked* for.
+#
+# It records its argv one invocation per line, fields separated by \037, which
+# is the same encoding `conftest.StubBin` parses -- one log format for every
+# stub in the suite.
+#
+#   $AGB_SSH_LOG     where to append the recorded argv (required)
+#   $AGB_SSH_SCRIPT  a file of NDJSON lines to emit as if it were the feed
+#   $AGB_SSH_HOLD    non-empty: after emitting, drain stdin until EOF, so the
+#                    connection stays up until the bridge closes it -- which is
+#                    how the real feed behaves and what makes "closing stdin
+#                    ends the feed" testable
+#   $AGB_SSH_EXIT    exit status (default 0)
+
+{ for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$AGB_SSH_LOG"
+
+if [ -n "$AGB_SSH_SCRIPT" ] && [ -f "$AGB_SSH_SCRIPT" ]; then
+    cat "$AGB_SSH_SCRIPT"
+fi
+
+if [ -n "$AGB_SSH_HOLD" ]; then
+    while read -r _line; do :; done
+fi
+
+exit "${AGB_SSH_EXIT:-0}"

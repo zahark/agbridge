@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  agbridge: the Mac side, run by launchd.
+
+  This is a TEMPLATE. `install.sh mac` renders it into
+  ~/Library/LaunchAgents/<label>.plist, substituting the five at-sign
+  placeholders below, and refuses to install a copy with any placeholder left
+  in it. Nothing here is generated at run time, so what launchd runs can be read
+  with `cat` and diffed against this file.
+
+  (No double hyphen appears in this comment on purpose: XML forbids it inside a
+  comment, and a plist that plutil rejects is a job launchd silently never
+  starts. The placeholder names are deliberately NOT spelled out here either:
+  `sed` substitutes globally, so naming them would splice an install path into
+  this comment, and one containing a double hyphen would render exactly the
+  invalid plist the previous sentence warns about.)
+
+  Why each key is what it is:
+
+  * ProgramArguments: `<python> -S -E <agb> bridge`, the same shape as the hook
+    command on the farm. An ABSOLUTE interpreter path, because a LaunchAgent has
+    almost no PATH and a bare `python3` that fails to resolve would leave the job
+    dead with nothing to show for it; `-S -E` so a stray PYTHONPATH or a user
+    site-packages directory cannot change what the bridge imports.
+
+  * KeepAlive <true/>: unconditional, including after a *clean* exit. The bridge
+    exiting is exactly the condition the `[?]` stale rendering exists for: the
+    ssh has gone, the rows are no longer being told anything, and the only
+    useful response is to reconnect. A `SuccessfulExit` dict would leave a
+    cleanly exited bridge down for ever, which is the silent no-op class this
+    project exists to remove.
+
+  * ThrottleInterval 10: KeepAlive plus a misconfiguration (no feed_host, an
+    unreachable farm) is a restart loop; 10 s makes it a slow, legible one in
+    the log rather than a spin.
+
+  * EnvironmentVariables/PATH: launchd gives a job a minimal PATH, and the
+    bridge shells out to `agtermctl` and `ssh`. This is the one thing that
+    cannot be inferred at run time, so it is written down.
+
+  * StandardOutPath / StandardErrorPath: the bridge's own report log. Under
+    launchd this is the only place "did the bridge see anything?" is answerable.
+
+  * ProcessType Background: it is a poller, not something a user is waiting on;
+    this keeps it out of the way of interactive work.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@LABEL@</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PYTHON@</string>
+    <string>-S</string>
+    <string>-E</string>
+    <string>@AGB@</string>
+    <string>bridge</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@PATH@</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>@LOGDIR@/bridge.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>@LOGDIR@/bridge.err.log</string>
+
+  <key>WorkingDirectory</key>
+  <string>/tmp</string>
+</dict>
+</plist>
