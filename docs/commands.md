@@ -32,7 +32,9 @@ is ever added, it is added here first.
 - Commands are always run as `<absolute-python> -S -E <path>/agb <command>`. `agb` has no shebang
   and is not executable on purpose.
 - The statedir resolves the same way everywhere, from one helper: `--statedir` (where the command
-  has one) → `$AGB_STATEDIR` → the `statedir` config key → `/shared/.agbridge`. `install-config` is
+  has one) → `$AGB_STATEDIR` → the `statedir` config key → `~/.agbridge`. ⚠️ That last default is
+  only correct where `$HOME` is the *same* directory on every agent host; `agb bridge` therefore has
+  no default at all, because it names a path on the **other** machine. `install-config` is
   the one command that inserts a step — see its entry.
 
 ---
@@ -81,7 +83,7 @@ agb bridge [--from-stdin] [--no-agterm] [--feed-host H] [--mac-id M] [--statedir
 | `--no-agterm` | off | consume and log the wire, touch no rows. This is what makes a transport problem diagnosable separately from a rendering one |
 | `--feed-host <target>` | config `feed_host` | ssh target of the farm box. **Required**: with neither, the bridge refuses to start rather than starting and never connecting |
 | `--mac-id <id>` | config `mac_id` | names `bridge/<mac-id>.beat`. **Required**, same reason |
-| `--statedir <path>` | `$AGB_STATEDIR` → config `statedir` → `/shared/.agbridge` | the **farm-side** statedir, sent across in `env AGB_STATEDIR=…`. Never expanded against the Mac's `$HOME`: `~` would resolve locally and then be shipped to a machine where it means something else |
+| `--statedir <path>` | `$AGB_STATEDIR` → config `statedir`, **no default** | the **farm-side** statedir, sent across in `env AGB_STATEDIR=…`. Never expanded against the Mac's `$HOME`: `~` would resolve locally and then be shipped to a machine where it means something else. **Required** for exactly that reason — `agb`'s own `~/.agbridge` default is right for a process running *on* the farm and wrong for this one, so the bridge asks rather than inventing a path that is correct on the wrong machine |
 | `--remote-path <path>` | config `agb_remote_path` → `/opt/agbridge/agb` | absolute path of `agb` on the farm |
 | `--remote-python <path>` | config `remote_python` → `/bin/python3` | absolute farm-side interpreter (`ssh host cmd` sources no profile) |
 | `--watchdog <seconds>` | `10.0` (five poll intervals) | no line at all — **including a tick** — for this long means the feed is dead: mark every row stale and reconnect. Must be > 0 |
@@ -105,7 +107,7 @@ Only `[done]` entries are touched; a bound row is never closed. A row is forgott
 ## `agb pane <key>` — Mac
 
 ```
-agb pane <key> --host <host> [--tmux <session>] [--pane %N] [--jump <host>]
+agb pane <key> --host <host> [--tmux <session>] [--pane %N] [--cwd <path>] [--jump <host>]
 ```
 
 This is the row's own command, built by the bridge; the flags mirror `agb_mac.pane_argv` word for
@@ -117,7 +119,26 @@ word, and the two are tested against each other.
 | `--host <hostname>` | — | **required**. The Mac cannot read the shared statedir, so the identity has to arrive on the command line. It is a *hostname*; `host_<name>` in the config maps it to an ssh target, and without such a key the hostname is used as the target |
 | `--tmux <session>` | none | the tmux session to attach to. **Without it there is no attach at all**: `pane` prints the identity, says so, and exits 0 without prompting |
 | `--pane %N` | none | tmux pane id, `%` plus digits. Accepted without `--tmux` (that record exists), and then rendered in the identity like any other field |
+| `--cwd <path>` | none | the agent's working directory, used by `[s] shell` below so the split pane opens there. Optional: rows created before it existed carry none, and the shell then lands wherever ssh does |
 | `--jump <host>` | config `jump_host` | ssh jump host for machine #3. The bridge's hint wins over the config, and either is dropped when it names the resolved target or the `--host` value itself — hopping through the box you are already going to |
+
+### The prompt
+
+```
+[enter] attach   [s] shell   [q] quit >
+```
+
+| Key | Effect |
+|---|---|
+| **enter** | `ssh -t <target> 'tmux select-window -t %N ; tmux select-pane -t %N ; exec tmux attach-session -t <session>'`. Runs in a **loop**, not `exec`: detaching returns to this prompt instead of closing the row's terminal. A non-zero exit is reported and prompted again rather than being fatal |
+| **s** / `shell` / `split` | opens agterm's split pane beside this one and starts `ssh -t [-J <jump>] <target> 'cd <cwd> && exec $SHELL -l'` in it. Both panes belong to the same row |
+| **q** / `quit` / `exit`, or EOF | leaves without attaching. Changes nothing about the agent |
+
+`[s]` is two `agtermctl` calls in a fixed order — `session split on --target active`, then
+`session type --target active --pane right` — because `--pane right` is an error when there is no
+split yet. `on` rather than `toggle`, since pressing `s` twice would otherwise close the pane.
+`--target active` needs no row id: this command is running *inside* the row's own session.
+A missing or failing `agtermctl` costs the row its split and nothing else.
 
 Values are rejected at parse time if empty or if they carry surrounding whitespace or a newline;
 the ssh target and the jump host are checked again before the attach, against a character whitelist
@@ -132,7 +153,7 @@ agb doctor [--statedir P] [--mac-id ID] [--quiet-after S] [--tail N]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--statedir <path>` | `$AGB_STATEDIR` → config → `/shared/.agbridge` | which statedir to probe |
+| `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | which statedir to probe |
 | `--mac-id <id>` | config `mac_id` | which `bridge/<mac-id>.beat` must exist. Without one, every beat found is still reported with its age — but a *missing* beat cannot be reported, which is how a mac-id typo hides |
 | `--quiet-after <seconds>` | `900.0` (15 min) | how old `sweep/<host>.marker` must be before that host's entries are listed as **unadjudicable**. A host with no marker at all is always quiet. Same default and meaning as `prune --quiet-after` |
 | `--tail <n>` | `3` | lines of each `err/<host>.<key>.log` breadcrumb to print, over at most 20 logs |
@@ -148,7 +169,7 @@ agb prune [--statedir P] [--quiet-after S] [--key <host>/<key>]… [--yes] [--dr
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--statedir <path>` | `$AGB_STATEDIR` → config → `/shared/.agbridge` | which statedir to work in |
+| `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | which statedir to work in |
 | `--quiet-after <seconds>` | `900.0` (15 min) | the same age heuristic `doctor` uses, from the same constant — `prune` consumes `doctor`'s list rather than deriving a second one |
 | `--key <host>/<key>` | none — the quiet-host list is used instead | name one entry explicitly. Repeatable. Named entries are read by name, so this also reaches entries the heuristic would not list |
 | `--yes` | off | skip the per-entry prompt. **Refused unless at least one `--key` was given**: consent has to be about something specific, never about a list built from an age heuristic |
@@ -202,7 +223,7 @@ agb status-line [--statedir P] [--mac-id ID]
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--statedir <path>` | `$AGB_STATEDIR` → config → `/shared/.agbridge` | passing it (or `$AGB_STATEDIR` inline, as `tmux.md` recommends) means the config is not read to find the statedir |
+| `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | passing it (or `$AGB_STATEDIR` inline, as `tmux.md` recommends) means the config is not read to find the statedir |
 | `--mac-id <id>` | config `mac_id`, then the newest `bridge/*.beat` | which beat to read. A configured id is never second-guessed: a missing beat reads `bridge:DOWN never`, not "some other Mac is fresh" |
 
 Give **both** and the config file is not opened at all — one avoided NFS `open()` per tick, forever.
@@ -222,7 +243,7 @@ agb install-hooks [--settings P] [--statedir P] [--python P] [--agb P] [--dry-ru
 | Flag | Default | Meaning |
 |---|---|---|
 | `--settings <path>` | `~/.claude/settings.json` | the file to merge into. Also the seam that keeps the test suite off the developer's live settings across a subprocess boundary |
-| `--statedir <path>` | `$AGB_STATEDIR` → config → `/shared/.agbridge` | baked into the hook command as `AGB_STATEDIR=…`, which is what lets the hot path skip the config read. Must be absolute |
+| `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | baked into the hook command as `AGB_STATEDIR=…`, which is what lets the hot path skip the config read. Must be absolute |
 | `--python <path>` | `sys.executable` — the interpreter running this command | baked into the hook command. Must be absolute, existing and executable, and must resolve at the *same* absolute path on every host that runs hooks (printed as a note, never guessed at) |
 | `--agb <path>` | the `agb` beside the running one | which `agb` the hook command names. Must be absolute |
 | `--dry-run` | off | print the whole report — what was verified, removed, kept — and write nothing |
@@ -244,7 +265,7 @@ agb install-config [--config P] [--statedir P] [--mac-id ID] [--feed-host H] [--
 | Flag | Default | Meaning |
 |---|---|---|
 | `--config <path>` | `~/.config/agbridge/config` | the file to merge into. **The only path `expanduser`'d** — the others name things on the farm, where `~` means something else |
-| `--statedir <path>` | the value already in the file, else `$AGB_STATEDIR` → config → `/shared/.agbridge` | the file's own value comes first on purpose, so a re-install from a shell that happens to carry `$AGB_STATEDIR` cannot silently repoint an installed configuration. Must be absolute |
+| `--statedir <path>` | the value already in the file, else `$AGB_STATEDIR` → config → `~/.agbridge` | the file's own value comes first on purpose, so a re-install from a shell that happens to carry `$AGB_STATEDIR` cannot silently repoint an installed configuration. Must be absolute |
 | `--mac-id <id>` | the value already in the file (**kept, never regenerated**) | setting a *different* one is allowed and reported as a loud `warning:` — it invalidates every other machine's config |
 | `--feed-host <target>` | not written | config `feed_host` |
 | `--agb-remote-path <path>` | not written | config `agb_remote_path`. Must be absolute |
@@ -259,6 +280,28 @@ With no `--mac-id`, no id in the file and no `--generate-mac-id`, the command **
 why. The merge preserves comments, layout and keys this tool does not know; the text it is about to
 write is re-parsed and refused if it would not read back as the values reported. The previous file is
 copied to `config.agb.bak`, and a run that would change nothing writes neither.
+
+## `agb-claude [name]` — farm, a convenience
+
+```
+agb-claude [name] [-- <claude args>...]
+```
+
+Not part of `agb` — a separate POSIX-sh script beside it. It starts Claude Code inside a **named
+tmux session**, which is what makes the resulting row attachable.
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `name` | the current directory's name | tmux session name. `.`, `:` and spaces become `-`, because tmux cannot address them as a target |
+| `--` | — | everything after it is passed to `claude` untouched |
+
+Re-running with the same name **attaches** to the existing session rather than starting a second
+agent in it, matched exactly (`-t "=name"`), so `agb-claude api` will not attach to `api-refactor`.
+Run from inside tmux it creates a *sibling* session and switches: a nested session cannot be
+attached to from outside, and agbridge would record the outer session's name for the inner agent.
+
+It exists because the tmux session name is resolved **once**, at the agent's first hook, and never
+refreshed — so naming has to happen before the agent starts, and forgetting is easy.
 
 ## `agb version`
 
