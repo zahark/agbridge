@@ -240,7 +240,7 @@ def test_the_row_command_this_parser_reads_is_the_one_the_bridge_writes(mac,
     assert argv[4] == "pane"
     opts = ops.parse_pane_args(argv[5:])
     assert opts == {"key": KEY, "host": HOST, "tmux": "build", "pane": "%24",
-                    "jump": JUMP}
+                    "jump": JUMP, "cwd": "/shared/work/task"}
 
 
 def test_a_non_tmux_row_command_round_trips_too(mac, ops):
@@ -725,3 +725,80 @@ def test_the_operator_file_still_carries_the_bulk(ops_source, agb_source):
     """Task 7 added a command and `agb` grew nothing at all."""
     assert len(ops_source) > 60000
     assert len(agb_source) < conftest.AGB_PARSE_BUDGET
+
+
+# ---------------------------------------------------------------------------
+# `[s] shell` -- agterm's split pane
+# ---------------------------------------------------------------------------
+
+class _Out(object):
+    """A collecting `out`, so assertions are about text rather than capsys."""
+
+    def __init__(self):
+        self.text = ""
+
+    def write(self, data):
+        self.text += data
+
+    def flush(self):
+        pass
+
+def test_the_shell_line_is_an_ssh_into_the_agents_own_directory(ops):
+    assert ops.split_shell_line("box2", "/work/api") == \
+        "ssh -t box2 'cd /work/api && exec $SHELL -l'"
+
+
+def test_the_shell_line_carries_the_jump_host(ops):
+    assert ops.split_shell_line("box3", "/work/api", jump="gate") == \
+        "ssh -t -J gate box3 'cd /work/api && exec $SHELL -l'"
+
+
+def test_a_row_with_no_recorded_cwd_still_gets_a_shell(ops):
+    """Rows created before `--cwd` existed have none. Landing in the home
+    directory is a smaller surprise than landing somewhere invented."""
+    assert ops.split_shell_line("box2") == "ssh -t box2"
+
+
+def test_a_cwd_with_a_space_survives_the_remote_shell(ops):
+    """`session type` injects a shell LINE, so an unquoted path would become
+    two arguments and `cd` would fail on the first half."""
+    line = ops.split_shell_line("box2", "/work/my project")
+    assert "'cd '\"'\"'/work/my project'\"'\"' && exec $SHELL -l'" in line \
+        or "/work/my project" in line.replace("'\\''", "'")
+
+
+def test_the_split_is_opened_before_anything_is_typed_into_it(ops):
+    """`--pane right` is an error when the session has no split, and `--select`
+    is documented as main-pane only -- so the order is load-bearing, not
+    stylistic."""
+    calls = []
+    ops.open_split("ssh -t box2", run=lambda argv: calls.append(argv) or 0,
+                   out=_Out())
+    assert [c[1:3] for c in calls] == [["session", "split"], ["session", "type"]]
+
+
+def test_the_split_is_turned_on_not_toggled(ops):
+    """Asked for twice, `toggle` would CLOSE the pane the second time."""
+    calls = []
+    ops.open_split("ssh -t box2", run=lambda argv: calls.append(argv) or 0,
+                   out=_Out())
+    assert calls[0] == ["agtermctl", "session", "split", "on",
+                        "--target", "active"]
+    assert calls[1][:6] == ["agtermctl", "session", "type", "--target",
+                            "active", "--pane"]
+    assert calls[1][6] == "right"
+    assert calls[1][7] == "ssh -t box2\n"      # a newline, or nothing runs
+
+
+def test_a_failed_split_leaves_the_row_alone_and_says_so(ops):
+    out = _Out()
+    calls = []
+    code = ops.open_split("ssh -t box2",
+                          run=lambda argv: calls.append(argv) or 3, out=out)
+    assert code == 3
+    assert len(calls) == 1                     # never typed into a pane that is not there
+    assert "was not opened" in out.text
+
+
+def test_the_prompt_offers_the_shell(ops):
+    assert "[s] shell" in ops.PANE_PROMPT

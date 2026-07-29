@@ -958,7 +958,7 @@ def test_subprocess_is_imported_only_inside_the_farm_and_bridge_sites(
     """A module-level `import subprocess` would be paid by every hook; a
     subprocess on the transition path would be paid by every state change.
 
-    Seven legitimate sites and no more, counted across **all three** files: the
+    Eight legitimate sites and no more, counted across **all three** files: the
     tmux resolver (once per mint, on the farm), the two halves of the bridge's
     ssh handling, Task 4b's `_run_command` -- the single door to `agtermctl`
     and to the notifier (Mac only, in `agb_mac`, and never reachable from
@@ -992,6 +992,14 @@ def test_subprocess_is_imported_only_inside_the_farm_and_bridge_sites(
     invocation is data, never an exception and never a hang" is a property of
     one place rather than of every call site.
 
+    ⚠️ `open_split` opens agterm's split pane for `agb pane`'s `[s] shell`.
+    It is a *second* door to `agtermctl`, which needs saying: `agb_mac`'s
+    `_run_command` is the renderer's single door, and this one exists because
+    `agb pane` runs on the Mac but lives in `agb_ops`, which never loads
+    `agb_mac`. Both obey the same rule -- a failure is written out and returned,
+    never raised, so a missing or broken `agtermctl` costs the row its split and
+    nothing else. It takes an injectable `run` like every other spawning site.
+
     The three bridge sites keep their imports function-local even though
     `agb_mac`'s module scope costs a hook nothing -- so that this stays one rule
     over one list, instead of one rule per file that has to be re-read to see
@@ -1007,7 +1015,7 @@ def test_subprocess_is_imported_only_inside_the_farm_and_bridge_sites(
                         holders.add(name)
     assert holders == set(["resolve_tmux_session", "bridge_spawn",
                            "_wait_or_kill", "_run_command", "prune_via_ssh",
-                           "pane_attach", "_probe_run"])
+                           "pane_attach", "_probe_run", "open_split"])
 
 
 def test_minting_never_uses_o_excl_to_create_the_idx_file(agb_tree):

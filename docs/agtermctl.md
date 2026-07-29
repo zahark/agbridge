@@ -1,14 +1,15 @@
 # `agtermctl` — the contract agbridge codes against
 
 `agtermctl` is a **Mac-only** binary shipped with [agterm](https://github.com/umputun/agterm). It
-cannot be run, inspected, or `--help`'d from the farm box: it does not exist here, and the machine
-has no route to GitHub either (`raw.githubusercontent.com` → `ECONNRESET`, verified 2026-07-28).
+cannot be run or `--help`'d from a Linux host: it does not exist there. Everything below was either
+derived from the design and later confirmed against a live agterm, or captured verbatim on a Mac —
+each clause says which.
 
 This file therefore has two layers, and they are kept **visually separate on purpose**:
 
 1. **The assumed contract** — what Tasks 4b, 8 and 9b code against *today*. Every clause is tagged
    with its evidence class.
-2. **The verbatim recording** — `--help` output captured on the Mac. **Not yet recorded.**
+2. **The verbatim recording** — `--help` output captured on the Mac. `session split` and `session type` are recorded below; the rest is still outstanding.
 
 When the recording lands, reconcile layer 1 against it and update `tests/stubs/agtermctl`
 (created by Task 4b). Nothing in the plan blocks on that: the assumed contract is complete enough
@@ -97,6 +98,43 @@ matters more than any other (see *Fallbacks*):
 - **ASSUMED** entirely. Used only by `agb close-done` and by the no-title fallback below.
 - If it does not exist, `agb close-done` degrades to a no-op that prints the rows the operator
   should close by hand. It must never be emitted on the `remove` path.
+
+### `agtermctl session split [on|off|toggle] [--target <id>]`  — **CONFIRMED**
+
+Verbatim from `agtermctl session split --help` (2026-07-29):
+
+```
+OVERVIEW: Show or hide a session split (on|off|toggle).
+USAGE: agtermctl session split [<mode>] [--target <target>] [--socket <socket>] [--json] [--window <window>]
+  <mode>     Mode: on (show), off (hide), or toggle (default). Hidden panes stay alive. (default: toggle)
+  --target   Target session/workspace id, unique prefix, or 'active'. (default: active)
+```
+
+agbridge uses **`on`**, never the default `toggle`: `[s] shell` can be pressed twice and a toggle
+would close the pane the second time.
+
+### `agtermctl session type [<text>] [--pane left|right|scratch] [--target <id>]` — **CONFIRMED**
+
+```
+OVERVIEW: Inject text into a session.
+USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--target <target>] ...
+  --select   Select (and realize) a never-shown session before injecting
+             (main pane only; a split pane must already exist).
+  --pane     Which pane to type into: left (main), right (split), or scratch. Defaults to left.
+```
+
+Two consequences, both load-bearing:
+
+- **The split must exist before anything is typed into it.** `--pane right` is an error otherwise,
+  and `--select` — the flag that realizes a never-shown session — is documented as *main pane only*.
+  That is why `open_split` is two calls in a fixed order, and why it stops if the first fails.
+- **It injects keystrokes into a shell, not an argv.** What arrives has to be a valid shell *line*,
+  ending in a newline or nothing runs. `split_shell_line` quotes every word for that reason.
+
+It also rules out doing this automatically at row creation: a row the human has never clicked is a
+never-shown session, and `--select` cannot realize its split pane. So the split is offered by
+`agb pane`'s prompt — which runs *inside* the row's own session, making it the active one, so
+`--target active` needs no row-id lookup at all.
 
 ## Decisions this file settles
 

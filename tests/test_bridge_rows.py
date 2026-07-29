@@ -465,7 +465,7 @@ def test_the_row_command_is_the_agb_pane_invocation(mac):
                          python="/usr/bin/python3") == [
         "/usr/bin/python3", "-S", "-E", "/opt/agb/agb",
         "pane", "aaaa1111", "--host", HOST, "--tmux", "build",
-        "--pane", "%24"]
+        "--cwd", "/shared/work/project", "--pane", "%24"]
 
 
 def test_the_row_command_names_an_interpreter_because_agb_has_no_shebang(mac,
