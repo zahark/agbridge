@@ -253,9 +253,14 @@ def test_the_command_still_dispatches_through_the_hop(agb, monkeypatch):
 # consumed, never duplicated
 # ---------------------------------------------------------------------------
 
+# `default_statedir` was here and was deliberately removed: the Mac side must
+# NOT derive a farm-side path from its own `$HOME`, so `bridge_settings` now
+# requires an explicit statedir instead of defaulting to it. That leaves it
+# consumed only inside `agb`, which makes it an internal helper rather than a
+# shared primitive -- said out loud here, as this list's own docstring demands.
 SHARED_PRIMITIVES = ("AgbError", "read_config", "config_path", "valid_mac_id",
                      "_json", "_select_readable", "_warn_once", "_stdin_fd",
-                     "default_statedir", "FEED_POLL_INTERVAL")
+                     "FEED_POLL_INTERVAL")
 
 
 def test_the_shared_primitives_stay_in_agb(agb, mac):
