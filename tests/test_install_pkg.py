@@ -490,7 +490,11 @@ def mac_args(tmp_path):
             "--python": sys.executable,
         }
         args.update(over)
-        argv = ["mac", "--no-load"]
+        # `--no-probe` for the same reason every path above is pinned: the probe
+        # is an outbound ssh, and a test that reaches the network is a test that
+        # fails for reasons unrelated to its subject. The probe has its own
+        # tests, which opt back in with a recording stub.
+        argv = ["mac", "--no-load", "--no-probe"]
         for name in sorted(args):
             if args[name] is None:
                 continue
@@ -1371,3 +1375,92 @@ def test_install_sh_names_all_three_files_and_both_configs():
         text = handle.read()
     assert 'FILES="agb agb_mac agb_ops"' in text
     assert "install-config" in text and "install-hooks" in text
+
+
+# ---------------------------------------------------------------------------
+# --probe: deriving host_<hostname> from the feed host
+# ---------------------------------------------------------------------------
+
+def _probing_args(mac_args, **over):
+    """`mac_args` opts out of probing; these tests are about it, so opt back in."""
+    argv = mac_args(**over)
+    return [a for a in argv if a != "--no-probe"]
+
+
+def _ssh_answering(stub_bin, hostname, exit_code=0):
+    """An ssh stub that records its argv AND answers the `hostname -s` probe."""
+    log = stub_bin.path / "ssh.log"
+    stub_bin.install("ssh", body=(
+        "#!/bin/sh\n"
+        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; } >> \""
+        + str(log) + "\"\n"
+        "printf '%s\\n' " + hostname + "\n"
+        "exit " + str(exit_code) + "\n"))
+
+
+def test_the_probe_maps_the_feed_hosts_real_hostname_to_its_ssh_alias(
+        run_sh, mac_args, stub_bin, tmp_path, agb):
+    """A record's `host` is the farm's hostname; `--feed-host` is an ssh alias.
+    Without `host_<hostname>` the row renders and then refuses to open, which is
+    a confusing place to discover a missing config line -- so the one mapping
+    that can be derived is derived."""
+    _ssh_answering(stub_bin, "buildbox07")
+    code, out, err = run_sh(_probing_args(mac_args))
+    assert code == 0, err
+    assert "buildbox07" in out
+    values = agb.read_config(str(tmp_path / "cfg" / "config"))
+    assert values["host_buildbox07"] == "box2"
+
+
+def test_the_probe_asks_the_feed_host_and_nothing_else(
+        run_sh, mac_args, stub_bin):
+    """Read-only, one call, and to the feed host by name."""
+    _ssh_answering(stub_bin, "buildbox07")
+    assert run_sh(_probing_args(mac_args))[0] == 0
+    calls = stub_bin.calls("ssh")
+    assert len(calls) == 1
+    assert calls[0][-2:] == ["box2", "hostname -s"]
+
+
+def test_an_explicit_host_mapping_beats_the_probe(
+        run_sh, mac_args, stub_bin, tmp_path, agb):
+    """The operator's own answer is never overwritten by a derived one."""
+    _ssh_answering(stub_bin, "buildbox07")
+    code, out, err = run_sh(_probing_args(mac_args,
+                                          **{"--host": "buildbox07=chosen"}))
+    assert code == 0, err
+    values = agb.read_config(str(tmp_path / "cfg" / "config"))
+    assert values["host_buildbox07"] == "chosen"
+    assert "already mapped explicitly" in out
+
+
+def test_a_failing_probe_is_not_fatal_and_says_what_to_do(
+        run_sh, mac_args, stub_bin, tmp_path, agb):
+    """The probe is a convenience. A farm that will not answer must not stop an
+    install -- it must leave a working config and name the missing flag."""
+    _ssh_answering(stub_bin, "", exit_code=255)
+    code, out, err = run_sh(_probing_args(mac_args))
+    assert code == 0, err
+    assert "--host" in out
+    values = agb.read_config(str(tmp_path / "cfg" / "config"))
+    assert values["mac_id"]
+    assert not [k for k in values if k.startswith("host_")]
+
+
+def test_a_garbage_hostname_is_refused_rather_than_written(
+        run_sh, mac_args, stub_bin, tmp_path, agb):
+    """Whatever comes back becomes a CONFIG KEY (`host_<name>`), so it is
+    validated before it is trusted -- an ssh banner or a shell error message
+    must not end up as one."""
+    _ssh_answering(stub_bin, "'not a hostname; rm -rf /'")
+    code, out, err = run_sh(_probing_args(mac_args))
+    assert code == 0, err
+    values = agb.read_config(str(tmp_path / "cfg" / "config"))
+    assert not [k for k in values if k.startswith("host_")]
+    assert "--host" in out
+
+
+def test_no_probe_makes_no_ssh_call_at_all(run_sh, mac_args, stub_bin):
+    _ssh_answering(stub_bin, "buildbox07")
+    assert run_sh(mac_args())[0] == 0          # mac_args already has --no-probe
+    assert stub_bin.calls("ssh") == []
