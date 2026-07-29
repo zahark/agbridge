@@ -1334,6 +1334,11 @@ def pane_argv(session, agb_path=None, python=None, jump=None):
             "--host", str(session.get("host") or "")]
     if session.get("tmux"):
         argv.extend(["--tmux", str(session["tmux"])])
+    if session.get("cwd"):
+        # For the split pane's shell, so it opens in the agent's own directory.
+        # Optional on purpose: a row created before this existed simply has no
+        # --cwd, and `agb pane` leaves the shell wherever ssh lands it.
+        argv.extend(["--cwd", str(session["cwd"])])
     if session.get("pane"):
         argv.extend(["--pane", str(session["pane"])])
     if jump:

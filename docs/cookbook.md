@@ -112,9 +112,16 @@ Your sidebar then reads something like:
   docs-pass    · buildbox01 · /work/docs · %2     idle
 ```
 
-**Click the row that wants you**, press Enter, and you land in that agent's pane. `Ctrl-b d`
-detaches and returns you to the prompt — the row stays, so you can re-attach without going back to
-the sidebar.
+**Click the row that wants you**, then choose at the prompt:
+
+```
+[enter] attach   [s] shell   [q] quit >
+```
+
+- **Enter** — attach to the agent's own tmux pane. `Ctrl-b d` detaches and returns you here, so you
+  can re-attach without going back to the sidebar.
+- **`s`** — open agterm's split pane beside this one with a plain shell on the same host, in the
+  agent's directory. Both panes belong to the same row.
 
 When an agent finishes its row is marked `[done]`. Reclaim them on the Mac with:
 

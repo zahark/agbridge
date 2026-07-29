@@ -1749,11 +1749,41 @@ def run_prune(argv, out=None, ask=None, run=None):
 # reachable only through box #2, which is `jump_host`. `ssh_target_for` is
 # shared with `prune --via-ssh` because the question is identical.
 
-PANE_PROMPT = "[enter] attach   [q] quit > "
+PANE_PROMPT = "[enter] attach   [s] shell   [q] quit > "
 
 PANE_QUIT_WORDS = ("q", "quit", "exit")
 
-PANE_VALUE_ARGS = ("--host", "--tmux", "--pane", "--jump")
+PANE_SPLIT_WORDS = ("s", "shell", "split")
+
+PANE_VALUE_ARGS = ("--host", "--tmux", "--pane", "--jump", "--cwd")
+
+AGTERMCTL = "agtermctl"
+
+# agterm's own words, verified against `agtermctl session split --help` and
+# `session type --help` on 2026-07-29:
+#
+#   session split [on|off|toggle] [--target <id|prefix|active>]
+#   session type  [<text>] [--stdin] [--pane left|right|scratch] [--target ...]
+#
+# `on` rather than the default `toggle`, because this can be asked for twice and
+# a toggle would CLOSE the pane the second time. `--target active` because this
+# command is already running inside the row's own session: the human clicked it
+# to get here, so the session that wants the split is by definition the active
+# one, and nothing has to look a row id up in the map.
+#
+# The split must exist BEFORE anything is typed into it -- `--pane right` is an
+# error otherwise, and `--select` (which realizes a never-shown session) is
+# documented as main-pane only. That ordering is why this is two calls.
+SPLIT_ON = ("session", "split", "on", "--target", "active")
+TYPE_RIGHT = ("session", "type", "--target", "active", "--pane", "right")
+
+PANE_SPLIT_NO_CTL = (
+    "agtermctl is not on PATH, so the split cannot be opened from here. It is "
+    "agterm's own CLI and ships with the app.")
+
+PANE_SPLIT_HINT = (
+    "the shell opens in agterm's split pane, beside this one. Both panes belong "
+    "to the same row.")
 
 PANE_NO_ATTACH = (
     "no attach target: this agent is recorded with neither a tmux session nor "
@@ -1965,7 +1995,7 @@ def pane_wait(prompt):
     return line.strip()
 
 
-def pane_attach(argv, out, ask=None, run=None):
+def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None):
     """Prompt, attach, and come **back** here when the attach ends.
 
     `subprocess.call` in a loop is the whole point of the function: `os.exec*`
@@ -1984,6 +2014,17 @@ def pane_attach(argv, out, ask=None, run=None):
         run = subprocess.call
     while True:
         answer = ask(PANE_PROMPT)
+        if answer is not None and answer.lower() in PANE_SPLIT_WORDS:
+            if split_line is None:
+                out.write("    no shell target recorded for this row\n")
+            elif not _have(AGTERMCTL):
+                out.write("    " + PANE_SPLIT_NO_CTL + "\n")
+            else:
+                out.write("    " + PANE_SPLIT_HINT + "\n")
+                out.write("    shell:  %s\n" % (split_line,))
+                open_split(split_line, ctl, out)
+            out.flush()
+            continue
         if answer is None or answer.lower() in PANE_QUIT_WORDS:
             out.write("leaving the row as it is -- nothing here changes any "
                       "agent's state\n")
@@ -1995,6 +2036,63 @@ def pane_attach(argv, out, ask=None, run=None):
         else:
             out.write("detached; the agent is still running\n")
         out.flush()
+
+
+def _have(program):
+    """Is `program` on $PATH? `agtermctl` is agterm's, not ours, so its absence
+    is a message rather than a traceback."""
+    for directory in (os.environ.get("PATH") or "").split(os.pathsep):
+        if directory and os.access(os.path.join(directory, program), os.X_OK):
+            return True
+    return False
+
+
+def split_shell_line(target, cwd=None, jump=None):
+    """The line typed into the split pane. Pure, so its test is a string test.
+
+    A *string*, not an argv: `session type` injects keystrokes into a shell that
+    is already running, so what lands there has to be a valid shell line. Every
+    word is quoted for that reason -- a cwd with a space would otherwise become
+    two arguments.
+
+    `exec $SHELL -l` rather than letting ssh pick: a login shell in the agent's
+    own directory is the point of the pane. Without a recorded cwd it is left
+    out entirely rather than guessed at -- rows created before `--cwd` was added
+    to the row command have none, and landing in the home directory is a smaller
+    surprise than landing somewhere invented.
+    """
+    import shlex
+    words = ["ssh", "-t"]
+    if jump:
+        words.extend(["-J", jump])
+    words.append(target)
+    if cwd:
+        # One ssh argument, so it is quoted as a whole: the remote login shell
+        # re-splits whatever ssh hands it.
+        words.append("cd %s && exec $SHELL -l" % (shlex.quote(cwd),))
+    return " ".join(shlex.quote(word) for word in words)
+
+
+def open_split(line, run=None, out=None):
+    """Open agterm's split pane and start `line` in it.
+
+    Two calls, in this order, because `--pane right` is an error when there is
+    no split yet. Neither is fatal: a failure here leaves the row exactly as it
+    was, and the main pane is still attachable.
+    """
+    if out is None:
+        out = sys.stdout
+    if run is None:
+        import subprocess
+        run = subprocess.call
+    for args in (list(SPLIT_ON), list(TYPE_RIGHT) + [line + "\n"]):
+        code = run([AGTERMCTL] + args)
+        if code:
+            out.write("    agtermctl %s exited %s -- the split was not opened\n"
+                      % (" ".join(args[:3]), code))
+            out.flush()
+            return code
+    return 0
 
 
 def run_pane(argv, out=None, ask=None, run=None, config=None):
@@ -2020,7 +2118,8 @@ def run_pane(argv, out=None, ask=None, run=None, config=None):
     ssh_argv = pane_ssh_argv(target, opts["tmux"], opts["pane"], jump)
     out.write("    attach: %s\n" % (pane_display(ssh_argv),))
     out.flush()
-    return pane_attach(ssh_argv, out, ask, run)
+    return pane_attach(ssh_argv, out, ask, run,
+                       split_shell_line(target, opts.get("cwd"), jump))
 
 
 # ==========================================================================
