@@ -619,13 +619,38 @@ The row's command, set at `session new` time, is the one line connecting the two
 The interpreter is spelled out because `agb` has no shebang and is not executable (see §5) — a bare
 `agb pane` row command would simply never run.
 
-`agb pane` prints the agent's identity, then prompts (`[enter] attach   [q] quit > `), and attaches
-only if you ask it to:
+`agb pane` prints the agent's identity, then prompts
+(`[enter] attach   [s] shell   [q] quit > `), and attaches only if you ask it to:
 
 ```sh
 ssh -t [-J jump] <target> \
     'tmux select-window -t %N ; tmux select-pane -t %N ; exec tmux attach-session -t <session>'
 ```
+
+**`s`, `shell` or `split` opens agterm's split pane** beside this one and starts a plain login
+shell on the same host, in the agent's own directory:
+
+```sh
+agtermctl session split on --target active
+agtermctl session type  --target active --pane right "ssh -t [-J jump] <target> 'cd <cwd> && exec \$SHELL -l'\n"
+```
+
+Both panes belong to **one session and one sidebar row** — agterm's own model, not something this
+tool invents. Three properties of that pair are load-bearing, and all three come from
+`--help` output recorded in [`agtermctl.md`](agtermctl.md) rather than from assumption:
+
+- **`on`, not the default `toggle`.** `[s]` can be pressed twice, and a toggle would close the pane
+  the second time.
+- **The split must exist before anything is typed into it.** `--pane right` is an error otherwise,
+  and `--select` — the flag that realizes a never-shown session — is documented as *main pane only*.
+  Hence two calls in a fixed order, the second skipped if the first fails.
+- **`--target active` needs no row id.** This command is running *inside* the row's own session:
+  the human clicked it to get here, so the session wanting the split is by definition the active
+  one. No rows-map lookup, and therefore no dependency on `agb_mac` from `agb_ops`.
+
+That last point is also why the split is **offered rather than opened automatically**. A row nobody
+has clicked is a never-shown session whose split pane cannot be realized — and splitting every row
+at creation would open one idle ssh per agent.
 
 **`q`, `quit`, `exit` and EOF leave without attaching**, exit 0, and print that nothing about the
 agent's state was changed — a row command whose stdin is not a terminal therefore ends instead of

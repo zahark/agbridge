@@ -30,6 +30,10 @@ cluster hosts whose interpreter you do not control.
 | `agb_mac` | `agb bridge`, `agb close-done` | the Mac side: transport, watchdog, row bijection, rendering |
 | `agb_ops` | `doctor`/`prune`/`pane`/`status-line`/`install-*` | operator and diagnostic commands |
 
+Plus **`agb-claude`**, a standalone POSIX-sh script that is not part of `agb` at all: it starts
+Claude Code in a named tmux session. It exists because the session name is resolved once, at an
+agent's first hook, so it has to be set before the agent starts.
+
 `agb hook` runs on **every Claude Code tool call**, over a network filesystem. `agb` has no `.py`
 extension and runs as `__main__`, so **CPython caches no bytecode for it** — the whole file is
 re-parsed every single invocation. (This is a property of being `__main__`, not of the missing
@@ -89,6 +93,12 @@ These are not style preferences. Each one has a test, and most were re-learned t
    The bridge treats only `complete is True` as authority — a truthy string is not.
 10. **A `[done]` row can be rebound** when the feed positively re-asserts the key. The removal was
     never proof, so refusing to rebind strands a live agent's row forever.
+11. **`agb bridge` has no statedir default.** `agb`'s own `~/.agbridge` is right for a process on
+    the farm and wrong for the Mac, which would resolve `~` locally and ship a path meaning
+    something else. There is no value that side can invent, so it asks. This shipped broken once.
+12. **`agtermctl session split` is used as `on`, never `toggle`**, and the split must exist before
+    anything is typed into it (`--pane right` errors otherwise, and `--select` is main-pane only).
+    Both are `--help`-verified, recorded in `docs/agtermctl.md`, and mutation-tested.
 
 ## Testing conventions
 
@@ -160,9 +170,14 @@ environment — several are version- or mount-specific.
 
 ## Known gaps
 
-- **Never run against a live agterm.** The `agtermctl` invocation contract is *assumed*, with
-  fallbacks recorded in [`docs/agtermctl.md`](docs/agtermctl.md). If it turns out to differ, that
-  file and `agb_mac`'s `RowRenderer` are what need correcting.
+- **Partly verified against a live agterm.** `session new` returning the row id on stdout,
+  `session split` and `session type` are all **CONFIRMED** — see
+  [`docs/agtermctl.md`](docs/agtermctl.md), which tags every clause. `session close`,
+  `--blink`/`--auto-reset` and repeated `rename` remain **ASSUMED**, with fallbacks recorded.
+- **Two doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single door;
+  `agb_ops.open_split` is a second one, because `agb pane` runs on the Mac but lives in `agb_ops`,
+  which never loads `agb_mac`. Both obey the same rule: a failure is written out and returned,
+  never raised.
 - `agb <cmd> --help` is not implemented — it would need a `--help` arm in nine hand-rolled parsers
   across three files, against the byte cap. [`docs/commands.md`](docs/commands.md) is the reference.
 - The nine `parse_*_args` functions share scaffolding that could collapse into one helper. It was

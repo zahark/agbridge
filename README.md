@@ -166,6 +166,10 @@ The interesting constraints, all of which the code and tests enforce:
 - **Nothing fails silently.** Every failure leaves a breadcrumb; `doctor` probes rather than
   checking existence (it really writes a file, renames it, and reads it back); the hook exits 0 on
   every path and never writes to stdout, because Claude Code injects hook stdout into the prompt.
+- **One row, two panes.** Clicking a row runs `agb pane`, which prints the agent's identity and
+  offers `[enter] attach   [s] shell   [q] quit`. Enter joins the agent's own tmux pane; `s` opens
+  agterm's split beside it with a shell on the same host, in the agent's directory. Detaching
+  returns to the prompt rather than closing the row.
 - **A dead row must not look like a live one.** `agterm`'s `idle` renders as *no glyph*, so a
   removed row would be pixel-identical to a live idle agent. Removed rows are marked `[done]` and
   stale ones `[?]` in the title.
