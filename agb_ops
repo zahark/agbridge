@@ -1,0 +1,3417 @@
+# agbridge -- the operator and diagnostic side: `doctor`, `prune`
+#, `pane`, `status-line`, and from Tasks 9a/9b
+# `install-hooks` and `install-config`.
+#
+# ⚠️ `status-line` is the exception to everything the next paragraph says: tmux
+# re-runs it every `status-interval` seconds, so it is a repeating path rather
+# than a rare one. It lives here anyway, and the measurement that decided that
+# is recorded above `status_age` rather than assumed.
+#
+# ---------------------------------------------------------------------------
+# Why there are two lazily loaded siblings at all
+# ---------------------------------------------------------------------------
+#
+# THIS IS THE CANONICAL COPY. `agb`'s tail and `agb_mac`'s header point here
+# rather than restating it; the reasoning used to be written out in all three
+# files and the measurement table in two of them, which is two places for one
+# set of numbers to drift apart.
+#
+# `agb` has no `.py` extension and is run as a script, so CPython writes **no
+# `__pycache__` entry** for it and re-compiles the whole file on every hook
+# invocation. Measured on the farm box:
+#
+#     Task 2b    51 KB    9.2 ms per no-change hook
+#     Task 3a    70 KB   10.1 ms   (3.0 ms of it parse)
+#     Task 3b    82 KB   10.8 ms
+#     Task 4a   105 KB   12.1 ms   (5.6 ms of it parse)  <- over the ~8-11 ms
+#                                                           target
+#     Task 4c    85 KB   10.6 ms   (Mac side moved to `agb_mac`)
+#     Task 5    100 KB   11.0 ms   (hook-side sweep; cannot be moved anywhere)
+#
+# Task 4a is what forced the split: every line of Mac-side code in `agb` was
+# being parsed hundreds of times per session by hooks that can never execute it.
+# `doctor` is the extreme case of the same thing -- parsed hundreds of times per
+# session, executed when a human is debugging -- so Task 5's handover note is
+# explicit that the next breach is paid this way rather than by raising the size
+# cap again. `doctor` therefore lands here on the day it is written; it is never
+# in `agb` at all, and Tasks 6b-9b follow it in. Splitting `agb_ops` off is
+# worth **1.6 ms on every hook** (`compile()` of `agb` alone 3.8 ms, of `agb` +
+# `agb_ops` 5.3 ms).
+#
+# Three rules govern BOTH siblings:
+#
+#   * **A hook must never open, read or compile either of them.** Not an
+#     aspiration: `tests/test_doctor.py` and `tests/test_mac_split.py` each run
+#     a hook against a copy of the tree in which the sibling is `chmod 000`.
+#   * Constraint #17 applies to both names: `-S -E` does not strip
+#     `sys.path[0]`, so nothing beside `agb` may be named after a stdlib module.
+#     Neither `agb_ops` nor `agb_mac` is, and -- like `agb` -- both deliberately
+#     have no `.py` extension, so a stray `import agb_ops` cannot pick it up at
+#     all.
+#   * The shared primitives stay in `agb` and are **consumed** from the
+#     siblings, never copied: `own_host`, `read_fresh`, `_read_all`,
+#     `read_state_entry`, `read_marker_keys`, `list_session_keys`, `bridge_dir`,
+#     `_stat_fresh`, `_listdir_quiet`,
+#     `_unlink_quiet`, `verify_statedir`, `read_config`, `AgbError` -- and, for
+#     `prune`, `proof_of_life`, `format_marker`, `atomic_write` and
+#     `breadcrumb`; `agb_mac` takes `_json`, `_select_readable`, `_warn_once`
+#     and `_stdin_fd` the same way. Two copies of a rule is how the halves come
+#     to disagree, and the entry-point names must not collide across the three
+#     files or the merged AST call graph the structural guards walk would
+#     silently drop half a guard.
+#
+# What is specific to THIS file: **one door.** `agb.cmd_ops(name, argv)` hops
+# into `run_ops` at the bottom, which dispatches all six commands. Six `cmd_*`
+# stubs in `agb` would have cost more than the parse budget had left. (`agb_mac`
+# has two commands and takes a hop each.)
+#
+# `import agb` below is not a filesystem import: `agb._load_sibling()` registers
+# the running `agb` module in `sys.modules` first, so this binds the *same*
+# module object -- not a second copy with its own state.
+#
+# ---------------------------------------------------------------------------
+# What `doctor` is for
+# ---------------------------------------------------------------------------
+#
+# `agr` failed silently in five stacked places, and every one of them would have
+# passed an existence check. So this command **probes**: it does not ask whether
+# the statedir exists, it writes a file and renames it; it does not ask whether
+# a bridge beat file is present, it reports how old the beat is; it does not
+# assume the two clocks agree, it measures the difference between a file's
+# server-stamped mtime and the writer's own `updated` field.
+#
+# And there is one thing it must never do. The entries it lists as
+# **unadjudicable** are entries on a host this machine cannot speak for, whose
+# `sweep/<host>.marker` mtime is old. That is an **age heuristic, not proof of
+# death** (design amendment 1): on machine #3 there is no feed, so the only beat
+# source is hooks -- and a `blocked` agent waiting for you fires none. Its beat
+# freezes while it is perfectly alive. Calling such an entry "orphaned" or
+# "provably dead" is precisely what would invite a blanket destructive
+# `--force` in Task 6b and re-create the bug amendment 1 removed. The word is
+# "unadjudicable", every rendering says so, and a test asserts it.
+
+import errno
+import os
+import sys
+import time
+
+import agb
+
+
+# `/proc/mounts` as a module constant so the mount probe is testable against a
+# synthetic table -- the same seam `agb.PROC` provides for the agent-pid walk.
+MOUNTS = "/proc/mounts"
+
+PROBE_OK = "ok"
+PROBE_WARN = "warn"
+PROBE_FAIL = "fail"
+
+_PROBE_RANK = {PROBE_OK: 0, PROBE_WARN: 1, PROBE_FAIL: 2}
+
+# The feed touches `bridge/<mac-id>.beat` on every poll (2 s by default), so a
+# beat this old means the Mac is not consuming -- the one thing the farm side
+# can say about the Mac at all.
+DOCTOR_BEAT_STALE = 30.0
+
+# How old `sweep/<host>.marker` must be before that host's entries are called
+# unadjudicable. Deliberately generous: the marker is refreshed by any hook
+# transition on that host, so a quiet 15 minutes means nobody there has changed
+# state in 15 minutes -- which is a *question*, never an answer.
+DOCTOR_QUIET_AFTER = 900.0
+
+# Beyond this, the writer's clock and the NFS server's disagree enough to matter.
+DOCTOR_SKEW_LIMIT = 2.0
+
+# Records sampled per host for the skew measurement. Each costs two opens, and
+# skew is a property of the host rather than of the entry.
+DOCTOR_SKEW_SAMPLE = 5
+
+DOCTOR_TAIL = 3
+DOCTOR_MAX_LOGS = 20
+
+# The word, in one place. Never "orphaned", never "provable".
+UNADJUDICABLE = "unadjudicable"
+UNADJUDICABLE_CAVEAT = ("an age heuristic, not proof of death -- a blocked "
+                        "agent waiting for input beats nothing at all")
+
+# Mount options worth putting in the summary line rather than only in the dump.
+MOUNT_INTERESTING = ("hard", "soft", "intr", "nointr", "noac", "nocto",
+                     "actimeo", "acregmin", "acregmax", "acdirmin", "acdirmax",
+                     "timeo", "retrans", "vers", "nfsvers", "lookupcache")
+
+MOUNT_AC_OPTIONS = ("actimeo", "acregmin", "acregmax", "acdirmin", "acdirmax",
+                    "noac")
+
+NFS_DEFAULT_AC = "acregmin=3 acregmax=60 acdirmin=30 acdirmax=60"
+
+# The atomicity probe's target. In `gen/` because that is a directory the tool
+# already writes into with temp+rename, so the probe exercises the real
+# discipline in the real place; the name carries no `.marker` suffix, so
+# `list_marker_hosts` can never mistake it for a host.
+PROBE_BASENAME = "doctor.%s.probe"
+
+
+class Probe(object):
+    """One question `doctor` asked, and what came back.
+
+    Kept as data rather than printed in place so the tests assert on the answer
+    instead of on a formatting accident, and so Task 6b can consume the
+    unadjudicable list without re-deriving it from text.
+    """
+
+    __slots__ = ("name", "status", "summary", "lines")
+
+    def __init__(self, name, status, summary, lines=None):
+        self.name = name
+        self.status = status
+        self.summary = summary
+        self.lines = list(lines or [])
+
+    def __repr__(self):
+        return "Probe(%r, %r, %r)" % (self.name, self.status, self.summary)
+
+
+def age_text(seconds):
+    """A human age. `None` is "unknown" -- never "0" and never "gone"."""
+    if seconds is None:
+        return "unknown"
+    if seconds < 0:
+        return "%.0f s in the future" % (-seconds,)
+    if seconds < 90:
+        return "%.0f s" % (seconds,)
+    if seconds < 5400:
+        return "%.0f min" % (seconds / 60.0,)
+    if seconds < 172800:
+        return "%.1f h" % (seconds / 3600.0,)
+    return "%.1f d" % (seconds / 86400.0,)
+
+
+def _plural(count, one="", many="s"):
+    """The suffix for `count` of something: `_plural(n)`, or `_plural(n, "y",
+    "ies")` for `entr%s`. Beside `age_text` because it is the same kind of
+    thing -- a one-line formatting rule this file states once rather than
+    inlining a dozen times."""
+    return one if count == 1 else many
+
+
+def _usable_value(text):
+    """One word this tool can carry unchanged: non-empty, unpadded, no controls.
+
+    Three commands ask this same question and used to answer it three different
+    ways -- `pane` refused a stray `\\r`, `install-hooks` did not, and
+    `install-config` walked the string looking for control characters. So an
+    embedded carriage return sailed through `--settings` and was refused by
+    `pane`, which is one predicate with two answers: the class of drift this
+    file already kills with `_ssh_word_ok` and `known_config_key`.
+
+    `text.strip()` covers the padded ends (including a trailing newline); the
+    scan covers the EMBEDDED ones, which are the dangerous ones -- every such
+    value ends up either on a remote command line a shell re-splits or on a
+    `key = value` line a line-oriented parser reads back.
+    """
+    if not text or text != text.strip():
+        return False
+    for char in text:
+        if ord(char) < 0x20 or ord(char) == 0x7f:
+            return False
+    return True
+
+
+# --------------------------------------------------------------------------
+# the config
+# --------------------------------------------------------------------------
+
+# Config keys documented in the plan. `host_<name>` is open-ended, so `agb`'s
+# reader is generic and this list is advisory: it exists so `doctor` can flag a
+# typo, which is why it lives here with its only reader rather than in `agb`,
+# where every byte is re-parsed on every hook.
+CONFIG_KEYS = ("statedir", "mac_id", "feed_host", "agb_remote_path",
+               "remote_python", "jump_host")
+CONFIG_KEY_PREFIXES = ("host_",)
+
+
+def known_config_key(key):
+    """True for a key the tool documents.
+
+    An unknown key is never fatal -- silently ignoring a misspelled `feed_hsot`
+    is the failure mode, not the safeguard.
+    """
+    if key in CONFIG_KEYS:
+        return True
+    for prefix in CONFIG_KEY_PREFIXES:
+        if key.startswith(prefix) and len(key) > len(prefix):
+            return True
+    return False
+
+
+def probe_config():
+    """(Probe, values). Malformed lines and unknown keys are *reported*.
+
+    `read_config`'s `warnings` list exists for exactly this: a config reader
+    that silently skips what it cannot parse turns a typo into a silent no-op,
+    which is the failure class this tool exists to remove. A misspelled
+    `feed_hsot` would otherwise leave the bridge saying only "feed_host is not
+    set". The list is this function's own, so the answer cannot be left over
+    from somebody else's read.
+    """
+    path = agb.config_path()
+    malformed = []
+    try:
+        values = agb.read_config(path, malformed)
+    except (OSError, agb.AgbError) as exc:
+        return (Probe("config", PROBE_WARN,
+                      "cannot read %s: %s" % (path, exc)), {})
+    if not values and not malformed and not os.path.exists(path):
+        return (Probe("config", PROBE_OK,
+                      "no config file at %s; defaults in use" % (path,)), values)
+    unknown = sorted(key for key in values if not known_config_key(key))
+    lines = []
+    for key in sorted(values):
+        lines.append("%s = %s" % (key, values[key]))
+    for lineno, raw in malformed:
+        lines.append("line %s is not `key = value`: %r" % (lineno, raw))
+    for key in unknown:
+        lines.append("unknown key %r -- a typo here is silent everywhere else"
+                     % (key,))
+    status = PROBE_WARN if (malformed or unknown) else PROBE_OK
+    summary = "%s: %d key%s" % (path, len(values), _plural(len(values)))
+    if malformed:
+        summary += ", %d malformed line%s" % (len(malformed),
+                                              _plural(len(malformed)))
+    if unknown:
+        summary += ", %d unknown key%s" % (len(unknown),
+                                           _plural(len(unknown)))
+    return (Probe("config", status, summary, lines), values)
+
+
+# --------------------------------------------------------------------------
+# the statedir: ownership, mode, layout
+# --------------------------------------------------------------------------
+
+def probe_statedir(sd):
+    """Ownership and mode, not merely existence.
+
+    The parent (`/shared`) is group-writable, so another member of the group
+    could have pre-created the directory -- existence proves nothing about who
+    owns it.
+    """
+    try:
+        st = os.stat(sd)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return Probe("statedir", PROBE_WARN,
+                         "%s does not exist yet (no agent has run, or the "
+                         "statedir is misconfigured)" % (sd,))
+        return Probe("statedir", PROBE_FAIL, "cannot stat %s: %s" % (sd, exc))
+    lines = ["mode %04o, uid %d, gid %d (this process is uid %d)"
+             % (st.st_mode & 0o7777, st.st_uid, st.st_gid, os.getuid())]
+    status = PROBE_OK
+    summary = "%s, mode %04o" % (sd, st.st_mode & 0o7777)
+    try:
+        agb.verify_statedir(sd)
+    except agb.AgbError as exc:
+        status = PROBE_FAIL
+        summary = "%s" % (exc,)
+    missing = [name for name in agb.SUBDIRS
+               if not os.path.isdir(os.path.join(sd, name))]
+    if missing:
+        lines.append("missing subdirectories: %s" % (" ".join(missing),))
+        if status == PROBE_OK:
+            status = PROBE_WARN
+    else:
+        lines.append("all subdirectories present: %s" % (" ".join(agb.SUBDIRS),))
+    return Probe("statedir", status, summary, lines)
+
+
+# --------------------------------------------------------------------------
+# the atomicity probe -- the one that actually writes
+# --------------------------------------------------------------------------
+
+def probe_atomicity(sd, host=None):
+    """(Probe, server_now). Write a temp, rename it, read it back, clean up.
+
+    A real round trip rather than a permission check: `os.access` answers a
+    question about mode bits, and every silent failure this tool exists to kill
+    was a mode-bit answer that did not survive contact with the filesystem. The
+    read-back is `agb.read_fresh` -- `open()` + `fstat` -- so it also proves
+    close-to-open is returning our own bytes.
+
+    The mtime of the file we just wrote is the **NFS server's** clock, so it is
+    returned as `doctor`'s `now`. That is the same trick `feed` plays with
+    `bridge/<mac-id>.beat` (constraint #12), and it is what keeps every age
+    below a same-clock subtraction instead of a cross-host guess.
+
+    A statedir that **does not exist yet** is not a failure of this probe: on a
+    fresh farm host no agent has run, so there is nothing to write into, and
+    `probe_statedir` above has already said so in the one place it belongs.
+    Reporting `[fail]` here made `agb doctor` -- the command `install.sh farm`
+    prints as its documented next step -- exit 1 on a correct install, two
+    lines after saying the same thing was only a warning.
+
+    That degrade is gated on the **statedir itself** being absent, with the
+    same two errnos `probe_statedir` calls absent, and on nothing else. Written
+    as `os.path.isdir(gen)` it swallowed every `stat` failure there is --
+    ENOTDIR, EACCES, ESTALE, EIO, ELOOP -- and reported a `gen/` that exists
+    and is unusable as "does not exist yet": a false sentence, at `warn`, in
+    the probe whose entire job is to catch exactly that. Every other failure
+    falls through to the write below, which reports the real errno at `[fail]`.
+
+    `doctor` does not create it either. It reports; creating the tree would
+    silently paper over the misconfiguration that `probe_statedir`'s "or the
+    statedir is misconfigured" exists to surface, and `doctor --statedir /typo`
+    would then leave a `/typo` behind on every run.
+    """
+    if host is None:
+        host = agb.own_host()
+    gen = agb.gen_dir(sd)
+    try:
+        os.stat(sd)
+        absent = False
+    except OSError as exc:
+        absent = exc.errno in (errno.ENOENT, errno.ENOTDIR)
+    if absent:
+        return (Probe("atomicity", PROBE_WARN,
+                      "not attempted: %s does not exist yet" % (sd,),
+                      ["`doctor` reports, it does not repair -- see the "
+                       "statedir probe above. The first agent to run on this "
+                       "host creates the tree; re-run this then."]), None)
+    path = os.path.join(gen, PROBE_BASENAME % (host,))
+    payload = "agb doctor probe %s %d %s\n" % (host, os.getpid(),
+                                               agb.iso_stamp())
+    started = time.time()
+    try:
+        try:
+            tmp = agb.atomic_write(path, payload)
+            data, st = agb.read_fresh(path)
+        finally:
+            # Always, including on a failed read-back: a probe that leaves
+            # debris behind is a probe that has to be cleaned up by hand.
+            agb._unlink_quiet(path)
+    except (OSError, agb.AgbError) as exc:
+        return (Probe("atomicity", PROBE_FAIL,
+                      "cannot write in %s: %s" % (gen, exc),
+                      ["nothing else in agb can work if this fails: every "
+                       "record, marker and breadcrumb is written here"]), None)
+    elapsed = (time.time() - started) * 1000.0
+    if data != payload.encode("utf-8"):
+        return (Probe("atomicity", PROBE_FAIL,
+                      "the renamed file did not read back byte for byte "
+                      "(%d bytes written, %d read)"
+                      % (len(payload), len(data))), None)
+    lines = ["wrote %s, renamed it into place, read it back, unlinked it"
+             % (os.path.basename(tmp),)]
+    # `agb._stat_fresh`, never `os.path.exists`: that is `os.stat`, and its
+    # answer comes out of the NFS attribute cache -- inside the one probe whose
+    # entire job is proving temp+rename works over NFS. An open() cannot be
+    # served stale (`agb.read_fresh`'s rule, applied to its own probe).
+    if agb._stat_fresh(tmp) is not None:
+        agb._unlink_quiet(tmp)
+        return (Probe("atomicity", PROBE_FAIL,
+                      "rename() left the temp %s behind" % (tmp,), lines), None)
+    local = time.time()
+    lines.append("server clock %.3f (this file's mtime), local clock %.3f, "
+                 "delta %+.1f s -- every age below is in the server's domain"
+                 % (st.st_mtime, local, st.st_mtime - local))
+    return (Probe("atomicity", PROBE_OK,
+                  "temp + rename + read-back verified in %.1f ms" % (elapsed,),
+                  lines), st.st_mtime)
+
+
+# --------------------------------------------------------------------------
+# the mount -- the acknowledged, un-engineerable risk
+# --------------------------------------------------------------------------
+#
+# `/shared` is a **hard** mount with `timeo=600,retrans=10` and no `intr`. A
+# server hiccup blocks `open()`/`stat()` uninterruptibly for minutes;
+# `signal.alarm()` cannot interrupt uninterruptible NFS I/O, and every Claude
+# tool call traverses this path. Nothing in agb can engineer that away, so
+# `doctor` prints the options: "Claude froze" is then diagnosed in seconds
+# rather than blamed on the tool.
+
+def read_mount_table(path=None):
+    """The raw text of `/proc/mounts`, or None.
+
+    `agb._read_all` rather than a loop of its own: `/proc/mounts` reports
+    st_size 0, so it has to be drained to EOF, and that is the primitive that
+    already does it. A second copy of the drain loop is the same rule this file
+    lives under for `read_fresh` and `_stat_fresh` -- consumed, never copied.
+    """
+    if path is None:
+        path = MOUNTS
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        return agb._read_all(fd).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _unescape_mount(text):
+    """`/proc/mounts` escapes space, tab, newline and backslash as `\\nnn`."""
+    if "\\" not in text:
+        return text
+    out = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        octal = text[index + 1:index + 4]
+        if char == "\\" and len(octal) == 3 and octal.isdigit():
+            try:
+                out.append(chr(int(octal, 8)))
+                index += 4
+                continue
+            except ValueError:
+                pass
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def parse_mount_table(text):
+    """[{device, mountpoint, fstype, options}] -- pure, so its test is data."""
+    mounts = []
+    for line in (text or "").splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        mounts.append({
+            "device": _unescape_mount(fields[0]),
+            "mountpoint": _unescape_mount(fields[1]),
+            "fstype": fields[2],
+            "options": fields[3],
+        })
+    return mounts
+
+
+def mount_for_path(mounts, path):
+    """The most specific mount covering `path`, or None.
+
+    Longest matching mountpoint wins: `/shared` and `/` both cover the
+    statedir, and only the first one carries the `ac*` values that matter.
+    """
+    target = os.path.realpath(path)
+    best = None
+    for entry in mounts:
+        point = entry["mountpoint"]
+        if point == "/":
+            covers = target.startswith("/")
+        else:
+            trimmed = point.rstrip("/")
+            covers = target == trimmed or target.startswith(trimmed + "/")
+        if covers and (best is None
+                       or len(point) > len(best["mountpoint"])):
+            best = entry
+    return best
+
+
+def probe_mount(path, text=None):
+    """Print `ac*`, `hard`/`soft`, `timeo`, `retrans` -- and what they imply."""
+    if text is None:
+        text = read_mount_table()
+    if text is None:
+        return Probe("mount", PROBE_WARN, "cannot read %s" % (MOUNTS,))
+    entry = mount_for_path(parse_mount_table(text), path)
+    if entry is None:
+        return Probe("mount", PROBE_WARN, "no mount covers %s" % (path,))
+    options = entry["options"].split(",")
+    names = set(option.split("=")[0] for option in options)
+    notable = [option for option in options
+               if option.split("=")[0] in MOUNT_INTERESTING]
+    summary = "%s on %s (%s): %s" % (
+        entry["device"], entry["mountpoint"], entry["fstype"],
+        ",".join(notable) if notable else "no notable options")
+    lines = ["all options: " + entry["options"]]
+    if entry["fstype"].startswith("nfs"):
+        if not (names & set(MOUNT_AC_OPTIONS)):
+            lines.append(
+                "no ac* option, so the kernel defaults apply (%s): another "
+                "host's readdir can be served from cache for up to 60 s. That "
+                "is why cross-host discovery reads gen/<host>.marker by name "
+                "and never lists a foreign session directory." % (NFS_DEFAULT_AC,))
+        if "hard" in names and "intr" not in names and "soft" not in names:
+            lines.append(
+                "hard mount without intr: a server hiccup blocks open()/stat() "
+                "uninterruptibly (timeo/retrans above are the retry budget), "
+                "and signal.alarm() cannot interrupt uninterruptible NFS I/O. "
+                "If Claude appears frozen, look here before blaming agb.")
+    return Probe("mount", PROBE_OK, summary, lines)
+
+
+# --------------------------------------------------------------------------
+# own entries: age, never presence
+# --------------------------------------------------------------------------
+
+def probe_own_entries(sd, now, host=None):
+    """This host's sessions, each with the age of its beat.
+
+    "Is my entry there?" is the question `agr` could answer and still be wrong.
+    The useful question is how long ago anything last proved that agent alive,
+    which is `.state`'s mtime -- server-stamped, and read through `fstat` on the
+    open fd rather than from the attribute cache (constraint #6).
+
+    A `.state` that fails validation is reported as **no information**, never as
+    gone: a peer mid-`O_TRUNC` looks exactly like a corrupt file.
+    """
+    if host is None:
+        host = agb.own_host()
+    try:
+        keys = agb.list_session_keys(sd, host)
+    except OSError as exc:
+        return Probe("own entries", PROBE_WARN,
+                     "cannot list sessions/%s: %s" % (host, exc))
+    lines = []
+    ages = []
+    unreadable = 0
+    for key in keys:
+        parsed, beat = agb.read_state_entry(sd, host, key)
+        if parsed is agb.STATE_GONE:
+            lines.append("%s: unlinked between the listing and the open"
+                         % (key,))
+            continue
+        if parsed is None:
+            unreadable += 1
+            lines.append("%s: no information this pass (a short or malformed "
+                         "read is never treated as a removal)" % (key,))
+            continue
+        age = None if beat is None else now - beat
+        if age is not None:
+            ages.append(age)
+        lines.append("%s: %s, beat %s old, seq %d, agent pid %s" % (
+            key, parsed["state"], age_text(age), parsed["seq"],
+            agb._opt_field(parsed["pid"])))
+    if not keys:
+        return Probe("own entries", PROBE_OK,
+                     "no sessions recorded for %s" % (host,))
+    summary = "%d on %s, oldest beat %s" % (
+        len(keys), host, age_text(max(ages)) if ages else "unknown")
+    return Probe("own entries", PROBE_WARN if unreadable else PROBE_OK,
+                 summary, lines)
+
+
+# --------------------------------------------------------------------------
+# the reverse heartbeat: is the Mac actually consuming?
+# --------------------------------------------------------------------------
+
+def probe_bridge_beats(sd, now, mac_id=None):
+    """`bridge/<mac-id>.beat` ages.
+
+    The only evidence the farm side has that anything is *consuming* the feed.
+    Without it "the bridge is up" would mean "a process exists somewhere", which
+    is exactly the class of claim `agr` made and could not back up.
+
+    The directory is `agb.bridge_dir`, like `beat_mtimes`' own: the name here is
+    only ever *reported*, the listing happens in there, and two hand-built
+    copies of the path is how a probe ends up naming a directory it never read.
+    """
+    directory = agb.bridge_dir(sd)
+    try:
+        beats = beat_mtimes(sd)
+    except OSError as exc:
+        return Probe("bridge beat", PROBE_WARN,
+                     "cannot list %s: %s" % (directory, exc))
+    lines = []
+    seen = set()
+    stale = 0
+    for who, mtime in sorted(beats):
+        age = now - mtime
+        seen.add(who)
+        if age >= DOCTOR_BEAT_STALE:
+            stale += 1
+            lines.append("%s: %s old -- STALE, nothing is consuming the feed "
+                         "under this mac-id" % (who, age_text(age)))
+        else:
+            lines.append("%s: %s old" % (who, age_text(age)))
+    if mac_id and mac_id not in seen:
+        lines.append("%s: no beat file at all -- the Mac has never connected "
+                     "with this mac-id, or it is using a different statedir"
+                     % (mac_id,))
+        return Probe("bridge beat", PROBE_WARN,
+                     "no beat from %s" % (mac_id,), lines)
+    if not seen:
+        return Probe("bridge beat", PROBE_WARN,
+                     "no bridge beat in %s: nothing is consuming the feed"
+                     % (directory,), lines)
+    fresh = len(seen) - stale
+    summary = "%d beat%s, %d fresh, %d stale (stale is >= %s)" % (
+        len(seen), _plural(len(seen)), fresh, stale,
+        age_text(DOCTOR_BEAT_STALE))
+    return Probe("bridge beat", PROBE_WARN if stale else PROBE_OK,
+                 summary, lines)
+
+
+# --------------------------------------------------------------------------
+# clock skew, measured rather than assumed
+# --------------------------------------------------------------------------
+
+def sample_host_skew(sd, host, keys, limit=DOCTOR_SKEW_SAMPLE):
+    """[(key, skew)] where skew = record mtime - the record's `updated` field.
+
+    The mtime is stamped by the **NFS server**; `updated` is written by the
+    agent's own host from its own clock (`build_record` keeps it in the writer's
+    domain precisely so this comparison exists). The difference is that host's
+    skew, and it is visible even when nothing is future-dated -- which is the
+    case a naive "is anything in the future?" check misses entirely.
+
+    Two opens per sample: `_stat_fresh` for the server's mtime and `read_record`
+    for the field. A record rewritten between them would contribute noise to a
+    diagnostic, which is an acceptable price for not adding a fourth way to read
+    a session file.
+    """
+    out = []
+    for key in keys[:limit]:
+        st = agb._stat_fresh(agb.record_path(sd, key, host))
+        if st is None:
+            continue
+        record = agb.read_record_quiet(sd, key, host)
+        if not record:
+            continue
+        updated = record.get("updated")
+        if not isinstance(updated, (int, float)):
+            continue
+        out.append((key, st.st_mtime - updated))
+    return out
+
+
+def probe_clock_skew(sd, now, limit=DOCTOR_SKEW_SAMPLE):
+    """Per-host skew, from the marker's key list -- never from a foreign readdir."""
+    lines = []
+    worst = 0.0
+    measured = 0
+    for host in agb.list_marker_hosts(sd):
+        keys = agb.read_marker_keys(sd, host)
+        if not keys:
+            continue
+        samples = sample_host_skew(sd, host, keys, limit)
+        if not samples:
+            lines.append("%s: no record carried a usable `updated` field"
+                         % (host,))
+            continue
+        values = [skew for _key, skew in samples]
+        extreme = max(values, key=abs)
+        measured += 1
+        worst = max(worst, abs(extreme))
+        note = ""
+        if abs(extreme) >= DOCTOR_SKEW_LIMIT:
+            note = "  <- beyond %.0f s; ages reported by that host drift" % (
+                DOCTOR_SKEW_LIMIT,)
+        lines.append("%s: %+.1f s over %d record%s (server mtime minus the "
+                     "writer's `updated`)%s" % (
+                         host, extreme, len(samples),
+                         _plural(len(samples)), note))
+    if not measured:
+        return Probe("clock skew", PROBE_OK,
+                     "no records to measure against yet", lines)
+    status = PROBE_WARN if worst >= DOCTOR_SKEW_LIMIT else PROBE_OK
+    return Probe("clock skew", status,
+                 "%d host%s measured, worst %.1f s" % (
+                     measured, _plural(measured), worst), lines)
+
+
+# --------------------------------------------------------------------------
+# unadjudicable entries -- an age heuristic, and labelled as one
+# --------------------------------------------------------------------------
+
+def host_quiet_age(sd, host, now):
+    """Age of `sweep/<host>.marker`, or None when there is no marker at all.
+
+    That marker is the closest thing the layout has to a per-host liveness
+    signal: it is touched by `maybe_sweep` on every hook transition on that
+    host, so its mtime says when anything there last changed state. `.state`
+    mtimes answer a per-entry question and the `gen/` marker is rewritten by any
+    transition on any key, so each of the three gives a different answer -- this
+    one is chosen and named rather than left implicit.
+    """
+    st = agb._stat_fresh(agb.sweep_marker_path(sd, host))
+    if st is None:
+        return None
+    return now - st.st_mtime
+
+
+def describe_entry(sd, host, key, parsed, beat, quiet, now, record=None):
+    """One entry as data: everything `prune` must show before it removes it.
+
+    Extracted so `unadjudicable_entries` (the swept-host list) and `entry_for`
+    (one key named on the command line) produce the **same** shape. Two
+    constructions of "what we know about an entry" is two places for the
+    rendering -- and the caveat that goes with it -- to drift apart.
+
+    `record` is an already-read `.json`, passed only by `describe_unreadable`:
+    that path takes `pid`/`starttime` from the record too, and taking them from
+    a *second* read of the same file would let the pid the refusal is decided on
+    and the label it is shown under come from two different reads.
+    """
+    if record is None:
+        record = agb.read_record_quiet(sd, key, host) or {}
+    return {
+        "host": host,
+        "key": key,
+        "state": parsed["state"],
+        "seq": parsed["seq"],
+        "pid": parsed["pid"],
+        "starttime": parsed["starttime"],
+        "beat": beat,
+        "beat_age": None if beat is None else now - beat,
+        "quiet_age": quiet,
+        "label": record.get("label") or key,
+        "cwd": record.get("cwd"),
+        "pane": record.get("pane"),
+        "tmux": record.get("tmux"),
+    }
+
+
+def unadjudicable_entries(sd, now, quiet_after=DOCTOR_QUIET_AFTER, host=None):
+    """Entries on a quiet host that **this** machine cannot speak for.
+
+    Not a death claim, and not a candidate list for anything automatic. Two
+    conditions, both weak on purpose:
+
+    * the entry's host is not ours -- `kill(pid, 0)` here says nothing about a
+      pid over there, so no proof is even available (constraint #11);
+    * that host's `sweep/<host>.marker` is older than `quiet_after`, or missing
+      entirely (a host whose hooks have never completed a transition).
+
+    Task 6b consumes this list under **per-entry** confirmation. It is exported
+    as data for that reason: a second derivation of "which entries look old"
+    would be a second place for the heuristic to drift into a claim.
+
+    Keys come from the host's marker **content**, never from
+    `readdir(sessions/<host>/)`: that listing can be served from cache for up to
+    `acdirmax=60` seconds, and a stale listing here would drop a key that host
+    created a minute ago (constraint #5).
+    """
+    mine = host or agb.own_host()
+    found = []
+    for other in agb.list_marker_hosts(sd):
+        if other == mine:
+            continue                      # we can adjudicate our own, elsewhere
+        quiet = host_quiet_age(sd, other, now)
+        if quiet is not None and quiet < quiet_after:
+            continue                      # that host swept recently; not quiet
+        keys = agb.read_marker_keys(sd, other)
+        if keys is None:
+            continue                      # no information this pass, not "none"
+        for key in keys:
+            parsed, beat = agb.read_state_entry(sd, other, key)
+            if parsed is agb.STATE_GONE or parsed is None:
+                continue
+            found.append(describe_entry(sd, other, key, parsed, beat, quiet,
+                                        now))
+    found.sort(key=lambda entry: (entry["host"], entry["key"]))
+    return found
+
+
+def format_unadjudicable(entry):
+    """One line, carrying everything Task 6b must show before it removes it."""
+    return ("%s/%s  %s  beat %s  label %s  cwd %s  pane %s" % (
+        entry["host"], entry["key"], entry["state"],
+        age_text(entry["beat_age"]), entry["label"],
+        entry["cwd"] or "-", entry["pane"] or "-"))
+
+
+def probe_unadjudicable(sd, now, quiet_after=DOCTOR_QUIET_AFTER):
+    """List them, and say plainly what the list is not."""
+    entries = unadjudicable_entries(sd, now, quiet_after)
+    if not entries:
+        return Probe(UNADJUDICABLE, PROBE_OK,
+                     "no %s entries (nothing on a host this machine cannot "
+                     "speak for has gone quiet)" % (UNADJUDICABLE,))
+    hosts = sorted(set(entry["host"] for entry in entries))
+    lines = ["%s: %s." % (UNADJUDICABLE.upper(), UNADJUDICABLE_CAVEAT),
+             "quiet means sweep/<host>.marker is older than %s (or absent). "
+             "`agb prune` removes these under per-entry confirmation; nothing "
+             "removes them automatically." % (age_text(quiet_after),)]
+    for host in hosts:
+        quiet = host_quiet_age(sd, host, now)
+        lines.append("host %s: last sweep marker %s" % (
+            host, "absent" if quiet is None else age_text(quiet) + " old"))
+    for entry in entries:
+        lines.append(format_unadjudicable(entry))
+        if entry["state"] == "blocked":
+            lines.append("    ^ state is `blocked`: this may be a live agent "
+                         "waiting for input, which beats nothing at all")
+    return Probe(UNADJUDICABLE, PROBE_WARN,
+                 "%d entr%s on %d quiet host%s (%s)" % (
+                     len(entries), _plural(len(entries), "y", "ies"),
+                     len(hosts), _plural(len(hosts)),
+                     UNADJUDICABLE_CAVEAT), lines)
+
+
+# --------------------------------------------------------------------------
+# breadcrumbs
+# --------------------------------------------------------------------------
+
+def read_tail(path, count):
+    """The last `count` lines of a breadcrumb file, or None.
+
+    The whole file is read: `agb.ERR_LOG_LIMIT` bounds it at ~64 KB by
+    truncate-and-restart, so there is nothing to seek past.
+    """
+    try:
+        data, _st = agb.read_fresh(path)
+    except (OSError, ValueError):
+        return None
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[-count:] if count else lines
+
+
+def probe_breadcrumbs(sd, tail=DOCTOR_TAIL, limit=DOCTOR_MAX_LOGS):
+    """The tails of `err/<host>.<key>.log`.
+
+    These are the tool's answer to `agr`'s five stacked silent no-ops, so
+    `doctor` surfaces them rather than leaving them to be found. Every host's
+    logs are shown, not just ours: the whole point of a breadcrumb is that
+    somebody else can read it.
+
+    A log that cannot be READ escalates to `warn`, exactly like the same event
+    in `probe_own_entries`: a breadcrumb nobody can read is the silent no-op
+    this probe exists to surface, and reporting it at `[ok]` puts the one line
+    that matters under the one status a reader skips. `doctor` exits 1 only on
+    `fail`, so the warning costs nothing but attention.
+    """
+    directory = agb.err_dir(sd)
+    try:
+        names = agb._listdir_quiet(directory)
+    except OSError as exc:
+        return Probe("breadcrumbs", PROBE_WARN,
+                     "cannot list %s: %s" % (directory, exc))
+    logs = [name for name in names if name.endswith(agb.SUFFIX_ERR_LOG)]
+    if not logs:
+        return Probe("breadcrumbs", PROBE_OK, "no breadcrumbs in %s"
+                     % (directory,))
+    lines = []
+    shown = 0
+    unreadable = 0
+    for name in logs:
+        if shown >= limit:
+            lines.append("... %d more log file%s in %s" % (
+                len(logs) - shown, _plural(len(logs) - shown), directory))
+            break
+        shown += 1
+        entries = read_tail(os.path.join(directory, name), tail)
+        if entries is None:
+            unreadable += 1
+            lines.append("%s: unreadable" % (name,))
+            continue
+        lines.append("%s:" % (name,))
+        for entry in entries:
+            lines.append("    " + entry)
+    summary = "%d log file%s, last %d line%s of each" % (
+        len(logs), _plural(len(logs)), tail, _plural(tail))
+    if unreadable:
+        summary += ", %d unreadable" % (unreadable,)
+    return Probe("breadcrumbs", PROBE_WARN if unreadable else PROBE_OK,
+                 summary, lines)
+
+
+# --------------------------------------------------------------------------
+# assembling and rendering
+# --------------------------------------------------------------------------
+
+def _probe_guard(name, call):
+    """Run one probe; a raise becomes a reported failure, never a traceback.
+
+    `doctor` is what somebody runs when the tool is already misbehaving, on a
+    statedir that may be unreadable, on a hard NFS mount that may be sulking.
+    A traceback out of probe three would hide probes four through nine -- the
+    diagnostic failing silently about everything it had not reached yet.
+    """
+    try:
+        return call()
+    except (OSError, ValueError, agb.AgbError) as exc:
+        return Probe(name, PROBE_FAIL,
+                     "probe failed: %s: %s" % (type(exc).__name__, exc))
+
+
+def doctor_probes(sd, mac_id=None, quiet_after=DOCTOR_QUIET_AFTER,
+                  tail=DOCTOR_TAIL, host=None, now=None, mounts=None):
+    """Every probe, in the order a reader needs them.
+
+    Configuration first (a typo there invalidates everything below it), then the
+    statedir, then the write probe -- which also supplies the server-stamped
+    `now` every age is measured against. `now` is injectable so the tests are
+    not races against the clock.
+    """
+    probes = []
+    config_probe, values = probe_config()
+    probes.append(config_probe)
+    if mac_id is None:
+        mac_id = values.get("mac_id")
+    probes.append(_probe_guard("statedir", lambda: probe_statedir(sd)))
+    atomicity, stamped = probe_atomicity(sd, host)
+    probes.append(atomicity)
+    if now is None:
+        now = stamped if stamped is not None else time.time()
+        if stamped is None:
+            probes.append(Probe(
+                "clock", PROBE_WARN,
+                "ages below are measured against this host's clock: the write "
+                "probe did not run, so no server-stamped `now` is available"))
+    probes.append(_probe_guard("mount", lambda: probe_mount(sd, mounts)))
+    probes.append(_probe_guard(
+        "own entries", lambda: probe_own_entries(sd, now, host)))
+    probes.append(_probe_guard(
+        "bridge beat", lambda: probe_bridge_beats(sd, now, mac_id)))
+    probes.append(_probe_guard("clock skew", lambda: probe_clock_skew(sd, now)))
+    probes.append(_probe_guard(
+        UNADJUDICABLE, lambda: probe_unadjudicable(sd, now, quiet_after)))
+    probes.append(_probe_guard(
+        "breadcrumbs", lambda: probe_breadcrumbs(sd, tail)))
+    return (probes, now)
+
+
+def doctor_status(probes):
+    """The worst answer any probe gave."""
+    worst = PROBE_OK
+    for probe in probes:
+        if _PROBE_RANK[probe.status] > _PROBE_RANK[worst]:
+            worst = probe.status
+    return worst
+
+
+def format_probes(probes, header=None):
+    out = []
+    if header:
+        out.append(header)
+    for probe in probes:
+        out.append("%-6s %-14s %s" % ("[" + probe.status + "]",
+                                      probe.name + ":", probe.summary))
+        for line in probe.lines:
+            out.append("       " + line)
+    return "\n".join(out) + "\n"
+
+
+def doctor_header(sd, host=None):
+    return "agb doctor %s -- host %s, statedir %s" % (
+        agb.VERSION, host or agb.own_host(), sd)
+
+
+DOCTOR_VALUE_ARGS = ("--statedir", "--mac-id", "--quiet-after", "--tail")
+
+
+def parse_doctor_args(argv):
+    """`doctor [--statedir P] [--mac-id ID] [--quiet-after S] [--tail N]`.
+
+    Hand-rolled like every other parser here (constraint #3): `argparse` is a
+    ~10 ms import, and while `doctor` could afford it, keeping it out of the
+    tool entirely is one rule instead of one rule per file.
+    """
+    opts = {"statedir": None, "mac_id": None,
+            "quiet_after": DOCTOR_QUIET_AFTER, "tail": DOCTOR_TAIL}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in DOCTOR_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("doctor: %s needs a value" % (name,))
+            value = inline
+            if name == "--statedir":
+                opts["statedir"] = os.path.expanduser(value)
+            elif name == "--mac-id":
+                if not agb.valid_mac_id(value):
+                    raise agb.AgbError("doctor: not a usable mac-id: %r"
+                                       % (value,))
+                opts["mac_id"] = value
+            else:
+                try:
+                    number = float(value)
+                except ValueError:
+                    raise agb.AgbError("doctor: %s: not a number: %s"
+                                       % (name, value))
+                if number < 0:
+                    raise agb.AgbError("doctor: %s must not be negative"
+                                       % (name,))
+                if name == "--quiet-after":
+                    opts["quiet_after"] = number
+                else:
+                    opts["tail"] = int(number)
+        elif arg.startswith("-"):
+            raise agb.AgbError("doctor: unknown option: %s" % (arg,))
+        else:
+            raise agb.AgbError("doctor: unexpected argument: %s" % (arg,))
+    return opts
+
+
+def run_doctor(argv, out=None):
+    """`agb doctor` -- reached through `run_ops`, at the bottom of this file.
+
+    Exits 1 only on a **failed probe** (something is broken), never on a
+    warning: unadjudicable entries and a stale bridge beat are questions for an
+    operator, not errors, and an exit status that cried wolf would be ignored
+    exactly when it mattered.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_doctor_args(argv)
+    sd = opts["statedir"] or agb.statedir()
+    probes, _now = doctor_probes(sd, mac_id=opts["mac_id"],
+                                 quiet_after=opts["quiet_after"],
+                                 tail=opts["tail"])
+    out.write(format_probes(probes, doctor_header(sd)))
+    out.flush()
+    return 1 if doctor_status(probes) == PROBE_FAIL else 0
+
+
+# ==========================================================================
+# `agb prune` -- the operator terminal path
+# ==========================================================================
+#
+# Design amendment 4 owes this command. Amendment 1 withdrew every rule that
+# turned age into a state, which leaves entries on a host nothing can currently
+# speak for with no terminal state at all: a `kill -9` on machine #3, or
+# powering it off mid-session, leaves entries and a bound row that **nothing**
+# ever reclaims.
+#
+# It is the only code in the tool that removes a session without proof of death.
+# So it is gated by a human instead -- per entry, one at a time.
+#
+# Two ways to get this wrong, both found in review, both encoded below.
+#
+# **Age is not death.** On machine #3 there is no feed, so the only beat source
+# is hooks -- and a `blocked` agent waiting on you fires none. If it is the only
+# agent on #3 its beat freezes while it is perfectly alive. A blanket `--force`
+# over an age-built list is therefore amendment 1's own withdrawn rule relocated
+# into a *destructive* command, and a direct violation of constraint #8. So
+# there is no `--force`. `--yes` exists and is **refused** unless the operator
+# also named the entries by key: consent has to be about something specific.
+#
+# **Own-host authority does not extend to a foreign marker.** `reap_entry`
+# rebuilds `gen/<host>.marker` from `readdir(sessions/<host>/)`, and constraint
+# #5 makes that listing authoritative *only for the local host*. Doing it to #3's
+# marker from box #2 uses a view that can be `acdirmax=60` stale: it would
+# silently drop any key #3 created in the last minute, the feed would emit
+# `remove` for a live agent, and #3's next transition would restore that key as
+# an unbound new one -- minting a duplicate row. So this command never calls the
+# shared reap helper (whose `_require_own_host` precondition forbids it anyway)
+# and never lists a session directory. It subtracts the keys it removed from the
+# marker's **own last-read content**, which is the only view of that host's keys
+# this machine is entitled to hold.
+#
+# Three smaller rules, each with a test:
+#
+#   * `idx/` is not touched. A foreign host's idx entries are anchors only its
+#     own hooks read, and dropping one inside that host's mint race would hand a
+#     live agent a second key. Its own sweep collects them.
+#   * a `.state` that fails validation is *no information* (constraint #8), so
+#     nothing this command DERIVES may include it: a peer mid-`O_TRUNC` looks
+#     exactly like a corrupt file, and the heuristic list skips it. Named with
+#     `--key`, it is offered -- under its own prompt, saying so. See
+#     `describe_unreadable` for why the alternative was worse.
+#   * proof of life outranks the operator. If `kill(pid, 0)` and the starttime
+#     agree that the recorded agent is running **here**, the entry stays whatever
+#     was typed at the prompt. On a foreign entry that agreement is a
+#     coincidence and refusing costs nothing; on an own-host entry it is a real
+#     answer, and it is the answer. It runs on **every** offered entry: an
+#     unreadable `.state` takes the pid from the `.json` written beside it in the
+#     same transition, which is rename-atomic and so never torn.
+#
+# `--via-ssh <host>` is the way out of the heuristic altogether: it runs this
+# same command **on** the owning host, where `kill(pid, 0)` is meaningful and the
+# rule above stops being a coincidence and becomes a proof.
+
+PRUNE_PROMPT = "remove %s/%s? [y/N] "
+
+# The prompt says it too, not only the block above it: `--yes` skips the block's
+# reader but never the operator's decision to type the key, and a prompt that
+# read the same as any other would make this the one removal in the tool whose
+# risk was only in the scrollback.
+PRUNE_UNREADABLE_PROMPT = (
+    "remove %s/%s -- its .state CANNOT BE READ, so nothing it recorded there "
+    "could be checked and it may be a live peer caught mid-write? [y/N] ")
+
+PRUNE_UNREADABLE_WARNING = (
+    "WARNING: this entry's `.state` cannot be read or parsed, so nothing it "
+    "would have said -- its live state, its seq, its beat -- could be checked. "
+    "That is a zero-length file left by a killed hook, or a peer caught inside "
+    "its in-place write. The proof-of-life rule still runs: `.json` is written "
+    "whole by rename in the same transition and never tears, so the pid above "
+    "is the one `.state` would have carried, and an agent that pid proves alive "
+    "on THIS host outranks any answer here. A `.json` that is missing or "
+    "pid-less proves nothing either way, and then your answer is the only one "
+    "there is. If it was alive, its next hook re-binds the same key from idx/ "
+    "and the bridge binds the row back.")
+
+PRUNE_BLOCKED_WARNING = (
+    "WARNING: this entry is `blocked`. On a host with no feed the only beat "
+    "source is hooks, and an agent waiting for your input fires none -- a "
+    "frozen beat is exactly what a live agent waiting on you looks like. If it "
+    "was alive, its next hook re-binds the same key from idx/ and the bridge "
+    "binds the row back; a row left reading [done] is cleared on the Mac with "
+    "`agb close-done`.")
+
+# ssh re-splits the remote command in a shell, so every interpolated word is
+# shell input. This is a whitelist rather than `agb_mac._shell_safe`'s
+# blacklist, and deliberately: that side must accept whatever ordinary paths a
+# config carries, while this one builds the argv of the only destructive command
+# in the tool and should fail closed on anything nobody thought about. Two rules
+# that can only differ by being *stricter* are not the duplication the split
+# forbids.
+#
+# ⚠️ A leading `-` is refused separately. Every character of
+# `-oProxyCommand=...` is in the set below, and a word like that reaching ssh's
+# own argv is read as an **option**, not as a host -- which `pane` makes
+# reachable from a config value (`host_<name>`) and from a row command. The
+# whitelist answers "would a shell re-split this"; this answers "would ssh parse
+# it as a flag", and both are needed.
+_SSH_WORD_SAFE = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/@:")
+
+
+def _ssh_word_ok(text):
+    if not text:
+        return False
+    if text.startswith("-"):
+        return False
+    for char in text:
+        if char not in _SSH_WORD_SAFE:
+            return False
+    return True
+
+
+def parse_key_spec(text):
+    """`<host>/<key>` -> (host, key). The only way to name an entry directly.
+
+    `agb.valid_mac_id` is the host check because the question is identical --
+    "is this text usable as a single path component?" -- and the answer must not
+    have two implementations. `sessions/<host>/` and `gen/<host>.marker` are
+    both built from it.
+    """
+    host, sep, key = text.partition("/")
+    if not sep:
+        raise agb.AgbError("prune: --key takes <host>/<key>, not %r" % (text,))
+    if not agb.valid_mac_id(host):
+        raise agb.AgbError("prune: not a usable host name: %r" % (host,))
+    if not agb.valid_key(key):
+        raise agb.AgbError("prune: not a usable key: %r" % (key,))
+    return (host, key)
+
+
+def entry_for(sd, host, key, now):
+    """One entry named on the command line, read **by name** -- never listed.
+
+    Three-valued like `agb.read_state_entry`, and for its reason:
+    `agb.STATE_GONE` is the server answering that the key is not there (nothing
+    to remove), `None` is a short or malformed read (no information, and
+    constraint #8 forbids acting on it), a dict is data.
+    """
+    parsed, beat = agb.read_state_entry(sd, host, key)
+    if parsed is agb.STATE_GONE:
+        return agb.STATE_GONE
+    if parsed is None:
+        return None
+    return describe_entry(sd, host, key, parsed, beat,
+                          host_quiet_age(sd, host, now), now)
+
+
+def describe_unreadable(sd, host, key, now):
+    """An entry named with `--key` whose `.state` cannot be read, as data.
+
+    Built through `describe_entry` with a hand-made `parsed` rather than by
+    hand, so it carries exactly the same fields (the shape test in Task 6b is
+    about that): `state` and `seq` are None, because only `.state` has them.
+
+    **`pid` and `starttime` come from the `.json`, and that is the whole point.**
+    Both files are written by one `_write_session`, from one `ident`, in one
+    transition -- but `.state` is written in place with `O_TRUNC` while `.json`
+    goes through `atomic_write`'s temp-and-rename, so a reader either sees the
+    old `.json` whole or the new one whole and NEVER a torn one. An unreadable
+    `.state` therefore says nothing whatever about the `.json` beside it, and
+    the pid in there is the same pid `.state` would have carried. Running the
+    proof-of-life rule on it is not a courtesy: a torn `.state` is *caused by an
+    agent writing*, so this is the branch where a live agent is most likely, and
+    it was the one branch that skipped the check. `agb.liveness` coerces with
+    `int()` and answers UNKNOWN on anything it cannot use, so an unparseable
+    `.json` degrades to "no proof" rather than to an exception -- and a
+    `.json` that is missing or pid-less leaves the operator's answer final,
+    which is what the prompt says.
+
+    Label, cwd and pane come from the same read, and matter most here, where
+    everything `.state` would have said is missing.
+
+    Why this exists at all -- constraint #8 says a failed read is *no
+    information* and may never be removed, and that rule is not weakened: it is
+    a rule about what the TOOL may decide by itself. `write_in_place` opens
+    `.state` with `O_TRUNC`, so a hook killed inside that window (SIGKILL, OOM,
+    ENOSPC, a host reset) leaves a zero-length file, and if its agent is gone
+    nothing can ever parse it again. The sweep skips it, the feed retains it and
+    withholds every snapshot's removal authority for as long as it exists, and
+    before this there was NO COMMAND IN THE TOOL that could clear it -- an entry
+    the design had made permanent and unreachable, which is `agr` failure mode
+    #3 in a new shape. `--key <host>/<key>` is the named, human-gated path built
+    for exactly the entries nothing can adjudicate; the prompt says plainly that
+    the file cannot be read and may be a peer mid-write, and only a `--key`
+    reaches it at all -- `unadjudicable_entries` skips an unparseable `.state`,
+    so no list this machine derives can ever offer one.
+
+    ⚠️ "Only a `--key`" is not the same as "only a name a human typed", and the
+    difference is `--via-ssh`: it re-issues the entries confirmed here as
+    `--key … --yes` on the owning host, and that host re-reads. A `.state` that
+    was readable here and is unreadable there (the write window, or a truncation
+    since) lands in this branch under an already-given `--yes`, so the block
+    below is printed *after* the decision rather than before it -- streamed back
+    over ssh, but after. That hop is precisely why the pid above is taken from
+    the record: the remote is the host where `kill(pid, 0)` is a proof, so a
+    live agent is refused there even though nobody was asked again.
+    """
+    record = agb.read_record_quiet(sd, key, host) or {}
+    entry = describe_entry(sd, host, key,
+                           {"state": None, "seq": None,
+                            "pid": record.get("pid"),
+                            "starttime": record.get("starttime")},
+                           None, host_quiet_age(sd, host, now), now, record)
+    entry["unreadable"] = True
+    entry["record_state"] = record.get("state")
+    return entry
+
+
+def format_prune_entry(entry):
+    """The block shown before the prompt.
+
+    State, beat age, host, cwd and pane, because those are what an operator
+    needs to recognise the thing they are about to delete -- and the caveat,
+    every time, because the list this came from is an age heuristic.
+    """
+    if entry.get("unreadable"):
+        lines = [
+            "%s/%s  UNREADABLE" % (entry["host"], entry["key"]),
+            "    label %s   cwd %s   pane %s" % (
+                entry["label"], entry["cwd"] or "-", entry["pane"] or "-"),
+            # From `.json`, and labelled as such: it is a transition behind
+            # `.state` at worst, and it is what the refusal below was decided
+            # on, so the operator must see the same fields the tool used.
+            "    .json says state %s, agent pid %s, host quiet %s" % (
+                agb._opt_field(entry.get("record_state")),
+                agb._opt_field(entry["pid"]), age_text(entry["quiet_age"])),
+            "    " + PRUNE_UNREADABLE_WARNING,
+        ]
+        if entry.get("record_state") == "blocked":
+            lines.append("    " + PRUNE_BLOCKED_WARNING)
+        return lines
+    lines = [
+        "%s/%s  %s  seq %d" % (entry["host"], entry["key"], entry["state"],
+                               entry["seq"]),
+        "    label %s   cwd %s   pane %s" % (
+            entry["label"], entry["cwd"] or "-", entry["pane"] or "-"),
+        "    beat %s old, agent pid %s, host quiet %s" % (
+            age_text(entry["beat_age"]), agb._opt_field(entry["pid"]),
+            age_text(entry["quiet_age"])),
+        "    %s: %s" % (UNADJUDICABLE, UNADJUDICABLE_CAVEAT),
+    ]
+    if entry["state"] == "blocked":
+        lines.append("    " + PRUNE_BLOCKED_WARNING)
+    return lines
+
+
+def prune_refusal(entry):
+    """Why this entry must not be removed, or None.
+
+    One rule, and it only ever *refuses*: if the recorded agent is alive on this
+    host by proof, no answer at the prompt may remove it. `agb.proof_of_life`
+    rather than a second `os.kill` here -- this file has no liveness rule of its
+    own, and asking the negative question (`proof_of_death`) is what would turn
+    a coincidence in another host's pid namespace into an authorisation.
+
+    An entry whose `.state` is unreadable runs this rule too, on the pid its
+    intact `.json` still carries (`describe_unreadable` says why that file is
+    trustworthy when the other one is not). It is the branch that needs the rule
+    most -- a torn `.state` is what an agent writing one looks like -- and the
+    branch where it used to be skipped. Only a `.json` that is missing, or
+    carries no pid, leaves the operator's answer unopposed, and
+    `PRUNE_UNREADABLE_WARNING` says exactly that where they will read it.
+    """
+    if agb.proof_of_life(entry["pid"], entry["starttime"]):
+        return ("pid %s is alive on this host right now (its starttime %s "
+                "matches), which outranks anything typed at a prompt"
+                % (agb._opt_field(entry["pid"]),
+                   agb._opt_field(entry["starttime"])))
+    return None
+
+
+def prune_remove(sd, host, key):
+    """Unlink one entry's two files, and say in its log why they went.
+
+    `.json` first, for `reap_entry`'s reason: a failure between the two leaves a
+    `.state` with no record, which the feed degrades to a stale label and the
+    next pass finishes, whereas the other order leaves a `.json` that nothing
+    ever collects. On a foreign host that is doubly true -- our sweep may not
+    touch it, and its owner is by definition not running one either.
+
+    The breadcrumb is not decoration: "why did this row disappear?" has to stay
+    answerable, and for a pruned entry the answer is "a human decided", which is
+    the one answer no other part of the tool can produce.
+    """
+    agb._unlink_quiet(agb.record_path(sd, key, host))
+    agb._unlink_quiet(agb.state_path(sd, key, host))
+    agb.breadcrumb(sd, key, "pruned by an operator on %s: no proof of death "
+                   "was available, so a human decided" % (agb.own_host(),),
+                   host)
+
+
+def prune_marker(sd, host, removed):
+    """`gen/<host>.marker` = its own last-read content, minus `removed`.
+
+    Never `agb.rebuild_marker`: that reads `readdir(sessions/<host>/)`, which is
+    authoritative only for the local host (constraint #5). Subtraction can only
+    ever remove the keys named here, so a key that host created a minute ago --
+    invisible in a cached listing, and present in the marker it wrote itself --
+    survives.
+
+    Returns the new key list, or None when the marker could not be read, in
+    which case it is left exactly as it stands. That is not a failure: removal
+    is proven per key by name, so the feed's next probe of a pruned key gets
+    `ENOENT` and emits `remove` regardless. Rewriting the marker only saves it
+    from probing that name for ever.
+    """
+    keys = agb.read_marker_keys(sd, host)
+    if keys is None:
+        return None
+    kept = [key for key in keys if key not in removed]
+    if kept != keys:
+        agb.atomic_write(agb.marker_path(sd, host), agb.format_marker(kept))
+    return kept
+
+
+# --------------------------------------------------------------------------
+# --via-ssh: make the decision where kill(pid, 0) means something
+# --------------------------------------------------------------------------
+
+def ssh_target_for(host, config):
+    """A record's `host` is a hostname, not an ssh alias -- `host_<name>` maps it."""
+    return config.get("host_" + host) or host
+
+
+def prune_ssh_argv(target, sd, host, keys, python, agb_path, jump=None):
+    """The exact `ssh …` argv. Pure, so its test is a string comparison.
+
+    The remote side is handed `--key <host>/<key>` for exactly the entries
+    confirmed here, plus `--yes`. That is the same contract the local path
+    enforces -- consent is about named entries, never about a list -- and it is
+    what lets the far side apply `prune_refusal` as a **proof**: over there the
+    pid is in the right namespace.
+    """
+    words = [target, sd, python, agb_path, host] + list(keys)
+    if jump:
+        words.append(jump)
+    for word in words:
+        if not _ssh_word_ok(word):
+            raise agb.AgbError(
+                "prune: not usable in an ssh command line: %r" % (word,))
+    for label, value in (("statedir", sd), ("remote python", python),
+                         ("agb path", agb_path)):
+        if not value.startswith("/"):
+            raise agb.AgbError(
+                "prune: %s must be an absolute farm-side path: %r"
+                % (label, value))
+    argv = ["ssh"]
+    if jump:
+        argv += ["-J", jump]
+    argv += [target, python, "-S", "-E", agb_path, "prune", "--statedir", sd]
+    for key in keys:
+        argv += ["--key", "%s/%s" % (host, key)]
+    argv.append("--yes")
+    return argv
+
+
+def prune_jump_host(config, pointless):
+    """The config's `jump_host`, or None when the hop would be through itself.
+
+    The third consumer of one config key, and it gets the same guard as the
+    other two: `agb_mac.jump_for` withholds the hint for a session on the feed
+    host or on the jump host itself, and `pane_settings` drops it when it names
+    the resolved target. A jump host is how machine #3 is reached *from the
+    Mac*; from box #2, #3 is direct, and `install.sh` copies the Mac's
+    `--jump-host` into the farm's config, so unguarded this path would ssh
+    box #2 -> box #2 -> anywhere, or box #2 -> box #2 for a prune OF box #2.
+
+    That is not a wasted hop and nothing else: on this path the removal is
+    **not** carried out locally, so an added hop that fails (no ssh-to-self key,
+    an unaccepted host key in a non-interactive run) means the entries a human
+    confirmed one by one are simply not removed -- and `--via-ssh` is the only
+    route on which `kill(pid, 0)` answers in the right pid namespace.
+
+    `pointless` is every name the caller has already resolved for which the hop
+    would go nowhere: the target in both its spellings (the record's hostname
+    and its ssh target) and this host in both of its own. Exact comparisons and
+    the caller's resolution, not a second copy of "which host is this really" --
+    that mapping has one home, in `ssh_target_for`, whose caller list a test
+    pins for exactly this reason.
+    """
+    jump = config.get("jump_host")
+    if not jump or jump in pointless:
+        return None
+    return jump
+
+
+def prune_via_ssh(sd, host, entries, out, run=None):
+    """Run this same command **on** the owning host.
+
+    The only way to turn the heuristic into a proof: over there `kill(pid, 0)`
+    answers about the right pid namespace, so an entry whose agent is still
+    running is refused by the remote `prune_refusal` even though this side had
+    no way to know.
+
+    The keys are synthesised here, from entries a human confirmed one by one --
+    so this is the one path on which a key the operator never typed arrives at
+    the far side as `--key … --yes`. The far side re-reads, and its read can
+    disagree with ours: an entry readable here can be unreadable there (see
+    `describe_unreadable`, which qualifies its own "only a typed name" claim for
+    exactly this). Each key is still an entry a human confirmed by name, and the
+    refusal that decides it over there is the proof this hop exists to get.
+
+    The defaults are "the paths I am running from", not a config lookup: box #2
+    and machine #3 see the same NFS `agb`, and `sys.executable` is the absolute
+    interpreter constraint #14 already requires to exist at the same path on
+    every host that runs hooks. `remote_python` / `agb_remote_path` /
+    `host_<name>` / `jump_host` override, since the config already names all
+    four for the bridge -- `jump_host` through `prune_jump_host`, which drops a
+    hop that would go through this host or through the target.
+    """
+    keys = [entry["key"] for entry in entries if entry["host"] == host]
+    # Everything the human just confirmed that this ssh cannot carry. Silently
+    # dropping it was the worst shape available: the operator answered "yes" to
+    # a removal, watched the command succeed, and nothing happened -- the tool
+    # lying about what it did, in the one place where it deletes files.
+    elsewhere = sorted(set("%s/%s" % (entry["host"], entry["key"])
+                           for entry in entries if entry["host"] != host))
+    if elsewhere:
+        out.write("NOT removed (--via-ssh %s only reaches %s's entries; "
+                  "re-run with --via-ssh <that host>): %s\n"
+                  % (host, host, " ".join(elsewhere)))
+    if not keys:
+        out.write("nothing confirmed for %s\n" % (host,))
+        return 0
+    config = agb.read_config()
+    target = ssh_target_for(host, config)
+    mine = agb.own_host()
+    argv = prune_ssh_argv(target, sd, host, keys,
+                          config.get("remote_python") or sys.executable,
+                          config.get("agb_remote_path")
+                          or agb.sibling_path("agb"),
+                          prune_jump_host(config, (target, host, mine,
+                                                   ssh_target_for(mine,
+                                                                  config))))
+    out.write("running: %s\n" % (" ".join(argv),))
+    out.flush()
+    if run is None:
+        import subprocess
+        run = subprocess.call
+    return run(argv)
+
+
+# --------------------------------------------------------------------------
+# the command
+# --------------------------------------------------------------------------
+
+PRUNE_FLAGS = {"--yes": "yes", "--dry-run": "dry_run"}
+PRUNE_VALUE_ARGS = ("--statedir", "--quiet-after", "--key", "--via-ssh")
+
+
+def parse_prune_args(argv):
+    """`prune [--statedir P] [--quiet-after S] [--key H/K]… [--yes] [--dry-run]
+    [--via-ssh H]`.
+
+    Hand-rolled like every other parser here (constraint #3). `--force` is not
+    merely absent: it is rejected with the reason, because the next person to
+    want one will type it before they read this file.
+    """
+    opts = {"statedir": None, "quiet_after": DOCTOR_QUIET_AFTER, "keys": [],
+            "yes": False, "dry_run": False, "via_ssh": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in PRUNE_FLAGS:
+            if sep:
+                raise agb.AgbError("prune: %s takes no value" % (name,))
+            opts[PRUNE_FLAGS[name]] = True
+            continue
+        if name == "--force":
+            raise agb.AgbError(
+                "prune: there is no --force. These entries are not known to be "
+                "dead -- a quiet host is a question, not an answer (design "
+                "amendment 1). Name what you mean: --key <host>/<key>, "
+                "repeatable, with --yes.")
+        if name in PRUNE_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("prune: %s needs a value" % (name,))
+            value = inline
+            if name == "--statedir":
+                opts["statedir"] = os.path.expanduser(value)
+            elif name == "--key":
+                opts["keys"].append(parse_key_spec(value))
+            elif name == "--via-ssh":
+                if not agb.valid_mac_id(value):
+                    raise agb.AgbError("prune: not a usable host name: %r"
+                                       % (value,))
+                opts["via_ssh"] = value
+            else:
+                try:
+                    number = float(value)
+                except ValueError:
+                    raise agb.AgbError("prune: %s: not a number: %s"
+                                       % (name, value))
+                if number < 0:
+                    raise agb.AgbError("prune: %s must not be negative"
+                                       % (name,))
+                opts["quiet_after"] = number
+            continue
+        if arg.startswith("-"):
+            raise agb.AgbError("prune: unknown option: %s" % (arg,))
+        raise agb.AgbError("prune: unexpected argument: %s" % (arg,))
+    if opts["yes"] and not opts["keys"]:
+        raise agb.AgbError(
+            "prune: --yes requires an explicit --key <host>/<key> list. There "
+            "is no blanket confirmation over a list built from an age "
+            "heuristic (design amendment 1).")
+    return opts
+
+
+def confirm_stdin(prompt):
+    """The default `ask`. **EOF is a no**, never a yes.
+
+    A `prune` whose stdin is a closed pipe or a redirected file must not remove
+    anything: the tests inject their own `ask`, and the one that runs it as a
+    real subprocess feeds it a real answer.
+    """
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        sys.stdout.write("\n")
+        return False
+    return line.strip().lower() in ("y", "yes")
+
+
+def prune_candidates(sd, now, opts, out):
+    """The entries this run will ask about.
+
+    Either the ones named with `--key`, read by name; or Task 6a's
+    `unadjudicable_entries` -- **that** list and no other, so the heuristic has
+    exactly one derivation in the tool (and never covers our own host, which the
+    sweep can adjudicate for real).
+
+    The two branches differ on ONE point, and it is the point: a `.state` that
+    cannot be read is dropped from the derived list and offered from the named
+    one, under `describe_unreadable`'s own prompt. That asymmetry is what keeps
+    constraint #8 a rule about what the tool decides while still leaving a way
+    to clear a file that nothing else in the tool can (see `describe_unreadable`).
+    """
+    if opts["keys"]:
+        found = []
+        for host, key in opts["keys"]:
+            entry = entry_for(sd, host, key, now)
+            if entry is agb.STATE_GONE:
+                out.write("%s/%s: already gone\n" % (host, key))
+            elif entry is None:
+                found.append(describe_unreadable(sd, host, key, now))
+            else:
+                found.append(entry)
+        return found
+    entries = unadjudicable_entries(sd, now, opts["quiet_after"])
+    if opts["via_ssh"]:
+        entries = [entry for entry in entries
+                   if entry["host"] == opts["via_ssh"]]
+    return entries
+
+
+def run_prune(argv, out=None, ask=None, run=None):
+    """`agb prune` -- reached through `run_ops`, like `doctor`.
+
+    The write probe is not ceremony: it supplies the same server-stamped `now`
+    `doctor` uses (constraint #12), so the beat age printed next to a removal
+    prompt is a same-clock subtraction rather than a cross-host guess -- and it
+    proves the statedir is writable before anything is offered for deletion.
+
+    Anything short of `ok` stops it, `warn` included. `doctor` may degrade the
+    probe to a warning (a statedir that does not exist yet is not a broken
+    install, and `doctor` is a report), but the two commands want different
+    things from the same answer: `prune` deletes, so it needs the probe to have
+    actually *succeeded*, both for the writability proof and for the `now` that
+    every age it prints is measured against.
+    """
+    if out is None:
+        out = sys.stdout
+    if ask is None:
+        ask = confirm_stdin
+    opts = parse_prune_args(argv)
+    sd = opts["statedir"] or agb.statedir()
+    probe, stamped = probe_atomicity(sd)
+    if probe.status != PROBE_OK:
+        out.write(format_probes([probe]))
+        out.write("prune deletes files, so it will not run without a write "
+                  "probe that succeeded. `agb doctor` explains the statedir.\n")
+        out.flush()
+        return 1
+    now = stamped if stamped is not None else time.time()
+
+    out.write("agb prune %s -- host %s, statedir %s\n"
+              % (agb.VERSION, agb.own_host(), sd))
+    entries = prune_candidates(sd, now, opts, out)
+    if not entries:
+        out.write("nothing to prune. `agb doctor` lists what this host can see "
+                  "and says what it cannot adjudicate.\n")
+        out.flush()
+        return 0
+
+    confirmed = []
+    for entry in entries:
+        for line in format_prune_entry(entry):
+            out.write(line + "\n")
+        refusal = prune_refusal(entry)
+        if refusal is not None:
+            out.write("    KEPT: %s\n" % (refusal,))
+            continue
+        prompt = (PRUNE_UNREADABLE_PROMPT if entry.get("unreadable")
+                  else PRUNE_PROMPT)
+        if not (opts["yes"] or ask(prompt % (entry["host"], entry["key"]))):
+            out.write("    kept\n")
+            continue
+        confirmed.append(entry)
+
+    if opts["dry_run"]:
+        out.write("dry run: %d of %d would be removed\n"
+                  % (len(confirmed), len(entries)))
+        out.flush()
+        return 0
+    if opts["via_ssh"]:
+        return prune_via_ssh(sd, opts["via_ssh"], confirmed, out, run)
+
+    removed = {}
+    for entry in confirmed:
+        prune_remove(sd, entry["host"], entry["key"])
+        removed.setdefault(entry["host"], []).append(entry["key"])
+        out.write("removed %s/%s\n" % (entry["host"], entry["key"]))
+    for host in sorted(removed):
+        kept = prune_marker(sd, host, set(removed[host]))
+        if kept is None:
+            out.write("gen/%s.marker: unreadable, so left as it stands; each "
+                      "removal is proven to the feed by name anyway\n"
+                      % (host,))
+        else:
+            out.write("gen/%s.marker: %d key%s left\n"
+                      % (host, len(kept), _plural(len(kept))))
+    out.flush()
+    return 0
+
+
+# ==========================================================================
+# `agb pane` -- status-only rows, attach on demand
+# ==========================================================================
+#
+# This is the command Task 4b puts **in the row**: clicking an agterm row runs
+#
+#     <python> -S -E <agb> pane <key> --host H [--tmux S] [--pane %N] [--jump J]
+#
+# built by `agb_mac.pane_argv`, which is the one line connecting a status row to
+# something you can act on. It runs **on the Mac** and ssh's out to the farm, so
+# it is the only part of agbridge that crosses that way round.
+#
+# Five rules, each of which is a test.
+#
+# **It never touches the statedir.** Constraint #10: the Mac cannot read the
+# shared NFS directory at all -- it only ever sees the feed stream. Everything
+# this command knows arrives on its own command line, which is exactly why the
+# row command carries `--host`, `--tmux` and `--pane` rather than a key alone.
+# A `read_state_entry` here would pass every farm-side test and then fail on the
+# only machine that ever runs the command.
+#
+# **`subprocess.call` in a loop, never `exec`.** `exec ssh` (which is what
+# `docs/design.md` §3 originally said, and what Task 10 reconciles) *replaces*
+# this process, so detaching from tmux -- `C-b d`, the normal way to leave --
+# ends the row's command and, with it, the terminal the row owns. Calling ssh as
+# a child and looping back to the prompt means detach returns somewhere: the row
+# is still there, and re-attaching is one keypress.
+#
+# **`--pane` is not decoration.** Two agents in two panes of one tmux session
+# share `label`, `host`, `cwd` *and* `tmux`; without the pane id both rows would
+# attach to whichever pane happens to be active. Verified on tmux 3.5a on this
+# box: `select-pane -t %N` makes the pane active **inside its own window** but
+# leaves the session's active *window* where it was, so an agent in another
+# window would be attached-to and never shown. `select-window -t %N` accepts a
+# pane id and moves the window; the pair lands on the right pane.
+#
+# **No attach target is a decision, not a discovery.** The non-tmux identity
+# tiers (plain ssh on machine #3, and the session-leader fallback) record
+# `tmux`/`pane` as null on purpose. Such a row prints its identity and says
+# there is nothing to join -- rather than opening an ssh that lands in a fresh
+# login shell looking like it worked.
+#
+# **The ssh target is not the hostname.** A record's `host` is what the agent's
+# own `uname` said; reaching it is `host_<name>` in the config, and machine #3 is
+# reachable only through box #2, which is `jump_host`. `ssh_target_for` is
+# shared with `prune --via-ssh` because the question is identical.
+
+PANE_PROMPT = "[enter] attach   [q] quit > "
+
+PANE_QUIT_WORDS = ("q", "quit", "exit")
+
+PANE_VALUE_ARGS = ("--host", "--tmux", "--pane", "--jump")
+
+PANE_NO_ATTACH = (
+    "no attach target: this agent is recorded with neither a tmux session nor "
+    "a pane, so there is no terminal to join and this row is status only. Said "
+    "here, once, rather than by opening an ssh that would land in a fresh login "
+    "shell and look like it worked.")
+
+
+def parse_pane_args(argv):
+    """`pane <key> --host H [--tmux S] [--pane %N] [--jump J]`.
+
+    The shape is `agb_mac.pane_argv`'s output verbatim -- the two are one
+    contract, and `tests/test_pane.py` feeds this parser what that function
+    builds so a change to either side has to be made on both.
+
+    Hand-rolled like every other parser here (constraint #3). Values go through
+    `_usable_value`, the one predicate all three value-taking commands share:
+    every one of them is either an ssh argument or a word in a command a remote
+    shell re-splits, and "looks like two arguments" is not something to discover
+    at attach time.
+    """
+    opts = {"key": None, "host": None, "tmux": None, "pane": None,
+            "jump": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in PANE_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("pane: %s needs a value" % (name,))
+            value = inline
+            if not _usable_value(value):
+                raise agb.AgbError("pane: %s: not a usable value: %r"
+                                   % (name, value))
+            opts[name[2:]] = value
+            continue
+        if arg.startswith("-"):
+            raise agb.AgbError("pane: unknown option: %s" % (arg,))
+        if opts["key"] is not None:
+            raise agb.AgbError("pane: unexpected argument: %s" % (arg,))
+        opts["key"] = arg
+    if opts["key"] is None:
+        raise agb.AgbError(
+            "pane: needs a session key: pane <key> --host <host> "
+            "[--tmux <session>] [--pane %<n>] [--jump <host>]")
+    if not agb.valid_key(opts["key"]):
+        raise agb.AgbError("pane: not a usable key: %r" % (opts["key"],))
+    if not opts["host"]:
+        raise agb.AgbError(
+            "pane: --host is required. The Mac cannot read the shared statedir "
+            "(constraint #10), so the identity has to arrive on the command "
+            "line -- which is what the row command does.")
+    if not agb.valid_mac_id(opts["host"]):
+        raise agb.AgbError("pane: not a usable host name: %r" % (opts["host"],))
+    if opts["pane"] is not None:
+        # The same `%<n>` form `agb.tmux_anchor_parts` requires when the anchor
+        # is minted; tmux always sets it. Accepted here, decided there.
+        if not (opts["pane"].startswith("%") and opts["pane"][1:].isdigit()):
+            raise agb.AgbError("pane: --pane takes a tmux pane id like %%24, "
+                               "not %r" % (opts["pane"],))
+        # `--pane` without `--tmux` is deliberately ACCEPTED, and this comment
+        # is where an earlier refusal used to be. `agb_mac.pane_argv` emits the
+        # two flags independently from the record, and a record really can
+        # carry a pane and no session: `resolve_tmux_session()` returns None
+        # whenever `$TMUX` is unset or `tmux display-message` cannot answer,
+        # while the pane id survives from `$TMUX_PANE` and from the previous
+        # record. Refusing the pair made the auto-created row's command exit 1
+        # -- a row that says nothing at all -- for a record this tool does
+        # write. `run_pane` now ATTACHES on such a record (see
+        # `pane_remote_command`), which is better than explaining it.
+    return opts
+
+
+def pane_settings(opts, config=None):
+    """(ssh target, jump host) -- the two things the config decides.
+
+    `--jump` is the bridge's *hint*: `agb_mac.jump_for` already withholds it for
+    a session on the host the feed itself runs on, so an unadorned invocation is
+    the normal case and the config's `jump_host` is the fallback for running
+    this command by hand. It is dropped when it names the target itself, which
+    is the one case where the extra hop is pointless beyond doubt -- an exact
+    comparison against the resolved target rather than a second copy of "which
+    host is this really", because that mapping already has one home in
+    `ssh_target_for`.
+    """
+    if config is None:
+        config = agb.read_config()
+    target = ssh_target_for(opts["host"], config)
+    jump = opts["jump"] or config.get("jump_host")
+    if jump and jump in (target, opts["host"]):
+        jump = None
+    return (target, jump)
+
+
+def pane_remote_command(tmux, pane=None):
+    """The command ssh hands to the remote login shell. Pure: a string test.
+
+    **The pane id alone is a usable attach target.** `attach-session -t %N`
+    resolves the session that contains the pane, so a record whose `tmux` is
+    null but whose `pane` survived is still attachable -- which is what turns
+    `resolve_tmux_session()` returning None from a permanently status-only row
+    back into a working one. Measured on tmux 3.5a on this box, not assumed:
+    `attach-session -t %2` attached a client to the session owning `%2`, and
+    `-t %99` failed with `can't find pane: %99` rather than silently attaching
+    to something else. The session name is still preferred when there is one --
+    it survives the pane's death, and a pane id does not.
+
+    `select-window` **and** `select-pane`, in that order, then the attach --
+    measured on tmux 3.5a, where `select-pane` alone leaves the session's active
+    window untouched and would show the wrong agent whenever the two panes are
+    in different windows.
+
+    Three separate `tmux` invocations joined by `;` rather than tmux's own
+    `\\;` command sequence: the string is re-split by the remote login shell, so
+    a literal backslash-semicolon would have to survive both quoting layers --
+    and with `;` a select that fails because the pane is gone still falls
+    through to the attach instead of aborting it. Selecting *before* attaching
+    rather than after is what makes that possible at all: after `attach-session`
+    the client is attached and the command has not returned.
+
+    `shlex.quote`, not the `_ssh_word_ok` whitelist, for these two: a tmux
+    session name is whatever the human called it, spaces included, and refusing
+    to attach to a session named "rq buf" would be a bug rather than a
+    safeguard. The words are quoted for the shell that re-splits them, so an
+    exotic name is a tmux error at worst, never an extra command.
+    """
+    import shlex
+    if not (tmux or pane):
+        raise agb.AgbError("pane: no attach target: neither a tmux session "
+                           "name nor a pane id")
+    attach = "exec tmux attach-session -t %s" % (shlex.quote(tmux or pane),)
+    if not pane:
+        return attach
+    target = shlex.quote(pane)
+    return "tmux select-window -t %s ; tmux select-pane -t %s ; %s" % (
+        target, target, attach)
+
+
+def pane_ssh_argv(target, tmux, pane=None, jump=None):
+    """The exact `ssh …` argv. Pure, so its test is a list comparison.
+
+    `-t` because ssh allocates a tty only when it is given no command, and tmux
+    refuses to attach without one -- the failure is `open terminal failed: not a
+    terminal`, which reads like a tmux problem and is not.
+
+    `target` and `jump` are ssh's own arguments and reach no shell, but they are
+    still checked: they come from a config file and from a row command, and a
+    word beginning with `-` would be read by ssh as an option rather than as a
+    host.
+    """
+    for label, word in (("ssh target", target), ("jump host", jump)):
+        if word is None:
+            continue
+        if not _ssh_word_ok(word):
+            raise agb.AgbError("pane: not usable as an %s: %r" % (label, word))
+    argv = ["ssh", "-t"]
+    if jump:
+        argv += ["-J", jump]
+    argv += [target, pane_remote_command(tmux, pane)]
+    return argv
+
+
+def pane_display(argv):
+    """The attach command rendered as a line that can be pasted.
+
+    `shlex.quote`, not `" ".join`: the remote command is **one** argv word, and
+    printing it unquoted shows a line that would do something different if a
+    human copied it -- an operator-facing lie in a tool whose entire premise is
+    that a display must not lie. Same reasoning as `agb_mac.pane_command`, on
+    the other end of the same command.
+    """
+    import shlex
+    return " ".join(shlex.quote(word) for word in argv)
+
+
+def pane_identity_lines(opts, target, jump=None):
+    """What this row *is*, printed before anything is attached to.
+
+    The plan's first checkbox, and the reason it comes first: a row that cannot
+    be attached to must still answer "which agent is this, and where does it
+    live" -- which is the whole difference between a dashboard and a dashboard
+    that lies.
+    """
+    lines = [
+        "agb pane %s -- key %s" % (agb.VERSION, opts["key"]),
+        "    host %s   ssh target %s" % (opts["host"], target),
+        "    tmux %s   pane %s" % (opts["tmux"] or "-", opts["pane"] or "-"),
+    ]
+    if jump:
+        lines.append("    via jump host %s" % (jump,))
+    return lines
+
+
+def pane_wait(prompt):
+    """The default `ask`: one line from stdin. **EOF quits**, and so does `q`.
+
+    Returns None for "stop", the typed text otherwise. A row command whose stdin
+    is not a terminal (a misconfigured `--command`, a piped test) therefore ends
+    instead of spinning on an unanswerable prompt.
+    """
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        sys.stdout.write("\n")
+        return None
+    return line.strip()
+
+
+def pane_attach(argv, out, ask=None, run=None):
+    """Prompt, attach, and come **back** here when the attach ends.
+
+    `subprocess.call` in a loop is the whole point of the function: `os.exec*`
+    would replace this process with ssh, so `C-b d` -- the ordinary way to leave
+    a tmux session -- would end the row's command and take the terminal with it.
+    Here a detach returns to the prompt, and re-attaching is one keypress.
+
+    A non-zero exit is reported and prompted again rather than being fatal: ssh
+    failing because the farm is briefly unreachable is not a reason to close a
+    row, and the human is standing right here.
+    """
+    if ask is None:
+        ask = pane_wait
+    if run is None:
+        import subprocess
+        run = subprocess.call
+    while True:
+        answer = ask(PANE_PROMPT)
+        if answer is None or answer.lower() in PANE_QUIT_WORDS:
+            out.write("leaving the row as it is -- nothing here changes any "
+                      "agent's state\n")
+            out.flush()
+            return 0
+        code = run(argv)
+        if code:
+            out.write("ssh exited %s -- nothing was attached\n" % (code,))
+        else:
+            out.write("detached; the agent is still running\n")
+        out.flush()
+
+
+def run_pane(argv, out=None, ask=None, run=None, config=None):
+    """`agb pane` -- reached through `run_ops`, like `doctor` and `prune`.
+
+    Note what is *not* here: no statedir, no `.state`, no record. This runs on
+    the Mac, which cannot read the shared directory at all (constraint #10), so
+    the identity is what the row command carries and nothing else.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_pane_args(argv)
+    target, jump = pane_settings(opts, config)
+    for line in pane_identity_lines(opts, target, jump):
+        out.write(line + "\n")
+    if not (opts["tmux"] or opts["pane"]):
+        # Only the non-tmux identity tiers land here now: plain ssh on machine
+        # #3 and the session-leader fallback record neither field. A pane with
+        # no session name is attachable (see `pane_remote_command`).
+        out.write("    " + PANE_NO_ATTACH + "\n")
+        out.flush()
+        return 0
+    ssh_argv = pane_ssh_argv(target, opts["tmux"], opts["pane"], jump)
+    out.write("    attach: %s\n" % (pane_display(ssh_argv),))
+    out.flush()
+    return pane_attach(ssh_argv, out, ask, run)
+
+
+# ==========================================================================
+# `agb status-line` -- the tmux segment
+# ==========================================================================
+#
+# One line, one file, one question: **is anything consuming the feed?**
+# `bridge:UP 2s` or `bridge:DOWN 14m`, from the mtime of `bridge/<mac-id>.beat`
+# -- the reverse heartbeat the feed touches on every poll. Not "is the ssh
+# process alive", not "does a socket exist": `agr`'s whole failure class was
+# claims of that shape, and this one is backed by a file another machine wrote.
+#
+# ---------------------------------------------------------------------------
+# Why it lives here, in the file a hook never loads
+# ---------------------------------------------------------------------------
+#
+# This is the one operator command that is **not** rare. tmux re-runs it every
+# `status-interval` seconds, forever, so it is a second hot path with its own
+# budget -- and it is the only inhabitant of `agb_ops` for which "a human runs
+# this while debugging" is false. Task 8 therefore **measured** the placement
+# instead of inheriting it: the whole command was spliced into a scratch copy of
+# `agb` and both trees were timed. Medians of 40 subprocess runs on the farm box,
+# 2026-07-28; a *tick* is the whole `python3 -S -E agb status-line --mac-id …`:
+#
+#                                       tick      no-change hook   agb bytes
+#     A: here, in `agb_ops`            15.2 ms       10.82 ms       101,695
+#     B: spliced into `agb`            12.2 ms       10.83 ms       114,568
+#     B' as B, rationale comment cut   11.9 ms       10.82 ms       110,782
+#     A with no `__pycache__` at all   20.9 ms          --             --
+#     floors: `-S -E -c pass` 4.2 ms, `agb version` 11.8 ms
+#
+# End to end the two hooks are indistinguishable, so the honest hook number is
+# the one measured directly: `compile()` of `agb` goes **3.80 ms -> 4.05 ms**,
+# +0.25 ms on every tool call. So the door costs a tick ~3.0 ms and saves a hook
+# ~0.25 ms, and it is A that wins -- on the two things the numbers alone do not
+# say:
+#
+#   * **Who is waiting.** A hook's cost is latency *inside* a Claude tool call,
+#     with a human watching, on a budget already at the top of the plan's
+#     ~8-11 ms band (Task 5's sweep took it to 11.0 ms and is code the hook
+#     actually runs, so it cannot be moved anywhere). A tick is a background
+#     segment repaint that nothing waits on: at the 5 s `status-interval`
+#     `docs/tmux.md` recommends, 3.0 ms is 0.06% of one core.
+#   * **B needs the 102,000-byte cap raised ~10%**, and that cap is a tripwire
+#     three tasks in a row declined to move. Spending it on a command that has a
+#     perfectly good home is exactly the creep it was put there to catch --
+#     and it would split one class of command across two files.
+#
+# The `__pycache__` line is the one caveat, and it is real: `agb_ops` is loaded
+# as a *module*, so CPython caches its bytecode -- which `agb` itself, having no
+# `.py` extension and being run as a script, never gets. If the install
+# directory is read-only the cache cannot be written and every tick pays the
+# full compile, 20.9 ms. `docs/tmux.md` says so, and `doctor` is where a
+# suspicious operator goes next.
+#
+# ---------------------------------------------------------------------------
+# What this command may not do
+# ---------------------------------------------------------------------------
+#
+#   * **No json, no subprocess, no argparse** -- the plan's checkbox, and a
+#     structural test over the reachable call graph rather than a comment.
+#   * **It never writes.** No `ensure_statedir`, no probe file, no beat. A
+#     segment that created directories, or that raced the feed for a filename,
+#     would be a display with side effects; and `doctor`'s server-stamped `now`
+#     costs a write this path is not allowed to make (see `status_line`).
+#   * **It always prints exactly one line, and never a traceback.** A blank
+#     segment is indistinguishable from "tmux is not running the command at
+#     all", which is precisely the silent no-op this project exists to kill --
+#     so every failure renders as `bridge:ERR <reason>`, bounded in width.
+
+BEAT_SUFFIX = ".beat"
+
+
+def beat_mtimes(sd):
+    """`[(mac-id, mtime)]` for every `bridge/<mac-id>.beat`, unordered.
+
+    One filter, two readers -- `probe_bridge_beats` and `newest_beat_age`. Both
+    have to skip names that are not beats AND `atomic_write`'s temporaries, and
+    two hand-written copies of that pair is how a half-written temp file becomes
+    somebody's "freshest Mac" in one of them and not the other.
+
+    Errors propagate: `doctor` turns them into a WARN probe and the segment into
+    one `bridge:ERR` line, which are different answers on purpose.
+    """
+    directory = agb.bridge_dir(sd)
+    found = []
+    for name in agb._listdir_quiet(directory):
+        if not name.endswith(BEAT_SUFFIX) or agb.TEMP_INFIX in name:
+            continue
+        st = agb._stat_fresh(os.path.join(directory, name))
+        if st is None:                  # unlinked between the listing and here
+            continue
+        found.append((name[:-len(BEAT_SUFFIX)], st.st_mtime))
+    return found
+
+
+# The segment and `doctor` answer the same question, so they answer it with the
+# same number: a bar reading `bridge:UP` beside a `doctor` reporting a stale
+# beat is a dashboard arguing with itself. Pinned by a test.
+STATUS_STALE_AFTER = DOCTOR_BEAT_STALE
+
+STATUS_UP = "bridge:UP"
+STATUS_DOWN = "bridge:DOWN"
+STATUS_ERR = "bridge:ERR"
+
+# No beat file at all: never seen, as opposed to seen and old. Kept distinct
+# because they call for different next steps -- "the Mac has never connected
+# with this mac-id (or is using another statedir)" versus "it stopped".
+STATUS_NEVER = "never"
+
+# A status bar is a few dozen columns wide. A 300-character exception message
+# would push the clock off the end of it.
+STATUS_ERR_LIMIT = 48
+
+STATUS_VALUE_ARGS = ("--statedir", "--mac-id")
+
+
+def status_age(seconds):
+    """A compact age: `2s`, `14m`, `3h`, `2d`. Truncated, never rounded up.
+
+    Deliberately not `age_text`: that one is `doctor`'s, where "14 min" reads
+    well in a paragraph of diagnostics. Here every character is a column of the
+    status bar. Truncation is the honest direction for an age -- the beat is *at
+    least* this old.
+
+    A **future** beat (our clock behind the NFS server's) is marked `+` rather
+    than clamped to `0s`. Clamping would hide skew silently, which is the one
+    thing this tool may not do; `doctor`'s clock-skew probe is where it gets
+    quantified.
+    """
+    if seconds is None:
+        return STATUS_NEVER
+    if seconds < 0:
+        return "+" + status_age(-seconds)
+    if seconds < 60:
+        return "%ds" % (int(seconds),)
+    if seconds < 3600:
+        return "%dm" % (int(seconds // 60),)
+    if seconds < 86400:
+        return "%dh" % (int(seconds // 3600),)
+    return "%dd" % (int(seconds // 86400),)
+
+
+def render_status(age):
+    """`bridge:UP 2s` / `bridge:DOWN 14m` / `bridge:DOWN never`. Pure.
+
+    A future-dated beat renders `UP`, because somebody wrote that file and no
+    amount of it says otherwise; the `+` in the age is what tells the operator
+    the two clocks disagree.
+    """
+    if age is None:
+        return "%s %s" % (STATUS_DOWN, STATUS_NEVER)
+    if age >= STATUS_STALE_AFTER:
+        return "%s %s" % (STATUS_DOWN, status_age(age))
+    return "%s %s" % (STATUS_UP, status_age(age))
+
+
+def bridge_beat_age(sd, mac_id, now):
+    """Age of `bridge/<mac-id>.beat`, or None when there is no such file.
+
+    `agb._stat_fresh` -- `open()` + `fstat`, constraint #6 -- rather than
+    `os.stat`: this mtime is the entire content of the segment, and `os.stat` is
+    served from the attribute cache. A missing file is None ("never"), and
+    anything else (EACCES, a hard mount that answered with an error) is raised
+    for `run_status_line` to render as `bridge:ERR`.
+    """
+    st = agb._stat_fresh(agb.bridge_beat_path(sd, mac_id))
+    if st is None:
+        return None
+    return now - st.st_mtime
+
+
+def newest_beat_age(sd, now):
+    """Age of the newest `bridge/*.beat`, or None when there is none.
+
+    The fallback for a host whose config carries no `mac_id` -- Task 9b writes
+    one, and this is what the segment does before that has happened. **Single
+    Mac assumed** (the plan's YAGNI): with two, this reports whichever beat is
+    fresher, which is why a configured `mac_id` always wins and is never
+    second-guessed.
+
+    *Which* Mac it was is deliberately not in the segment: it would change the
+    bar's width the day a second one appeared, and `doctor` already names them
+    all. This is also the one place the command reads a **directory**, which is
+    what makes it the laggier of the two paths -- see `docs/tmux.md`.
+    """
+    beats = beat_mtimes(sd)
+    if not beats:
+        return None
+    return now - max(mtime for _who, mtime in beats)
+
+
+def status_settings(opts):
+    """(statedir, mac_id), reading the config at most once and often not at all.
+
+    `agb.statedir()` reads it only when `$AGB_STATEDIR` is unset, and the
+    `mac_id` lookup is skipped entirely when `--mac-id` was given -- which is
+    why the tmux.conf line `docs/tmux.md` recommends carries both: at every tick
+    forever, one avoided `open()` of an NFS `$HOME` is worth spelling out.
+
+    The precedence is not re-derived here. `agb.statedir()` owns
+    `$AGB_STATEDIR` -> config -> default, and a second copy of that ordering is
+    how the hook and the segment would come to disagree about which directory
+    they are talking about.
+    """
+    sd = opts["statedir"]
+    if sd is None:
+        sd = agb.statedir()
+    mac_id = opts["mac_id"]
+    if mac_id is None:
+        mac_id = agb.read_config().get("mac_id")
+    return (sd, mac_id)
+
+
+def status_line(sd, mac_id=None, now=None):
+    """The segment text for one tick.
+
+    `now` is this host's clock, and that is the one cross-clock comparison in
+    the command: the beat's mtime is stamped by the NFS server (constraint #12).
+    The alternative -- `doctor`'s trick of writing a probe file and using its
+    server-stamped mtime -- costs a write, a rename and an unlink on a path that
+    runs every few seconds forever. It is safe here for the same reason the
+    hook's beat throttle is safe: this comparison only ever *displays*, it can
+    never remove anything, and the `+` in a future-dated age surfaces the skew
+    rather than hiding it.
+
+    A configured `mac_id` is never second-guessed: if its beat is missing the
+    answer is `DOWN never`, not "some other Mac's beat is fresh". Falling back
+    there would report a *different* machine as this one.
+    """
+    if now is None:
+        now = time.time()
+    if mac_id:
+        return render_status(bridge_beat_age(sd, mac_id, now))
+    return render_status(newest_beat_age(sd, now))
+
+
+def status_error(exc):
+    """A failure, in one bounded line. Never a traceback, never silence.
+
+    An `OSError` renders as its errno name (`EACCES`, `ESTALE`) because that is
+    the word an operator greps for and it is the same width every time. Anything
+    else renders as its message, collapsed to one line and truncated: this
+    string lands in a status bar, next to the clock.
+    """
+    if isinstance(exc, OSError) and exc.errno is not None:
+        detail = errno.errorcode.get(exc.errno, "errno %d" % (exc.errno,))
+    else:
+        detail = str(exc) or type(exc).__name__
+    detail = " ".join(detail.split())
+    if len(detail) > STATUS_ERR_LIMIT:
+        detail = detail[:STATUS_ERR_LIMIT - 3] + "..."
+    return detail
+
+
+def parse_status_args(argv):
+    """`status-line [--statedir P] [--mac-id ID]`.
+
+    Hand-rolled (constraint #3), and both option forms, like every other parser
+    in this file. There is no `--host`: the beat is written by the *Mac*, and
+    which host reads it changes nothing but the lag.
+    """
+    opts = {"statedir": None, "mac_id": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in STATUS_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("status-line: %s needs a value" % (name,))
+            value = inline
+            if name == "--statedir":
+                opts["statedir"] = os.path.expanduser(value)
+            else:
+                if not agb.valid_mac_id(value):
+                    raise agb.AgbError("status-line: not a usable mac-id: %r"
+                                       % (value,))
+                opts["mac_id"] = value
+        elif arg.startswith("-"):
+            raise agb.AgbError("status-line: unknown option: %s" % (arg,))
+        else:
+            raise agb.AgbError("status-line: unexpected argument: %s" % (arg,))
+    return opts
+
+
+def run_status_line(argv, out=None, now=None):
+    """`agb status-line` -- reached through `run_ops`, like every command here.
+
+    The only command in the tool that catches its own errors and still exits
+    with output on stdout. `agb`'s top-level handler prints an `AgbError` to
+    **stderr** and exits 1, which tmux renders as an empty segment -- a bar that
+    says nothing at all about a bridge that may well be down. So a bad option, an
+    unreadable statedir and a sulking mount all render here, in the bar, in one
+    line. The exit status still distinguishes them for anyone running the
+    command by hand.
+    """
+    if out is None:
+        out = sys.stdout
+    try:
+        opts = parse_status_args(argv)
+        sd, mac_id = status_settings(opts)
+        line = status_line(sd, mac_id, now)
+        code = 0
+    except (OSError, ValueError, agb.AgbError) as exc:
+        line = "%s %s" % (STATUS_ERR, status_error(exc))
+        code = 1
+    out.write(line + "\n")
+    out.flush()
+    return code
+
+
+# ==========================================================================
+# `agb install-hooks` -- the wire between Claude Code and the tool
+# ==========================================================================
+#
+# Four lines in `~/.claude/settings.json`, and everything else in agbridge is
+# downstream of them being right. It is also the only command in the tool that
+# rewrites a file **somebody else owns** -- one that is live, hand-edited, and
+# being read by the very session running the command. That shapes every rule
+# below.
+#
+# ---------------------------------------------------------------------------
+# The command it installs
+# ---------------------------------------------------------------------------
+#
+#     AGB_STATEDIR=<statedir> <abs-python> -S -E <abs-agb> hook <state>
+#
+# Constraint #1, verbatim, plus constraint #14's absolute interpreter:
+#
+#   * **`-S`** skips `site.py`, which scans user site-packages over an NFS
+#     `$HOME`; **`-E`** ignores `PYTHONPATH`/`PYTHONHOME`. Measured at ~5.1 ms
+#     of the hook's ~9-11 ms, on every `PostToolUse`, hundreds of times a
+#     session. A shebang cannot carry them (`env` does not forward interpreter
+#     flags), which is why `agb` has none and is never executable.
+#   * **an absolute interpreter**, never bare `python3`: hooks run in a minimal
+#     non-interactive environment, and a `python3` that fails to resolve kills
+#     the hook *before* `agb` runs -- so nothing is recorded and no breadcrumb is
+#     written. That is the silent-failure class this project exists to remove.
+#   * **`AGB_STATEDIR` baked in**, so the hot path never opens a config file.
+#     `agb.statedir()` reads the config only when the variable is unset.
+#
+# The statedir travels as a **shell assignment prefix** rather than through
+# `/usr/bin/env`: a hook `command` is a shell command line (the `agr` entries
+# this replaces rely on `$HOME` expanding, which proves it), and `VAR=value cmd`
+# is POSIX shell with nothing to locate on disk. `env` would put a second
+# absolute path into the command, with a second way to be missing.
+#
+# ---------------------------------------------------------------------------
+# What may be deleted, and the precision that requires
+# ---------------------------------------------------------------------------
+#
+# The four live `agr` entries are **the tool being replaced**, not unrelated
+# hooks to preserve. Left in place both tools fire on every tool call, the
+# measured hot-path budget becomes fiction, and `agr` keeps writing the stale
+# target mappings this project exists to eliminate.
+#
+# But "delete the agr hooks" and "delete somebody's tooling" are one sloppy
+# predicate apart, and the wrong answer here is silent. So the rule is about the
+# **program a shell would run**, not about the text:
+#
+#   * the command is tokenised the way a shell would (`shlex`), leading
+#     `VAR=value` assignments and a leading `env` are skipped, and the first
+#     remaining word is the program;
+#   * it is agr's if that word's **basename is exactly `agr`**. `agrep`,
+#     `/opt/agrippa/run` and `sh -c '... agr ...'` are all somebody else's.
+#   * anything mentioning `agr` as a whole word that is *not* the program is
+#     **kept and reported** -- named in the output as something to look at by
+#     hand. Reporting an entry costs nothing; deleting the wrong one is
+#     unrecoverable.
+#
+# Our own previous entries are recognised structurally too -- a word whose
+# basename is `agb` followed by `hook` -- so a re-install after the statedir,
+# the interpreter or the checkout moved replaces the old line instead of
+# stacking a second one beside it. That, and nothing else, is what makes this
+# command idempotent.
+#
+# Both sweeps run over **every** event in the file, not only the four we write.
+# An `agr` entry left on a fifth event would keep agr running, which is the
+# whole point of removing them; and an `agb hook` entry on an event this table
+# no longer maps would keep firing for ever with nothing to remove it.
+#
+# ---------------------------------------------------------------------------
+# What it refuses to do
+# ---------------------------------------------------------------------------
+#
+#   * **It never rewrites a file it could not parse.** Malformed JSON, a
+#     `hooks` value that is not an object, an event that is not a list, a group
+#     that is not an object: each one aborts with the reason and leaves the file
+#     byte for byte as it was. A tool that "repairs" a settings file by
+#     overwriting the parts it did not understand destroys settings it never
+#     read.
+#   * **It never drops a group it does not fully understand.** A matcher group
+#     emptied by a removal is dropped only when its keys are exactly the
+#     documented `matcher`/`hooks`; anything else is kept with an empty hook
+#     list, which is inert.
+#   * **It probes rather than asks.** `os.access` on the interpreter answers a
+#     question about mode bits; this command *runs*
+#     `<python> -S -E <agb> version` and requires the right answer back. That
+#     single round trip validates the interpreter, the flags and the `agb` path
+#     together -- the exact three things whose failure would otherwise be
+#     discovered as a hook that silently does nothing.
+#
+# The one thing it cannot check is constraint #14's actual predicate: *the same
+# absolute path on every host that runs hooks*. That is a claim about machine
+# #3, which is not reachable from here. Note the predicate is **not** "on a
+# shared mount" -- requiring that would push toward an NFS interpreter and undo
+# the entire hot-path budget. `sys.executable` here is `/bin/python3`, a local
+# path and almost certainly right on a uniform farm; `--python` is the per-host
+# override, and the note is printed every time rather than buried.
+
+SETTINGS_BASENAME = "settings.json"
+
+# (event, matcher, state). The plan's mapping, in one place.
+#
+# `Notification` carries the **`permission_prompt` matcher**: unmatched, that
+# event fires for more than permission prompts, and every one of those would
+# paint the row `blocked` -- a dashboard reporting "waiting for you" when
+# nothing is. The other three take every occurrence of their event.
+#
+# There is no producer for `idle` (Task 2a dropped it as an agent-reported
+# state): it renders as *no glyph*, so a fresh session would be pixel-identical
+# to a `[done]` row and to a stale `[?]` one.
+HOOK_EVENTS = (
+    ("UserPromptSubmit", None, "active"),
+    ("PostToolUse", None, "active"),
+    ("Notification", "permission_prompt", "blocked"),
+    ("Stop", None, "completed"),
+)
+
+HOOK_TYPE = "command"
+STATEDIR_VAR = "AGB_STATEDIR"
+
+# The documented keys of one matcher group. A group carrying anything else is
+# never dropped, however empty it becomes.
+GROUP_KEYS = frozenset(["matcher", "hooks"])
+
+# What one existing hook entry is.
+HOOK_OURS = "agb"
+HOOK_AGR = "agr"
+HOOK_SUSPECT = "suspect"
+HOOK_OTHER = "other"
+
+# The program name that identifies the tool being replaced. A basename match on
+# the *program*, never a substring of the command.
+AGR_PROGRAM = "agr"
+
+# Written beside the settings file before it is replaced. The file is live and
+# hand-edited; one copy of what was there costs nothing and is the difference
+# between a mistake and a loss.
+BACKUP_SUFFIX = ".agb.bak"
+
+INSTALL_VALUE_ARGS = ("--settings", "--statedir", "--python", "--agb")
+INSTALL_FLAGS = {"--dry-run": "dry_run"}
+
+INSTALL_PORTABILITY_NOTE = (
+    "the interpreter must resolve to a working python at this **same absolute "
+    "path on every host that runs hooks** (machine #3 included) -- not "
+    "\"on a shared mount\", which would push toward an NFS interpreter and undo "
+    "the hot-path budget. Re-run with --python <abs-path> on any host where it "
+    "differs.")
+
+
+def settings_path():
+    """`~/.claude/settings.json`.
+
+    Through `agb.home_dir()` (which reads `$HOME`) rather than
+    `os.path.expanduser`, for one reason that is not tidiness: the test suite's
+    autouse `fake_home` fixture moves `$HOME`, and that is the only thing
+    standing between a bug in this command and the developer's real settings
+    file. `--settings` is the seam for everything else.
+    """
+    return os.path.join(agb.home_dir(), ".claude", SETTINGS_BASENAME)
+
+
+def hook_command(python, agb_path, sd, state):
+    """The exact command string installed for one state. Pure: a string test.
+
+    Every word is `shlex.quote`d, because this string is re-split by a shell: a
+    statedir with a space in it would otherwise install a hook that runs a
+    different command than the one printed here, which is the class of quiet
+    divergence the whole tool is against.
+    """
+    import shlex
+    return "%s=%s %s -S -E %s hook %s" % (
+        STATEDIR_VAR, shlex.quote(sd), shlex.quote(python),
+        shlex.quote(agb_path), shlex.quote(state))
+
+
+def command_words(command):
+    """A hook command as a shell would split it.
+
+    `shlex` rather than `.split()` so a quoted path with a space stays one
+    word. Unbalanced quotes raise, and the fallback is the naive split: this
+    function only ever feeds a *classification*, and refusing to classify a
+    weird command would leave it in place -- which is the safe direction anyway.
+    """
+    import shlex
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _is_assignment(word):
+    """`NAME=value` -- a shell assignment prefix, not the program."""
+    name, sep, _value = word.partition("=")
+    if not sep or not name or name[0].isdigit():
+        return False
+    for char in name:
+        if not (char.isalnum() or char == "_"):
+            return False
+    return True
+
+
+def command_program(words):
+    """The word a shell would actually execute, or None.
+
+    Leading `VAR=value` assignments are skipped (our own command starts with
+    one), and so is a leading `env` -- with the assignments that follow it
+    falling out of the same loop. An `env -i` leaves `-i` as the answer, which
+    classifies as nobody's tool and is therefore kept: the conservative
+    direction on purpose.
+    """
+    for word in words:
+        if _is_assignment(word):
+            continue
+        if os.path.basename(word) == "env":
+            continue
+        return word
+    return None
+
+
+def _mentions_agr(command):
+    """`agr` as a **whole word** anywhere in the text.
+
+    Only ever used to *report*, never to remove. `agrep` and `/opt/agrippa/run`
+    do not match; `sh -c '$HOME/.local/bin/agr status active'` does, and that
+    one is worth a human looking at even though this command will not touch it.
+
+    `re` is imported here rather than at module scope, like `shlex` and
+    `subprocess` below: `install-hooks` is a once-per-host command and nothing
+    else in this file wants a regex.
+    """
+    import re
+    return re.search(r"\b%s\b" % (re.escape(AGR_PROGRAM),),
+                     command) is not None
+
+
+def classify_hook(command):
+    """What an existing hook entry is: `agb`, `agr`, `suspect` or `other`.
+
+    The two kinds that get removed are recognised **structurally**, from the
+    program a shell would run and from the argv shape -- never from a substring
+    of the command text. Getting this wrong deletes somebody else's tooling
+    silently, so `suspect` exists as the middle answer: reported, kept.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return HOOK_OTHER
+    words = command_words(command)
+    for index, word in enumerate(words):
+        if (os.path.basename(word) == "agb"
+                and words[index + 1:index + 2] == ["hook"]):
+            return HOOK_OURS
+    program = command_program(words)
+    if program is not None and os.path.basename(program) == AGR_PROGRAM:
+        return HOOK_AGR
+    if _mentions_agr(command):
+        return HOOK_SUSPECT
+    return HOOK_OTHER
+
+
+def _group_is_disposable(group):
+    """True when an emptied matcher group can be dropped without losing data."""
+    return set(group) <= GROUP_KEYS
+
+
+def _shape_error(what, value):
+    return agb.AgbError(
+        "install-hooks: %s is %s, not the documented shape. Refusing to "
+        "rewrite a settings file whose structure this tool does not "
+        "understand -- overwriting the parts it could not read is how a "
+        "settings file loses settings nobody was told about."
+        % (what, type(value).__name__))
+
+
+def our_groups(commands):
+    """The four groups this command installs. Pure, and the only writer of them.
+
+    Appended as fresh groups rather than merged into somebody else's: Claude
+    Code runs every matching group, so appending preserves an unrelated hook on
+    the same event **exactly** -- byte for byte, matcher and all -- instead of
+    editing a structure we did not write.
+    """
+    groups = []
+    for event, matcher, state in HOOK_EVENTS:
+        group = {}
+        if matcher:
+            group["matcher"] = matcher
+        group["hooks"] = [{"type": HOOK_TYPE, "command": commands[state]}]
+        groups.append((event, group))
+    return groups
+
+
+def merge_hooks(settings, commands):
+    """(new settings, removed, kept). Pure -- no I/O, so its tests are data.
+
+    Removal first, over every event in the file, then our four groups appended.
+    That order is the whole of the idempotency argument: a second run removes
+    exactly what the first one wrote and puts back exactly the same thing, so
+    the rendered bytes are identical.
+    """
+    hooks = settings.get("hooks")
+    if hooks is None:
+        hooks = {}
+    if not isinstance(hooks, dict):
+        raise _shape_error("the `hooks` value", hooks)
+    merged = {}
+    removed = []
+    kept = []
+    for event in hooks:
+        groups = hooks[event]
+        if not isinstance(groups, list):
+            raise _shape_error("hooks.%s" % (event,), groups)
+        out = []
+        for group in groups:
+            if not isinstance(group, dict):
+                raise _shape_error("a group in hooks.%s" % (event,), group)
+            entries = group.get("hooks")
+            if entries is None:
+                out.append(group)
+                continue
+            if not isinstance(entries, list):
+                raise _shape_error("hooks.%s[].hooks" % (event,), entries)
+            surviving = []
+            dropped = 0
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    raise _shape_error("an entry in hooks.%s" % (event,), entry)
+                kind = classify_hook(entry.get("command"))
+                if kind in (HOOK_OURS, HOOK_AGR):
+                    removed.append((event, kind, entry.get("command")))
+                    dropped += 1
+                    continue
+                kept.append((event, kind, entry.get("command")))
+                surviving.append(entry)
+            if not surviving and dropped and _group_is_disposable(group):
+                continue
+            replacement = dict(group)
+            replacement["hooks"] = surviving
+            out.append(replacement)
+        merged[event] = out
+    for event, group in our_groups(commands):
+        merged.setdefault(event, []).append(group)
+    for event in list(merged):
+        if not merged[event]:
+            del merged[event]
+    new = dict(settings)
+    new["hooks"] = merged
+    return (new, removed, kept)
+
+
+# --------------------------------------------------------------------------
+# the settings file itself
+# --------------------------------------------------------------------------
+
+def read_settings(path):
+    """(settings, previous bytes). A missing file is `({}, None)`, never an error.
+
+    `agb.read_fresh` -- `open()` + `fstat` -- like every other read in the tool;
+    `$HOME` is NFS here too. Anything that is not a JSON object aborts: see the
+    file header on why this command never rewrites what it could not parse.
+    """
+    try:
+        data, _st = agb.read_fresh(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return ({}, None)
+        raise agb.AgbError("install-hooks: cannot read %s: %s" % (path, exc))
+    try:
+        parsed = agb._json().loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise agb.AgbError(
+            "install-hooks: %s is not valid JSON (%s). It is left exactly as it "
+            "stands: this file is live and hand-edited, and a tool that "
+            "overwrites what it cannot parse destroys settings it never read. "
+            "Fix or move it and run again." % (path, exc))
+    if not isinstance(parsed, dict):
+        raise _shape_error("the top level of %s" % (path,), parsed)
+    return (parsed, data)
+
+
+def settings_text(settings):
+    """The file text. `indent=2`, insertion order kept, one trailing newline.
+
+    Named `settings_text` rather than `render_settings` because `agb_mac`
+    already has a `render_settings` (the row renderer's options) -- the AST
+    guard that spans all three files treats a name defined twice as an error,
+    on the grounds that the siblings consume shared helpers rather than
+    shadowing each other's.
+
+    Not `sort_keys`: this is somebody's hand-edited file, and reordering every
+    key of it would make the diff of a four-line change unreadable. Python 3.6's
+    dicts preserve insertion order and `json.loads` builds them in file order,
+    so a round trip leaves untouched keys exactly where their author put them.
+    """
+    return agb._json().dumps(settings, indent=2) + "\n"
+
+
+def write_settings(path, text, previous, label):
+    """Back the old file up, then temp+rename the new one. Returns the backup.
+
+    `agb.atomic_write` because a torn `settings.json` is a Claude Code that
+    cannot start, and this file is being read by the session running the
+    command. The mode of an existing file is preserved -- silently tightening
+    somebody's dotfile to 0600 is a surprise, and this command has no business
+    having an opinion about it.
+
+    Task 9b's `install-config` writes `~/.config/agbridge/config` through this
+    same function rather than growing a second copy of it: both are live,
+    hand-editable dotfiles this tool merges into, and "back the old one up, then
+    replace it atomically keeping its mode" is one rule, not two. It stays the
+    only writer either installer reaches -- a structural test in each of
+    `tests/test_install_hooks.py` and `tests/test_install_pkg.py` asserts it.
+
+    Being shared is exactly why `label` is a parameter rather than a literal:
+    every other AgbError in this file names the command the operator actually
+    typed, and a hard-coded "install-hooks:" made `agb install-config` on a
+    machine with an uncreatable `~/.config/agbridge` blame a command nobody ran.
+    """
+    directory = os.path.dirname(path)
+    if directory and not os.path.isdir(directory):
+        try:
+            os.makedirs(directory, agb.STATEDIR_MODE)
+        except OSError as exc:
+            raise agb.AgbError("%s: cannot create %s: %s"
+                               % (label, directory, exc))
+    mode = agb.FILE_MODE
+    backup = None
+    if previous is not None:
+        st = agb._stat_fresh(path)
+        if st is not None:
+            mode = st.st_mode & 0o7777 or agb.FILE_MODE
+        backup = path + BACKUP_SUFFIX
+        agb.atomic_write(backup, previous, mode)
+    agb.atomic_write(path, text, mode)
+    return backup
+
+
+# --------------------------------------------------------------------------
+# the interpreter -- constraint #14, probed rather than asked about
+# --------------------------------------------------------------------------
+
+def check_interpreter(python):
+    """Reject an interpreter that cannot be in a hook command. Local checks only.
+
+    Absolute, existing, executable. The predicate that actually matters -- the
+    same path on every host that runs hooks -- is a claim about another machine
+    and is *printed* (`INSTALL_PORTABILITY_NOTE`), never guessed at here. In
+    particular there is deliberately no "is it on a shared mount?" test:
+    requiring that would push toward an NFS interpreter and undo the hot path.
+    """
+    if not python:
+        raise agb.AgbError("install-hooks: no interpreter to install")
+    if not python.startswith("/"):
+        raise agb.AgbError(
+            "install-hooks: the interpreter must be an absolute path, not %r. "
+            "Hooks run in a minimal non-interactive environment, and a bare "
+            "`python3` that fails to resolve kills the hook before agb runs -- "
+            "so nothing is recorded and no breadcrumb is written (constraint "
+            "#14)." % (python,))
+    if not os.path.isfile(python) or not os.access(python, os.X_OK):
+        raise agb.AgbError(
+            "install-hooks: %s is not an executable file. Use --python to name "
+            "the interpreter this host should run hooks with." % (python,))
+    return python
+
+
+def _probe_run(argv):
+    """(exit code, stdout, stderr). The default runner; tests inject their own."""
+    import subprocess
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    out, err = proc.communicate()
+    return (proc.returncode, out.decode("utf-8", "replace"),
+            err.decode("utf-8", "replace"))
+
+
+def probe_hook_command(python, agb_path, run=None):
+    """Run `<python> -S -E <agb> version` and require the right answer back.
+
+    `doctor`'s ethos applied to installation: existence checks are what every
+    one of `agr`'s five silent no-ops would have passed. One round trip proves
+    the interpreter runs, that it accepts `-S -E`, and that it can find and
+    execute *this* `agb` -- the three things whose failure would otherwise show
+    up as a hook that quietly does nothing, hundreds of times a session, with no
+    breadcrumb because `agb` never started.
+
+    Returns the argv it ran, so the report can print what was verified.
+    """
+    if run is None:
+        run = _probe_run
+    argv = [python, "-S", "-E", agb_path, "version"]
+    try:
+        code, out, err = run(argv)
+    except OSError as exc:
+        raise agb.AgbError("install-hooks: cannot run %s: %s"
+                           % (" ".join(argv), exc))
+    expected = "agb %s" % (agb.VERSION,)
+    if code != 0 or out.strip() != expected:
+        raise agb.AgbError(
+            "install-hooks: `%s` did not answer %r (exit %s, stdout %r, stderr "
+            "%r). Nothing is installed: a hook command is written only once it "
+            "has been *run*, because a broken one fails before agb starts and "
+            "leaves no trace at all."
+            % (" ".join(argv), expected, code, out.strip(), err.strip()))
+    return argv
+
+
+# --------------------------------------------------------------------------
+# the command
+# --------------------------------------------------------------------------
+
+def parse_install_args(argv):
+    """`install-hooks [--settings P] [--statedir P] [--python P] [--agb P]
+    [--dry-run]`.
+
+    Hand-rolled (constraint #3). `--settings` is not a convenience: it is the
+    seam that keeps the test suite off the developer's real, live
+    `~/.claude/settings.json` across a subprocess boundary, where `monkeypatch`
+    cannot reach.
+    """
+    opts = {"settings": None, "statedir": None, "python": None, "agb": None,
+            "dry_run": False}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in INSTALL_FLAGS:
+            if sep:
+                raise agb.AgbError("install-hooks: %s takes no value"
+                                   % (name,))
+            opts[INSTALL_FLAGS[name]] = True
+            continue
+        if name in INSTALL_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("install-hooks: %s needs a value" % (name,))
+            value = os.path.expanduser(inline)
+            if not _usable_value(value):
+                raise agb.AgbError("install-hooks: %s: not a usable path: %r"
+                                   % (name, value))
+            opts[name[2:]] = value
+            continue
+        if arg.startswith("-"):
+            raise agb.AgbError("install-hooks: unknown option: %s" % (arg,))
+        raise agb.AgbError("install-hooks: unexpected argument: %s" % (arg,))
+    return opts
+
+
+def install_settings(opts):
+    """(settings path, python, agb path, statedir) -- everything resolved once.
+
+    The statedir comes from `agb.statedir()`, so `$AGB_STATEDIR` -> config ->
+    default is decided in exactly one place; whatever it resolves to is then
+    **frozen into the command**, which is what lets the hot path skip the config
+    read entirely.
+    """
+    path = opts["settings"] or settings_path()
+    python = opts["python"] or sys.executable
+    agb_path = opts["agb"] or agb.sibling_path("agb")
+    sd = opts["statedir"] or agb.statedir()
+    check_interpreter(python)
+    for label, value in (("agb path", agb_path), ("statedir", sd)):
+        if not value.startswith("/"):
+            raise agb.AgbError(
+                "install-hooks: the %s must be absolute, not %r: a hook runs "
+                "with no reliable working directory." % (label, value))
+    return (path, python, agb_path, sd)
+
+
+def describe_hook(entry):
+    """`event  kind  command`, for the report. Every removal is named."""
+    event, kind, command = entry
+    return "%-18s %-8s %s" % (event, kind, command)
+
+
+def statedir_is_unrepairable(sd):
+    """True when the statedir exists and no hook can ever make it usable.
+
+    `agb.verify_statedir`'s three refusals -- not a directory, another uid's,
+    the wrong mode -- evaluated independently, because they are the ones that
+    are still true on the next call and the call after that. Anything else
+    (missing, a mount that is not answering, EACCES on the parent) is a
+    transient the first hook may well get past, so it is NOT reported here: a
+    false "this will never work" is as bad as the false "it will retry" this
+    function exists to replace.
+    """
+    try:
+        st = os.stat(sd)
+    except OSError:
+        return False
+    return ((st.st_mode & agb._S_IFMT) != agb._S_IFDIR
+            or st.st_uid != os.getuid()
+            or (st.st_mode & agb._MODE_MASK) != agb.STATEDIR_MODE)
+
+
+def run_install_hooks(argv, out=None, run=None):
+    """`agb install-hooks` -- reached through `run_ops`, like every command here.
+
+    Everything it did is printed: what it verified, what it removed, what it
+    kept, what it wrote and where the backup went. This command's whole job is
+    to make the tool audible, so it may not itself be quiet about the one file
+    it edits.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_install_args(argv)
+    path, python, agb_path, sd = install_settings(opts)
+    probe_argv = probe_hook_command(python, agb_path, run)
+    commands = {}
+    for _event, _matcher, state in HOOK_EVENTS:
+        commands[state] = hook_command(python, agb_path, sd, state)
+
+    settings, previous = read_settings(path)
+    merged, removed, kept = merge_hooks(settings, commands)
+    text = settings_text(merged)
+
+    out.write("agb install-hooks %s -- host %s\n" % (agb.VERSION,
+                                                     agb.own_host()))
+    out.write("settings: %s%s\n" % (path, "" if previous is not None
+                                    else " (does not exist yet)"))
+    out.write("verified: %s -> agb %s\n" % (" ".join(probe_argv), agb.VERSION))
+    try:
+        agb.ensure_statedir(sd)
+        out.write("statedir: %s (ready)\n" % (sd,))
+    except (OSError, agb.AgbError) as exc:
+        # Not fatal either way: a sulking NFS mount now is no reason to leave
+        # Claude Code unwired. But two very different failures arrive as this
+        # one exception, and "the first hook will try again" is a promise only
+        # the first of them can keep. `verify_statedir` refuses a wrong-mode,
+        # wrong-owner or not-a-directory statedir on *every* call, so a hook
+        # would no-op for ever with that line as the only clue -- the silent
+        # no-op this tool exists to remove. So the permanent condition is
+        # tested for directly rather than inferred from the exception text.
+        if statedir_is_unrepairable(sd):
+            out.write(
+                "statedir: %s -- NOT usable: %s\n"
+                "          No hook will ever repair this: every hook re-runs\n"
+                "          the same check and no-ops. Fix it by hand --\n"
+                "          `chmod 0700 %s`, and check you own it -- then\n"
+                "          re-run install-hooks.\n" % (sd, exc, sd))
+        else:
+            out.write("statedir: %s -- NOT ready: %s (the first hook will try "
+                      "again)\n" % (sd, exc))
+    for event, matcher, state in HOOK_EVENTS:
+        out.write("hook:     %s%s -> %s\n" % (
+            event, "[%s]" % (matcher,) if matcher else "", state))
+    for state in sorted(set(commands)):
+        out.write("command:  %s\n" % (commands[state],))
+    for entry in removed:
+        out.write("removed:  %s\n" % (describe_hook(entry),))
+    for entry in kept:
+        out.write("kept:     %s%s\n" % (
+            describe_hook(entry),
+            "   <- mentions `agr` but is not the agr program; check by hand"
+            if entry[1] == HOOK_SUSPECT else ""))
+    out.write("note:     %s\n" % (INSTALL_PORTABILITY_NOTE,))
+
+    if opts["dry_run"]:
+        out.write("dry run: nothing was written\n")
+        out.flush()
+        return 0
+    if previous is not None and text.encode("utf-8") == previous:
+        out.write("unchanged: %s already carries exactly these hooks\n"
+                  % (path,))
+        out.flush()
+        return 0
+    backup = write_settings(path, text, previous, "install-hooks")
+    if backup:
+        out.write("backup:   %s\n" % (backup,))
+    out.write("wrote:    %s (%d hooks installed, %d removed)\n"
+              % (path, len(HOOK_EVENTS), len(removed)))
+    out.flush()
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `agb install-config` -- the config file, on BOTH sides
+# ---------------------------------------------------------------------------
+#
+# `~/.config/agbridge/config` is the one place two machines have to agree, and
+# `mac_id` is what they agree on: the Mac's bridge writes `bridge/<mac-id>.beat`
+# and the farm's `agb status-line` reads exactly that file. **Nothing else in
+# the tool produces a mac-id.** So it is minted here, once, and every later run
+# *keeps* the one already in the file. Regenerating it would fail in the worst
+# available way: both halves would keep running, the Mac writing one beat file
+# and the farm watching another, and the segment would read `bridge:DOWN` for
+# ever with a healthy bridge in front of it.
+#
+# For the same reason the farm side refuses to invent one. `--generate-mac-id`
+# is the Mac's flag; on the farm the value must be *given*.
+#
+# ⚠️ **The farm side is not a no-op**, even though `/shared` is NFS-shared:
+# NFS carries the three files, not the configuration. `agb status-line` runs
+# under tmux's `status-interval`, where neither `$AGB_STATEDIR` (baked into the
+# hook command at install time) nor ssh's `env` exists -- the config file is the
+# only thing that can tell it which statedir and which beat to look at.
+#
+# Like `install-hooks` this **merges**: comments, hand formatting and keys this
+# tool does not know survive verbatim, an unchanged run leaves the file byte for
+# byte as it was, and the text is re-parsed with `agb.parse_config` -- the
+# reader every other command actually uses -- before anything is written. If the
+# round trip does not return exactly the values reported, nothing is written at
+# all.
+#
+# It deliberately does **not** touch the statedir. On the Mac that path names a
+# directory on another machine (constraint #10), so creating it here would
+# either fail or, worse, silently create a local decoy.
+
+CONFIG_VALUE_ARGS = {
+    "--config": "config",
+    "--statedir": "statedir",
+    "--mac-id": "mac_id",
+    "--feed-host": "feed_host",
+    "--agb-remote-path": "agb_remote_path",
+    "--remote-python": "remote_python",
+    "--jump-host": "jump_host",
+}
+
+CONFIG_FLAGS = {
+    "--generate-mac-id": "generate_mac_id",
+    "--print-mac-id": "print_mac_id",
+    "--dry-run": "dry_run",
+}
+
+# `--host <hostname>=<ssh-target>`, repeatable: a record's `host` is a hostname,
+# not an ssh alias, and `agb pane` needs the mapping.
+CONFIG_HOST_ARG = "--host"
+
+# The order a *fresh* file gets its keys in. An existing file keeps its own.
+CONFIG_WRITE_ORDER = ("statedir", "mac_id", "feed_host", "agb_remote_path",
+                      "remote_python", "jump_host")
+
+# Values that are farm-side paths and must be absolute. The Mac never expands
+# them: `~` would resolve against the Mac's home and then be sent to a machine
+# where it means something else (`agb_mac.bridge_ssh_argv` refuses them too --
+# this check just moves the refusal from the first connection to install time).
+CONFIG_ABSOLUTE_KEYS = ("statedir", "agb_remote_path", "remote_python")
+
+CONFIG_HEADER = (
+    "# agbridge configuration -- `key = value`, read lazily and never on the\n"
+    "# hook's hot path. Written by `agb install-config`; comments, layout and\n"
+    "# keys this tool does not know are preserved across re-runs.\n")
+
+MAC_ID_MAX = 64
+
+MAC_ID_GENERATED = "generated"
+MAC_ID_KEPT = "kept"
+MAC_ID_GIVEN = "given"
+MAC_ID_REPLACED = "replaced"
+
+MAC_ID_MISSING_NOTE = (
+    "install-config: no mac_id, and this command will not invent one here. The "
+    "Mac mints it (`--generate-mac-id`) and every other machine must be told "
+    "the same value (`--mac-id <id>`): the bridge writes bridge/<mac-id>.beat "
+    "and `agb status-line` reads that exact name, so a second, freshly "
+    "generated id would name a beat file nothing ever writes -- the segment "
+    "would read bridge:DOWN for ever with a healthy bridge running.")
+
+
+def generate_mac_id(host=None):
+    """Mint a mac-id: `<short host>-<16 hex>`. The **only** producer in the tool.
+
+    Two halves for two reasons. The host part makes `bridge/<mac-id>.beat`
+    legible to a human reading the statedir on the farm, which is where that
+    file is actually looked at. The random part -- `agb.new_key()`, the same
+    minting a session key gets -- is what stops two Macs, or one Mac rebuilt
+    from a backup, sharing a beat file: each would then look alive to the
+    other's `status-line`, which is the dashboard-that-lies failure applied to
+    the bridge indicator itself.
+    """
+    if host is None:
+        host = agb.own_host()
+    suffix = agb.new_key()
+    stem = "".join(ch for ch in host if ch in agb._MAC_ID_SAFE)
+    stem = stem[:MAC_ID_MAX - len(suffix) - 1].strip("-.")
+    mac_id = "%s-%s" % (stem, suffix) if stem else suffix
+    if not agb.valid_mac_id(mac_id):
+        # Unreachable by construction; stated rather than trusted, because the
+        # value becomes a path component in a directory shared by every host.
+        raise agb.AgbError(
+            "install-config: generated an unusable mac-id: %r" % (mac_id,))
+    return mac_id
+
+
+def resolve_mac_id(existing, given, generate, path=None):
+    """(mac-id, provenance). Never regenerates over a value already in the file.
+
+    The four answers are all reported, `replaced` loudest: changing a mac-id is
+    legitimate (a new Mac) but it invalidates every *other* machine's config,
+    and that consequence is invisible from here.
+    """
+    where = " in %s" % (path,) if path else ""
+    if given:
+        if not agb.valid_mac_id(given):
+            raise agb.AgbError(
+                "install-config: not a usable mac-id: %r. It becomes a path "
+                "component (bridge/<mac-id>.beat) in a directory shared by "
+                "every host." % (given,))
+        if existing and existing != given:
+            return (given, MAC_ID_REPLACED)
+        return (given, MAC_ID_GIVEN)
+    if existing:
+        if not agb.valid_mac_id(existing):
+            raise agb.AgbError(
+                "install-config: the mac_id already recorded%s is not usable "
+                "(%r), and nothing is written. Replacing it silently would "
+                "leave the Mac writing one bridge/<mac-id>.beat and the farm "
+                "watching another. Pass --mac-id <id> to set it deliberately."
+                % (where, existing))
+        return (existing, MAC_ID_KEPT)
+    if generate:
+        return (generate_mac_id(), MAC_ID_GENERATED)
+    raise agb.AgbError(MAC_ID_MISSING_NOTE)
+
+
+def check_config_value(key, value):
+    """Reject a value the config file could not carry, or the bridge could not use."""
+    if not _usable_value(value):
+        raise agb.AgbError(
+            "install-config: %s: not a usable value: %r" % (key, value))
+    if key in CONFIG_ABSOLUTE_KEYS and not value.startswith("/"):
+        raise agb.AgbError(
+            "install-config: %s must be an absolute farm-side path, not %r. "
+            "The Mac never expands it -- `~` would resolve against the Mac's "
+            "own home and then be sent to a machine where it means something "
+            "else." % (key, value))
+    return value
+
+
+def install_config_values(opts, existing, path=None):
+    """({key: value} this run sets, mac-id provenance).
+
+    The statedir precedence is `--statedir` -> whatever the file being edited
+    already says -> `agb.statedir()`. The last of those owns `$AGB_STATEDIR` ->
+    default-path config -> default, so the ordering is not re-derived here; and
+    the file's own value comes first on purpose, so that a re-install from a
+    shell that happens to carry `$AGB_STATEDIR` cannot silently repoint an
+    installed configuration at another directory.
+    """
+    values = {}
+    mac_id, source = resolve_mac_id(existing.get("mac_id"), opts["mac_id"],
+                                    opts["generate_mac_id"], path)
+    values["mac_id"] = mac_id
+    values["statedir"] = (opts["statedir"] or existing.get("statedir")
+                          or agb.statedir())
+    for key in ("feed_host", "agb_remote_path", "remote_python", "jump_host"):
+        if opts[key]:
+            values[key] = opts[key]
+    for name in sorted(opts["hosts"]):
+        values["host_" + name] = opts["hosts"][name]
+    for key in sorted(values):
+        check_config_value(key, values[key])
+    return (values, source)
+
+
+def config_key_order(values):
+    """The documented keys first, in the documented order; the rest sorted."""
+    ordered = [key for key in CONFIG_WRITE_ORDER if key in values]
+    ordered += sorted(key for key in values if key not in CONFIG_WRITE_ORDER)
+    return ordered
+
+
+def merge_config_text(text, values, header=None):
+    """The new file text: every existing line kept, managed keys rewritten.
+
+    A key that already carries the wanted value keeps its **raw line**, so hand
+    formatting (`statedir=/x`, an aligned column, a blank line someone put
+    there) survives and a re-run is byte-identical rather than merely
+    equivalent. A *second* line for a key this run sets is dropped, because
+    `agb.parse_config` takes the last occurrence: leaving it would make the file
+    say something other than what the report claims was written.
+    """
+    out = []
+    seen = set()
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        key = None
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.partition("=")[0].strip()
+        if key and key in values:
+            if key in seen:
+                continue
+            seen.add(key)
+            if stripped.partition("=")[2].strip() == values[key]:
+                out.append(raw)
+            else:
+                out.append("%s = %s" % (key, values[key]))
+            continue
+        out.append(raw)
+    missing = [key for key in config_key_order(values) if key not in seen]
+    if missing and header and not text.strip():
+        out = header.rstrip("\n").split("\n") + out
+    for key in missing:
+        out.append("%s = %s" % (key, values[key]))
+    if not out:
+        return ""
+    return "\n".join(out) + "\n"
+
+
+def verify_config_text(text, values):
+    """Re-parse the text we are about to write; refuse it if it disagrees.
+
+    One `agb.parse_config` call, and it is the difference between a file that
+    *looks* right and one the reader every command actually uses returns the
+    reported values from. Returns the malformed lines it found, so the report
+    can name them instead of swallowing them.
+    """
+    parsed, malformed = agb.parse_config(text)
+    for key in config_key_order(values):
+        if parsed.get(key) != values[key]:
+            raise agb.AgbError(
+                "install-config: refusing to write %s: the file would parse "
+                "back as %r, not %r" % (key, parsed.get(key), values[key]))
+    return malformed
+
+
+def read_config_text(path):
+    """(text, previous bytes). A missing file is `("", None)`, never an error.
+
+    Refuses a file it cannot decode rather than replacing it, for the reason
+    `read_settings` refuses malformed JSON: this is somebody's hand-edited file,
+    and a tool that overwrites what it could not read destroys settings it never
+    saw.
+    """
+    try:
+        data, _st = agb.read_fresh(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return ("", None)
+        raise agb.AgbError("install-config: cannot read %s: %s" % (path, exc))
+    try:
+        return (data.decode("utf-8"), data)
+    except UnicodeDecodeError as exc:
+        raise agb.AgbError(
+            "install-config: %s is not UTF-8 (%s). It is left exactly as it "
+            "stands. Fix or move it and run again." % (path, exc))
+
+
+def parse_config_args(argv):
+    """`install-config [--config P] [--statedir P] [--mac-id ID] [--feed-host H]
+    [--agb-remote-path P] [--remote-python P] [--jump-host H]
+    [--host <name>=<target>]... [--generate-mac-id] [--print-mac-id]
+    [--dry-run]`.
+
+    Hand-rolled like every other parser here (constraint #3). Only `--config` is
+    `expanduser`d: it is the one path that names a file on *this* machine. The
+    others are farm-side and are resolved on a different host, where `~` means
+    something else.
+    """
+    opts = {"config": None, "statedir": None, "mac_id": None,
+            "feed_host": None, "agb_remote_path": None, "remote_python": None,
+            "jump_host": None, "hosts": {}, "generate_mac_id": False,
+            "print_mac_id": False, "dry_run": False}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in CONFIG_FLAGS:
+            if sep:
+                raise agb.AgbError("install-config: %s takes no value"
+                                   % (name,))
+            opts[CONFIG_FLAGS[name]] = True
+            continue
+        if name == CONFIG_HOST_ARG or name in CONFIG_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("install-config: %s needs a value" % (name,))
+            value = inline.strip()
+            if not value:
+                raise agb.AgbError("install-config: %s needs a value" % (name,))
+            if name == CONFIG_HOST_ARG:
+                host, sep, target = value.partition("=")
+                if not sep or not host.strip() or not target.strip():
+                    raise agb.AgbError(
+                        "install-config: --host wants <hostname>=<ssh-target>, "
+                        "not %r" % (value,))
+                opts["hosts"][host.strip()] = target.strip()
+                continue
+            if name == "--config":
+                value = os.path.expanduser(value)
+            opts[CONFIG_VALUE_ARGS[name]] = value
+            continue
+        if arg.startswith("-"):
+            raise agb.AgbError("install-config: unknown option: %s" % (arg,))
+        raise agb.AgbError("install-config: unexpected argument: %s" % (arg,))
+    return opts
+
+
+def run_install_config(argv, out=None):
+    """`agb install-config` -- reached through `run_ops`, like every command here.
+
+    Everything it did is printed: which file, which mac-id and where it came
+    from, every key set, every line it did not understand and left alone, the
+    backup, and whether anything was written at all.
+
+    `--print-mac-id` makes **stdout a machine-readable channel** -- just the
+    mac-id, one line -- and moves the report to stderr, where the human running
+    the installer still sees it. That is what lets `install.sh` hand the Mac's
+    minted id to the farm side without re-implementing `key = value` parsing in
+    shell, which is the sort of second reader that drifts.
+    """
+    opts = parse_config_args(argv)
+    if out is None:
+        out = sys.stderr if opts["print_mac_id"] else sys.stdout
+    path = opts["config"] or agb.config_path()
+    text, previous = read_config_text(path)
+    existing, _malformed = agb.parse_config(text)
+    values, source = install_config_values(opts, existing, path)
+    merged = merge_config_text(text, values, CONFIG_HEADER)
+    malformed = verify_config_text(merged, values)
+
+    out.write("agb install-config %s -- host %s\n" % (agb.VERSION,
+                                                      agb.own_host()))
+    out.write("config:   %s%s\n" % (path, "" if previous is not None
+                                    else " (does not exist yet)"))
+    out.write("mac_id:   %s (%s)\n" % (values["mac_id"], source))
+    if source == MAC_ID_REPLACED:
+        out.write("warning:  the mac_id here was %s. Every other machine's "
+                  "config must be changed to match, or its `agb status-line` "
+                  "watches a beat file nothing writes.\n"
+                  % (existing.get("mac_id"),))
+    for key in config_key_order(values):
+        if key != "mac_id":
+            out.write("set:      %s = %s\n" % (key, values[key]))
+    for lineno, raw in malformed:
+        out.write("kept:     line %d is not `key = value` and is left as it "
+                  "stands: %s\n" % (lineno, raw.strip()))
+
+    written = True
+    if opts["dry_run"]:
+        out.write("dry run: nothing was written\n")
+        written = False
+    elif previous is not None and merged.encode("utf-8") == previous:
+        out.write("unchanged: %s already carries exactly these values\n"
+                  % (path,))
+        written = False
+    else:
+        backup = write_settings(path, merged, previous, "install-config")
+        if backup:
+            out.write("backup:   %s\n" % (backup,))
+        out.write("wrote:    %s (%d keys)\n" % (path, len(values)))
+    if written and source == MAC_ID_GENERATED:
+        out.write("note:     this mac-id exists nowhere else yet -- run "
+                  "`install.sh farm --mac-id %s` on the farm, or `agb "
+                  "install-config --mac-id %s` there by hand.\n"
+                  % (values["mac_id"], values["mac_id"]))
+    out.flush()
+    if opts["print_mac_id"]:
+        sys.stdout.write("%s\n" % (values["mac_id"],))
+        sys.stdout.flush()
+    return 0
+
+
+def run_ops(name, argv):
+    """The single door `agb.cmd_ops` hops through.
+
+    The dispatch lives here rather than in `agb` so that Tasks 7-9a cost `agb`
+    nothing at all: it already routes every name in `agb.OPS_COMMANDS` here, and
+    a name this file does not implement yet gets the same explicit answer
+    `main` used to give -- a *known* command that is not built is not a typo.
+    Task 9b's `install-config` is the first new *name* since the door was built,
+    so it costs `agb` one table entry and a usage line and nothing else -- no
+    `cmd_install_config`, no dispatch arm. That answer stays reachable only by a
+    future entry, which is exactly why it is still here.
+    """
+    if name == "doctor":
+        return run_doctor(argv)
+    if name == "prune":
+        return run_prune(argv)
+    if name == "pane":
+        return run_pane(argv)
+    if name == "status-line":
+        return run_status_line(argv)
+    if name == "install-hooks":
+        return run_install_hooks(argv)
+    if name == "install-config":
+        return run_install_config(argv)
+    sys.stderr.write("agb: %s: not implemented yet\n" % (name,))
+    return 3

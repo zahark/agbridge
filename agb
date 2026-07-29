@@ -1,0 +1,2727 @@
+# agbridge -- agent status bridge from a compute cluster to agterm on a Mac.
+#
+# Deliberately NOT executable and deliberately without a shebang: hooks are
+# invoked as `<abs-python> -S -E <path>/agb hook <state>`, because `env` cannot
+# pass interpreter flags and a bare `python3` that fails to resolve in the
+# hook's minimal environment kills the hook before any breadcrumb is written.
+# See docs/design.md, "hot path" and "the hook command".
+#
+# Hot-path rules that this file must never violate:
+#   * `import json` lives inside a transition branch, never at module top.
+#   * no argparse on the hook path -- argv is dispatched by hand.
+#   * top-level imports are limited to cheap builtin/extension modules.
+#     Measured with `-S -E`: `pass` 4.1 ms, `import os,sys,errno` 5.6 ms,
+#     `import os,sys,errno,time` 5.6 ms (`time` is in sys.builtin_module_names,
+#     so it costs no file system access), `json` 8.9 ms, `socket` 9.6 ms.
+#
+# Python 3.6.8 floor: no dataclasses, no walrus, no f-string `=`.
+
+import errno
+import os
+import sys
+import time
+
+VERSION = "0.1.0"
+
+DEFAULT_STATEDIR_NAME = ".agbridge"
+
+# statedir layout (docs/design.md -> "statedir layout")
+SUBDIRS = ("sessions", "idx", "gen", "bridge", "sweep", "err")
+
+# The documented config keys live in `agb_ops` beside `known_config_key`, their
+# only reader: `read_config` here is generic, and the list exists so `doctor`
+# can flag a typo.
+
+# stat(2) bits, spelled out so that `import stat` stays off the hot path.
+_S_IFMT = 0o170000
+_S_IFDIR = 0o040000
+_MODE_MASK = 0o7777
+
+STATEDIR_MODE = 0o700
+FILE_MODE = 0o600
+
+
+class AgbError(Exception):
+    """A condition agb can describe. Never raised out of the hook path."""
+
+
+# --------------------------------------------------------------------------
+# identity
+# --------------------------------------------------------------------------
+
+def own_host():
+    """The short hostname of the machine we are running on.
+
+    One helper, used by writers and sweepers alike: if the two ever disagreed,
+    entries would be written under one name and swept under another, i.e. never
+    swept at all (constraint #13).
+
+    `socket.gethostname()` returns an FQDN here, hence the split. We read
+    `os.uname()[1]` instead of importing `socket`, because on POSIX
+    `gethostname(2)` returns `uname.nodename` -- verified identical on this box,
+    and pinned by a test -- while `import socket` costs ~5.5 ms on every hook.
+    """
+    name = os.environ.get("AGB_HOST")
+    if not name:
+        try:
+            name = os.uname()[1]
+        except AttributeError:  # non-POSIX; not a supported platform, but be safe
+            import socket
+            name = socket.gethostname()
+    return name.split(".")[0]
+
+
+# --------------------------------------------------------------------------
+# config -- read lazily, never on the hot path
+# --------------------------------------------------------------------------
+
+def home_dir():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def config_path():
+    return os.path.join(home_dir(), ".config", "agbridge", "config")
+
+
+def default_statedir():
+    """`~/.agbridge`; see docs/design.md, "where the statedir lives"."""
+    return os.path.join(home_dir(), DEFAULT_STATEDIR_NAME)
+
+
+def parse_config(text):
+    """Parse `key = value` text.
+
+    Returns (values, malformed) where `malformed` is a list of (lineno, raw).
+    A malformed line is skipped, never fatal, and never silent -- the caller
+    keeps the list so `doctor` can print it.
+    """
+    values = {}
+    malformed = []
+    lineno = 0
+    for raw in text.splitlines():
+        lineno += 1
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            malformed.append((lineno, raw))
+            continue
+        key, _sep, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            malformed.append((lineno, raw))
+            continue
+        values[key] = value.strip()
+    return values, malformed
+
+
+def read_config(path=None, warnings=None):
+    """Read the config file. Missing file is not an error; it returns {}.
+
+    `warnings`, when given, is the caller's list; malformed lines are appended
+    to it as `(lineno, raw)`. Only `doctor` wants them -- silently skipping a
+    misspelled `feed_hsot` is the failure this tool exists to remove -- and it
+    passes a list of its own rather than reading a module global that every
+    reader shared and every reader had to remember to clear.
+    """
+    if path is None:
+        path = config_path()
+    try:
+        data, _st = read_fresh(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return {}
+        raise
+    values, malformed = parse_config(data.decode("utf-8", "replace"))
+    if warnings is not None:
+        warnings.extend(malformed)
+    return values
+
+
+# --------------------------------------------------------------------------
+# statedir resolution and layout
+# --------------------------------------------------------------------------
+
+def statedir():
+    """Resolve the statedir: $AGB_STATEDIR -> config -> default_statedir().
+
+    The config file is read *only* when $AGB_STATEDIR is unset. The hook command
+    bakes $AGB_STATEDIR in at install time precisely so the hot path never opens
+    a config file.
+    """
+    value = os.environ.get("AGB_STATEDIR")
+    if value:
+        return os.path.expanduser(value)
+    value = read_config().get("statedir")
+    if value:
+        return os.path.expanduser(value)
+    return default_statedir()
+
+
+def session_dir(sd, host=None):
+    """`sessions/<host>/`. The owning host is in the *path*, which is what makes
+    every marker rebuild a readdir with zero opens, and "sweep only your own
+    entries" structural rather than a runtime check."""
+    return os.path.join(sd, "sessions", host if host else own_host())
+
+
+def state_path(sd, key, host=None):
+    return os.path.join(session_dir(sd, host), key + ".state")
+
+
+def record_path(sd, key, host=None):
+    return os.path.join(session_dir(sd, host), key + ".json")
+
+
+def verify_statedir(path):
+    """Reject a statedir we do not exclusively own.
+
+    The parent (`/shared`) is group-writable, so another member of the group
+    could have pre-created it. Existence is not ownership.
+    """
+    try:
+        st = os.stat(path)
+    except OSError as exc:
+        raise AgbError("cannot stat statedir %s: %s" % (path, exc))
+    if (st.st_mode & _S_IFMT) != _S_IFDIR:
+        raise AgbError("statedir %s exists but is not a directory" % (path,))
+    if st.st_uid != os.getuid():
+        raise AgbError(
+            "statedir %s is owned by uid %d, not by uid %d"
+            % (path, st.st_uid, os.getuid()))
+    mode = st.st_mode & _MODE_MASK
+    if mode != STATEDIR_MODE:
+        raise AgbError(
+            "statedir %s has mode %04o, expected %04o"
+            % (path, mode, STATEDIR_MODE))
+    return st
+
+
+def _mkdir_owned(path, verify=False):
+    """Create `path` with mode 0700, or verify it if it already exists."""
+    try:
+        os.makedirs(path, STATEDIR_MODE)
+    except OSError as exc:
+        if exc.errno != errno.EEXIST:
+            raise AgbError("cannot create %s: %s" % (path, exc))
+        if verify:
+            verify_statedir(path)
+        return False
+    # makedirs' mode is filtered through the umask, so restate it.
+    try:
+        os.chmod(path, STATEDIR_MODE)
+    except OSError as exc:
+        raise AgbError("cannot chmod %s: %s" % (path, exc))
+    return True
+
+
+def ensure_statedir(path=None):
+    """Create (or validate) the statedir and its fixed subdirectories."""
+    if path is None:
+        path = statedir()
+    _mkdir_owned(path, verify=True)
+    for name in SUBDIRS:
+        _mkdir_owned(os.path.join(path, name))
+    return path
+
+
+def ensure_session_dir(sd=None, host=None):
+    """Create `sessions/<own_host>/` on demand. Off the hot path by design."""
+    sd = ensure_statedir(sd)
+    path = session_dir(sd, host)
+    _mkdir_owned(path)
+    return path
+
+
+# --------------------------------------------------------------------------
+# file primitives
+# --------------------------------------------------------------------------
+
+def _as_bytes(data):
+    if isinstance(data, bytes):
+        return data
+    return data.encode("utf-8")
+
+
+def temp_name(path):
+    """`<name>.tmp.<host>.<pid>.<rand>`, in the same directory as `path`.
+
+    Same directory because `rename()` is only atomic within a filesystem, and
+    the random suffix because two hosts writing the same target must not collide
+    on the temp itself.
+    """
+    head, base = os.path.split(path)
+    return os.path.join(head, "%s.tmp.%s.%d.%s" % (
+        base, own_host(), os.getpid(), os.urandom(4).hex()))
+
+
+def write_in_place(path, data, mode=FILE_MODE):
+    """O_WRONLY|O_CREAT|O_TRUNC + a single os.write.
+
+    For files whose **mtime is the data** (`sessions/*.state` -> beat,
+    `bridge/*.beat`). A temp+rename would make the mtime uncontrollable.
+
+    O_TRUNC opens an RPC-visible zero-length window, which is exactly why the
+    readers treat a short read as "no information" rather than "empty"
+    (constraint #8), and why `gen/*.marker` is *not* written this way.
+
+    Returns the fstat taken on the write fd, so callers get the server-stamped
+    mtime without a second lookup.
+    """
+    payload = _as_bytes(data)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        _write_all(fd, payload)
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    return st
+
+
+def atomic_write(path, data, mode=FILE_MODE):
+    """Same-dir temp + rename(), for files whose **content** must never tear
+    (`gen/*.marker`, `sessions/*.json`)."""
+    payload = _as_bytes(data)
+    tmp = temp_name(path)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.fchmod(fd, mode)   # O_CREAT's mode is umask-filtered; restate it
+        _write_all(fd, payload)
+    except BaseException:
+        os.close(fd)
+        _unlink_quiet(tmp)
+        raise
+    os.close(fd)
+    try:
+        os.rename(tmp, path)
+    except BaseException:
+        _unlink_quiet(tmp)
+        raise
+    return tmp
+
+
+def _write_all(fd, payload):
+    # A single os.write is the discipline; the loop only exists because write(2)
+    # is permitted to return short, and a silently truncated file is exactly the
+    # failure class this project exists to remove.
+    written = os.write(fd, payload)
+    while written < len(payload):
+        written += os.write(fd, payload[written:])
+
+
+def _unlink_quiet(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def read_fresh(path, retries=1):
+    """open() + fstat(fd) + read, retrying once on ESTALE.
+
+    Never `os.stat`/`os.scandir`: their attributes come from the NFS attribute
+    cache, so a cross-host reader holding a cached dentry can be served the old
+    inode's attributes silently. `open()` forces a real GETATTR under
+    close-to-open, and on a renamed-over file that GETATTR returns ESTALE, which
+    we turn into a fresh lookup rather than a skip (constraints #6 and #9).
+
+    Returns (bytes, os.stat_result).
+    """
+    attempt = 0
+    while True:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError as exc:
+            if exc.errno == errno.ESTALE and attempt < retries:
+                attempt += 1
+                continue
+            raise
+        try:
+            st = os.fstat(fd)
+            data = _read_all(fd)
+        except OSError as exc:
+            os.close(fd)
+            if exc.errno == errno.ESTALE and attempt < retries:
+                attempt += 1
+                continue
+            raise
+        except BaseException:
+            os.close(fd)
+            raise
+        os.close(fd)
+        return data, st
+
+
+def _read_all(fd):
+    chunks = []
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    if len(chunks) == 1:
+        return chunks[0]
+    return b"".join(chunks)
+
+
+# --------------------------------------------------------------------------
+# session identity: anchor, agent pid, key minting
+# --------------------------------------------------------------------------
+#
+# Three things have to be established before a state can be recorded:
+#
+#   * the **anchor** -- a name that is stable for the life of one agent and
+#     distinct between agents, used as `idx/<host>-<spid>-<tag>`;
+#   * the **agent pid + starttime** -- the only thing any sweep is ever allowed
+#     to reason about death from;
+#   * the **key** -- minted once per agent, never reused.
+
+# Overridden by the tests. The ancestor walk is otherwise untestable here,
+# because pytest may itself be running under the very `claude`/`node` process
+# the walk looks for, which would make the result depend on how the suite was
+# launched.
+PROC = "/proc"
+
+# Ancestor process names that identify "the agent". The hook's own parent is
+# the transient `sh -c` Claude spawns hooks through; storing *that* pid is
+# revision 1's delete-everything bug one level up, so the PPid chain is walked
+# until one of these is found.
+AGENT_COMMS = ("claude", "node")
+
+# The walk is bounded: a looping (or faked) /proc must not hang the hot path.
+PROC_WALK_LIMIT = 32
+
+# agterm's real status vocabulary. There is no `unknown` (amendment 2).
+STATUS_VOCABULARY = ("active", "blocked", "completed", "idle")
+
+# States an *agent* may report. `idle` is deliberately excluded: no hook
+# produces it (Task 9a maps UserPromptSubmit/PostToolUse -> active,
+# Notification -> blocked, Stop -> completed), and giving it a `SessionStart`
+# producer would paint a fresh session with agterm's *no glyph* rendering --
+# pixel-identical to a `[done]` row and to a row the bridge has marked stale.
+# The bridge still emits `idle` itself, for the `[?]` and `[done]` renderings,
+# because it is the only "we assert nothing" value in the vocabulary.
+AGENT_STATES = ("active", "blocked", "completed")
+
+KEY_BYTES = 8
+_HEXDIGITS = frozenset("0123456789abcdef")
+
+# `-` is excluded on purpose: it separates the three fields of an idx name, and
+# hostnames here contain it ("worker01"), so the *tag* must not.
+_IDX_SAFE = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789%._")
+
+# read_idx()'s third answer: not "corrupt", but a positive "there is no file".
+IDX_MISSING = ["missing"]
+
+
+def _proc_read(pid, name):
+    """Read a small file under /proc.
+
+    Local, not NFS: read_fresh's close-to-open discipline buys nothing here, so
+    this stays one open+read with no retry. It does run on the hot path -- the
+    same-pane re-mint check (below) needs the current agent's identity on every
+    invocation -- but procfs reads are local and cost microseconds, while the
+    NFS budget this file guards is about round trips to the server.
+    """
+    try:
+        fd = os.open(os.path.join(PROC, str(pid), name), os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        return os.read(fd, 8192)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def proc_ppid(pid="self"):
+    """The parent pid from `/proc/<pid>/status`, or None."""
+    data = _proc_read(pid, "status")
+    if not data:
+        return None
+    for line in data.decode("utf-8", "replace").splitlines():
+        if line.startswith("PPid:"):
+            parts = line.split()
+            if len(parts) < 2:
+                return None
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
+def proc_comm(pid):
+    data = _proc_read(pid, "comm")
+    if not data:
+        return None
+    return data.decode("utf-8", "replace").strip()
+
+
+def proc_cmdline(pid):
+    data = _proc_read(pid, "cmdline")
+    if not data:
+        return []
+    text = data.decode("utf-8", "replace")
+    return [arg for arg in text.split("\0") if arg]
+
+
+def proc_starttime(pid):
+    """`/proc/<pid>/stat` field 22 -- boot-relative jiffies, CLK_TCK=100.
+
+    The pid-reuse guard. Exact *within one boot* only; add
+    /proc/sys/kernel/random/boot_id if cross-reboot exactness is ever wanted.
+
+    Parsed from the last `)` because field 2 is the comm, which may itself
+    contain spaces and parentheses.
+    """
+    data = _proc_read(pid, "stat")
+    if not data:
+        return None
+    _head, sep, rest = data.decode("utf-8", "replace").rpartition(")")
+    if not sep:
+        return None
+    fields = rest.split()
+    # field 3 is the first one after the ')', so field 22 is index 19.
+    if len(fields) < 20:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def is_agent_process(pid):
+    """True when `pid` looks like the Claude agent itself."""
+    if proc_comm(pid) in AGENT_COMMS:
+        return True
+    for arg in proc_cmdline(pid)[:1]:
+        if os.path.basename(arg) in AGENT_COMMS:
+            return True
+    return False
+
+
+def resolve_agent():
+    """(agent pid, starttime), or (None, None) when nothing can be identified.
+
+    Walks the PPid chain upward from `/proc/self/status`. `PPid` alone is the
+    transient `sh -c` Claude runs hooks through, which dies immediately -- and a
+    sweep that believed it was the agent would delete every live entry.
+
+    Fail safe: an unidentifiable agent yields (None, None), the entry is then
+    written with no pid, and every sweep skips it (constraint #11). It is
+    `agb prune`, not a guess, that ends such an entry.
+    """
+    override = os.environ.get("AGB_AGENT_PID")
+    if override is not None:
+        override = override.strip()
+        if override in ("", "-", "0", "none"):
+            return (None, None)
+        try:
+            pid = int(override)
+        except ValueError:
+            return (None, None)
+        return (pid, proc_starttime(pid))
+
+    pid = proc_ppid("self")
+    steps = 0
+    seen = set()
+    while pid and pid > 1 and steps < PROC_WALK_LIMIT and pid not in seen:
+        seen.add(pid)
+        steps += 1
+        if is_agent_process(pid):
+            return (pid, proc_starttime(pid))
+        pid = proc_ppid(pid)
+    return (None, None)
+
+
+def _idx_safe(text):
+    return "".join(c if c in _IDX_SAFE else "_" for c in text)
+
+
+class Anchor(object):
+    """`idx/<host>-<spid>-<tag>` -- the name that owns an agent's key."""
+
+    __slots__ = ("host", "kind", "spid", "tag", "pane")
+
+    def __init__(self, host, kind, spid, tag, pane=None):
+        self.host = host
+        self.kind = kind
+        self.spid = spid
+        self.tag = tag
+        self.pane = pane
+
+    def name(self):
+        return "%s-%d-%s" % (self.host, self.spid, _idx_safe(self.tag))
+
+    def __repr__(self):
+        return "Anchor(%r, %r, %r, %r)" % (
+            self.host, self.kind, self.spid, self.tag)
+
+
+def tmux_anchor_parts():
+    """(tmux server pid, pane) from $TMUX/$TMUX_PANE, or None.
+
+    `$TMUX` is `<socket>,<server pid>,<session id>` and is **session**-level, so
+    the pane has to come from `$TMUX_PANE` -- two agents in two panes of one
+    session are otherwise the same anchor, the same key and one row.
+
+    A pane id that is not `%<n>` is treated as absent: tmux always sets that
+    form, and the leading `%` is what makes an idx name's kind unambiguous.
+    """
+    tmux = os.environ.get("TMUX")
+    pane = os.environ.get("TMUX_PANE")
+    if not tmux or not pane:
+        return None
+    parts = tmux.split(",")
+    if len(parts) < 3:
+        return None
+    try:
+        spid = int(parts[1])
+    except ValueError:
+        return None
+    if spid <= 0:
+        return None
+    pane = pane.strip()
+    if len(pane) < 2 or not pane.startswith("%") or not pane[1:].isdigit():
+        return None
+    return (spid, pane)
+
+
+def resolve_anchor(host=None, agent_pid=None, starttime=None):
+    """The stable name this agent's key is minted under.
+
+    Three tiers, ordered by how much each can prove:
+
+    1. **tmux** -- (host, tmux server pid, `%PANE`). Pane ids are never reused
+       within a server, so the anchor is stable across *successive* agents in
+       one pane -- which is why bind_key() must check the recorded agent
+       identity before adopting a key.
+    2. **plain ssh (machine #3)** -- (host, agent pid, agent starttime):
+       distinct per agent process, and with no attach target.
+    3. **neither** -- the session leader. Nothing here can be attached to, and
+       with no agent pid nothing can prove its death either; `agb prune` is the
+       terminal path for such an entry (amendment 4).
+    """
+    if host is None:
+        host = own_host()
+    parts = tmux_anchor_parts()
+    if parts is not None:
+        return Anchor(host, "tmux", parts[0], parts[1], pane=parts[1])
+    if agent_pid:
+        return Anchor(host, "pid", agent_pid,
+                      "p%s" % ("-" if starttime is None else starttime))
+    try:
+        sid = os.getsid(0)
+    except OSError:
+        sid = os.getpid()
+    return Anchor(host, "sid", sid, "s")
+
+
+def parse_idx_name(name):
+    """(host, spid, tag) or None -- the inverse of Anchor.name().
+
+    Split from the right, because the hostname contains `-`.
+    """
+    parts = name.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    host, spid, tag = parts
+    if not host or not tag:
+        return None
+    try:
+        spid = int(spid)
+    except ValueError:
+        return None
+    return (host, spid, tag)
+
+
+def idx_kind(tag):
+    """Which liveness predicate an idx file's `spid` answers to.
+
+    `%…` -> a tmux server pid; `p…` -> an agent pid whose starttime the tag
+    carries; `s…` -> a session leader.
+    """
+    if tag.startswith("%"):
+        return "tmux"
+    if tag.startswith("p"):
+        return "pid"
+    if tag.startswith("s"):
+        return "sid"
+    return None
+
+
+def idx_tag_starttime(tag):
+    """The agent starttime encoded in a `pid`-kind tag, or None."""
+    if not tag.startswith("p"):
+        return None
+    try:
+        return int(tag[1:])
+    except ValueError:
+        return None
+
+
+def idx_path(sd, anchor):
+    return os.path.join(sd, "idx", anchor.name())
+
+
+def new_key():
+    return os.urandom(KEY_BYTES).hex()
+
+
+def valid_key(key):
+    if not key or len(key) > 64:
+        return False
+    for char in key:
+        if char not in _HEXDIGITS:
+            return False
+    return True
+
+
+def format_idx(key, agent_pid, starttime):
+    return "%s\n%s\n%s\n" % (
+        key,
+        "-" if agent_pid is None else agent_pid,
+        "-" if starttime is None else starttime)
+
+
+def _opt_int(text):
+    text = text.strip()
+    if text == "-":
+        return (True, None)
+    try:
+        return (True, int(text))
+    except ValueError:
+        return (False, None)
+
+
+def parse_idx(data):
+    """{'key','pid','starttime'} or None.
+
+    Exactly three lines, or it is no information at all (constraint #8). The
+    file is created content-first (see link_idx), so a short read here means
+    real corruption rather than a write in progress.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.splitlines()
+    if len(lines) != 3:
+        return None
+    key = lines[0].strip()
+    if not valid_key(key):
+        return None
+    ok_pid, pid = _opt_int(lines[1])
+    ok_start, start = _opt_int(lines[2])
+    if not ok_pid or not ok_start:
+        return None
+    return {"key": key, "pid": pid, "starttime": start}
+
+
+def read_idx(path):
+    """The parsed idx file, None if corrupt, or IDX_MISSING if there is none."""
+    try:
+        data, _st = read_fresh(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return IDX_MISSING
+        raise
+    return parse_idx(data)
+
+
+def link_idx(path, key, agent_pid, starttime):
+    """Create `path` with its content **already in place**.
+
+    Write a same-dir temp, then `os.link()`: atomic, `EEXIST` on collision, and
+    -- unlike `O_CREAT|O_EXCL` -- with no window in which the loser of the race
+    can read an empty file. O_EXCL is atomic *creation*, not
+    creation-with-content.
+
+    Returns True if we created it, False on EEXIST. NFSv3 `LINK` is
+    non-idempotent, so a lost reply can make the true winner see `EEXIST` too --
+    harmless, because the caller's fallback is to read the file, which returns
+    the right key either way.
+    """
+    tmp = temp_name(path)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, FILE_MODE)
+    try:
+        _write_all(fd, _as_bytes(format_idx(key, agent_pid, starttime)))
+    except BaseException:
+        os.close(fd)
+        _unlink_quiet(tmp)
+        raise
+    os.close(fd)
+    try:
+        os.link(tmp, path)
+    except OSError as exc:
+        _unlink_quiet(tmp)
+        if exc.errno == errno.EEXIST:
+            return False
+        raise
+    _unlink_quiet(tmp)
+    return True
+
+
+def replace_idx(path, key, agent_pid, starttime):
+    """Re-point an existing anchor at a freshly minted key (temp+rename)."""
+    return atomic_write(path, format_idx(key, agent_pid, starttime))
+
+
+def idx_matches(rec, agent_pid, starttime):
+    """True unless there is **positive evidence** of a different agent.
+
+    Absence of evidence must never re-mint: a re-mint orphans the previous
+    entry, and orphaning on a guess is the failure class this project exists to
+    remove. So an unknown current agent, or an entry recorded without one,
+    adopts the existing key.
+    """
+    if agent_pid is None or rec["pid"] is None:
+        return True
+    if rec["pid"] != agent_pid:
+        return False
+    if starttime is None or rec["starttime"] is None:
+        return True
+    return rec["starttime"] == starttime
+
+
+def bind_key(sd, anchor, agent_pid=None, starttime=None, attempts=4):
+    """(key, minted) for this anchor, minting one if needed.
+
+    The bound case -- every invocation after the first -- is one `open()` of one
+    file, which is the first half of the hot path's two-file NFS budget.
+    """
+    path = idx_path(sd, anchor)
+    attempt = 0
+    while attempt < attempts:
+        attempt += 1
+        rec = read_idx(path)
+        if rec is IDX_MISSING:
+            ensure_statedir(sd)
+            key = new_key()
+            if link_idx(path, key, agent_pid, starttime):
+                return (key, True)
+            # Lost the race (or an NFSv3 LINK reply was). The file has content
+            # either way -- it was written before the link -- so adopt it.
+            rec = read_idx(path)
+            if rec is IDX_MISSING or rec is None:
+                continue
+        if rec is not None and idx_matches(rec, agent_pid, starttime):
+            return (rec["key"], False)
+        # Either corrupt, or the anchor belongs to a *different* agent (see
+        # `resolve_anchor` tier 1). A minted key is never reused -- inheriting
+        # one would rebind a row the bridge already marked [done].
+        key = new_key()
+        replace_idx(path, key, agent_pid, starttime)
+        rec = read_idx(path)
+        if rec is not None and rec is not IDX_MISSING and idx_matches(
+                rec, agent_pid, starttime):
+            return (rec["key"], rec["key"] == key)
+    raise AgbError("could not bind a session key at %s" % (path,))
+
+
+class Identity(object):
+    """Everything a record needs about *who* is reporting a state.
+
+    `tmux` and `label` are resolved **only when a key is minted**; on every
+    later invocation they are None and the caller uses the stored record's
+    values (falling back to default_label()). That is the price of keeping the
+    tmux subprocess off the transition path, and it means a tmux session
+    renamed after the mint does not update `label`.
+
+    `tmux` and `pane` both None is how "no attach target" is expressed on the
+    wire (Task 7's degraded path).
+    """
+
+    __slots__ = ("key", "minted", "host", "anchor", "pid", "starttime",
+                 "pane", "tmux", "label", "cwd")
+
+    def __init__(self, key, minted, host, anchor, pid, starttime,
+                 pane=None, tmux=None, label=None, cwd=None):
+        self.key = key
+        self.minted = minted
+        self.host = host
+        self.anchor = anchor
+        self.pid = pid
+        self.starttime = starttime
+        self.pane = pane
+        self.tmux = tmux
+        self.label = label
+        self.cwd = cwd
+
+    def __repr__(self):
+        return "Identity(key=%r, host=%r, pid=%r)" % (
+            self.key, self.host, self.pid)
+
+
+def current_dir():
+    try:
+        return os.getcwd()
+    except OSError:
+        return os.environ.get("PWD", "")
+
+
+def default_label(cwd=None, host=None):
+    """The row label when tmux cannot supply one."""
+    if cwd:
+        base = os.path.basename(cwd.rstrip("/"))
+        if base:
+            return base
+    return host or own_host()
+
+
+def resolve_tmux_session(pane=None, spid=None, why=None):
+    """The tmux session name, resolved **once, at mint time**.
+
+    A subprocess is acceptable here and nowhere else: this runs once per agent,
+    never on a transition and never on the hot path. Failure is never fatal --
+    a mint must not depend on tmux answering -- but never *silent* either: the
+    reason goes into `why` for the caller to breadcrumb, rather than collapsing
+    into a bare None that nothing downstream can explain.
+    """
+    import subprocess  # mint path only; never at module scope (hot-path budget)
+    # `$TMUX` names the server owning this pane, so `/proc/<spid>/exe` IS the
+    # binary, and a bare name may not resolve in a hook's `$PATH` (constraint
+    # #14). But after ANY tmux upgrade that link reads `/usr/bin/tmux
+    # (deleted)`: a basename that still passes the name check, a path that
+    # cannot be exec'd. So strip the suffix, insist the result really is
+    # executable, else take the weaker `$PATH` answer -- one that usually
+    # works beats a path that provably cannot.
+    prog = None
+    gone = " (deleted)"
+    if spid:
+        try:
+            prog = os.readlink("%s/%d/exe" % (PROC, spid))
+        except OSError:
+            prog = None
+        if prog and prog.endswith(gone):
+            prog = prog[:-len(gone)]
+    if not (prog and os.path.basename(prog).startswith("tmux")
+            and os.access(prog, os.X_OK)):
+        prog = "tmux"
+    argv = [prog, "display-message", "-p"]
+    if pane:
+        argv.extend(["-t", pane])
+    argv.append("#S")
+    try:
+        out = subprocess.check_output(argv, stderr=subprocess.DEVNULL, timeout=5)
+    except Exception as exc:
+        if why is not None:
+            why.append("%s: %s: %s" % (prog, type(exc).__name__, exc))
+        return None
+    name = out.decode("utf-8", "replace").strip()
+    if not name and why is not None:
+        why.append("%s printed no session name" % (prog,))
+    return name or None
+
+
+def resolve_identity(sd=None, want_tmux=True):
+    """Bind (or mint) this agent's key and describe it."""
+    if sd is None:
+        sd = statedir()
+    host = own_host()
+    agent_pid, starttime = resolve_agent()
+    anchor = resolve_anchor(host, agent_pid, starttime)
+    key, minted = bind_key(sd, anchor, agent_pid, starttime)
+    ident = Identity(key=key, minted=minted, host=host, anchor=anchor,
+                     pid=agent_pid, starttime=starttime, pane=anchor.pane,
+                     cwd=current_dir())
+    if minted:
+        if want_tmux and anchor.kind == "tmux":
+            why = []
+            ident.tmux = resolve_tmux_session(anchor.pane, anchor.spid, why)
+            if why:
+                # The row degrades to `--pane` with no `--tmux` -- `agb pane`
+                # still attaches on the pane id -- and nothing else would say
+                # why. Once per agent: this branch is mint-only.
+                breadcrumb(sd, key, "no tmux session for pane %s: %s"
+                           % (anchor.pane, why[0]), host)
+        ident.label = ident.tmux or default_label(ident.cwd, host)
+    return ident
+
+
+# --------------------------------------------------------------------------
+# session state files, marker, breadcrumbs
+# --------------------------------------------------------------------------
+#
+# Three files describe a session, each written by the discipline its own failure
+# mode demands (constraint #7; the full table is docs/design.md, "Write
+# discipline by file class"):
+#
+#   sessions/<host>/<key>.state   five bare lines, IN PLACE: its mtime is the
+#                                 beat, and a rename would make it uncontrollable
+#   sessions/<host>/<key>.json    the record; temp+rename, torn reads matter
+#   gen/<host>.marker             the key list as CONTENT; temp+rename, because
+#                                 an empty read would mean "no sessions here"
+
+SUFFIX_STATE = ".state"
+
+# `.state` is exactly this many lines or it is no information at all
+# (constraint #8): state, host, pid, starttime, seq.
+STATE_FIELDS = 5
+
+# The marker's trailing sentinel. rename() already gives the reader old-or-new
+# rather than torn, so this is a corruption canary rather than load-bearing --
+# but it is one line and it converts "silently truncated" into "discarded".
+MARKER_END = "#end"
+
+RECORD_VERSION = 1
+
+# The beat is refreshed at most this often on the no-change path: it exists so a
+# reader can see the session is alive, not to timestamp every tool call.
+BEAT_INTERVAL = 15.0
+
+# The hook-side sweep runs at most this often per host, gated on
+# `sweep/<host>.marker`'s mtime -- and checked on the TRANSITION path only.
+SWEEP_INTERVAL = 60.0
+
+# Breadcrumbs are bounded by truncate-and-restart rather than rotation: a
+# read-modify-write would conflict with the single-os.write discipline.
+ERR_LOG_LIMIT = 64 * 1024
+
+
+def marker_path(sd, host=None):
+    return os.path.join(sd, "gen", (host or own_host()) + ".marker")
+
+
+def sweep_marker_path(sd, host=None):
+    return os.path.join(sd, "sweep", (host or own_host()) + ".marker")
+
+
+def gen_dir(sd):
+    return os.path.join(sd, "gen")
+
+
+def bridge_dir(sd):
+    return os.path.join(sd, "bridge")
+
+
+def bridge_beat_path(sd, mac_id):
+    """`bridge/<mac-id>.beat` -- the reverse heartbeat.
+
+    Written by `feed` on every poll, read by `status-line` and `doctor`. It is
+    the only evidence the farm side has that the Mac is actually *consuming*.
+    """
+    return os.path.join(bridge_dir(sd), mac_id + ".beat")
+
+
+def err_log_path(sd, key, host=None):
+    """`err/<host>.<key>.log` -- one file per session, never a shared log.
+
+    NFSv3 `O_APPEND` is not atomic, so a shared breadcrumb file is corruptible
+    -- and a corruptible breadcrumb undoes the whole non-silence thesis. One
+    writer per file means there is no appender to race.
+    """
+    return os.path.join(sd, "err", "%s.%s.log" % (host or own_host(), key or "-"))
+
+
+def _opt_field(value):
+    return "-" if value is None else str(value)
+
+
+def format_state(state, host, pid, starttime, seq):
+    return "%s\n%s\n%s\n%s\n%d\n" % (
+        state, host, _opt_field(pid), _opt_field(starttime), seq)
+
+
+def parse_state(data):
+    """{'state','host','pid','starttime','seq'} or None.
+
+    None means **no information this poll** -- never "empty" and never "gone"
+    (constraint #8). In-place `O_TRUNC` opens an RPC-visible zero-length window,
+    so a cross-host reader will see a short read from time to time; treating one
+    as data is how a live agent's row gets removed.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.splitlines()
+    if len(lines) != STATE_FIELDS:
+        return None
+    state = lines[0].strip()
+    if state not in STATUS_VOCABULARY:
+        return None
+    host = lines[1].strip()
+    if not host:
+        return None
+    ok_pid, pid = _opt_int(lines[2])
+    ok_start, starttime = _opt_int(lines[3])
+    if not ok_pid or not ok_start:
+        return None
+    try:
+        seq = int(lines[4].strip())
+    except ValueError:
+        return None
+    if seq < 0:
+        return None
+    return {"state": state, "host": host, "pid": pid,
+            "starttime": starttime, "seq": seq}
+
+
+def format_marker(keys):
+    out = [key + "\n" for key in keys]
+    out.append("%s %d\n" % (MARKER_END, len(keys)))
+    return "".join(out)
+
+
+def parse_marker(data):
+    """The live key list, or None for "no information this poll".
+
+    A marker that fails validation must never be read as "this host has no
+    sessions": that single misreading emits `remove` for every row on the host.
+    """
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.splitlines()
+    if not lines:
+        return None
+    tail = lines[-1].split()
+    if len(tail) != 2 or tail[0] != MARKER_END:
+        return None
+    try:
+        count = int(tail[1])
+    except ValueError:
+        return None
+    keys = [line.strip() for line in lines[:-1]]
+    if len(keys) != count:
+        return None
+    for key in keys:
+        if not valid_key(key):
+            return None
+    return keys
+
+
+def list_session_keys(sd, host=None):
+    """The host's keys, from `readdir` alone -- zero open()s, no file contents.
+
+    Own-host `readdir` is authoritative (constraint #5's scope note: local writes
+    invalidate the local dcache). Because the owning host is in the *path*, this
+    needs no attribution step, which is what removes the truncate-window hole
+    revision 4 had: a peer mid-`O_TRUNC` leaves a zero-length `.state`, and a
+    rebuild that read `host` out of the file could not attribute it to anyone.
+
+    The suffix match is exact so that `*.tmp.*` files never appear as sessions.
+    """
+    try:
+        names = os.listdir(session_dir(sd, host))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return []
+        raise
+    keys = []
+    for name in names:
+        if not name.endswith(SUFFIX_STATE):
+            continue
+        key = name[:-len(SUFFIX_STATE)]
+        if valid_key(key):
+            keys.append(key)
+    keys.sort()
+    return keys
+
+
+def rebuild_marker(sd, host=None):
+    """Rewrite `gen/<host>.marker` from the directory, never from memory.
+
+    From `readdir` because two unlocked writers on this host would otherwise
+    each write the list *they* knew about, and the second would drop the first's
+    key -- the lost-update race. temp+rename because its content is the sole
+    cross-host key list.
+    """
+    if host is None:
+        host = own_host()
+    keys = list_session_keys(sd, host)
+    payload = format_marker(keys)
+    path = marker_path(sd, host)
+    try:
+        atomic_write(path, payload)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+            raise
+        _mkdir_owned(os.path.dirname(path))
+        atomic_write(path, payload)
+    return keys
+
+
+def iso_stamp(now=None):
+    if now is None:
+        now = time.time()
+    return "%s.%03dZ" % (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)),
+        int((now % 1.0) * 1000))
+
+
+def breadcrumb(sd, key, text, host=None):
+    """Append one line to `err/<host>.<key>.log`. Never raises, ever.
+
+    This is the tool's answer to `agr`'s five stacked silent no-ops, so it is
+    the one call that must not be able to turn a degraded run into a failed one.
+    Returns True when the line landed, so the caller can tell (and tests can).
+    """
+    if not sd:
+        return False
+    try:
+        if host is None:
+            host = own_host()
+        path = err_log_path(sd, key, host)
+        payload = _as_bytes("%s %s\n" % (iso_stamp(), text.replace("\n", " ")))
+        try:
+            fd = _open_append(path)
+        except OSError as exc:
+            if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                raise
+            _mkdir_owned(os.path.dirname(path))
+            fd = _open_append(path)
+        try:
+            if os.fstat(fd).st_size + len(payload) > ERR_LOG_LIMIT:
+                # Truncate and restart: a read-modify-write rotation would
+                # conflict with the single-os.write discipline, and the file is
+                # per-session so there is no concurrent appender to surprise.
+                os.close(fd)
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                             FILE_MODE)
+            _write_all(fd, payload)
+        finally:
+            os.close(fd)
+        return True
+    except Exception:
+        return False
+
+
+def _open_append(path):
+    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, FILE_MODE)
+
+
+def grace_elapsed(now, mtime, interval):
+    """A **deletion** gate: true only when `mtime` is `interval` old or more.
+
+    No future arm, and that is the point. `now` is sampled once at the top of
+    `hook_apply` and compared against server-stamped mtimes several NFS round
+    trips later, so a file written inside that window is future-dated with no
+    skew at all -- and future means *younger*, so a gate that authorises an
+    `unlink` answers "keep". `interval_elapsed` adds the opposite arm because
+    its callers only rate-limit: skew there changes how *often* a beat or a
+    sweep is redone, never whether anything is removed.
+    """
+    return now - mtime >= interval
+
+
+def interval_elapsed(now, mtime, interval):
+    """A **rate-limiter** gate: `grace_elapsed`, or an mtime ahead of `now`."""
+    return grace_elapsed(now, mtime, interval) or now < mtime
+
+
+# --------------------------------------------------------------------------
+# liveness proving -- the only code in the tool that unlinks a session
+# --------------------------------------------------------------------------
+#
+# This section is shared, deliberately and by contract, between the feed-side
+# sweep and the hook-side sweep. Two independent
+# implementations of "decide an agent is dead, then delete its files" is exactly
+# how a delete-everything bug gets in -- revision 1 of the design shipped one,
+# and it deleted every live entry because it reasoned about the wrong pid.
+#
+# Three rules hold everywhere below, and each has a test that fails if it is
+# weakened:
+#
+#   * **Death is proven, never inferred** (design amendment 1). No age, no beat,
+#     no host silence and no failed read is ever evidence of death. The only
+#     proofs are `kill(pid, 0)` -> ESRCH and a starttime mismatch.
+#   * **Absence of evidence fails safe** (constraint #11). An entry with no pid,
+#     a pid we cannot resolve, or a `.state` that fails validation is *skipped*.
+#     `agb prune`, under per-entry confirmation, is the terminal path
+#     for those -- not a guess made here.
+#   * **Own host only** (constraint #5). The unlink is followed by a marker
+#     rebuild from `readdir`, which is authoritative only for the local host, and
+#     the pid being adjudicated is meaningless anywhere else. The precondition is
+#     executable, not a comment.
+
+LIVENESS_ALIVE = "alive"
+LIVENESS_DEAD = "dead"
+LIVENESS_UNKNOWN = "unknown"
+
+# sweep_entry()'s answers.
+SWEEP_REAPED = "reaped"
+SWEEP_ALIVE = "alive"
+SWEEP_SKIPPED = "skipped"
+
+
+def liveness(pid, starttime):
+    """A three-valued verdict on one agent process.
+
+    Three-valued on purpose: "provably dead" and "not provably alive" are
+    different answers, and collapsing them into a boolean is precisely the
+    mistake that turns a sweep into a delete-everything bug. Only
+    LIVENESS_DEAD may ever unlink anything.
+
+    * `ESRCH` -- no process holds this pid at all. Positive proof of death.
+    * a starttime mismatch -- some process holds the pid, but it started at a
+      different moment, so it is a **reused** pid and our agent is gone. Also
+      positive proof. (Boot-relative jiffies: exact within one boot, which is
+      the only span an entry can survive anyway.)
+    * anything else -- UNKNOWN, and the caller must skip.
+
+    The pid < 2 guard is not paranoia: `os.kill(0, 0)` addresses the caller's
+    whole **process group** and a negative pid addresses a group by id. Neither
+    is a question about this entry, and signal 0 still performs the permission
+    check against every one of those processes.
+    """
+    if pid is None:
+        return LIVENESS_UNKNOWN
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return LIVENESS_UNKNOWN
+    if pid < 2:
+        return LIVENESS_UNKNOWN
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return LIVENESS_DEAD
+        if exc.errno == errno.EPERM:
+            # The pid exists but belongs to someone else. That is suggestive of
+            # reuse rather than proof of it, so it only counts when the recorded
+            # starttime positively disagrees.
+            if starttime is not None:
+                live = proc_starttime(pid)
+                if live is not None and live != starttime:
+                    return LIVENESS_DEAD
+            return LIVENESS_UNKNOWN
+        return LIVENESS_UNKNOWN
+    except (TypeError, OverflowError):
+        return LIVENESS_UNKNOWN
+    if starttime is None:
+        # A process holds the pid, but with nothing to rule out reuse we cannot
+        # claim it is *ours*. Not dead, not provably alive.
+        return LIVENESS_UNKNOWN
+    live = proc_starttime(pid)
+    if live is None:
+        return LIVENESS_UNKNOWN
+    if live != starttime:
+        return LIVENESS_DEAD
+    return LIVENESS_ALIVE
+
+
+def proof_of_death(pid, starttime):
+    """True only on positive proof. Every unlink in the tool traces to this."""
+    return liveness(pid, starttime) == LIVENESS_DEAD
+
+
+def proof_of_life(pid, starttime):
+    """True only on positive proof of *life*.
+
+    Not `not proof_of_death(...)`: a beat refresh asserts "this agent was alive
+    just now" to every reader, so an unresolvable pid must not produce one
+    either. The middle answer stays the middle answer in both directions.
+    """
+    return liveness(pid, starttime) == LIVENESS_ALIVE
+
+
+def _require_own_host(host, what):
+    """The executable precondition guarding every destructive path.
+
+    Spelled as a raise rather than as an `assert` statement on purpose: `assert`
+    is compiled out by `python -O`, and the one guard standing between this tool
+    and another host's live sessions must not be one interpreter flag away from
+    vanishing.
+
+    Two independent reasons it has to hold, either of which is sufficient:
+    the marker rebuild that follows an unlink reads `readdir`, which constraint
+    #5 makes authoritative only for the local host; and a pid from another host
+    means nothing in this pid namespace, so `liveness()` would be adjudicating a
+    coincidence. `agb prune` is the foreign-host path, and it must not
+    call in here.
+    """
+    mine = own_host()
+    if host != mine:
+        raise AgbError(
+            "%s refused: %s is not this host (%s). Only the owning host may "
+            "sweep its own entries (constraint #11); `agb prune` is the "
+            "operator path for a foreign host." % (what, host, mine))
+    return mine
+
+
+def refresh_beat(path):
+    """`os.utime(path, None)` -- never explicit times (constraint #12).
+
+    `None` is what makes the NFS **server** stamp the file, which is what keeps
+    every age comparison inside one clock domain. Returns False when the file
+    has gone; whether that means anything is the caller's business, not this
+    function's -- proving removal is `read_state_entry`'s job, by name.
+    """
+    try:
+        os.utime(path, None)
+    except OSError:
+        return False
+    return True
+
+
+def reap_entry(sd, host, key, reason=""):
+    """Unlink one **own-host** session and rebuild the marker.
+
+    The single unlink authority for `sessions/`, called only after
+    `proof_of_death`. A structural test asserts that no second function in this
+    file unlinks a session, so Task 5 cannot grow its own copy by accident.
+
+    `.json` is unlinked **before** `.state`, and the order is not arbitrary: a
+    crash between the two leaves a `.state` with no record, which the feed
+    already degrades gracefully (a stale label) and which the very next sweep
+    re-adjudicates and finishes. The other order leaves an orphan `.json`
+    nothing ever reaps -- its entry is gone from every listing.
+
+    The marker rebuild comes last and is unconditional: it is what turns the
+    unlink into a `remove` on the wire, and it is idempotent, so a rebuild after
+    a no-op unlink costs nothing but keeps a partially-failed batch consistent.
+    """
+    _require_own_host(host, "reap of %s/%s" % (host, key))
+    _unlink_quiet(record_path(sd, key, host))
+    unlinked = True
+    try:
+        os.unlink(state_path(sd, key, host))
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+            raise
+        unlinked = False          # already reaped by a concurrent sweeper
+    rebuild_marker(sd, host)
+    # "Why did this row disappear?" must be answerable after the fact; an
+    # unexplained vanishing row is the same silent failure as an unexplained
+    # missing one. breadcrumb() never raises.
+    breadcrumb(sd, key, "reaped: %s" % (reason or "proof of death",), host)
+    return unlinked
+
+
+def sweep_entry(sd, host, key, pid, starttime, beat=None, now=None):
+    """Adjudicate one own-host entry: reap it, refresh its beat, or skip it.
+
+    **The** shared implementation. The feed calls it every poll from the state
+    it has just read; the hook-side sweep calls it per `.state` found
+    by `readdir(sessions/<own_host>/)`. Both pass the mtime they
+    already hold as `beat`, so neither pays an extra round trip for the throttle.
+
+    Returns SWEEP_REAPED, SWEEP_ALIVE or SWEEP_SKIPPED -- the three values of
+    `liveness()`, one-to-one, because the caller must be able to tell "we know it
+    is gone" from "we could not tell".
+    """
+    _require_own_host(host, "sweep of %s/%s" % (host, key))
+    if now is None:
+        now = time.time()
+    # Written as the two named predicates rather than as one saved verdict so
+    # that the unlink is *lexically* gated by `proof_of_death` -- the code a
+    # reviewer checks and the predicate that authorises the deletion are the
+    # same expression. The double evaluation costs one extra `kill(pid, 0)` and
+    # one procfs read, both local, neither on the NFS budget; and a process that
+    # dies between the two calls yields SKIPPED, which is the fail-safe answer.
+    if proof_of_death(pid, starttime):
+        reap_entry(sd, host, key,
+                   "agent pid %s (starttime %s) is gone"
+                   % (_opt_field(pid), _opt_field(starttime)))
+        return SWEEP_REAPED
+    if proof_of_life(pid, starttime):
+        # The feed runs continuously on box #2, so this -- not the hooks -- is
+        # what keeps a 20-minute build or a blocked agent visibly alive. Both
+        # `now` and `beat` are server-stamped here, so the throttle is a
+        # same-clock comparison.
+        if beat is None or interval_elapsed(now, beat, BEAT_INTERVAL):
+            refresh_beat(state_path(sd, key, host))
+        return SWEEP_ALIVE
+    return SWEEP_SKIPPED
+
+
+# --------------------------------------------------------------------------
+# the hook-side sweep -- machine #3 and quiet hosts
+# --------------------------------------------------------------------------
+#
+# Machine #3 runs no feed, so on #3 the hooks are the only agb code that ever
+# runs: without this pass nothing there could prove an agent dead, and `agr`
+# failure mode #3 would be reproduced exactly (docs/design.md, "The rest of the
+# sweep"). Three rules, each with a test that fails if it is weakened:
+#
+# * **Nothing here re-implements the liveness rules.** `sweep_entry` is called
+#   verbatim, so every unlink still runs `proof_of_death` -> `reap_entry` (see
+#   "liveness proving" above for why there is exactly one of those).
+# * **Own host only**, and *structurally*: the session directory is
+#   `sessions/<own_host>/`, an idx name begins with the owning host, an err
+#   log's does too, and a temp carries it inside `<name>.tmp.<host>.<pid>.<rand>`.
+#   The runtime precondition is kept as well -- constraint #11 is not a thing to
+#   be clever about.
+# * **No json.** It leans on `list_session_keys` (readdir, zero opens) and
+#   `read_state_entry` (the three-valued `.state` read the feed also uses),
+#   both of which live further down with the code they were written for.
+
+# An `idx/` entry younger than this is never dropped, whatever else is true of
+# it. `link_idx` creates the file microseconds before the first `.state` exists,
+# and a sweep landing inside that window would drop a live agent's anchor, hand
+# it a second key on the next hook and mint a duplicate row. The grace is a
+# race guard, not evidence of anything: proof is still what authorises the
+# unlink.
+SWEEP_IDX_GRACE = 60.0
+
+# `atomic_write` and `link_idx` remove their own temps, so one this old means
+# the writer died between creating it and renaming it.
+SWEEP_TEMP_GRACE = 3600.0
+
+# How long a session's breadcrumbs outlive the session. The last line written to
+# one is usually the reap itself, so "why did this row disappear?" has to stay
+# answerable well after it did.
+SWEEP_ERR_GRACE = 24 * 3600.0
+
+SUFFIX_ERR_LOG = ".log"
+TEMP_INFIX = ".tmp."
+
+
+def _listdir_quiet(path):
+    """readdir, with a missing directory meaning "nothing" rather than an error.
+
+    Deliberately *not* shared with `list_session_keys`: that one sits inside the
+    feed's call graph, where a structural test names the exact functions allowed
+    to list a directory. Routing it through a general helper would soften that
+    guard into "some helper somewhere lists directories".
+    """
+    try:
+        return sorted(os.listdir(path))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return []
+        raise
+
+
+def _stat_fresh(path):
+    """open() + fstat, or None when the name no longer resolves.
+
+    Every mtime that gates a deletion is taken this way rather than with
+    `os.stat` (constraint #6), and the open doubles as evidence that the file
+    still existed at the moment the decision was made.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None
+        raise
+    try:
+        return os.fstat(fd)
+    finally:
+        os.close(fd)
+
+
+def idx_dir(sd):
+    return os.path.join(sd, "idx")
+
+
+def err_dir(sd):
+    return os.path.join(sd, "err")
+
+
+def idx_anchor_liveness(kind, spid, tag):
+    """The verdict on the *anchor* an `idx/` name is built from.
+
+    Which process `spid` names depends on the kind, and so does how much can be
+    proven about it:
+
+    * **tmux** -- the tmux **server** pid. No starttime for it is recorded
+      anywhere, so only `ESRCH` counts: a reused server pid comes back UNKNOWN
+      and the entry survives until its key does not. That is the safe direction,
+      and `bind_key` already re-mints when the recorded agent disagrees.
+    * **pid** -- machine #3's plain-ssh anchor, where `spid` **is** the agent pid
+      and the tag carries its starttime, so the full pid-reuse guard applies.
+      Revision 3 left this case with no predicate at all.
+    * **sid** -- the session leader; `ESRCH` only, for the same reason as tmux.
+
+    Routed through `liveness()` rather than a second `os.kill`, so the tool
+    keeps one liveness rule and one place that can conclude death.
+    """
+    if kind is None:
+        return LIVENESS_UNKNOWN
+    starttime = idx_tag_starttime(tag) if kind == "pid" else None
+    return liveness(spid, starttime)
+
+
+def sweep_sessions(sd, host, now):
+    """Adjudicate every `.state` under `sessions/<host>/`. Returns [reaped keys].
+
+    The listing is `readdir` only -- authoritative for the local host
+    (constraint #5's scope note) and free of any dependence on file contents --
+    and each entry is then read by name through the same three-valued read the
+    feed uses. A short or malformed read is *no information* and is skipped, not
+    adjudicated (see `parse_state`): reaping on one is the delete-everything bug.
+
+    A failure to adjudicate one entry is contained to that entry and
+    breadcrumbed. This runs inside a hook, so the alternative is an exception
+    that costs the *rest* of the sweep -- and silence about it.
+    """
+    reaped = []
+    for key in list_session_keys(sd, host):
+        parsed, beat = read_state_entry(sd, host, key)
+        if parsed is STATE_GONE or parsed is None:
+            # GONE: unlinked between the readdir and the open, so there is
+            # nothing left to adjudicate. None: no information this pass.
+            continue
+        try:
+            verdict = sweep_entry(sd, host, key, parsed["pid"],
+                                  parsed["starttime"], beat=beat, now=now)
+        except (AgbError, OSError, ValueError) as exc:
+            breadcrumb(sd, key, "sweep: cannot adjudicate %s/%s: %s"
+                       % (host, key, exc), host)
+            continue
+        if verdict == SWEEP_REAPED:
+            reaped.append(key)
+    return reaped
+
+
+def sweep_idx(sd, host, live_keys, now):
+    """Drop own-host `idx/` entries that can no longer name a live agent.
+
+    `idx/` is the bijection `agr` never collected: its entries outlive the
+    sessions they point at, and a stale one is what lets a new agent inherit a
+    dead agent's row. Nothing else removes them.
+
+    Four rules, in this order, and the order *is* the safety:
+
+    1. another host's anchor is never touched -- the owning host is the first
+       field of the name, so this is a filter rather than a judgement;
+    2. an entry whose **recorded agent is provably alive** is kept, whatever
+       else is true of it. This is what closes the mint race: during the window
+       between `link_idx` and the first `.state` write, the key genuinely does
+       not exist yet;
+    3. an entry younger than `SWEEP_IDX_GRACE` is kept -- the same race, for an
+       agent whose pid could not be resolved and which therefore cannot be
+       proven alive either;
+    4. otherwise it is dropped when its key **positively** no longer exists, or
+       when its anchor is proven dead.
+
+    A corrupt idx file is *kept*: constraint #8 makes a failed read "no
+    information", and `bind_key` re-mints over one anyway.
+    """
+    dropped = []
+    for name in _listdir_quiet(idx_dir(sd)):
+        if TEMP_INFIX in name:
+            continue                       # debris; sweep_debris owns it
+        parts = parse_idx_name(name)
+        if parts is None:
+            continue                       # not a name this tool wrote
+        owner, spid, tag = parts
+        if owner != host:
+            continue                       # another host's anchor
+        path = os.path.join(idx_dir(sd), name)
+        try:
+            data, st = read_fresh(path)
+        except OSError as exc:
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                continue                   # already gone
+            breadcrumb(sd, None, "sweep: cannot read idx %s: %s" % (name, exc),
+                       host)
+            continue
+        rec = parse_idx(data)
+        if rec is None:
+            continue
+        if proof_of_life(rec["pid"], rec["starttime"]):
+            continue
+        if not grace_elapsed(now, st.st_mtime, SWEEP_IDX_GRACE):
+            continue
+        key_gone = rec["key"] not in live_keys
+        anchor_dead = idx_anchor_liveness(
+            idx_kind(tag), spid, tag) == LIVENESS_DEAD
+        if not key_gone and not anchor_dead:
+            continue
+        _unlink_quiet(path)
+        dropped.append(name)
+        breadcrumb(sd, rec["key"], "sweep: dropped idx %s (%s)" % (
+            name, "key is gone" if key_gone else "anchor is dead"), host)
+    return dropped
+
+
+def sweep_err_logs(sd, host, live_keys, now):
+    """Reap breadcrumb files whose session no longer exists.
+
+    Nothing else reaps them: they are per-session by construction (see
+    `err_log_path`), which means one file per agent that ever ran here, forever.
+
+    `err/<host>.-.log` -- the breadcrumbs of invocations that never had a key --
+    is never reaped here, because it belongs to no session and `-` is not a
+    valid key.
+    """
+    dropped = []
+    prefix = host + "."
+    for name in _listdir_quiet(err_dir(sd)):
+        if not name.startswith(prefix) or not name.endswith(SUFFIX_ERR_LOG):
+            continue
+        key = name[len(prefix):-len(SUFFIX_ERR_LOG)]
+        if not valid_key(key) or key in live_keys:
+            continue
+        path = os.path.join(err_dir(sd), name)
+        st = _stat_fresh(path)
+        if st is None or not grace_elapsed(now, st.st_mtime, SWEEP_ERR_GRACE):
+            continue
+        _unlink_quiet(path)
+        dropped.append(name)
+    return dropped
+
+
+def sweep_debris(sd, host, now):
+    """Reap this host's abandoned `*.tmp.*` files.
+
+    `atomic_write` and `link_idx` remove their own temps in a `finally`-shaped
+    path, so a surviving one means the writer was killed mid-write. The name
+    carries the **writing host** -- `<name>.tmp.<host>.<pid>.<rand>` -- which is
+    what makes "only our own debris" a filter on the name rather than a
+    judgement about someone else's files, and matters for `gen/`, which holds
+    every host's marker.
+    """
+    dropped = []
+    infix = TEMP_INFIX + host + "."
+    for directory in (session_dir(sd, host), gen_dir(sd), idx_dir(sd)):
+        for name in _listdir_quiet(directory):
+            if infix not in name:
+                continue
+            path = os.path.join(directory, name)
+            st = _stat_fresh(path)
+            if st is None or not grace_elapsed(now, st.st_mtime,
+                                               SWEEP_TEMP_GRACE):
+                continue
+            _unlink_quiet(path)
+            dropped.append(path)
+    return dropped
+
+
+def sweep_host(sd, host=None, now=None):
+    """One full own-host pass: sessions, then `idx/`, then `err/`, then debris.
+
+    Sessions first, because the other three ask "does this key still exist?" and
+    that answer must include everything this pass has just proven dead. The live
+    key set is re-listed after the session pass rather than inferred from it: an
+    unrelated hook may have minted a key in between, and a key missing from an
+    inferred set would be a *deletion*.
+
+    Returns a dict of what was removed, which is what `doctor` and the
+    tests read. Nothing here is inferred from age: the graces above only delay a
+    removal that some positive proof has already authorised.
+    """
+    if host is None:
+        host = own_host()
+    _require_own_host(host, "sweep of %s" % (host,))
+    if now is None:
+        now = time.time()
+    reaped = sweep_sessions(sd, host, now)
+    live_keys = set(list_session_keys(sd, host))
+    return {
+        "reaped": reaped,
+        "idx": sweep_idx(sd, host, live_keys, now),
+        "err": sweep_err_logs(sd, host, live_keys, now),
+        "temps": sweep_debris(sd, host, now),
+    }
+
+
+# --------------------------------------------------------------------------
+# the session record -- the only json in the tool
+# --------------------------------------------------------------------------
+
+def _json():
+    """`import json` lives here and nowhere else (constraint #2).
+
+    One import site makes the constraint checkable on the AST rather than by
+    grepping text, and every caller of this function is on the transition path.
+    The runtime guard is the real one: `<python> -S -E -v agb hook <state>` on a
+    no-change invocation must print no `import 'json'` line.
+    """
+    import json
+    return json
+
+
+def read_record(sd, key, host=None):
+    """The stored session record, or None if there is none or it is corrupt."""
+    try:
+        data, _st = read_fresh(record_path(sd, key, host))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None
+        raise
+    try:
+        rec = _json().loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(rec, dict):
+        return None
+    return rec
+
+
+def build_record(ident, state, seq, now, old=None):
+    """Merge identity, the previous record and the new state.
+
+    `label` and `tmux` are resolved only at mint time -- a tmux subprocess per
+    transition is not affordable -- so on every later transition they come from
+    the stored record. `pane` is carried because two agents in two panes of one
+    tmux session share label, host, cwd *and* tmux: without it their rows are
+    visually identical and `agb pane` cannot select between them.
+
+    `updated` is the **writer's** clock on purpose: `doctor` compares it against
+    the server-stamped mtime to measure per-host skew.
+    """
+    if old is None:
+        old = {}
+    return {
+        "v": RECORD_VERSION,
+        "key": ident.key,
+        "label": ident.label or old.get("label") or default_label(
+            ident.cwd, ident.host),
+        "host": ident.host,
+        "pid": ident.pid,
+        "starttime": ident.starttime,
+        "tmux": ident.tmux or old.get("tmux"),
+        "pane": ident.pane or old.get("pane"),
+        "cwd": ident.cwd or old.get("cwd"),
+        "state": state,
+        "seq": seq,
+        "updated": now,
+    }
+
+
+def _next_seq(cur, old):
+    prev = 0
+    if cur:
+        prev = max(prev, cur["seq"])
+    if old:
+        try:
+            prev = max(prev, int(old.get("seq", 0)))
+        except (TypeError, ValueError):
+            pass
+    return prev + 1
+
+
+# --------------------------------------------------------------------------
+# `agb hook <state>` -- the hot path
+# --------------------------------------------------------------------------
+
+def maybe_sweep(sd, host=None, now=None):
+    """The 60 s hook-sweep throttle gate, and the sweep behind it.
+
+    Called from the **transition** path only: on the no-change path it would
+    make the hot-path NFS budget three files instead of two -- and with the
+    sweep attached, three files plus four `readdir`s.
+
+    The window is claimed *before* the sweep runs, so a sweep that dies partway
+    cannot spin once per transition. A sweep that fails is breadcrumbed and
+    swallowed: it is a maintenance pass, and a hook that reported a state
+    successfully must not go on to fail because of it.
+    """
+    if host is None:
+        host = own_host()
+    if now is None:
+        now = time.time()
+    path = sweep_marker_path(sd, host)
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+            raise
+    else:
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if not interval_elapsed(now, st.st_mtime, SWEEP_INTERVAL):
+            return False
+    payload = iso_stamp(now) + "\n"
+    try:
+        write_in_place(path, payload)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+            raise
+        _mkdir_owned(os.path.dirname(path))
+        write_in_place(path, payload)
+    try:
+        sweep_host(sd, host, now)
+    except (AgbError, OSError, ValueError) as exc:
+        breadcrumb(sd, None, "sweep failed: %s: %s" % (type(exc).__name__, exc),
+                   host)
+    return True
+
+
+def _state_is_current(cur, ident, state):
+    """True when nothing worth writing has changed.
+
+    `host` is not compared: the owning host is in the path, so a mismatch is
+    impossible by construction. pid/starttime are, because a first hook that
+    could not resolve the agent records `-` and a later one that can must repair
+    it -- otherwise the entry is permanently unsweepable.
+    """
+    return (cur["state"] == state
+            and cur["pid"] == ident.pid
+            and cur["starttime"] == ident.starttime)
+
+
+def hook_apply(sd, ident, state, now=None):
+    """Compare, then write only if something actually changed.
+
+    Returns "unchanged", "beat" or "transition".
+
+    The no-change path is **one open()** of one file, which together with
+    bind_key's single idx open is the whole two-file NFS budget. Every extra
+    round trip here is an independent stall point on a hard mount, paid on every
+    single tool call.
+    """
+    if now is None:
+        now = time.time()
+    path = state_path(sd, ident.key, ident.host)
+    cur = None
+    attempt = 0
+    while True:
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError as exc:
+            if exc.errno == errno.ESTALE and attempt < 1:
+                attempt += 1
+                continue
+            if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+                break  # nothing recorded yet: a transition by definition
+            raise
+        try:
+            st = os.fstat(fd)
+            cur = parse_state(_read_all(fd))
+            if cur is not None and _state_is_current(cur, ident, state):
+                if interval_elapsed(now, st.st_mtime, BEAT_INTERVAL):
+                    # On the SAME fd: os.utime(path, None) would cost a second
+                    # LOOKUP, and `None` (never explicit times) is what puts the
+                    # beat in the NFS server's clock domain (constraint #12).
+                    os.utime(fd, None)
+                    return "beat"
+                return "unchanged"
+        except OSError as exc:
+            if exc.errno == errno.ESTALE and attempt < 1:
+                attempt += 1
+                cur = None
+                continue
+            raise
+        finally:
+            os.close(fd)
+        break
+    hook_transition(sd, ident, state, cur, now)
+    return "transition"
+
+
+def hook_transition(sd, ident, state, cur, now):
+    """Write the record, then the state, then rebuild the marker.
+
+    Order matters. The feed re-reads `.json` only when `.state`'s `seq` moves,
+    so publishing the new `seq` first would pair it with the old record. The
+    marker comes last because it is what makes the key discoverable at all.
+    """
+    old = None if ident.minted else read_record(sd, ident.key, ident.host)
+    seq = _next_seq(cur, old)
+    record = build_record(ident, state, seq, now, old)
+    payload = _json().dumps(record, sort_keys=True) + "\n"
+    line = format_state(state, ident.host, ident.pid, ident.starttime, seq)
+    try:
+        _write_session(sd, ident, payload, line)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+            raise
+        ensure_session_dir(sd, ident.host)
+        _write_session(sd, ident, payload, line)
+    rebuild_marker(sd, ident.host)
+    maybe_sweep(sd, ident.host, now)
+    return record
+
+
+def _write_session(sd, ident, payload, line):
+    atomic_write(record_path(sd, ident.key, ident.host), payload)
+    write_in_place(state_path(sd, ident.key, ident.host), line)
+
+
+def cmd_hook(argv):
+    """`agb hook <state>` -- always exit 0, never touch stdout, never read stdin.
+
+    * exit 0 on every path: a non-zero hook is a Claude-visible error, and the
+      states agb reports are never worth interrupting a session for.
+    * nothing on stdout, ever: Claude Code injects a `UserPromptSubmit` hook's
+      stdout straight into the prompt context (constraint #15).
+    * stdin is deliberately never read: the hook's JSON payload carries nothing
+      agb needs, and the hot path must not block on it. Exiting without reading
+      gives Claude a harmless `EPIPE` (constraint #16).
+
+    Every failure becomes a breadcrumb instead of an exception, which is the
+    whole point of the tool: `agr` failed silently in five separate places.
+    """
+    sd = None
+    key = None
+    try:
+        state = argv[0] if argv else ""
+        sd = statedir()
+        if state not in AGENT_STATES:
+            breadcrumb(sd, None, "ignored: state %r is not one of %s" % (
+                state, "|".join(AGENT_STATES)))
+            return 0
+        ident = resolve_identity(sd)
+        key = ident.key
+        if ident.minted:
+            breadcrumb(sd, key, "minted key for %s (pid %s, cwd %s)" % (
+                ident.anchor.name(), _opt_field(ident.pid), ident.cwd))
+        hook_apply(sd, ident, state, None)
+    except Exception as exc:
+        breadcrumb(sd, key, "error: %s: %s" % (type(exc).__name__, exc))
+    return 0
+
+
+# --------------------------------------------------------------------------
+# `agb feed` -- the farm side of the transport
+# --------------------------------------------------------------------------
+#
+# The feed runs on box #2 under one long-lived `ssh … agb feed <mac-id>` and
+# streams NDJSON on stdout. Two environment facts shape the whole loop, argued
+# in full in docs/design.md ("Why the feed polls" / "Discovery by marker"):
+#
+# * **It polls, never watches (constraint #4).** `inotify` is delivered by the
+#   *local* kernel from local VFS events, so a write on machine #3 produces no
+#   event on box #2 -- a watch would be silent for precisely the machine that is
+#   hardest to reach. No inotify import exists in this file, and a test asserts
+#   it.
+# * **Discovery reads the marker's CONTENT (constraint #5).** This mount carries
+#   no `ac*` options, so a `readdir` of another host's directory can be served
+#   from cache for acdirmax=60 s; `open()` on a **known** name cannot, and keys
+#   are random so no negative dentry can short-circuit it. Hence: `readdir(gen/)`
+#   *only* to enumerate hosts, then `gen/<host>.marker` by name, then every
+#   `sessions/<host>/<key>.state` by name. A foreign session directory is never
+#   listed. Residual cost: a brand-new *host* takes up to 60 s to be noticed.
+
+FEED_POLL_INTERVAL = 2.0
+
+# One sentence for both of `feed_poll`'s denials of removal authority.
+FEED_UNREADABLE = "%s unreadable: no snapshot may remove anything it names"
+
+SUFFIX_MARKER = ".marker"
+
+# Fields the wire record takes from `.json`; state, seq, pid, starttime and the
+# beat come from `.state` and its mtime (see `feed_wire_record`), which is why
+# the poll loop can run without opening a single `.json`.
+RECORD_STATIC_FIELDS = ("v", "label", "tmux", "pane", "cwd", "updated")
+
+# read_state_entry()'s third answer: the server positively said the key is gone.
+# Conflating it with `None` ("no information this poll") is the bug that removes
+# every row on a host mid-truncate-window.
+STATE_GONE = ["gone"]
+
+_MAC_ID_SAFE = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def valid_mac_id(mac_id):
+    """A mac-id becomes a path component (`bridge/<mac-id>.beat`)."""
+    if not mac_id or len(mac_id) > 64:
+        return False
+    if mac_id in (".", ".."):
+        return False
+    for char in mac_id:
+        if char not in _MAC_ID_SAFE:
+            return False
+    return True
+
+
+def list_marker_hosts(sd):
+    """Hosts with a marker in `gen/`. The **only** readdir the feed performs.
+
+    A missing `gen/` is not an error: it means no agent has ever run, and the
+    feed must keep ticking so the bridge can tell "nothing to report" from
+    "the transport is dead".
+    """
+    try:
+        names = os.listdir(gen_dir(sd))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return []
+        raise
+    hosts = []
+    for name in names:
+        if not name.endswith(SUFFIX_MARKER) or TEMP_INFIX in name:
+            continue
+        host = name[:-len(SUFFIX_MARKER)]
+        if valid_mac_id(host):     # it becomes a path component below
+            hosts.append(host)
+    hosts.sort()
+    return hosts
+
+
+def read_marker_keys(sd, host):
+    """A host's live key list, read from the marker's CONTENT, or None.
+
+    None is "no information this poll" -- including on ENOENT, deliberately.
+    The marker's name is *not* random, so the constraint #5 argument that makes
+    a `.state` ENOENT trustworthy does not apply to it; and it does not need to,
+    because removal is proven per key below. Reading a vanished marker as "no
+    sessions here" would emit `remove` for every row on it (see `parse_marker`).
+    """
+    try:
+        data, _st = read_fresh(marker_path(sd, host))
+    except (OSError, ValueError):
+        return None
+    return parse_marker(data)
+
+
+def read_state_entry(sd, host, key):
+    """(answer, beat) for one key -- the three-valued read at the core of the feed.
+
+    * `(dict, mtime)` -- data. The beat is `.state`'s **fstat** mtime, never
+      `os.stat`'s, for `read_fresh`'s reason (constraint #6).
+    * `(STATE_GONE, None)` -- `open()` returned ENOENT on a **random key name**.
+      That is a positive server answer, not an absence of data: random keys mean
+      no cached negative dentry can manufacture a false ENOENT. It is the only
+      thing that emits `remove`, and without it a key listed in a marker whose
+      `.state` has been unlinked -- a normal transient of non-atomic
+      unlink-then-rebuild -- could never be cleared by anything (constraint #8).
+    * `(None, None)` -- a short read from a peer's in-place `O_TRUNC` window, a
+      malformed file, an unreadable one, a persistent ESTALE. **No information**:
+      the previous value is retained and nothing is removed.
+    """
+    try:
+        data, st = read_fresh(state_path(sd, key, host))
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return (STATE_GONE, None)
+        return (None, None)
+    except ValueError:
+        return (None, None)
+    parsed = parse_state(data)
+    if parsed is None:
+        return (None, None)
+    return (parsed, st.st_mtime)
+
+
+def read_record_quiet(sd, key, host):
+    """`read_record`, but a failure is never fatal to the poll loop."""
+    try:
+        return read_record(sd, key, host)
+    except (OSError, ValueError):
+        return None
+
+
+def feed_wire_record(record, parsed, beat, host, key, old=None):
+    """One session as it goes on the wire.
+
+    `.state` is authoritative for state/seq/pid/starttime even though `.json`
+    carries them too: the transition writes `.json` first, so a `.json` read can
+    legitimately be one seq *ahead* of the `.state` whose mtime supplied the
+    beat. Taking the pair from one file keeps every emitted record internally
+    consistent, and the next poll picks the newer seq up anyway.
+
+    The static fields fall back to the previously emitted record, so a transient
+    `.json` failure degrades to a stale label rather than to a row with none.
+    """
+    wire = {"v": RECORD_VERSION}
+    for source in (old, record):
+        if not source:
+            continue
+        for name in RECORD_STATIC_FIELDS:
+            if name in source:
+                wire[name] = source[name]
+    wire["key"] = key
+    wire["host"] = host
+    wire["state"] = parsed["state"]
+    wire["seq"] = parsed["seq"]
+    wire["pid"] = parsed["pid"]
+    wire["starttime"] = parsed["starttime"]
+    # `beat` is not a stored field anywhere: it is `.state`'s mtime, in the NFS
+    # server's clock domain, synthesized here (design amendment 3).
+    wire["beat"] = beat
+    if not wire.get("label"):
+        # An unreadable `.json` must not cost us the row. The key is a poor
+        # label, but it is honest and it is unique.
+        wire["label"] = key
+    return wire
+
+
+def _feed_sweep(sd, host, key, parsed, beat, now, warn=None):
+    """The feed's own-host liveness proving. True when the entry was reaped.
+
+    Why the feed sweeps at all: it is the only agb process that runs
+    *continuously* on box #2. Hooks fire on tool calls, so an agent that is
+    blocked waiting on the user, or twenty minutes into a build, produces none --
+    and design amendment 1 forbids inferring anything from that silence. Without
+    this pass, box-#2 liveness would be unprovable exactly when it matters.
+
+    A failure to reap is contained to the one entry: losing every other host's
+    updates because one unlink hit EACCES would be a larger lie than the row it
+    failed to remove. It is reported on both channels agb has -- the per-session
+    breadcrumb and the feed's deduplicated stderr -- and the entry is skipped,
+    the same fail-safe every other unresolvable case takes.
+    """
+    try:
+        return sweep_entry(sd, host, key, parsed["pid"], parsed["starttime"],
+                           beat=beat, now=now) == SWEEP_REAPED
+    except (AgbError, OSError, ValueError) as exc:
+        text = "cannot adjudicate %s/%s: %s" % (host, key, exc)
+        breadcrumb(sd, key, text, host)
+        if warn is not None:
+            warn(text)
+        return False
+
+
+class FeedState(object):
+    """What the feed remembers between polls.
+
+    Both dicts are *retained* across a failed read -- constraint #8 expressed as
+    a data structure. Nothing is ever dropped because a read came back short;
+    only a positive ENOENT removes an entry.
+
+    That retention covers every poll but the FIRST, which has nothing to
+    retain: what poll 1 cannot read is *absent* from the snapshot, and the
+    bridge reads a snapshot as the whole truth. Hence `complete` (did this poll
+    earn the claim) and `owed` (has the claim been delivered), the two halves of
+    one question, answered in `feed_loop` where the rule is written down.
+    """
+
+    __slots__ = ("markers", "entries", "started", "complete", "owed")
+
+    def __init__(self):
+        self.markers = {}    # host -> [key]   last good marker content
+        self.entries = {}    # key  -> wire record, carrying `beat`
+        self.started = False
+        self.complete = True
+        self.owed = True
+
+
+def feed_poll(sd, fs, now=None, warn=None):
+    """One discovery pass. Returns [(kind, payload)] in emission order.
+
+    Marker content is the discovery mechanism: the only `readdir` of a session
+    directory that can happen anywhere under this function is the **own-host**
+    rebuild that follows a reap, which constraint #5's scope note makes
+    authoritative. A foreign host's directory is never listed, and both a
+    runtime spy and a structural test assert it.
+
+    `now` is the server-stamped stamp from `bridge/<mac-id>.beat`, so the beat
+    throttle inside the sweep compares two mtimes from the same clock.
+    """
+    if now is None:
+        now = time.time()
+    mine = own_host()
+    hosts = list_marker_hosts(sd)
+    # No marker source at all = no evidence about the farm, and a snapshot may
+    # never turn an absence of data into "the farm has no sessions": a statedir
+    # that drifted from the Mac's, or one the ssh reached before the automount
+    # was up, would mark every live row [done]. (`ensure_statedir` CREATES
+    # `gen/`, so missing and empty look alike here; and a marker is never
+    # unlinked once written, so this is "nothing has ever run here".)
+    fs.complete = bool(hosts or fs.markers)
+    for host in hosts:
+        fs.markers.setdefault(host, [])
+    for host in sorted(fs.markers):
+        keys = read_marker_keys(sd, host)
+        if keys is None:
+            fs.complete = False       # unknown, never empty (see FeedState)
+            if warn is not None:
+                warn(FEED_UNREADABLE % ("gen/%s.marker" % (host,),))
+        else:
+            fs.markers[host] = keys
+
+    probe = []
+    listed = set()
+    for host in sorted(fs.markers):
+        for key in fs.markers[host]:
+            if key in listed:
+                continue
+            listed.add(key)
+            probe.append((host, key))
+    # A key that has *left* a marker is still probed by name. The marker is
+    # rebuilt from readdir after every unlink, so this is normally the same
+    # event as the unlink -- but if we stopped probing on the marker's word
+    # alone, an entry that vanished from a marker without its `.state` being
+    # removed would be retained forever, with nothing able to clear it.
+    for key in sorted(fs.entries):
+        if key not in listed:
+            probe.append((fs.entries[key].get("host") or mine, key))
+
+    events = []
+    for host, key in probe:
+        parsed, beat = read_state_entry(sd, host, key)
+        if parsed is STATE_GONE:
+            if key in fs.entries:
+                del fs.entries[key]
+                events.append(("remove", key))
+            continue
+        if parsed is None:
+            # No information this poll (`read_state_entry`'s third answer), and
+            # said out loud because it can be PERMANENT: a hook killed inside
+            # `write_in_place` leaves a zero-length `.state` only `prune --key`
+            # can clear, and until then `complete` never comes back.
+            fs.complete = False
+            if warn is not None:
+                warn(FEED_UNREADABLE % ("%s/%s.state" % (host, key),))
+            continue
+        if host == mine and _feed_sweep(sd, host, key, parsed, beat, now, warn):
+            # Proven dead and unlinked. The `remove` is emitted here rather than
+            # waiting for the next poll to trip over the ENOENT, so a dead agent
+            # is never carried into a snapshot.
+            if key in fs.entries:
+                del fs.entries[key]
+                events.append(("remove", key))
+            continue
+        old = fs.entries.get(key)
+        # The `.json` is opened only at snapshot time (no cached record after a
+        # restart) and when `seq` moves. A beat refresh alone never opens it.
+        record = None
+        if old is None or old.get("seq") != parsed["seq"]:
+            record = read_record_quiet(sd, key, host)
+        wire = feed_wire_record(record, parsed, beat, host, key, old)
+        if wire != old:
+            events.append(("upsert", wire))
+        fs.entries[key] = wire
+    return events
+
+
+def touch_bridge_beat(sd, mac_id, now=None):
+    """Write `bridge/<mac-id>.beat` in place and return the **server's** mtime.
+
+    One write, two jobs. It proves to the farm side that the Mac is consuming,
+    and its fstat hands the loop a `now` stamped by the same clock as every
+    `.state` mtime it is about to be subtracted from (constraint #12). Without
+    that, every age on the wire would be a cross-clock subtraction between the
+    feed's host and the writer's.
+    """
+    path = bridge_beat_path(sd, mac_id)
+    payload = iso_stamp(now) + "\n"
+    try:
+        st = write_in_place(path, payload)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+            raise
+        _mkdir_owned(os.path.dirname(path))
+        st = write_in_place(path, payload)
+    return st.st_mtime
+
+
+def feed_line(kind, now, **fields):
+    """One NDJSON line. Every line carries the feed's `now` (constraint #12)."""
+    payload = {"t": kind, "now": now}
+    payload.update(fields)
+    return _json().dumps(payload, sort_keys=True) + "\n"
+
+
+def feed_emit(out, kind, now, **fields):
+    """Write one line, flushed. False means the Mac is gone -- stop.
+
+    An orphaned feed that kept polling would keep touching
+    `bridge/<mac-id>.beat`, which would make `bridge:UP` a lie on the farm side.
+    """
+    try:
+        out.write(feed_line(kind, now, **fields))
+        out.flush()
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _select_readable(fd, timeout):
+    """True/False, or **None** when the fd cannot be selected on at all.
+
+    The single `import select` site in the file -- the feed's EOF check and the
+    bridge's line reader both go through it. Function-local, because the module
+    top is limited to builtins so that the hook's startup cost stays where it
+    was measured; one site so that stays checkable on the AST.
+
+    The three-valued answer matters: "not readable" is a normal quiet moment,
+    while "this fd is gone" is the end of the connection, and a boolean would
+    collapse them into one.
+    """
+    import select
+    try:
+        return bool(select.select([fd], [], [], timeout)[0])
+    except (OSError, ValueError):
+        return None
+
+
+def feed_stdin_eof(fd):
+    """True once the bridge's end of stdin is closed.
+
+    `select` with a **zero** timeout, then a read only on a readable fd: a
+    blocking `read()` would stall the poll loop for as long as the bridge stayed
+    quiet, and skipping the read altogether would make EOF undetectable, since a
+    closed pipe reports *readable* forever. `read()` returning `b""` is the
+    proof.
+    """
+    if fd is None:
+        return False
+    readable = _select_readable(fd, 0)
+    if readable is None:
+        return True
+    if not readable:
+        return False
+    try:
+        data = os.read(fd, 4096)
+    except OSError as exc:
+        if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR):
+            return False
+        return True
+    return data == b""
+
+
+def _warn_once(reported, what, text):
+    """Diagnostics go to **stderr**; stdout carries the protocol and nothing else.
+
+    Deduplicated, because a broken statedir would otherwise produce one line per
+    poll forever -- and a log nobody can read is a silent failure with extra
+    steps.
+    """
+    if text in reported:
+        return
+    reported.add(text)
+    try:
+        sys.stderr.write("agb %s: %s\n" % (what, text))
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _feed_warn(reported, text):
+    _warn_once(reported, "feed", text)
+
+
+def feed_loop(sd, mac_id, out=None, poll_interval=None, iterations=None,
+              stdin_fd=None, sleep=None, state=None):
+    """Poll, emit, repeat. Returns the process exit status.
+
+    `iterations` and `sleep` are injected so the tests are neither sleeps nor
+    process kills; `stdin_fd` is separate from `sys.stdin` for the same reason.
+    """
+    if out is None:
+        out = sys.stdout
+    if poll_interval is None:
+        poll_interval = FEED_POLL_INTERVAL
+    if sleep is None:
+        sleep = time.sleep
+    if state is None:
+        state = FeedState()
+    reported = set()
+
+    def warn(text):
+        _feed_warn(reported, text)
+
+    count = 0
+    while True:
+        count += 1
+        try:
+            now = touch_bridge_beat(sd, mac_id)
+        except (AgbError, OSError, ValueError) as exc:
+            _feed_warn(reported, "cannot write the bridge beat: %s" % (exc,))
+            # Degraded, and honest about it: the ages on the wire are now the
+            # feed host's clock rather than the server's.
+            now = time.time()
+        try:
+            events = feed_poll(sd, state, now=now, warn=warn)
+        except (AgbError, OSError, ValueError) as exc:
+            _feed_warn(reported, "poll failed: %s" % (exc,))
+            events = []
+            state.complete = False
+
+        # A snapshot is the feed's claim to REMOVAL AUTHORITY, honoured by the
+        # bridge only when `complete`. So the claim is RETRIED: poll 1 always
+        # emits one, and `owed` holds the obligation open until a poll can
+        # carry it. Without the retry an incomplete poll 1 forfeited removal for
+        # the whole CONNECTION -- one unparseable `.state` pinned it false for
+        # ever, stranding a row no command could reach until a reconnect, and a
+        # launchd ssh stays up for days. `sessions` is every entry held, not
+        # this poll's upserts: a snapshot is a replacement, not a delta.
+        # Re-armed, not merely cleared: a later incomplete poll owes one too.
+        state.owed = state.owed or not state.complete
+        if state.owed and (state.complete or not state.started):
+            state.started = True
+            state.owed = not state.complete
+            sessions = [state.entries[key] for key in sorted(state.entries)]
+            alive = feed_emit(out, "snapshot", now, sessions=sessions,
+                              complete=state.complete)
+        else:
+            alive = True
+            for kind, payload in events:
+                if kind == "upsert":
+                    alive = feed_emit(out, "upsert", now, session=payload)
+                else:
+                    alive = feed_emit(out, "remove", now, key=payload)
+                if not alive:
+                    break
+            if alive and not events:
+                # The tick is what lets the bridge's watchdog tell "quiet" from
+                # "dead" -- silence is never evidence of anything by itself.
+                alive = feed_emit(out, "tick", now)
+        if not alive:
+            return 0
+
+        if feed_stdin_eof(stdin_fd):
+            return 0
+        if iterations is not None and count >= iterations:
+            return 0
+        sleep(poll_interval)
+
+
+def parse_feed_args(argv):
+    """`feed [--poll-interval S] [--iterations N] <mac-id>`.
+
+    Hand-rolled, like every other argv parser here: `argparse` is a ~10 ms
+    import and agb is one file, so keeping it out entirely is cheaper than
+    keeping it off one code path (constraint #3). `--once` is deliberately
+    absent -- it is `--iterations 1`.
+
+    `--opt=` -- an `=` with nothing after it -- is a missing value here and in
+    all eight other parsers; it used to consume the *next* argv word instead,
+    so `feed --iterations= --poll-interval 5` read the count as an option name.
+    """
+    opts = {"poll_interval": FEED_POLL_INTERVAL, "iterations": None,
+            "mac_id": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in ("--poll-interval", "--iterations"):
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise AgbError("feed: %s needs a value" % (name,))
+            value = inline
+            try:
+                if name == "--poll-interval":
+                    opts["poll_interval"] = float(value)
+                else:
+                    opts["iterations"] = int(value)
+            except ValueError:
+                raise AgbError("feed: %s: not a number: %s" % (name, value))
+        elif arg.startswith("-"):
+            raise AgbError("feed: unknown option: %s" % (arg,))
+        elif opts["mac_id"] is None:
+            opts["mac_id"] = arg
+        else:
+            raise AgbError("feed: unexpected argument: %s" % (arg,))
+    if opts["poll_interval"] <= 0:
+        raise AgbError("feed: --poll-interval must be positive")
+    if opts["iterations"] is not None and opts["iterations"] < 1:
+        raise AgbError("feed: --iterations must be at least 1")
+    if not opts["mac_id"]:
+        raise AgbError("feed: a <mac-id> argument is required")
+    if not valid_mac_id(opts["mac_id"]):
+        raise AgbError("feed: not a usable mac-id: %r" % (opts["mac_id"],))
+    return opts
+
+
+def _stdin_fd():
+    try:
+        return sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def _silence_stdout():
+    """Make the interpreter's shutdown flush harmless after a broken pipe.
+
+    CPython flushes `sys.stdout` while shutting down. If the Mac has gone the
+    flush raises `BrokenPipeError` and the process exits **120**, so a clean
+    "the bridge disconnected" would reach the supervisor as a crash and every
+    reconnect would be logged as a feed failure. Redirecting the fd at
+    /dev/null is the standard remedy.
+    """
+    try:
+        fd = sys.stdout.fileno()
+    except (AttributeError, ValueError, OSError):
+        return
+    try:
+        sys.stdout.flush()
+        return
+    except (ValueError, OSError):
+        pass
+    try:
+        null = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        os.dup2(null, fd)
+    except OSError:
+        pass
+    os.close(null)
+
+
+def cmd_feed(argv):
+    """`agb feed <mac-id>` -- run over `ssh host cmd`, which sources no profile.
+
+    That is why `$AGB_STATEDIR` is read from the environment (the bridge passes
+    it with `env AGB_STATEDIR=…`) and why a broken statedir is a warning rather
+    than an exit: a feed that died on a missing directory would look, from the
+    Mac, exactly like a dead ssh.
+    """
+    opts = parse_feed_args(argv)
+    sd = statedir()
+    reported = set()
+    try:
+        ensure_statedir(sd)
+    except (AgbError, OSError) as exc:
+        _feed_warn(reported, "%s" % (exc,))
+    rc = feed_loop(sd, opts["mac_id"],
+                   poll_interval=opts["poll_interval"],
+                   iterations=opts["iterations"],
+                   stdin_fd=_stdin_fd())
+    _silence_stdout()
+    return rc
+
+
+# --------------------------------------------------------------------------
+# the rare-path commands live in sibling files, loaded lazily
+# --------------------------------------------------------------------------
+#
+# The whole file is re-parsed on every hook (no `.py`, so no `__pycache__`), and
+# a no-change hook went out of its ~8-11 ms target as soon as the Mac side
+# landed here. Two siblings carry the rare-path code and a hook loads neither:
+# `agb_mac` (the Mac commands) and `agb_ops` (the operator ones, `OPS_COMMANDS`
+# below). The only ways in are `_load_mac()` and `_load_ops()`; the measurements
+# and the three rules both siblings live under are written down exactly once,
+# in `agb_ops`' header.
+
+MAC_MODULE = "agb_mac"
+OPS_MODULE = "agb_ops"
+
+
+def sibling_path(name):
+    """Where a sibling module is: beside this file.
+
+    Resolved from `__file__` through `realpath`, so an `agb` symlinked into a
+    `bin/` directory still finds the siblings next to the *real* file.
+    """
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+
+
+def mac_path():
+    return sibling_path(MAC_MODULE)
+
+
+def ops_path():
+    return sibling_path(OPS_MODULE)
+
+
+def _load_sibling(name, path):
+    """Import a sibling module, by path, on first use.
+
+    Not `import agb_mac`: like `agb`, those files deliberately have no `.py`
+    extension, so the import machinery cannot find them -- which is also what
+    stops a stray `import agb_ops` from picking one up out of `sys.path[0]`
+    (constraint #17). Loading by path is explicit and unambiguous.
+
+    Registering *this* module as `sys.modules["agb"]` first is what makes the
+    sibling's own `import agb` bind the module already running -- one module
+    object, one set of module state -- instead of loading a second copy. When
+    `agb` runs as a script its module name is `__main__`, which is precisely why
+    this cannot be left to the normal import system. One loader for both.
+    """
+    mod = sys.modules.get(name)
+    if mod is not None:
+        return mod
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    sys.modules.setdefault("agb", sys.modules[__name__])
+    loader = SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_file_location(name, path, loader=loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    try:
+        loader.exec_module(mod)
+    except BaseException:
+        # A half-initialized module left in sys.modules would be returned by the
+        # next call as if it had loaded, so the second failure would be a
+        # baffling AttributeError instead of the real one.
+        del sys.modules[name]
+        raise
+    return mod
+
+
+def _load_mac():
+    return _load_sibling(MAC_MODULE, mac_path())
+
+
+def _load_ops():
+    return _load_sibling(OPS_MODULE, ops_path())
+
+
+def cmd_bridge(argv):
+    """`agb bridge` -- the Mac side. One lazy hop; `agb_mac` has every line."""
+    return _load_mac().run_bridge(argv)
+
+
+def cmd_close_done(argv):
+    """`agb close-done` -- Mac-side, and deliberately its own command rather
+    than a `bridge` subcommand; the reason is in `agb_mac`, beside the code."""
+    return _load_mac().run_close_done(argv)
+
+
+# Rare-path commands: parsed by every hook if they lived here, run by
+# essentially none. They share ONE door rather than a `cmd_*` stub each --
+# Task 6a left ~600 bytes under the parse budget, and one hop per command is the
+# wrong way to spend it. Which of them exist yet is `agb_ops`' business.
+OPS_COMMANDS = ("doctor", "prune", "pane", "status-line", "install-hooks",
+                "install-config")
+
+
+def cmd_ops(name, argv):
+    """The single door into `agb_ops`. One lazy hop and nothing else."""
+    return _load_ops().run_ops(name, argv)
+
+
+# --------------------------------------------------------------------------
+# command dispatch -- hand-rolled, no argparse (constraint #3)
+# --------------------------------------------------------------------------
+
+# USAGE is the whole declared surface. A `COMMANDS` tuple used to sit here for a
+# `not implemented yet` arm in `main` that nothing could reach -- every name is
+# routed above it -- and `run_ops` gives that answer anyway.
+USAGE = """\
+usage: <python> -S -E agb <command> [args]
+
+commands:
+  hook <state>        record an agent state transition (hot path)
+  feed <mac-id>       stream NDJSON session state to the Mac
+  bridge              consume the feed and drive agterm rows (Mac)
+  close-done          close rows marked [done] (Mac)
+  pane <key>          print identity, attach on demand
+  doctor              probe the statedir, the mount and the bridge beat
+  prune               remove unadjudicable entries, per-entry confirmation
+  status-line         tmux segment: bridge:UP/DOWN
+  install-hooks       merge agb hooks into ~/.claude/settings.json
+  install-config      write ~/.config/agbridge/config (mac_id, statedir)
+  version             print the agb version
+"""
+
+
+def cmd_version(argv):
+    sys.stdout.write("agb %s\n" % (VERSION,))
+    return 0
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.stderr.write(USAGE)
+        return 2
+    cmd = argv[1]
+    rest = argv[2:]
+    if cmd in ("-h", "--help", "help"):
+        sys.stderr.write(USAGE)
+        return 2
+    if cmd == "hook":
+        # First, and by name rather than by table lookup: this is the branch
+        # taken hundreds of times per session.
+        return cmd_hook(rest)
+    if cmd == "feed":
+        return cmd_feed(rest)
+    if cmd == "bridge":
+        return cmd_bridge(rest)
+    if cmd == "close-done":
+        return cmd_close_done(rest)
+    if cmd in OPS_COMMANDS:
+        return cmd_ops(cmd, rest)
+    if cmd == "version":
+        return cmd_version(rest)
+    sys.stderr.write("agb: unknown command: %s\n" % (cmd,))
+    sys.stderr.write(USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except AgbError as _exc:
+        sys.stderr.write("agb: %s\n" % (_exc,))
+        sys.exit(1)

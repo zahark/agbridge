@@ -1,0 +1,1956 @@
+# agbridge -- the Mac side: transport, supervision, watchdog.
+#
+# This is the FIRST of the two lazily loaded siblings (Task 4c; `agb_ops` came
+# with Task 6a). Why they exist, the per-task measurement table behind the
+# split, and the three rules both of them live under -- the hook may never open
+# this file, constraint #17 governs the name, and the shared primitives stay in
+# `agb` -- are written down ONCE, in `agb_ops`' header. They apply here
+# unchanged; the reasoning was previously copied out into all three files, with
+# the measurement table in two of them, which is three places for one set of
+# numbers to drift.
+#
+# What is specific to this file:
+#
+#   * `agb` reaches it through `_load_mac()`, called from `cmd_bridge` and
+#     `cmd_close_done` and nowhere else. `agb_ops` has one shared door for six
+#     commands; here there are two hops for two commands.
+#   * `import agb` below is not a filesystem import: `_load_mac()` registers the
+#     running `agb` module in `sys.modules` first, so this binds the *same*
+#     module object the hook is running from -- not a second copy with its own
+#     state.
+#   * Everything here runs on the **Mac**. The transport is inverted relative to
+#     `agr`: the Mac *pulls* over one long-lived ssh instead of the farm pushing
+#     into a reverse-forwarded socket. There is no tunnel whose lifetime can
+#     drift out of step with the session, and a dead connection is observable
+#     rather than silently no-op.
+
+import errno
+import fcntl
+import os
+import sys
+import time
+
+import agb
+
+
+BRIDGE_ALIVE_INTERVAL = 15
+BRIDGE_ALIVE_COUNT = 3
+
+# The farm-side interpreter. Constraint #14: an absolute path, because `ssh host
+# cmd` sources no profile and a bare `python3` that fails to resolve would kill
+# the feed with nothing on the Mac able to tell that apart from a quiet farm.
+DEFAULT_REMOTE_PYTHON = "/bin/python3"
+DEFAULT_AGB_REMOTE_PATH = "/opt/agbridge/agb"
+
+# TWO thresholds, because "no data for a while" and "this connection is dead"
+# are different claims and only one of them justifies killing an ssh.
+#
+# `BRIDGE_QUIET` -- no line, **including a tick**, for this many poll intervals.
+# The rows go `[?]`/idle, which is honest: nothing is being updated. ServerAlive
+# keeps the TCP honest but cannot see a half-open connection whose ssh is fine
+# and whose feed has wedged, which is `agr` failure mode #1 in a new costume.
+#
+# `BRIDGE_WATCHDOG` -- silence long enough to conclude the *feed* is gone, so
+# the ssh is torn down and respawned. It is anchored to the MOUNT's retry
+# budget rather than to the poll interval: `/shared` is a hard mount with
+# `timeo=600,retrans=10` and no `intr` (see `agb_ops`' mount probe), so one
+# `open()` inside `feed_poll` can block uninterruptibly for that long. At
+# 10 s -- five poll intervals, which is what this was -- an ordinary server
+# hiccup produced a false "the feed is gone" desktop notification, a torn-down
+# ssh and every row flipped to `[?]`, roughly every 12-16 s, for a condition
+# respawning ssh cannot influence at all because the stall is farm-side. The
+# `[?]` rendering was right; the teardown was not, so the two were separated.
+BRIDGE_QUIET_TICKS = 5
+BRIDGE_QUIET = agb.FEED_POLL_INTERVAL * BRIDGE_QUIET_TICKS
+BRIDGE_WATCHDOG = 600.0
+
+BRIDGE_BACKOFF_BASE = 1.0
+BRIDGE_BACKOFF_CAP = 60.0
+BRIDGE_BACKOFF_LIMIT = 20          # exponent cap; 2**n must stay a small int
+
+BRIDGE_READ_SIZE = 65536
+# A "line" that never terminates would otherwise grow the buffer without bound.
+BRIDGE_MAX_LINE = 4 * 1024 * 1024
+
+BRIDGE_CLOSE_GRACE = 5.0
+
+# why a connection ended
+BRIDGE_EOF = "eof"
+BRIDGE_SILENT = "watchdog"
+# ...and why the rows went `[?]` without the connection ending. A separate
+# word, because "the feed has stopped saying anything" and "the feed is gone"
+# are different reports and the operator acts on them differently.
+BRIDGE_QUIET_REASON = "quiet"
+BRIDGE_STOPPED = "stopped"
+BRIDGE_NO_CONNECTION = "spawn-failed"
+
+# what the transport hands the renderer (Task 4b turns these into agtermctl
+# calls; keeping them as data is what makes the transport testable with no Mac)
+BRIDGE_OP_UPSERT = "upsert"
+BRIDGE_OP_REMOVE = "remove"
+BRIDGE_OP_STALE = "stale"
+BRIDGE_OP_LIVE = "live"
+# The tick is an op rather than a swallowed event because the row title carries
+# the **beat age**, and an age that is only recomputed when a session changes
+# freezes exactly where it matters most: a `blocked` agent on machine #3 beats
+# nothing at all (there is no feed there), so its row would show the age it had
+# at its last transition, forever. That is the dashboard-that-lies failure in
+# miniature. The tick gives the renderer a heartbeat in the *feed's* clock.
+BRIDGE_OP_TICK = "tick"
+
+# Characters the remote login shell would re-interpret. ssh joins its command
+# words with spaces and the far side re-splits them, so these have to be refused
+# rather than sent. Globs and brackets are deliberately *not* here: an unmatched
+# glob stays literal in sh, and rejecting them would refuse ordinary paths.
+_SHELL_META = frozenset(" \t\n\r\"'\\$`;&|<>()#")
+
+
+def _shell_safe(text):
+    for char in text:
+        if char in _SHELL_META or ord(char) < 0x20:
+            return False
+    return True
+
+
+def bridge_ssh_argv(feed_host, sd, mac_id, agb_remote_path,
+                    remote_python=None):
+    """The exact `ssh …` argv. Pure, so its test is a string comparison.
+
+    `env AGB_STATEDIR=…` rather than a profile: `ssh host cmd` runs a
+    non-login shell and sources nothing, so the statedir has to travel with the
+    command. `-S -E` for the same reason it is in the hook command.
+
+    Every interpolated word is checked for shell metacharacters, because the
+    remote shell re-splits the command: a statedir with a space in it would
+    otherwise produce a connection that fails in a way nothing on the Mac can
+    see, which is the failure class this project exists to remove.
+
+    Only `agb` is named on the remote command line, never `agb_mac`: the farm
+    side runs `feed`, and the split is invisible from here.
+    """
+    if not feed_host or feed_host.startswith("-") or not _shell_safe(feed_host):
+        raise agb.AgbError("bridge: not a usable feed host: %r" % (feed_host,))
+    if not agb.valid_mac_id(mac_id):
+        raise agb.AgbError("bridge: not a usable mac-id: %r" % (mac_id,))
+    for label, value in (("statedir", sd), ("agb path", agb_remote_path),
+                         ("remote python", remote_python)):
+        if not value or not value.startswith("/"):
+            raise agb.AgbError(
+                "bridge: %s must be an absolute farm-side path: %r"
+                % (label, value))
+        if not _shell_safe(value):
+            raise agb.AgbError(
+                "bridge: %s contains shell metacharacters: %r" % (label, value))
+    return [
+        "ssh",
+        "-o", "ServerAliveInterval=%d" % (BRIDGE_ALIVE_INTERVAL,),
+        "-o", "ServerAliveCountMax=%d" % (BRIDGE_ALIVE_COUNT,),
+        feed_host,
+        "env", "AGB_STATEDIR=" + sd,
+        remote_python, "-S", "-E", agb_remote_path,
+        "feed", mac_id,
+    ]
+
+
+class LineSource(object):
+    """NDJSON lines off a raw fd. `wait(timeout)` -> (lines, eof).
+
+    Non-blocking by construction: the bridge must be able to notice *silence*,
+    and a blocking readline cannot -- it would sit in the read while the feed it
+    is waiting for is already dead. Partial lines are buffered across reads,
+    since a `write()` on the far side is not a message boundary here.
+    """
+
+    __slots__ = ("fd", "_buf", "_over")
+
+    def __init__(self, fd):
+        self.fd = fd
+        self._buf = b""
+        self._over = False
+
+    def wait(self, timeout):
+        if self.fd is None:
+            return ([], True)
+        readable = agb._select_readable(self.fd, max(0.0, timeout))
+        if readable is None:
+            return ([], True)
+        if not readable:
+            return ([], False)
+        try:
+            data = os.read(self.fd, BRIDGE_READ_SIZE)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR):
+                return ([], False)
+            return ([], True)
+        if not data:
+            # A trailing partial line is not a line: the feed flushes whole
+            # lines, so anything left in the buffer at EOF is truncated.
+            return ([], True)
+        self._buf += data
+        return (self._take_lines(), False)
+
+    def _take_lines(self):
+        lines = []
+        while True:
+            cut = self._buf.find(b"\n")
+            if cut < 0:
+                break
+            line = self._buf[:cut]
+            self._buf = self._buf[cut + 1:]
+            if self._over:
+                self._over = False       # the tail of a line already discarded
+                continue
+            if line.strip():
+                lines.append(line)
+        if len(self._buf) > BRIDGE_MAX_LINE:
+            # Drop the runaway line rather than the process. Discarding it is
+            # safe: an unparsable line is "no information", never a removal.
+            self._buf = b""
+            self._over = True
+        return lines
+
+
+def bridge_decode(raw, warn=None):
+    """One wire line -> event dict, or None.
+
+    A malformed line is dropped rather than fatal, and -- deliberately -- does
+    **not** refresh the watchdog: bytes arriving is not the same as a feed that
+    still speaks the protocol, and treating garbage as liveness is how a wedged
+    feed keeps a dashboard looking healthy.
+
+    `agb._json()` rather than a module-level `import json` here: one import site
+    in the whole tool is what keeps constraint #2 checkable on the AST instead of
+    by grepping two files that both discuss json in their comments.
+    """
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        event = agb._json().loads(raw)
+    except (UnicodeDecodeError, ValueError):
+        event = None
+    if not isinstance(event, dict) or not event.get("t"):
+        if warn is not None:
+            warn("ignoring an unparsable feed line")
+        return None
+    return event
+
+
+class BridgeModel(object):
+    """What the bridge believes about the farm, and nothing more.
+
+    Deliberately free of agterm: Task 4b renders the ops this produces. That
+    split is what lets the whole transport, the resync and the staleness rule be
+    tested on the farm box, where there is no Mac and no `agtermctl`.
+    """
+
+    __slots__ = ("sessions", "now", "stale")
+
+    def __init__(self):
+        self.sessions = {}      # key -> the last wire record seen
+        self.now = None         # the feed's server-stamped clock
+        self.stale = False
+
+    def apply(self, event):
+        """Fold one event in; returns the ops it implies."""
+        now = event.get("now")
+        if isinstance(now, (int, float)) and not isinstance(now, bool):
+            self.now = now
+        ops = []
+        if self.stale:
+            # Any line at all proves the feed is back, so the `[?]` treatment
+            # is lifted before the event is applied.
+            self.stale = False
+            ops.append((BRIDGE_OP_LIVE, None))
+        kind = event.get("t")
+        if kind == "snapshot":
+            # A **missing** `complete` key means complete, so a feed older than
+            # this field still resyncs exactly as it always did. Everything
+            # else is adjudicated by `_resync`, which asks for `True` itself
+            # rather than for truthiness.
+            ops.extend(self._resync(event.get("sessions"),
+                                    event.get("complete", True)))
+        elif kind == "upsert":
+            ops.extend(self._upsert(event.get("session")))
+        elif kind == "remove":
+            ops.extend(self._remove(event.get("key")))
+        elif kind == "tick":
+            ops.append((BRIDGE_OP_TICK, None))
+        return ops
+
+    def adopt(self, keys):
+        """Seed the model with keys a **previous** bridge run left bound.
+
+        Without this, a row whose agent finished while the bridge was down is
+        never reclaimed: the first snapshot's `_resync` can only remove sessions
+        the model already knows about, and a fresh process knows none -- so the
+        row stays bound and visible forever. That is `agr` failure mode #3
+        rebuilt out of the persisted map.
+
+        The placeholder is deliberately not a wire record: it exists only to be
+        *removed* (or replaced) by the first snapshot, and it can never be
+        emitted as an upsert because it is never equal to a real session.
+        """
+        for key in keys:
+            if key not in self.sessions:
+                self.sessions[key] = {"key": key}
+
+    def mark_stale(self, reason):
+        """Feed death -- the *only* inference-free staleness trigger.
+
+        The bridge owns the ssh, so it can prove this one; no age and no silence
+        anywhere else in the system is ever converted into a state (amendment
+        1). Idempotent, so a reconnect storm fires one notification, not ten.
+        """
+        if self.stale:
+            return []
+        self.stale = True
+        return [(BRIDGE_OP_STALE, reason)]
+
+    def _upsert(self, session):
+        if not isinstance(session, dict):
+            return []
+        key = session.get("key")
+        if not key or not isinstance(key, str):
+            return []
+        if self.sessions.get(key) == session:
+            return []
+        self.sessions[key] = session
+        return [(BRIDGE_OP_UPSERT, session)]
+
+    def _remove(self, key):
+        if key in self.sessions:
+            del self.sessions[key]
+            return [(BRIDGE_OP_REMOVE, key)]
+        return []
+
+    def _resync(self, sessions, complete=True):
+        """A snapshot is the whole truth about the farm, so it is applied as a
+        *replacement*, not a merge -- **when the feed says it is one**.
+
+        The replacement is the fix for `agr` failure mode #5. While the bridge
+        was disconnected, agents started and finished; a push transport loses
+        those edges permanently, and a merge-only reconnect would leave every
+        session that ended during the outage on screen forever.
+
+        `complete=False` withdraws only the removal half. The feed sets it when
+        the poll behind the snapshot could not read something -- a sulking hard
+        mount, a torn marker, an `.state` it could not open. Constraint #8's
+        retention covers that from poll 2 on, but a snapshot is poll **1**: it
+        has nothing to retain, so an unreadable key and a gone key arrive as the
+        identical absence. Removing on that absence is exactly what constraint
+        #8 forbids, one process further along -- and here it is *worse* than a
+        wrong row, because `_render_remove` marks the row `[done]` and only
+        `agb close-done` can undo that. So the removals wait for a snapshot that
+        can back them up. The upserts are unaffected: they are positive data.
+
+        ⚠️ "Wait for the next snapshot" is only sound because the feed **re-emits
+        one** on the first later poll that can read everything (`FeedState.owed`).
+        It used to send exactly one snapshot per connection, so this deferral
+        silently became a *cancellation* for the whole ssh -- days, under launchd
+        -- and the test on this side passed anyway, because it fed the model two
+        snapshots by hand. Deferring is not the same as forgetting, and neither
+        half of that contract can be checked from inside one process.
+
+        ⚠️ `complete is not True`, not `not complete`. Removal authority is
+        granted, never merely un-withheld: this value arrives over a wire, and
+        `"false"` -- the JSON string, which a re-encoding proxy or a hand-edited
+        replay produces -- is *truthy* in Python, so a truth test reads a
+        garbled value as permission to mark every absent row `[done]`. Anything
+        present that is not the boolean defers, exactly as `false` does.
+        """
+        if not isinstance(sessions, list):
+            sessions = []
+        ops = []
+        seen = set()
+        for session in sessions:
+            if isinstance(session, dict) and session.get("key"):
+                seen.add(session["key"])
+                ops.extend(self._upsert(session))
+        if complete is not True:
+            return ops
+        for key in sorted(self.sessions):
+            if key not in seen:
+                ops.extend(self._remove(key))
+        return ops
+
+
+def _bridge_emit(on_ops, ops):
+    if ops and on_ops is not None:
+        return on_ops(ops)
+    return None
+
+
+def bridge_run(source, model, on_ops=None, watchdog=None, clock=None,
+               warn=None, quiet=None):
+    """Consume one connection. Returns (reason, events-seen).
+
+    The event count is what the supervisor uses to tell a connection that worked
+    and then dropped from one that never worked at all -- the two deserve
+    different reconnect behaviour, and neither deserves a hot loop.
+
+    Two deadlines off one timer (see BRIDGE_QUIET/BRIDGE_WATCHDOG): at `quiet`
+    the rows are marked stale and the loop keeps reading; only at `watchdog`
+    does the connection end. Any line at all lifts both -- `model.apply` emits
+    the `live` op itself -- so a recovering feed repaints without a reconnect.
+    `quiet` is clamped to `watchdog` so a caller that asks for a short watchdog
+    (every test, and `--watchdog`) gets exactly the timeout it asked for.
+
+    `clock` is monotonic and injectable: this is a *local* timeout, unrelated to
+    the server-stamped ages on the wire, and the tests must be able to run it
+    without real sleeps.
+    """
+    if watchdog is None:
+        watchdog = BRIDGE_WATCHDOG
+    if quiet is None:
+        quiet = BRIDGE_QUIET
+    quiet = min(quiet, watchdog)
+    if clock is None:
+        clock = time.monotonic
+    events = 0
+    last = clock()
+    marked = False
+    while True:
+        idle = clock() - last
+        if idle >= watchdog:
+            return (BRIDGE_SILENT, events)
+        if not marked and idle >= quiet:
+            marked = True
+            _bridge_emit(on_ops, model.mark_stale(BRIDGE_QUIET_REASON))
+            idle = clock() - last
+        lines, eof = source.wait((watchdog if marked else quiet) - idle)
+        for raw in lines:
+            event = bridge_decode(raw, warn)
+            if event is None:
+                continue
+            events += 1
+            last = clock()
+            marked = False
+            if _bridge_emit(on_ops, model.apply(event)) is False:
+                return (BRIDGE_STOPPED, events)
+        if eof:
+            return (BRIDGE_EOF, events)
+
+
+def bridge_backoff(failures, base=None, cap=None):
+    """Capped exponential backoff. Pure, so its test is arithmetic."""
+    if failures < 1:
+        return 0.0
+    if base is None:
+        base = BRIDGE_BACKOFF_BASE
+    if cap is None:
+        cap = BRIDGE_BACKOFF_CAP
+    delay = base * (2 ** (min(failures, BRIDGE_BACKOFF_LIMIT) - 1))
+    return min(delay, cap)
+
+
+def bridge_supervise(connect, model, on_ops=None, watchdog=None,
+                     connections=None, sleep=None, clock=None, warn=None,
+                     backoff=None, quiet=None):
+    """Connect, consume, repeat. Returns the process exit status.
+
+    `connections` bounds the loop for the tests exactly as `--iterations` does
+    for the feed, and `sleep`/`backoff` are injected so no test ever waits.
+    """
+    if sleep is None:
+        sleep = time.sleep
+    if backoff is None:
+        backoff = bridge_backoff
+    count = 0
+    failures = 0
+    while True:
+        count += 1
+        conn = None
+        reason, events = (BRIDGE_NO_CONNECTION, 0)
+        try:
+            conn = connect()
+        except (agb.AgbError, OSError) as exc:
+            if warn is not None:
+                warn("cannot start the feed: %s" % (exc,))
+        if conn is not None:
+            try:
+                reason, events = bridge_run(conn.source, model, on_ops,
+                                            watchdog=watchdog, clock=clock,
+                                            warn=warn, quiet=quiet)
+            finally:
+                try:
+                    conn.close()
+                except (OSError, ValueError):
+                    pass
+        # The connection is over, whatever ended it: every managed row goes
+        # idle + `[?]`. Rendering it is Task 4b's job; proving it is this one's.
+        _bridge_emit(on_ops, model.mark_stale(reason))
+        if reason == BRIDGE_STOPPED:
+            return 0
+        if connections is not None and count >= connections:
+            return 0
+        # A connection that delivered events restarts the exponent rather than
+        # zeroing the delay: a feed that dies right after its snapshot would
+        # otherwise be respawned in a tight loop forever. A watchdog kill is
+        # excluded from "delivered events" on purpose -- it is the one ending
+        # respawning cannot help with (the stall is farm-side NFS), so it backs
+        # off like any other failure instead of retrying every second.
+        failures = 1 if (events and reason != BRIDGE_SILENT) else failures + 1
+        sleep(backoff(failures))
+
+
+class SshFeed(object):
+    """A running `ssh … agb feed`, as a line source plus an orderly shutdown."""
+
+    __slots__ = ("proc", "source")
+
+    def __init__(self, proc):
+        self.proc = proc
+        self.source = LineSource(proc.stdout.fileno())
+
+    def close(self):
+        """Close stdin **first**: that is the feed's own EOF proof, so it exits
+        by agreement rather than by signal. An orphaned feed would keep touching
+        `bridge/<mac-id>.beat`, which makes `bridge:UP` a lie on the farm side --
+        precisely the "dashboard that lies" failure, one layer down.
+        """
+        for handle in (self.proc.stdin, self.proc.stdout):
+            try:
+                handle.close()
+            except (OSError, ValueError):
+                pass
+        self.source.fd = None       # the fd belonged to proc.stdout
+        return _wait_or_kill(self.proc)
+
+
+def _wait_or_kill(proc, grace=None):
+    """Wait for an orderly exit, escalate if it does not come.
+
+    A separate function only so the one `import subprocess` on this path is at
+    module scope inside a *named* site the AST guard can pin -- agbridge has
+    three legitimate subprocess users across its two files and no more. Keeping
+    it function-local here costs nothing and keeps that guard a single rule
+    rather than one rule per file.
+    """
+    import subprocess
+    if grace is None:
+        grace = BRIDGE_CLOSE_GRACE
+    try:
+        proc.wait(grace)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+        try:
+            proc.wait(grace)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    return proc.returncode
+
+
+def bridge_spawn(argv, popen=None):
+    """Start the ssh. `popen` is injected by the tests that must not fork."""
+    import subprocess
+    if popen is None:
+        popen = subprocess.Popen
+    try:
+        proc = popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    except OSError as exc:
+        raise agb.AgbError("cannot run %s: %s" % (argv[0], exc))
+    return SshFeed(proc)
+
+
+BRIDGE_VALUE_ARGS = {
+    "--feed-host": "feed_host",
+    "--mac-id": "mac_id",
+    "--statedir": "statedir",
+    "--remote-path": "remote_path",
+    "--remote-python": "remote_python",
+    "--watchdog": "watchdog",
+    "--connections": "connections",
+    "--rows": "rows",
+}
+
+BRIDGE_FLAGS = {
+    "--from-stdin": "from_stdin",
+    # Transport only: consume the feed and log it, without touching the
+    # sidebar. It is what makes a transport problem diagnosable separately from
+    # a rendering one, and it is how the Task 4a tests keep running on a box
+    # that has no agterm.
+    "--no-agterm": "no_agterm",
+}
+
+
+def parse_bridge_args(argv):
+    """`bridge [--from-stdin] [--feed-host H] [--mac-id M] …`.
+
+    Hand-rolled like every other parser here (constraint #3). `--from-stdin` is
+    a test seam first and a debugging tool second: it makes the resync, the
+    watchdog and the staleness rule pure units with no ssh anywhere.
+    """
+    opts = {"from_stdin": False, "no_agterm": False, "feed_host": None,
+            "mac_id": None, "statedir": None, "remote_path": None,
+            "remote_python": None, "watchdog": None, "connections": None,
+            "rows": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in BRIDGE_FLAGS:
+            if sep:
+                raise agb.AgbError("bridge: %s takes no value" % (name,))
+            opts[BRIDGE_FLAGS[name]] = True
+        elif name in BRIDGE_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("bridge: %s needs a value" % (name,))
+            opts[BRIDGE_VALUE_ARGS[name]] = inline
+        elif arg.startswith("-"):
+            raise agb.AgbError("bridge: unknown option: %s" % (arg,))
+        else:
+            raise agb.AgbError("bridge: unexpected argument: %s" % (arg,))
+    if opts["watchdog"] is not None:
+        try:
+            opts["watchdog"] = float(opts["watchdog"])
+        except ValueError:
+            raise agb.AgbError("bridge: --watchdog: not a number: %s"
+                               % (opts["watchdog"],))
+        if opts["watchdog"] <= 0:
+            raise agb.AgbError("bridge: --watchdog must be positive")
+    if opts["connections"] is not None:
+        try:
+            opts["connections"] = int(opts["connections"])
+        except ValueError:
+            raise agb.AgbError("bridge: --connections: not a number: %s"
+                               % (opts["connections"],))
+        if opts["connections"] < 1:
+            raise agb.AgbError("bridge: --connections must be at least 1")
+    return opts
+
+
+def bridge_settings(opts, config=None):
+    """CLI over config over default, and a **loud** failure when something is
+    missing.
+
+    A bridge that starts, finds no `feed_host` and quietly never connects is
+    `agr` failure mode #1 rebuilt from scratch, so the two values nothing can
+    invent -- the ssh target and the mac-id -- are required.
+
+    The statedir here is a **farm-side** path, never expanded against the Mac's
+    `$HOME`: `~` would resolve locally and then be sent to a machine where it
+    means something else.
+    """
+    if config is None:
+        config = agb.read_config()
+
+    def pick(name, key, default=None):
+        return opts.get(name) or config.get(key) or default
+
+    settings = {
+        "feed_host": pick("feed_host", "feed_host"),
+        "mac_id": pick("mac_id", "mac_id"),
+        "statedir": (opts.get("statedir") or os.environ.get("AGB_STATEDIR")
+                     or config.get("statedir") or agb.default_statedir()),
+        "remote_path": pick("remote_path", "agb_remote_path",
+                            DEFAULT_AGB_REMOTE_PATH),
+        "remote_python": pick("remote_python", "remote_python",
+                              DEFAULT_REMOTE_PYTHON),
+    }
+    for name in ("feed_host", "mac_id"):
+        if not settings[name]:
+            raise agb.AgbError(
+                "bridge: no %s configured (set it in %s or pass --%s)"
+                % (name, agb.config_path(), name.replace("_", "-")))
+    return settings
+
+
+def bridge_report(ops, out=None):
+    """The log sink: one line per op.
+
+    Task 4b added the `agtermctl` renderer beside it rather than in place of it
+    -- under launchd this is the log that answers "did the bridge see
+    anything?", and it is what makes `--from-stdin` observable end to end.
+
+    Ticks are skipped: one line every poll interval would bury every line that
+    carries information, and the tick's audience is the renderer (a beat age
+    that has to keep moving) and the watchdog, neither of which reads this log.
+    """
+    if out is None:
+        out = sys.stdout
+    for op, payload in ops:
+        if op == BRIDGE_OP_TICK:
+            continue
+        if op == BRIDGE_OP_UPSERT:
+            text = "%s %s %s" % (op, payload.get("key"), payload.get("state"))
+        elif payload is None:
+            text = op
+        else:
+            text = "%s %s" % (op, payload)
+        out.write(text + "\n")
+    out.flush()
+
+
+class OpTee(object):
+    """Fan one op batch out to several sinks.
+
+    The log and the renderer both see every op. A sink that answers False stops
+    the connection, and one sink saying so must not silence the others -- the
+    `[done]` repaint of a row is worth exactly as much when it is the last thing
+    the bridge does before exiting.
+    """
+
+    __slots__ = ("sinks",)
+
+    def __init__(self, sinks):
+        self.sinks = list(sinks)
+
+    def __call__(self, ops):
+        stop = None
+        for sink in self.sinks:
+            if sink(ops) is False:
+                stop = False
+        return stop
+
+
+# --------------------------------------------------------------------------
+# the key -> row bijection, persisted on the Mac
+# --------------------------------------------------------------------------
+#
+# `agr` failure mode #3: its target mappings were never garbage-collected, so a
+# stale mapping eventually pointed a new agent at somebody else's row. The fix
+# here is structural rather than hygienic:
+#
+#   * the mapping is a **bijection** -- one key owns one row and a row is owned
+#     by one key, enforced on every bind rather than assumed;
+#   * keys are minted, never reused, so a row is never rebound. A row
+#     whose key is gone is marked `[done]` and reclaimed by `agb close-done`;
+#   * it is **persisted**, because the bridge is a launchd job that restarts and
+#     an in-memory map would mint a second row for every live agent each time.
+#
+# The file is Mac-local, tiny and rewritten whole, and it is written **temp +
+# rename** like every other file whose CONTENT is the data. It used to be
+# written in place, to keep "`agb_mac` has no unlink and no rename authority at
+# all" an unqualified rule -- but that rule is about the **shared statedir**,
+# where removal must be proven by the machine that owns the entry (constraint
+# #11), and this is a Mac-local file under `~/.config` whose only temp it
+# creates itself. Against that, a torn write loses the whole bijection: orphan
+# rows the bridge no longer knows about, keys whose row is gone, and an `agb
+# close-done` that silently closes nothing. So the structural guard is narrowed
+# instead of the discipline being wrong -- `atomic_write` is exempted for
+# `RowMap.save` BY NAME, the test asserts that is the only exemption, and the
+# companion guard forbidding every statedir helper is untouched. A torn map is
+# still discarded on read (the `#end` sentinel is the canary), which costs a
+# duplicate row and never a wrong close.
+
+# Version 2 added a fourth field, the last title painted for the row. Version 1
+# files are still read (their rows simply carry no remembered title), which is
+# the whole compatibility story: the map is Mac-local and the next save rewrites
+# it in the new form.
+ROWS_HEADER = "agbridge-rows 2"
+ROWS_HEADERS = ("agbridge-rows 1", ROWS_HEADER)
+ROWS_END = "#end"
+
+# The map's sibling lock file (see `_rows_lock`). Created once beside the map
+# and never removed, so it is a name the map's own directory always carries.
+SUFFIX_LOCK = ".lock"
+
+# A row title is free text from the farm, so it is bounded and stripped of the
+# two characters the line format is made of before it is ever written. A title
+# carrying a tab would otherwise split into five fields and make the whole map
+# unparseable -- which costs every row, not one.
+ROW_TITLE_MAX = 512
+ROW_BOUND = "bound"
+ROW_DONE = "done"
+ROW_KINDS = (ROW_BOUND, ROW_DONE)
+
+# agterm's ids are opaque to us -- `agr`'s live target files hold uppercase
+# UUIDs, but nothing here parses or generates one. This is only a sanity bound
+# so that a stray line of `agtermctl` chatter cannot become a row id.
+ROW_ID_MAX = 128
+
+
+def rows_path():
+    """`~/.config/agbridge/rows` -- beside the config, on the **Mac**.
+
+    Never under the shared statedir: constraint #10 says the Mac cannot read
+    that path at all, and this map is meaningless on the farm side anyway.
+    """
+    return os.path.join(os.path.dirname(agb.config_path()), "rows")
+
+
+def valid_row_id(row):
+    if not row or len(row) > ROW_ID_MAX:
+        return False
+    for char in row:
+        if char in "\t\r\n" or ord(char) < 0x20:
+            return False
+    return True
+
+
+def clean_row_title(text):
+    """A title as it may appear in the map: one line, bounded, tabs gone."""
+    text = str(text or "").replace("\t", " ")
+    text = "".join(ch for ch in text if ord(ch) >= 0x20)
+    return text[:ROW_TITLE_MAX]
+
+
+def format_rows(entries):
+    """`kind<TAB>key<TAB>row<TAB>title` plus the marker's `#end <count>`.
+
+    Deliberately not json: `agb._json()` is the tool's single import site and
+    every caller of it is on a path that has to speak NDJSON. A fixed-field line
+    needs no parser, and the sentinel makes a truncated file *detectable*, which
+    is what lets the reader discard it instead of half-believing it.
+
+    The title is the fourth field and the reason the format has a version. It is
+    what a row **is** -- `label · host · cwd · pane` -- and `self.seen` cannot
+    supply it after a restart, so without it the first snapshot after every
+    launchd start re-titles finished rows to their raw hex key.
+    """
+    out = [ROWS_HEADER + "\n"]
+    for entry in entries:
+        kind, key, row = entry[:3]
+        title = clean_row_title(entry[3] if len(entry) > 3 else "")
+        out.append("%s\t%s\t%s\t%s\n" % (kind, key, row, title))
+    out.append("%s %d\n" % (ROWS_END, len(entries)))
+    return "".join(out)
+
+
+def parse_rows(data):
+    """[(kind, key, row, title)] or None for "this file tells us nothing".
+
+    None is never "the map is empty": that reading would unbind every row at
+    once and mint a duplicate for every live agent on the next upsert.
+
+    Three fields or four: a version-1 line simply has no remembered title.
+    """
+    try:
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = data.splitlines()
+    if len(lines) < 2 or lines[0].strip() not in ROWS_HEADERS:
+        return None
+    tail = lines[-1].split()
+    if len(tail) != 2 or tail[0] != ROWS_END:
+        return None
+    try:
+        count = int(tail[1])
+    except ValueError:
+        return None
+    body = lines[1:-1]
+    if len(body) != count:
+        return None
+    entries = []
+    seen_keys = set()
+    seen_rows = set()
+    for line in body:
+        parts = line.split("\t")
+        if len(parts) == 3:
+            parts.append("")
+        if len(parts) != 4:
+            return None
+        kind, key, row, title = parts
+        if kind not in ROW_KINDS or not agb.valid_key(key):
+            return None
+        if not valid_row_id(row):
+            return None
+        # The bijection is validated on the way in as well as on the way out: a
+        # file that violates it was not written by this tool, and adopting it
+        # would put two keys on one row.
+        if key in seen_keys or row in seen_rows:
+            return None
+        seen_keys.add(key)
+        seen_rows.add(row)
+        entries.append((kind, key, row, clean_row_title(title)))
+    return entries
+
+
+def read_rows_file(path, warn=None):
+    """[] for "there is no map", None for "there is one and it is unreadable"."""
+    if not path:
+        return []
+    try:
+        data, _st = agb.read_fresh(path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return []
+        if warn is not None:
+            warn("cannot read the row map %s: %s" % (path, exc))
+        return None
+    entries = parse_rows(data)
+    if entries is None and warn is not None:
+        warn("the row map %s is unreadable; starting from an empty map, so "
+             "agterm rows from before this point will not be reclaimed by "
+             "`agb close-done`" % (path,))
+    return entries
+
+
+def _rows_lock(path):
+    """Hold the map's read-modify-write against the other writer. fd, or None.
+
+    `RowMap.save` reads (`_merge_disk`) and then writes, and `agb bridge` and
+    `agb close-done` are two separate processes both doing it. The merge alone
+    is not enough: the interleave *bridge merges -> close-done renames ->
+    bridge renames* is a plain LOST UPDATE, and it does **not** self-heal.
+    `_merge_disk` drops an entry only when disk no longer has it, and the
+    bridge has just put it back, so from the next save on it is adopted for
+    ever -- a `[done]` entry naming a row `agtermctl` already closed, which
+    `close-done` can then only keep failing to close and no command can clear.
+
+    `flock` rather than an `O_EXCL` lock file, because the kernel drops it when
+    the holder dies: a bridge killed mid-save must not wedge every later
+    `close-done` behind a lock nobody holds. The lock file is created once and
+    never removed -- unlinking it is exactly what re-opens the race, and the
+    Mac side has no unlink authority anyway.
+
+    None means "no lock to be had" -- the parent directory does not exist yet
+    (the first save creates it), or the filesystem refuses locks. The save then
+    proceeds unlocked, as it did before: a map that is not written at all is
+    worse than one written under the old window.
+    """
+    try:
+        fd = os.open(path + SUFFIX_LOCK, os.O_CREAT | os.O_WRONLY, 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except (IOError, OSError):
+        _rows_unlock(fd)
+        return None
+    return fd
+
+
+def _rows_unlock(fd):
+    """Closing the fd releases the flock; there is nothing else to undo."""
+    if fd is None:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+class RowMap(object):
+    """key -> (row id, bound?, last title), bijection enforced on every bind."""
+
+    __slots__ = ("path", "entries", "loaded", "dropped", "touched", "dirty")
+
+    def __init__(self, path=None, entries=()):
+        self.path = path
+        self.entries = {}            # key -> [row id, bound?, last title]
+        self.loaded = set()          # what was on disk when we read it
+        self.dropped = set()         # what *we* removed, so a merge cannot undo it
+        self.touched = set()         # what *we* changed, so a merge cannot undo it
+        self.dirty = False
+        for entry in entries:
+            kind, key, row = entry[:3]
+            title = entry[3] if len(entry) > 3 else ""
+            self.entries[key] = [row, kind == ROW_BOUND, title]
+            self.loaded.add(key)
+
+    def rows_in_use(self):
+        return set(entry[0] for entry in self.entries.values())
+
+    def known(self, key):
+        return key in self.entries
+
+    def row_for(self, key):
+        entry = self.entries.get(key)
+        if entry is None or not entry[1]:
+            return None
+        return entry[0]
+
+    def bound_keys(self):
+        return sorted(key for key, entry in self.entries.items() if entry[1])
+
+    def done_entries(self):
+        return sorted((key, entry[0])
+                      for key, entry in self.entries.items() if not entry[1])
+
+    def title_for(self, key):
+        entry = self.entries.get(key)
+        return entry[2] if entry else ""
+
+    def set_title(self, key, title):
+        """Remember what this row was last called. False when nothing changed.
+
+        Persisted rather than kept in the renderer, because the renderer's
+        memory dies with the process and the map does not: `[done]` after a
+        restart has to be prefixed onto a real identity, not onto a hex key.
+        """
+        entry = self.entries.get(key)
+        title = clean_row_title(title)
+        if entry is None or entry[2] == title:
+            return False
+        entry[2] = title
+        self.touched.add(key)
+        self.dirty = True
+        return True
+
+    def bind(self, key, row, title=""):
+        """The bijection, as a refusal rather than as a comment.
+
+        A key that is already known -- **including one already marked `[done]`**
+        -- is never bound *to a new row*: keys are minted and never reused, so a
+        second bind request for one means something upstream is wrong, and
+        quietly moving the row would leave the old one orphaned. Returning a
+        `[done]` entry to its own row is `rebind`, which is a different act.
+        """
+        if not agb.valid_key(key):
+            raise agb.AgbError("rows: not a usable session key: %r" % (key,))
+        if not valid_row_id(row):
+            raise agb.AgbError("rows: not a usable agterm row id: %r" % (row,))
+        if key in self.entries:
+            raise agb.AgbError(
+                "rows: %s is already bound to row %s"
+                % (key, self.entries[key][0]))
+        if row in self.rows_in_use():
+            raise agb.AgbError(
+                "rows: row %s is already bound to another key" % (row,))
+        self.entries[key] = [row, True, clean_row_title(title)]
+        self.touched.add(key)
+        self.dirty = True
+        return row
+
+    def unbind(self, key):
+        """Mark a row `[done]`: no longer any agent's, not yet closed."""
+        entry = self.entries.get(key)
+        if entry is None or not entry[1]:
+            return None
+        entry[1] = False
+        self.touched.add(key)
+        self.dirty = True
+        return entry[0]
+
+    def rebind(self, key):
+        """Undo an `unbind`: the row is this key's again. Its id never moves.
+
+        The exact counterpart to `unbind`, and deliberately not part of `bind`.
+        `[done]` is not proof that an agent finished -- it is what a `remove`
+        renders, and a `remove` can come from a snapshot that simply could not
+        read the key (see `BridgeModel._resync`) or from `agb prune`, which the
+        tool documents as expected to hit live agents. When the feed then
+        *positively* re-asserts the key, that assertion outranks the earlier
+        absence: constraint #8's rule -- removal needs proof, absence is not
+        proof -- applied on the Mac side. Refusing here instead left a live
+        `active` agent rendering idle + `[done]` for ever.
+
+        Returns None for a key that is unknown or already bound, so a caller
+        cannot use it to reach around `bind`'s bijection.
+        """
+        entry = self.entries.get(key)
+        if entry is None or entry[1]:
+            return None
+        entry[1] = True
+        self.touched.add(key)
+        self.dirty = True
+        return entry[0]
+
+    def forget(self, key):
+        if key not in self.entries:
+            return False
+        del self.entries[key]
+        self.dropped.add(key)
+        self.dirty = True
+        return True
+
+    def serialize(self):
+        entries = []
+        for key in sorted(self.entries):
+            row, bound, title = self.entries[key]
+            entries.append((ROW_BOUND if bound else ROW_DONE, key, row, title))
+        return format_rows(entries)
+
+    def save(self, force=False):
+        """Rewrite the map, merging whatever else changed on disk first.
+
+        `agb close-done` is a **separate short-lived process** by design (making
+        it a `bridge` subcommand would start a second long-lived launchd-owned
+        bridge), so two processes write this file. Without the merge a running
+        bridge would rewrite its own in-memory copy over the top and resurrect
+        every entry `close-done` had just closed -- and then keep trying to
+        close an already-closed row forever. The mirror image is why the merge
+        prefers the DISK copy for a key this process never edited: see
+        `_merge_disk`'s third rule and `touched`.
+
+        The merge and the write are ONE critical section under `_rows_lock`,
+        because a merge that is not held to the write is only a narrower
+        window, not a closed one: see `_rows_lock` for the exact interleave and
+        for why it does not heal itself afterwards.
+
+        **temp + rename**, by the project's own rule: this file's CONTENT is the
+        data (the whole key <-> row bijection), and nothing anywhere reads its
+        mtime, so content atomicity dominates. A torn in-place write loses the
+        bijection -- orphan rows the bridge no longer knows about, keys whose
+        row is gone -- and can leave `agb close-done` a silent no-op, which is
+        the failure class this tool exists to remove. It used to be written in
+        place to keep "the Mac never renames" unqualified; that rule is about
+        the **shared statedir**, where the Mac has no removal authority
+        (constraint #11), and this is a Mac-local file under `~/.config` whose
+        only temp it creates itself. The guards say so in those words now.
+        """
+        if not self.path or not (self.dirty or force):
+            return False
+        lock = _rows_lock(self.path)
+        try:
+            self._merge_disk()
+            payload = self.serialize()
+            try:
+                agb.atomic_write(self.path, payload)
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                    raise
+                agb._mkdir_owned(os.path.dirname(self.path))
+                agb.atomic_write(self.path, payload)
+        finally:
+            _rows_unlock(lock)
+        self.dirty = False
+        self.loaded = set(self.entries)
+        self.touched = set()
+        return True
+
+    def _merge_disk(self):
+        """Fold in the other process's edits. Three rules:
+
+        * an entry on disk that we never knew about was bound by someone else --
+          adopt it, unless *we* dropped it (`close-done`) or its row is already
+          spoken for here;
+        * an entry we **read at load time** and that is no longer on disk was
+          removed by someone else -- drop it, rather than writing it back;
+        * an entry we hold **but never changed** is not our opinion, it is a
+          stale copy of theirs -- take the disk's, unless it would move the key
+          onto a row another of our keys holds.
+
+        `touched` is `dropped`'s sibling and exists for the same reason: the
+        merge has to tell OUR edit from a value we merely read. Without it the
+        third rule cannot exist, and holding a copy is enough to win --
+        `close-done` reads the map, then spends one `agtermctl session close`
+        subprocess (seconds) per row, and every `[done]` the bridge records in
+        that window is written back as `bound`. That one does heal on the
+        bridge's next map write, but "next write" on an idle farm is exactly
+        never, and an idle farm is when `close-done` gets run.
+
+        Ours still wins for a key we did change: a `bind`/`unbind`/`rebind`/
+        `set_title` this process has not managed to save yet is newer than
+        anything on disk, which is what the first two rules already assumed.
+        `save` clears `touched` once the write lands, because from then on the
+        disk copy IS ours and a later disagreement is genuinely theirs.
+
+        An unreadable disk copy merges nothing: it is "no information", exactly
+        as everywhere else in this tool.
+        """
+        entries = read_rows_file(self.path)
+        if entries is None:
+            return
+        disk = dict((key, (row, kind == ROW_BOUND, title))
+                    for kind, key, row, title in entries)
+        in_use = self.rows_in_use()
+        for key in sorted(disk):
+            row, bound, title = disk[key]
+            if key in self.dropped:
+                continue
+            mine = self.entries.get(key)
+            if mine is None:
+                if row in in_use:
+                    continue
+            elif key in self.touched or (row != mine[0] and row in in_use):
+                continue
+            else:
+                in_use.discard(mine[0])   # the row we are about to give up
+            self.entries[key] = [row, bound, title]
+            in_use.add(row)
+        for key in list(self.entries):
+            if key in self.loaded and key not in disk:
+                del self.entries[key]
+
+
+def load_rows(path, warn=None):
+    entries = read_rows_file(path, warn)
+    rows = RowMap(path, entries or ())
+    if entries is None:
+        # Nothing on disk is trusted, so nothing on disk may be treated as
+        # "removed by someone else" either (see _merge_disk).
+        rows.loaded = set()
+    return rows
+
+
+# --------------------------------------------------------------------------
+# rendering rows: titles, the `agb pane` row command, agtermctl
+# --------------------------------------------------------------------------
+#
+# The contract this codes against is `docs/agtermctl.md`, recorded by Task 0.
+# Two of its decisions are load-bearing here:
+#
+#   * `--blink` is adopted for `active` **on transitions only** -- never on a
+#     snapshot repaint. It is not established whether agterm treats `blink` as a
+#     sticky attribute or a one-shot animation; gating on transitions is correct
+#     under both readings, so the ambiguity costs nothing.
+#   * `--auto-reset` is **deliberately dropped**. It hands agterm the authority
+#     to repaint a row on its own timer with no notification back, which is
+#     precisely the bridge-model-vs-display divergence `[done]` exists to
+#     prevent.
+
+AGTERMCTL = "agtermctl"
+
+# A wedged `agtermctl` must not become a wedged bridge.
+AGTERMCTL_TIMEOUT = 10.0
+
+TITLE_SEP = " · "
+TITLE_STALE = "[?] "
+TITLE_DONE = "[done] "
+
+# Printed once when `agtermctl` refuses a `--target` this bridge still believes
+# in. There is no command that clears a stale *bound* entry -- `close-done`
+# only reaches `[done]` ones, and `RowMap.rebind` only ever returns an entry to
+# the row it already had -- so the recovery is a file, and a recovery nobody
+# can find is not one.
+ROW_STALE_HINT = (
+    "row %s is in the map but agterm will not accept it. If agterm has lost "
+    "its rows (a reinstall, a state reset), no agb command clears a bound "
+    "entry: stop the bridge, delete %s, and let the next snapshot re-create "
+    "the rows.")
+
+# The title carries the beat age only once the beat is **late**. A beat is
+# refreshed every `agb.BEAT_INTERVAL` by whoever can prove the agent is alive,
+# so anything under two intervals is "beating normally" and printing it would
+# repaint every row on every tick to say nothing. Above it, the age is the one
+# piece of information the vocabulary cannot express -- design amendment 1
+# forbids converting it into a state, so it goes in the title.
+BEAT_LATE = agb.BEAT_INTERVAL * 2
+
+# Buckets, so a late row is repainted at most once per bucket rather than once
+# per second.
+BEAT_BUCKET = 15
+
+# The floor between two desktop notifications, measured on the Mac's own
+# monotonic clock. `BridgeModel.mark_stale` is idempotent, so one *outage*
+# already fires one notification -- but the model's flag is per-connection and
+# is cleared by the first line of the next one, so a farm-side stall that ends
+# the connection, gets respawned and stalls again fires one per reconnect
+# cycle. This is what makes the limit hold ACROSS cycles. The stderr line is
+# deliberately not rate-limited: it is the launchd log, and it is cheap.
+NOTIFY_INTERVAL = 300.0
+
+# The prefix that marks an outage line on stderr. It is matched, not just
+# printed: `_bridge_warn` exempts these from `_warn_once`' dedup.
+NOTICE = "NOTICE: "
+
+
+def beat_age(session, now):
+    """Age of a session's beat in the **feed's** clock domain, or None.
+
+    `now` comes off the wire (the feed `fstat`s the bridge beat it just wrote,
+    constraint #12) and `beat` is `.state`'s server-stamped mtime, so this
+    subtraction stays inside one clock. The Mac's own clock is never involved --
+    it would be a third domain, skewed against both.
+    """
+    if not isinstance(session, dict):
+        return None
+    beat = session.get("beat")
+    for value in (now, beat):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return None
+    age = now - beat
+    if age < 0:
+        return 0.0
+    return age
+
+
+def beat_age_text(age):
+    if age is None or age < BEAT_LATE:
+        return ""
+    if age < 60:
+        return "%ds" % (int(age) // BEAT_BUCKET * BEAT_BUCKET,)
+    if age < 3600:
+        return "%dm" % (int(age) // 60,)
+    if age < 86400:
+        return "%dh" % (int(age) // 3600,)
+    return "%dd" % (int(age) // 86400,)
+
+
+def row_title(session, now=None, prefix=""):
+    """`<label> · <host> · <cwd> · <pane> [· <beat age>]`, with a prefix.
+
+    `pane` is in there because two agents in two panes of one tmux session share
+    label, host, cwd **and** tmux: without it their rows are identical on
+    screen. `[?]` and `[done]` are title prefixes rather than statuses because
+    the vocabulary has no `unknown` and `idle` renders as *no glyph*, so a
+    removed row would otherwise be pixel-identical to a live idle agent.
+    """
+    if not isinstance(session, dict):
+        session = {}
+    parts = [str(session.get("label") or session.get("key") or "?")]
+    for name in ("host", "cwd", "pane"):
+        value = session.get(name)
+        if value:
+            parts.append(str(value))
+    age = beat_age_text(beat_age(session, now))
+    if age:
+        parts.append(age)
+    return prefix + TITLE_SEP.join(parts)
+
+
+def local_agb_path():
+    """The Mac's own `agb`, resolved from this file's location.
+
+    The two files are one unit and `install.sh` copies both into one directory,
+    so `agb` is beside `agb_mac` -- and `agb.mac_path()` is the single place
+    that knows how to resolve "beside", symlinks included.
+    """
+    return os.path.join(os.path.dirname(agb.mac_path()), "agb")
+
+
+def short_host(target):
+    """`user@box2.example.com:22` -> `box2`. An ssh target is not a hostname."""
+    if not target:
+        return ""
+    name = target.split("@")[-1].split(":")[0]
+    return name.split(".")[0]
+
+
+def pane_argv(session, agb_path=None, python=None, jump=None):
+    """The row's command, as argv. Pure, so its test is a list comparison.
+
+    This line is the only thing connecting Task 7 to the system: clicking the
+    row runs it, and it is what turns a status row into something you can attach
+    to. The interpreter is spelled out because `agb` has **no shebang and is not
+    executable** (constraint #1) -- `./agb` could not pass `-S -E` anyway.
+    """
+    if python is None:
+        python = sys.executable
+    if agb_path is None:
+        agb_path = local_agb_path()
+    argv = [python, "-S", "-E", agb_path, "pane", session.get("key") or "",
+            "--host", str(session.get("host") or "")]
+    if session.get("tmux"):
+        argv.extend(["--tmux", str(session["tmux"])])
+    if session.get("pane"):
+        argv.extend(["--pane", str(session["pane"])])
+    if jump:
+        argv.extend(["--jump", str(jump)])
+    return argv
+
+
+def pane_command(session, agb_path=None, python=None, jump=None):
+    """`--command` takes one string, and agterm hands it to a shell."""
+    import shlex
+    return " ".join(shlex.quote(word)
+                    for word in pane_argv(session, agb_path, python, jump))
+
+
+def jump_for(session, settings):
+    """The `--jump` hint, or None.
+
+    A jump host is how machine #3 is reached at all (it is routable only from
+    box #2), but attaching to box #2 *through* box #2 would be an extra hop for
+    nothing -- so the hint is withheld for sessions on the host the feed itself
+    runs on. `agb pane` owns the final decision and may ignore it.
+    """
+    if not settings:
+        return None
+    jump = settings.get("jump_host")
+    if not jump:
+        return None
+    host = str(session.get("host") or "")
+    if host and host in (short_host(settings.get("feed_host")),
+                         short_host(jump)):
+        return None
+    return jump
+
+
+def _run_command(argv, timeout=None):
+    """Run one local command; returns (rc, stdout, stderr). rc None = no run.
+
+    The single subprocess site on the Mac's rendering path, and the reason
+    `agtermctl` failing can never wedge the bridge: every failure mode --
+    missing binary, non-zero exit, a process that never returns -- comes back as
+    data rather than as an exception or a hang.
+    """
+    import subprocess
+    if timeout is None:
+        timeout = AGTERMCTL_TIMEOUT
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        return (None, "", "%s" % (exc,))
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        return (None, _text(out), "timed out after %gs" % (timeout,))
+    return (proc.returncode, _text(out), _text(err))
+
+
+def _text(data):
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    return data or ""
+
+
+class RowRenderer(object):
+    """Ops in, `agtermctl` out. The only part of the bridge that needs a Mac.
+
+    Everything it decides is a function of the transport's ops plus its own
+    memory of what it last painted, which is what keeps it testable here: the
+    tests drive it with a recording `run` and with the `tests/stubs/agtermctl`
+    stub, neither of which needs agterm.
+    """
+
+    __slots__ = ("model", "rows", "settings", "run", "warn",
+                 "seen", "applied", "titles", "stale", "clock", "notified")
+
+    def __init__(self, model, rows, run=None, warn=None, settings=None,
+                 clock=None):
+        self.model = model
+        self.rows = rows
+        self.settings = settings or {}
+        self.run = run if run is not None else _run_command
+        self.warn = warn
+        self.seen = {}         # key -> last wire record (survives `remove`)
+        self.applied = {}      # key -> last status we actually emitted
+        self.titles = {}       # key -> last title we actually emitted
+        self.stale = False
+        # Monotonic and injectable, like the watchdog's: this measures the gap
+        # between two notifications on the Mac, never an age on the wire.
+        self.clock = clock if clock is not None else time.monotonic
+        self.notified = None
+
+    # -- the sink ---------------------------------------------------------
+
+    def __call__(self, ops):
+        """One op batch. `OpTee` calls every sink as `sink(ops)`, so this IS the
+        production entry point -- there is no second, named spelling of it."""
+        for op, payload in ops:
+            try:
+                self._render_op(op, payload)
+            except (agb.AgbError, OSError, ValueError) as exc:
+                self._warn("%s" % (exc,))
+        try:
+            self.rows.save()
+        except (agb.AgbError, OSError) as exc:
+            # A map that cannot be written costs reclamation after the next
+            # restart; it must not cost the transport. `dirty` stays set, so a
+            # transient failure heals on the next batch, and the warning is
+            # deduplicated so a permanent one does not become a log flood.
+            self._warn("cannot persist the row map: %s" % (exc,))
+        self._forget_unmapped()
+        return None
+
+    def _forget_unmapped(self):
+        """Drop per-key memory for keys the row map no longer holds.
+
+        The bridge is launchd-resident and restarted only by a crash or a
+        reboot, so three dicts that only ever grow are three dicts that grow
+        for months. `save()` has just merged the disk copy, so an entry `agb
+        close-done` reclaimed in another process is gone from the map by now --
+        and a key the map does not hold cannot be rendered again: every reader
+        here reaches it through `bound_keys()`/`row_for()`, both of which are
+        the map. A `[done]` entry is deliberately still *in* the map, so its
+        memory survives until it is actually closed.
+        """
+        for memory in (self.seen, self.applied, self.titles):
+            for key in [k for k in memory if not self.rows.known(k)]:
+                del memory[key]
+
+    def _render_op(self, op, payload):
+        """Named `_render_*` rather than `_upsert`/`_remove` on purpose:
+        `BridgeModel` already has methods by those names, and the structural
+        guards merge both files into one call graph by function name -- a
+        duplicate would silently shadow and drop half a guard."""
+        if op == BRIDGE_OP_UPSERT:
+            self._render_upsert(payload)
+        elif op == BRIDGE_OP_REMOVE:
+            self._render_remove(payload)
+        elif op == BRIDGE_OP_STALE:
+            self._render_stale(payload)
+        elif op == BRIDGE_OP_LIVE:
+            self._render_live()
+        elif op == BRIDGE_OP_TICK:
+            self._render_tick()
+
+    def _warn(self, text):
+        if self.warn is not None:
+            self.warn(text)
+
+    # -- agtermctl --------------------------------------------------------
+
+    def _agtermctl(self, args):
+        """Best-effort by contract: a failure is recorded, never raised.
+
+        `agtermctl` is the one thing here that talks to a program this project
+        does not own. If it is missing, broken or hung, the bridge keeps
+        consuming the feed and the next snapshot repaint re-applies the intended
+        state -- because the bridge holds the level state, not agterm.
+        """
+        argv = [AGTERMCTL] + list(args)
+        rc, out, err = self.run(argv)
+        if rc == 0:
+            return out
+        self._warn("%s %s failed (%s): %s"
+                   % (AGTERMCTL, " ".join(args[:2]),
+                      "could not run" if rc is None else "exit %s" % (rc,),
+                      err.strip() or "no output"))
+        # A bound row id agterm no longer knows -- an app reinstall, a state
+        # reset -- is unrecoverable from inside the bridge: a row id is never
+        # reassigned to a different key, and `close-done` only ever touches
+        # `[done]` entries, so a stale *bound* one is reachable by no command
+        # at all. Rather than repeat that failure silently every poll for ever,
+        # name the file and the one thing that fixes it. Only for calls that
+        # carried a `--target`: `session new` has no row to blame, and telling
+        # somebody to delete their row map over it would lose data for nothing.
+        args = list(args)
+        if "--target" in args[:-1]:
+            self._warn(ROW_STALE_HINT % (args[args.index("--target") + 1],
+                                         self.rows.path or rows_path()))
+        return None
+
+    def _create_row(self, session):
+        """`agtermctl session new`, whose stdout is the new row id.
+
+        The id is treated as an **opaque** string -- never parsed, never
+        generated, only stored and echoed back through `--target` -- so the
+        bijection does not depend on agterm's id format.
+        """
+        key = session["key"]
+        settings = self.settings
+        command = pane_command(session, settings.get("agb_path"),
+                               settings.get("python"), jump_for(session, settings))
+        name = row_title(session, self.model.now)
+        out = self._agtermctl([
+            "session", "new",
+            "--name", name,
+            "--cwd", str(session.get("cwd") or ""),
+            "--command", command,
+        ])
+        if out is None:
+            return None
+        row = ""
+        for line in out.splitlines():
+            line = line.strip()
+            if line:
+                row = line.split()[0]
+        if not valid_row_id(row):
+            self._warn(
+                "%s session new printed no usable row id for %s (%r); the row "
+                "cannot be bound -- see the fallbacks in docs/agtermctl.md"
+                % (AGTERMCTL, key, out[:120]))
+            return None
+        # The map remembers the name from the moment the row exists, so even a
+        # bridge that dies before its first rename leaves an identity behind.
+        self.rows.bind(key, row, name)
+        return row
+
+    # -- the ops ----------------------------------------------------------
+
+    def _render_upsert(self, session):
+        if not isinstance(session, dict):
+            return
+        key = session.get("key")
+        if not key or not agb.valid_key(key):
+            return
+        self.seen[key] = session
+        row = self.rows.row_for(key)
+        if row is None:
+            # Known but not bound means we marked this row `[done]`. That mark
+            # was never proof the agent had finished -- a `remove` also comes
+            # from an incomplete snapshot and from `agb prune` -- and the feed
+            # is now positively asserting the key, which outranks the earlier
+            # absence. So the row comes back rather than being refused for ever
+            # (`RowMap.rebind`); its id never moves.
+            row = self.rows.rebind(key)
+            if row is not None:
+                self._warn("%s is being reported again: its row was marked "
+                           "[done] and is now bound to it once more" % (key,))
+            else:
+                row = self._create_row(session)
+            if row is None:
+                return
+        self._title(key, row, session)
+        state = session.get("state")
+        # `--blink` on transitions **into** `active` only, never on a repaint:
+        # a row that has been quietly active for an hour must not flash on every
+        # reconnect. A first paint never blinks, which is why this reads the
+        # previously *applied* status rather than the previous wire record.
+        previous = self.applied.get(key)
+        self._status(key, row, state,
+                     blink=(state == "active" and previous not in (None, "active")))
+
+    def _render_remove(self, key):
+        """A removed row keeps its pane and gets `[done]` in its title.
+
+        No `session close` here, ever: closing on `remove` would take the row
+        out from under the user the instant an agent finished. Reclamation is
+        `agb close-done`, a separate deliberate act -- and if the agent turns
+        out to be alive after all, `_render_upsert` binds the row straight back.
+        """
+        row = self.rows.unbind(key)
+        if row is None:
+            return
+        self._title(key, row, self.seen.get(key), prefix=TITLE_DONE)
+        self._status(key, row, "idle")
+
+    def _render_stale(self, reason):
+        """Feed death -- the only inference-free staleness trigger there is.
+
+        Every managed row goes to `idle` (no glyph: "we assert nothing") plus a
+        `[?]` prefix, and exactly one notification is fired. No age and no
+        silence anywhere else in the system may do this (amendment 1); the
+        bridge owns the ssh, so this one it can prove.
+
+        ⚠️ The `[?]` needs an identity to prefix. `self.seen` is per-process, so
+        on a fresh launchd start -- and a spawn failure is the *normal* first
+        report when the Mac wakes before the farm is reachable -- there is no
+        record for any key, and the map's remembered title is what carries it.
+        When neither exists `_title` falls back to the key rather than skipping
+        the rename, because the `idle` below always lands and the pair must not
+        come apart (see `_title`).
+
+        The message distinguishes the two deadlines. `BRIDGE_QUIET` is "the
+        feed has stopped talking", with the connection still open and the rows
+        repainting the moment it does; only `BRIDGE_WATCHDOG` and a real EOF
+        mean it is gone. Announcing a death at the quiet deadline would train
+        the reader to ignore the notification that matters. No number is
+        written here: `BRIDGE_QUIET` is derived from `agb.FEED_POLL_INTERVAL`,
+        and a docstring restating today's product goes quietly wrong.
+        """
+        self.stale = True
+        for key in self.rows.bound_keys():
+            row = self.rows.row_for(key)
+            self._title(key, row, self.seen.get(key), prefix=TITLE_STALE)
+            self._status(key, row, "idle")
+        if reason == BRIDGE_QUIET_REASON:
+            self._notify("the feed has not spoken for %ds: every agb row is "
+                         "now [?]. The connection is still open and the rows "
+                         "repaint as soon as it does." % (BRIDGE_QUIET,))
+        else:
+            self._notify("the feed is gone (%s): every agb row is now [?] and "
+                         "its status is not being updated" % (reason,))
+
+    def _render_live(self):
+        """The feed is back: lift `[?]` and re-assert the level state."""
+        self.stale = False
+        for key in self.rows.bound_keys():
+            row = self.rows.row_for(key)
+            session = self.seen.get(key)
+            if session is None:
+                continue
+            self._title(key, row, session)
+            if session.get("state"):
+                self._status(key, row, session["state"])
+
+    def _render_tick(self):
+        """A tick moved the feed's clock, so late rows' ages moved with it.
+
+        Only rows whose rendered title actually changed are repainted, which is
+        what keeps the tick cheap: a healthy row's title carries no age at all
+        (see BEAT_LATE) and a late one changes at most once per bucket.
+        """
+        for key in self.rows.bound_keys():
+            if self.seen.get(key) is None:
+                continue                       # never painted here: see _title
+            self._title(key, self.rows.row_for(key), self.seen[key])
+
+    # -- the two agtermctl verbs ------------------------------------------
+
+    def _title(self, key, row, session, prefix=None):
+        """Rename one row. False when nothing was sent.
+
+        The body is computed without the prefix and remembered in the map,
+        because `[?]` and `[done]` are *state* while the body is the row's
+        identity -- and the identity has to outlive this process. `self.seen` is
+        per-process and the map is persisted, so after a launchd restart the map
+        is the only thing that still knows what a row is.
+
+        **A refused rename and an applied `idle` must not coexist.** With
+        neither a record nor a remembered body -- a version-1 map, or a row
+        bound by a bridge that died before its first rename -- there is no
+        identity to prefix, and the rule splits on whether a prefix is being
+        applied at all:
+
+        * no prefix: refuse. The rename would be cosmetic, and replacing
+          `build · box2 · /shared/x · %24` with a hex string is a loss.
+        * `[?]` or `[done]`: rename to the **key**. Here the marker is the whole
+          point. `_render_stale` and `_render_remove` also set the row `idle`,
+          and an `idle` with no marker is pixel-identical to a live idle agent
+          -- precisely the failure the two markers exist to prevent. A hex key
+          is a poor label; a row that lies is worse, and this one self-heals on
+          the next upsert.
+
+        The stand-in is never *remembered* as the row's identity: writing the
+        key into the map would make it permanent.
+        """
+        if prefix is None:
+            prefix = TITLE_STALE if self.stale else ""
+        body = row_title(session, self.model.now) if session else \
+            self.rows.title_for(key)
+        keep = bool(body)
+        if not body:
+            if not prefix:
+                return False
+            body = key
+        title = prefix + body
+        if self.titles.get(key) == title:
+            return False
+        if self._agtermctl(["session", "rename", title, "--target", row]) is None:
+            return False
+        self.titles[key] = title
+        if keep:
+            self.rows.set_title(key, body)
+        return True
+
+    def _status(self, key, row, state, blink=False):
+        """The vocabulary is closed: `active|blocked|completed|idle` and nothing
+        else. There is no `unknown` (amendment 2), so a state outside the set is
+        a bug on the wire and must not be forwarded to agterm."""
+        if state not in agb.STATUS_VOCABULARY:
+            self._warn("refusing to set %s to %r: not one of %s"
+                       % (key, state, "|".join(agb.STATUS_VOCABULARY)))
+            return False
+        if self.applied.get(key) == state and not blink:
+            return False
+        args = ["session", "status", state, "--target", row]
+        if blink:
+            args.append("--blink")
+        if self._agtermctl(args) is None:
+            return False
+        self.applied[key] = state
+        return True
+
+    def _notify(self, text):
+        """One notification per outage, and never two inside NOTIFY_INTERVAL.
+
+        Two channels on purpose: the stderr line always fires and is what
+        launchd's log will carry, and `osascript` is what the user actually
+        sees. The second is best-effort -- a Mac without it still gets the
+        first, and neither can fail the bridge -- and it is the one that is rate
+        limited, because a reconnect storm the user can do nothing about must
+        not become a banner every fifteen seconds.
+
+        "Always fires" is a claim about the *real* wiring, not just about this
+        method: `run_bridge` hands the renderer a `_warn_once` closure, which
+        dedups by exact text for the life of the process, so five outages used
+        to reach the launchd log once. `_bridge_warn` is what keeps the promise
+        -- and the log is the only record of how often the feed died.
+        """
+        self._warn(NOTICE + text)
+        now = self.clock()
+        if self.notified is not None and now - self.notified < NOTIFY_INTERVAL:
+            return
+        self.notified = now
+        rc, _out, err = self.run(
+            ["osascript", "-e",
+             'display notification "%s" with title "agbridge"'
+             % (text.replace('"', "'"),)])
+        if rc != 0:
+            self._warn("cannot post a desktop notification: osascript %s"
+                       % (err.strip() or "exit %s" % (rc,),))
+
+
+def render_settings(opts, config=None):
+    """What the renderer needs, none of which may be required.
+
+    Deliberately separate from `bridge_settings`: that one *refuses to start*
+    without a feed host and a mac-id, and rightly so, but none of those apply on
+    the `--from-stdin` path and none of them are needed to paint a row.
+    """
+    if config is None:
+        config = agb.read_config()
+    return {
+        "rows": opts.get("rows") or rows_path(),
+        "agb_path": local_agb_path(),
+        "python": sys.executable,
+        "jump_host": config.get("jump_host"),
+        "feed_host": opts.get("feed_host") or config.get("feed_host"),
+    }
+
+
+def bridge_sink(model, opts, warn=None, config=None, run=None):
+    """The op sink: the log always, the agterm renderer unless disabled.
+
+    Returns (sink, renderer). The renderer is handed back so the caller can seed
+    the model from the persisted map -- a row bound by a previous bridge run
+    whose agent has since finished must be reclaimable, and the only evidence
+    that it existed is the map.
+    """
+    if opts.get("no_agterm"):
+        return (bridge_report, None)
+    settings = render_settings(opts, config)
+    rows = load_rows(settings["rows"], warn)
+    renderer = RowRenderer(model, rows, run=run, warn=warn, settings=settings)
+    return (OpTee([bridge_report, renderer]), renderer)
+
+
+def _bridge_warn(reported, text):
+    """`agb._warn_once`, except that an outage NOTICE is never deduplicated.
+
+    Dedup-by-exact-text-for-ever is right for "agtermctl is broken" -- otherwise
+    that is one line per poll -- and wrong for the one line that says the feed
+    died: the launchd log is the only record of HOW OFTEN that happened, and a
+    record that prints an event once per *process* is not a record. The desktop
+    banner is what is rate limited instead (NOTIFY_INTERVAL), which is the split
+    `RowRenderer._notify` documents.
+    """
+    agb._warn_once(set() if text.startswith(NOTICE) else reported,
+                   "bridge", text)
+
+
+def run_bridge(argv):
+    """`agb bridge` -- consume the feed. Mac side; never reached by a hook.
+
+    Named `run_bridge` rather than `cmd_bridge` so that the two files never
+    define the same name: the AST guards merge both modules into one call graph,
+    and a shadowed name there would silently drop half a guard.
+    """
+    opts = parse_bridge_args(argv)
+    model = BridgeModel()
+    reported = set()
+
+    def warn(text):
+        _bridge_warn(reported, text)
+
+    sink, renderer = bridge_sink(model, opts, warn)
+    if renderer is not None:
+        model.adopt(renderer.rows.bound_keys())
+
+    if opts["from_stdin"]:
+        fd = agb._stdin_fd()
+        if fd is None:
+            raise agb.AgbError("bridge: --from-stdin: stdin is not readable")
+        source = LineSource(fd)
+        reason, _events = bridge_run(source, model, sink,
+                                     watchdog=opts["watchdog"], warn=warn)
+        _bridge_emit(sink, model.mark_stale(reason))
+        return 0
+
+    settings = bridge_settings(opts)
+    ssh_argv = bridge_ssh_argv(settings["feed_host"], settings["statedir"],
+                               settings["mac_id"], settings["remote_path"],
+                               settings["remote_python"])
+
+    def connect():
+        return bridge_spawn(ssh_argv)
+
+    return bridge_supervise(connect, model, sink,
+                            watchdog=opts["watchdog"],
+                            connections=opts["connections"], warn=warn)
+
+
+# --------------------------------------------------------------------------
+# `agb close-done` -- reclaiming rows, deliberately and by hand
+# --------------------------------------------------------------------------
+#
+# Rows are never auto-closed and never rebound, so without a reclamation path
+# the sidebar grows by one row for every agent ever run. This is that path, and
+# it is a **separate short-lived command** rather than a `bridge` subcommand for
+# a concrete reason: `bridge` is the long-lived launchd job, so `agb bridge
+# close-done` would start a *second* one. It needs no IPC with the running
+# bridge either -- both the map and `agtermctl` are local to the Mac.
+#
+# design.md §3's "keep the pane, you want the scrollback" rationale does not
+# apply here: the Mac-side pane runs `agb pane`, which prints identity and
+# waits. There is no agent scrollback in it to preserve.
+
+
+CLOSE_DONE_VALUE_ARGS = {"--rows": "rows"}
+
+CLOSE_DONE_FLAGS = {"--dry-run": "dry_run"}
+
+
+def parse_close_done_args(argv):
+    """`close-done [--rows PATH] [--dry-run]`."""
+    opts = {"rows": None, "dry_run": False}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in CLOSE_DONE_FLAGS:
+            if sep:
+                raise agb.AgbError("close-done: %s takes no value" % (name,))
+            opts[CLOSE_DONE_FLAGS[name]] = True
+        elif name in CLOSE_DONE_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("close-done: %s needs a value" % (name,))
+            opts[CLOSE_DONE_VALUE_ARGS[name]] = inline
+        elif arg.startswith("-"):
+            raise agb.AgbError("close-done: unknown option: %s" % (arg,))
+        else:
+            raise agb.AgbError("close-done: unexpected argument: %s" % (arg,))
+    return opts
+
+
+def _rebound_on_disk(path, key):
+    """True when `key` is bound again in the map ON DISK.
+
+    `RowMap.rebind` exists because a `remove` is not proof an agent finished --
+    an incomplete snapshot and `agb prune` both produce one -- so a running
+    bridge can return a `[done]` row to a live agent at any moment. `close-done`
+    reads the map once and then spends a subprocess per row inside `agtermctl`,
+    which is a wide enough window for exactly that to land in between. Closing
+    the row would take a live agent's pane away, and `session close` is not
+    undoable, so the disk is re-read immediately before each close. An
+    unreadable map answers False, like every other "no information" here: the
+    entry we already read stands.
+    """
+    for kind, other, _row, _title in read_rows_file(path) or ():
+        if other == key:
+            return kind == ROW_BOUND
+    return False
+
+
+def run_close_done(argv, run=None, out=None):
+    """Close every `[done]` row and forget it. Bound rows are never touched.
+
+    A row is only closed if `agtermctl` says it was: on failure the entry stays
+    in the map and is printed, so the operator is told what to close by hand
+    rather than left with an orphan row nothing remembers. That is also the
+    documented degradation if `session close` turns out not to exist at all.
+
+    "Bound rows are never touched" is checked twice -- once against the map this
+    process loaded, and once against the map on disk immediately before each
+    close (`_rebound_on_disk`), because the bridge is a second writer.
+    """
+    opts = parse_close_done_args(argv)
+    if run is None:
+        run = _run_command
+    if out is None:
+        out = sys.stdout
+    reported = set()
+
+    def warn(text):
+        agb._warn_once(reported, "close-done", text)
+
+    path = opts["rows"] or rows_path()
+    rows = load_rows(path, warn)
+    done = rows.done_entries()
+    if not done:
+        out.write("close-done: no [done] rows to close (%d still bound)\n"
+                  % (len(rows.bound_keys()),))
+        out.flush()
+        return 0
+    closed = 0
+    for key, row in done:
+        if opts["dry_run"]:
+            out.write("would close %s (row %s)\n" % (key, row))
+            continue
+        if _rebound_on_disk(path, key):
+            # The bridge re-bound it while we were closing the row before this
+            # one. Follow it here too, or `save()` would write our stale `done`
+            # back over the bridge's `bound` and orphan a live agent's row.
+            rows.rebind(key)
+            out.write("kept %s (row %s): the bridge has bound it again\n"
+                      % (key, row))
+            continue
+        rc, _stdout, err = run([AGTERMCTL, "session", "close", "--target", row])
+        if rc == 0:
+            rows.forget(key)
+            closed += 1
+            out.write("closed %s (row %s)\n" % (key, row))
+        else:
+            warn("cannot close row %s for %s: %s"
+                 % (row, key, err.strip() or "exit %s" % (rc,)))
+            out.write("close by hand: %s (row %s)\n" % (key, row))
+    rows.save()
+    if not opts["dry_run"]:
+        out.write("close-done: closed %d of %d\n" % (closed, len(done)))
+    out.flush()
+    return 0

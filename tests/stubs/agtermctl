@@ -1,0 +1,100 @@
+#!/bin/sh
+# Recording `agtermctl` stub.
+#
+# `agtermctl` is a Mac-only binary and cannot be run, inspected or `--help`'d
+# from the farm box (docs/agtermctl.md). So the Mac-side rendering is tested
+# against this stub, which implements the *assumed contract* recorded by Task 0
+# and -- more importantly -- **fails loudly on anything that contract forbids**.
+# A permissive stub would happily validate a fiction such as `unknown`, and the
+# suite would go green while the bridge emitted a status agterm rejects.
+#
+# What it enforces (docs/agtermctl.md -> "What the Task 4b stub must enforce"):
+#
+#   * `session status <s>` with `s` outside active|blocked|completed|idle
+#     exits non-zero. There is no `unknown` (design amendment 2).
+#   * `session new` prints one opaque row id and requires `--command`, because
+#     that command line is the only thing connecting `agb pane` to the system.
+#   * `rename`, `status` and `close` require `--target`.
+#   * every invocation's argv is appended to $AGB_AGTERMCTL_LOG, in the same
+#     \037-separated format `conftest.StubBin` already parses.
+#
+#   $AGB_AGTERMCTL_LOG   where to append the recorded argv (required)
+#   $AGB_AGTERMCTL_FAIL  a verb (or `all`) that must fail with exit 9
+#   $AGB_AGTERMCTL_ID    override the id `session new` prints (for the
+#                        "no usable row id" and duplicate-id paths)
+
+log="${AGB_AGTERMCTL_LOG}"
+if [ -z "$log" ]; then
+    echo "agtermctl stub: \$AGB_AGTERMCTL_LOG is not set" >&2
+    exit 64
+fi
+{ for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$log"
+
+if [ "$1" != "session" ]; then
+    echo "agtermctl: unknown command: $1" >&2
+    exit 2
+fi
+verb="$2"
+shift 2
+
+if [ "$AGB_AGTERMCTL_FAIL" = "all" ] || [ "$AGB_AGTERMCTL_FAIL" = "$verb" ]; then
+    echo "agtermctl: $verb: induced failure" >&2
+    exit 9
+fi
+
+have_target=0
+have_command=0
+for a in "$@"; do
+    case "$a" in
+        --target) have_target=1 ;;
+        --command) have_command=1 ;;
+    esac
+done
+
+case "$verb" in
+    new)
+        if [ "$have_command" -eq 0 ]; then
+            echo "agtermctl: session new: no --command" >&2
+            exit 5
+        fi
+        if [ -n "${AGB_AGTERMCTL_ID+set}" ]; then
+            printf '%s\n' "$AGB_AGTERMCTL_ID"
+            exit 0
+        fi
+        n=0
+        if [ -f "$log.n" ]; then
+            n=$(cat "$log.n")
+        fi
+        n=$((n + 1))
+        echo "$n" > "$log.n"
+        # Shaped like agterm's real ids (uppercase UUIDs, seen in `agr`'s live
+        # target files) precisely so that a bridge which tried to *parse* one
+        # would still work here and fail on the Mac.
+        printf '0E3D894C-7C14-4C45-83FF-%012d\n' "$n"
+        ;;
+    status)
+        case "$1" in
+            active|blocked|completed|idle) ;;
+            *)
+                echo "agtermctl: session status: not a status: $1" >&2
+                exit 3
+                ;;
+        esac
+        if [ "$have_target" -eq 0 ]; then
+            echo "agtermctl: session status: no --target" >&2
+            exit 4
+        fi
+        ;;
+    rename|close)
+        if [ "$have_target" -eq 0 ]; then
+            echo "agtermctl: session $verb: no --target" >&2
+            exit 4
+        fi
+        ;;
+    *)
+        echo "agtermctl: unknown subcommand: session $verb" >&2
+        exit 2
+        ;;
+esac
+
+exit 0
