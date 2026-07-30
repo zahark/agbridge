@@ -1175,6 +1175,97 @@ class RowMap(object):
                 del self.entries[key]
 
 
+# --------------------------------------------------------------------------
+# where a row lives: remembered placements
+# --------------------------------------------------------------------------
+#
+# `session new --workspace-name` decides where a row is BORN. Nothing decides
+# where it lives afterwards -- the operator drags rows between workspaces and
+# the bridge leaves them alone, which is right. But `agb-refresh` genuinely
+# destroys and recreates, so without a record the layout is lost every time.
+#
+# Deliberately NOT a fifth field in the rows map: that file carries the
+# bijection, the `#end` sentinel and the flock, and a placement is none of
+# those. A `key = workspace` file parses with `agb.parse_config` and writes with
+# `agb.atomic_write`, so this adds no format and no new failure mode to the one
+# structure on the Mac that must not be got wrong.
+
+
+def placements_path():
+    return os.path.join(os.path.dirname(agb.config_path()), "placements")
+
+
+def tree_workspaces(run=None):
+    """{row id: workspace name} from `agtermctl tree --json`, or None.
+
+    None means "could not ask", which is different from "no rows": a refresh
+    that cannot read the tree must leave the remembered placements alone rather
+    than erase them.
+    """
+    if run is None:
+        run = _run_command
+    rc, out, _err = run([AGTERMCTL, "tree", "--json"])
+    if rc != 0 or not out:
+        return None
+    try:
+        tree = agb._json().loads(out)
+    except ValueError:
+        return None
+    spaces = (((tree or {}).get("result") or {}).get("tree") or {}).get(
+        "workspaces")
+    if not isinstance(spaces, list):
+        return None
+    found = {}
+    for space in spaces:
+        if not isinstance(space, dict):
+            continue
+        name = space.get("name")
+        if not name or not valid_workspace(name):
+            continue
+        for session in space.get("sessions") or []:
+            if isinstance(session, dict) and session.get("id"):
+                found[str(session["id"])] = str(name)
+    return found
+
+
+def valid_workspace(name):
+    """A name that survives a `key = value` line and an argv word.
+
+    `=` would split the placement line in the wrong place; control characters
+    would break it outright. Spaces are fine and common ("working repos").
+    """
+    if not name or len(name) > 100 or "=" in name:
+        return False
+    for char in name:
+        if ord(char) < 0x20 or ord(char) == 0x7f:
+            return False
+    return name.strip() == name
+
+
+def read_placements(path=None):
+    """{key: workspace}. A malformed line is skipped, never fatal: a placement
+    is a convenience, and losing one costs a row its position, not its row."""
+    values, _malformed = agb.parse_config(_read_text(path or placements_path()))
+    return dict((key, value) for key, value in values.items()
+                if agb.valid_key(key) and valid_workspace(value))
+
+
+def _read_text(path):
+    try:
+        data, _st = agb.read_fresh(path)
+    except (OSError, ValueError):
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def write_placements(places, path=None):
+    text = "".join("%s = %s\n" % (key, places[key]) for key in sorted(places))
+    agb.atomic_write(path or placements_path(), text.encode("utf-8"))
+
+
 def load_rows(path, warn=None):
     entries = read_rows_file(path, warn)
     rows = RowMap(path, entries or ())
@@ -1415,13 +1506,17 @@ class RowRenderer(object):
     """
 
     __slots__ = ("model", "rows", "settings", "run", "warn",
-                 "seen", "applied", "titles", "stale", "clock", "notified")
+                 "seen", "applied", "titles", "stale", "clock", "notified",
+                 "placements")
 
     def __init__(self, model, rows, run=None, warn=None, settings=None,
                  clock=None):
         self.model = model
         self.rows = rows
         self.settings = settings or {}
+        # Read once at construction: a refresh writes it while this process is
+        # stopped, so it cannot change under a running bridge.
+        self.placements = read_placements(self.settings.get("placements"))
         self.run = run if run is not None else _run_command
         self.warn = warn
         self.seen = {}         # key -> last wire record (survives `remove`)
@@ -1549,7 +1644,10 @@ class RowRenderer(object):
         # made once and reused for ever after. Without this agterm uses whatever
         # workspace happens to be current, so rows recreated by a refresh land
         # wherever you were looking at the time.
-        workspace = (self.settings or {}).get("workspace")
+        # A remembered placement wins over the configured default: the operator
+        # moved that row on purpose, and `workspace` is only where rows are born.
+        workspace = (self.placements or {}).get(key) \
+            or (self.settings or {}).get("workspace")
         if workspace:
             args.extend(["--workspace-name", workspace, "--create-workspace"])
         out = self._agtermctl(args)
@@ -1932,13 +2030,14 @@ def _rebound_on_disk(path, key):
 
 
 FORGET_FLAGS = {"--dry-run": "dry_run", "--no-close": "no_close"}
-FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key"}
+FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key",
+                     "--placements": "placements"}
 
 
 def parse_forget_args(argv):
     """`forget-rows [--key K]... [--rows PATH] [--no-close] [--dry-run]`."""
     opts = {"rows": None, "keys": [], "dry_run": False,
-            "no_close": False}
+            "no_close": False, "placements": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -1955,7 +2054,7 @@ def parse_forget_args(argv):
             if name == "--key":
                 opts["keys"].append(inline)
             else:
-                opts["rows"] = inline
+                opts[FORGET_VALUE_ARGS[name]] = inline
         else:
             raise agb.AgbError("forget-rows: unknown option: %s" % (name,))
     return opts
@@ -2004,6 +2103,12 @@ def run_forget_rows(argv, out=None, run=None):
         out.write("no rows to forget: the map is already empty\n")
         out.flush()
         return 0
+    remembered = read_placements(opts["placements"])
+    # Ask agterm where these rows live BEFORE any of them is closed: once the
+    # session is gone its workspace is as unknowable as its id. None means
+    # "could not ask", which must leave the remembered placements alone rather
+    # than erase them.
+    placed = None if opts["dry_run"] else tree_workspaces(run)
     missing = [k for k in targets if not rows.known(k)]
     for key in missing:
         out.write("not in the map: %s\n" % (key,))
@@ -2028,6 +2133,8 @@ def run_forget_rows(argv, out=None, run=None):
         # Best effort: when agterm has already dropped the row -- the original
         # reason this command exists -- the close fails and that is the expected
         # answer, not an error worth stopping for.
+        if placed is not None and row and placed.get(row):
+            remembered[key] = placed[row]
         if row and not opts["no_close"]:
             rc, _stdout, err = run([AGTERMCTL, "session", "close",
                                     "--target", row])
@@ -2040,6 +2147,16 @@ def run_forget_rows(argv, out=None, run=None):
         rows.forget(key)
     if not opts["dry_run"]:
         rows.save(force=True)
+        if placed is not None:
+            write_placements(remembered, opts["placements"])
+            kept = [k for k in dropped if k in remembered]
+            if kept:
+                out.write("remembered the workspace of %d row%s, so the next "
+                          "snapshot puts them back\n"
+                          % (len(kept), "" if len(kept) == 1 else "s"))
+        else:
+            out.write("could not read agterm's tree, so placements were left "
+                      "as they stand -- rows may come back elsewhere\n")
     out.write("%s%d of %d binding%s; the next snapshot re-creates the rows\n"
               % ("dry run: " if opts["dry_run"] else "forgot ",
                  len(dropped), len(targets), "" if len(targets) == 1 else "s"))

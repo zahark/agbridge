@@ -134,7 +134,7 @@ Full flag reference: [`docs/commands.md`](docs/commands.md).
 | `agb_remote_path` | `bridge`, `prune --via-ssh` | absolute path of `agb` on the cluster |
 | `remote_python` | `bridge`, `prune --via-ssh` | absolute cluster-side interpreter |
 | `jump_host` | `pane`, `prune --via-ssh` | ssh jump host for hosts you cannot reach directly |
-| `workspace` | `bridge` | agterm workspace for new rows, by **name**; created if absent. Without it they land in whichever workspace is current when the row is made |
+| `workspace` | `bridge` | agterm workspace for new rows, by **name**; created if absent. Without it they land in whichever workspace is current when the row is made. A row you have moved keeps its own place — see below |
 | `host_<name> = <ssh-target>` | `pane`, `prune` | a record's `host` is a hostname, not an ssh alias |
 
 **Environment overrides:**
@@ -144,6 +144,13 @@ Full flag reference: [`docs/commands.md`](docs/commands.md).
 | `AGB_STATEDIR` | overrides `statedir`. Baked into the hook command at install time, which is what lets the hot path skip reading the config |
 | `AGB_HOST` | overrides the short hostname used for `sessions/<host>/` and for the sweep's own-host check. **Test seam** — setting it in a live shell orphans entries |
 | `AGB_AGENT_PID` | overrides agent-pid resolution; `-`/`none`/`0` mean "no pid". **Test seam** |
+
+### Where rows live
+
+Drag a row to another workspace and it stays there — the bridge only sets a workspace when a row is
+*created*, and never moves one afterwards. `agb-refresh` genuinely destroys and recreates rows, so
+before closing them it records where each one was (`~/.config/agbridge/placements`) and puts them
+back. The `workspace` config key is the fallback for rows that have no remembered place.
 
 ### Where the statedir lives
 

@@ -668,6 +668,10 @@ def test_json_is_reached_only_through_the_transition_branch(agb_tree,
     from `agb_mac`, which is why the caller search matches on the attribute name
     regardless of what it is qualified by.
 
+    ⚠️ `tree_workspaces` is on the list because agterm answers `tree --json`
+    in json, and parsing it is the only way to learn which workspace a row is
+    in. Mac-side, in `agb_mac`, never reachable from `cmd_hook`.
+
     ⚠️ `run_rename` is on the list because the record it rewrites **is** json --
     the same file `hook_transition` writes, through the same `atomic_write`. It
     is in `agb_ops`, which no hook ever loads, so the hot path pays nothing for
@@ -687,7 +691,7 @@ def test_json_is_reached_only_through_the_transition_branch(agb_tree,
                   ) - set(["_json"])
     assert callers == set(["read_record", "hook_transition", "feed_line",
                            "bridge_decode", "read_settings", "settings_text",
-                           "run_rename"])
+                           "run_rename", "tree_workspaces"])
 
     for name in ("hook_apply", "parse_state", "bind_key", "read_idx",
                  "resolve_identity", "cmd_hook", "main"):

@@ -382,7 +382,8 @@ having forgotten its rows** — closed, reset or reinstalled — while the map s
 |---|---|---|
 | `--key <key>` | every binding | forget one; repeatable. Use it when only one row was closed — dropping the whole map mints duplicates for rows that are still live |
 | `--rows <path>` | `~/.config/agbridge/rows` | the map |
-| `--workspace <name>` | config `workspace`, else agterm's current one | which agterm workspace new rows are created in |
+| `--workspace <name>` | config `workspace`, else agterm's current one | where new rows are created. A **remembered placement** for that key wins over this |
+| `--placements <path>` | `~/.config/agbridge/placements` | remembered `key = workspace` file |
 | `--dry-run` | off | name the bindings and change nothing |
 
 Exits 1 if a named key was not in the map (and says so), 0 otherwise. **Nothing on the farm is
@@ -390,7 +391,12 @@ touched** — agents, keys and state are untouched, so rows return with the same
 
 ⚠️ Not a file deletion, and not a `sed`. The map ends in an `#end <count>` sentinel; a hand-edited
 line leaves the count wrong, the whole map then reads as corrupt, and the bindings you meant to keep
-go with it. It also **closes each agterm session as it forgets it** (`--no-close` to skip). Dropping the
+go with it. It **records which workspace each row is in** before closing it (`agtermctl tree --json`) and
+writes them to `~/.config/agbridge/placements`, so the next snapshot puts every row back where you
+had it. A tree it cannot read leaves the remembered placements **alone** rather than erasing them —
+erasing would scatter every row, which is worse than the problem this solves.
+
+It also **closes each agterm session as it forgets it** (`--no-close` to skip). Dropping the
 mapping alone leaves agterm's session and its running `agb pane` in place, so the bridge mints a
 fresh row beside it and you are left closing duplicates by hand. A close that fails is not an error:
 agterm having already dropped the row is the original reason this command exists.
