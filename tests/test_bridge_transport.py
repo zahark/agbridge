@@ -171,6 +171,8 @@ def test_the_ssh_argv_is_the_documented_invocation(mac):
         "ssh",
         "-o", "ServerAliveInterval=15",
         "-o", "ServerAliveCountMax=3",
+        "-o", "ConnectTimeout=20",
+        "-o", "BatchMode=yes",
         HOST,
         "env", "AGB_STATEDIR=/shared/.agbridge",
         "/bin/python3", "-S", "-E", "/opt/agbridge/agb",
@@ -202,6 +204,25 @@ def test_the_ssh_argv_supervises_the_connection(mac):
     argv = mac.bridge_ssh_argv(HOST, SD, MAC, REMOTE, PY)
     assert "ServerAliveInterval=%d" % (mac.BRIDGE_ALIVE_INTERVAL,) in argv
     assert "ServerAliveCountMax=%d" % (mac.BRIDGE_ALIVE_COUNT,) in argv
+
+
+def test_the_ssh_argv_bounds_the_connect_and_never_prompts(mac):
+    """The two things ServerAlive cannot do, both seen in a real launchd log.
+
+    ServerAlive only starts once a session exists, so it does not bound the
+    *connect*: a laptop that loses its VPN sat in the kernel's TCP timeout and
+    reported `Operation timed out` minutes later. And a LaunchAgent has no tty,
+    so an ssh that decides to ask for a passphrase or a host-key confirmation
+    blocks on a prompt nobody can answer -- a hung bridge with a live process,
+    which reads from the outside exactly like a quiet farm.
+    """
+    argv = mac.bridge_ssh_argv(HOST, SD, MAC, REMOTE, PY)
+    assert "ConnectTimeout=%d" % (mac.BRIDGE_CONNECT_TIMEOUT,) in argv
+    assert "BatchMode=yes" in argv
+    # Before the host, or ssh reads them as arguments to the remote command.
+    for option in ("ConnectTimeout=%d" % (mac.BRIDGE_CONNECT_TIMEOUT,),
+                   "BatchMode=yes"):
+        assert argv.index(option) < argv.index(HOST)
 
 
 @pytest.mark.parametrize("args", [
