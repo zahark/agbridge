@@ -196,9 +196,12 @@ they must be the same path.
 has forgotten rows the map still names. On the Mac:
 
 ```sh
-~/.local/lib/agbridge/agb-refresh              # all rows
-~/.local/lib/agbridge/agb-refresh --key <key>  # just one, if the others are still live
+agb-refresh              # all rows
+agb-refresh --key <key>  # just one, if the others are still live
 ```
+
+`install.sh mac` links it into `~/.local/bin` beside `agb`. If your install predates that, or you
+passed `--no-wrapper`, it is `~/.local/lib/agbridge/agb-refresh`.
 
 Nothing on the farm is touched; rows come back with the same identities on the next snapshot.
 Reopen agterm first if it is closed.

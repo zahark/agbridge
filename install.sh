@@ -84,8 +84,8 @@ mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/config with a
   --farm <ssh-target>        run the farm side over ssh with the minted mac-id
   --no-load                  write the plist but do not load it
   --no-probe                 do not ssh the feed host to learn its hostname
-  --bin-dir <dir>            where the `agb` wrapper goes   (default ~/.local/bin)
-  --no-wrapper               do not write the `agb` wrapper
+  --bin-dir <dir>            where `agb` and `agb-refresh` go (default ~/.local/bin)
+  --no-wrapper               do not write the `agb` wrapper or link agb-refresh
   --dry-run                  say what would happen; write nothing
 
 farm -- write ~/.config/agbridge/config and merge the hooks into
@@ -99,8 +99,8 @@ farm -- write ~/.config/agbridge/config and merge the hooks into
   --jump-host <target>       ssh jump host for machine #3
   --host <name>=<target>     ssh target for a record's host; repeatable
   --agb <path>               the agb to install hooks for       (default: beside this file)
-  --bin-dir <dir>            where the `agb` wrapper goes   (default ~/.local/bin)
-  --no-wrapper               do not write the `agb` wrapper
+  --bin-dir <dir>            where `agb` and `agb-refresh` go (default ~/.local/bin)
+  --no-wrapper               do not write the `agb` wrapper or link agb-refresh
   --no-hooks                 write the config only
   --dry-run                  say what would happen; write nothing
 EOF
@@ -184,6 +184,29 @@ write_wrapper() {
         *":$wdir:"*) ;;
         *) say "          ⚠ $wdir is not on your \$PATH, so \`agb\` will not resolve yet" ;;
     esac
+}
+
+link_refresh() {
+    ldir=$1
+    ltarget=$2
+    [ "$wrapper" = yes ] || return 0        # --no-wrapper means neither
+    lpath="$ldir/agb-refresh"
+    if [ "$dry" = yes ]; then
+        # Asked about the SOURCE, not the target: a dry run copies nothing, so
+        # testing the target would silently report nothing and make the dry run
+        # a worse description of the real one than it needs to be.
+        [ -f "$SELF/agb-refresh" ] \
+            && say "dry run:  would link $lpath -> $ltarget"
+        return 0
+    fi
+    [ -f "$ltarget" ] || return 0           # not installed; nothing to link
+    mkdir -p "$ldir" || return 0
+    # Never fatal, here or anywhere in this function: a missing convenience
+    # link must not fail an install that otherwise worked. The full path in
+    # the message is what makes the failure recoverable by hand.
+    ln -sfn "$ltarget" "$lpath" 2>/dev/null \
+        && say "link:     $lpath -> $ltarget" \
+        || say "note:     could not link $lpath; run $ltarget directly"
 }
 
 # Prove the tree at $2 works, through all three files, before anything is
@@ -435,6 +458,13 @@ role_mac() {
 
     [ "$wrapper" = yes ] && write_wrapper "$python" "$installed" \
         "${bindir:-$DEFAULT_BINDIR}"
+
+    # `agb-refresh` needs to be reachable by name too. It is the recovery
+    # command -- run when the sidebar has gone wrong and you are already
+    # annoyed -- and one you had to type an absolute path for is one you will
+    # not reach for. A symlink rather than a wrapper: unlike `agb`, it has a
+    # shebang and is executable, so nothing needs generating.
+    link_refresh "${bindir:-$DEFAULT_BINDIR}" "$dest/agb-refresh"
 
     command -v agtermctl >/dev/null 2>&1 \
         || say "note:     agtermctl is not on this PATH; the bridge needs it, and the launchd job looks for it in $launchpath"
