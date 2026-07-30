@@ -916,6 +916,85 @@ def test_a_recovery_repaint_does_not_blink(bridge):
         b.run.statuses())
 
 
+class _Clock(object):
+    """A hand-cranked monotonic clock, for the re-assert interval."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+def _reassert_bridge(mac, rows_file):
+    clock = _Clock()
+    b = Harness(mac, rows_file)
+    b.renderer.clock = clock
+    b.renderer.reasserted = clock()
+    return b, clock
+
+
+def test_a_row_status_is_re_asserted_periodically(mac, rows_file):
+    """Reported live: attach to a row for the first time and its glyph
+    disappears. agterm resets a session's status when the session's command
+    starts, and because the remembered status still matched, the bridge never
+    repainted -- the row stayed blank until the agent's state next moved, which
+    for an idle agent can be hours.
+
+    So the memory is an optimisation, not a description of the screen. Anything
+    that resets a row out from under us self-heals within one interval.
+    """
+    b, clock = _reassert_bridge(mac, rows_file)
+    b.upsert(wire("aaaa1111", state="active"))
+    painted = len(b.run.statuses())
+
+    clock.advance(mac.REASSERT_INTERVAL + 1)
+    b.tick()
+
+    after = b.run.statuses()[painted:]
+    assert [state for state, _row, _blink in after] == ["active"]
+
+
+def test_a_re_assert_never_blinks(mac, rows_file):
+    """It is not a transition. Otherwise every row on the sidebar would flash
+    once per interval, for ever."""
+    b, clock = _reassert_bridge(mac, rows_file)
+    b.upsert(wire("aaaa1111", state="active"))
+    for _round in range(3):
+        clock.advance(mac.REASSERT_INTERVAL + 1)
+        b.tick()
+    assert [blink for _s, _r, blink in b.run.statuses()] == [False] * 4
+
+
+def test_a_re_assert_is_rate_limited_to_the_interval(mac, rows_file):
+    """A tick arrives every couple of seconds. Re-asserting on each one would
+    be one `agtermctl` per row per tick, for a display that is almost always
+    already right."""
+    b, clock = _reassert_bridge(mac, rows_file)
+    b.upsert(wire("aaaa1111", state="active"))
+    painted = len(b.run.statuses())
+    for _tick in range(10):
+        clock.advance(1.0)
+        b.tick()
+    assert len(b.run.statuses()) == painted, "no interval elapsed; no re-assert"
+
+
+def test_a_re_assert_does_not_undo_the_stale_rendering(mac, rows_file):
+    """While the feed is gone, `idle` + `[?]` is the correct rendering. Putting
+    the last known status back would be the bridge asserting something it can no
+    longer see -- exactly the inference this design refuses to make."""
+    b, clock = _reassert_bridge(mac, rows_file)
+    b.upsert(wire("aaaa1111", state="active"))
+    b.stale("eof")
+    painted = len(b.run.statuses())
+    clock.advance(mac.REASSERT_INTERVAL + 1)
+    b.renderer._render_tick()          # a tick cannot really arrive here
+    assert len(b.run.statuses()) == painted
+
+
 def test_every_bridge_warning_carries_a_timestamp(mac, capsys):
     """The launchd log is appended across every restart for the life of the
     machine, while the dedup is per process -- so without a stamp, a block of

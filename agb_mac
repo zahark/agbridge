@@ -1354,6 +1354,13 @@ BEAT_BUCKET = 15
 # deliberately not rate-limited: it is the launchd log, and it is cheap.
 NOTIFY_INTERVAL = 300.0
 
+# How often every row's status is re-sent regardless of whether it changed.
+# See `RowRenderer._reassert`: agterm resets a row's status when the row's
+# command starts, so the renderer's memory cannot be trusted as a description of
+# what is on screen. 30 s is a compromise between how long a wrong row is
+# allowed to stay wrong and one extra `agtermctl` per row per interval.
+REASSERT_INTERVAL = 30.0
+
 # The prefix that marks an outage line on stderr. It is matched, not just
 # printed: `_bridge_warn` exempts these from `_warn_once`' dedup.
 NOTICE = "NOTICE: "
@@ -1528,7 +1535,7 @@ class RowRenderer(object):
 
     __slots__ = ("model", "rows", "settings", "run", "warn",
                  "seen", "applied", "titles", "stale", "clock", "notified",
-                 "placements")
+                 "placements", "reasserted")
 
     def __init__(self, model, rows, run=None, warn=None, settings=None,
                  clock=None):
@@ -1548,6 +1555,10 @@ class RowRenderer(object):
         # between two notifications on the Mac, never an age on the wire.
         self.clock = clock if clock is not None else time.monotonic
         self.notified = None
+        # Seeded, not None: the first paint of every row happens within moments
+        # of construction, so a re-assert before the interval has elapsed would
+        # be pure duplicate traffic. The clock starts now.
+        self.reasserted = self.clock()
 
     # -- the sink ---------------------------------------------------------
 
@@ -1833,6 +1844,44 @@ class RowRenderer(object):
             if self.seen.get(key) is None:
                 continue                       # never painted here: see _title
             self._title(key, self.rows.row_for(key), self.seen[key])
+        self._reassert()
+
+    def _reassert(self):
+        """Re-send every row's status periodically, whether it changed or not.
+
+        The suppression in `_status` assumes this process is the only thing that
+        changes what agterm displays. It is not. Reported live: after attaching
+        to a row for the first time, its glyph **disappeared** -- agterm resets
+        a session's status when the session's command starts -- and because the
+        remembered status still matched, the bridge never repainted it. The row
+        stayed blank until the agent's state happened to move, which for an idle
+        agent can be hours (state only moves when Claude Code fires a hook).
+
+        So the memory is treated as an optimisation, not as truth: it still
+        collapses the per-poll traffic, but it can no longer make a divergence
+        permanent. Anything that resets a row -- an attach, an agterm restart, a
+        display bug -- self-heals within one interval.
+
+        Never blinks: a re-assert is not a transition. `applied` is dropped and
+        immediately re-set to the same value, so the blink rule downstream is
+        unchanged.
+
+        On ticks only, which is where it costs least and matters most: a tick is
+        emitted when the farm has nothing to say, and a row nobody is updating
+        is exactly the row that stays wrong.
+        """
+        if self.stale:
+            return          # `[?]` is the correct rendering; do not undo it
+        now = self.clock()
+        if now - self.reasserted < REASSERT_INTERVAL:
+            return
+        self.reasserted = now
+        for key in self.rows.bound_keys():
+            session = self.seen.get(key)
+            if session is None or not session.get("state"):
+                continue
+            self.applied.pop(key, None)
+            self._status(key, self.rows.row_for(key), session["state"])
 
     # -- the two agtermctl verbs ------------------------------------------
 
