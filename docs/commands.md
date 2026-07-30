@@ -164,14 +164,25 @@ an exit status that cries wolf is one nobody reads.
 ## `agb rename <key> <label>` — farm
 
 ```
+agb rename <label>                 # the row this terminal is in
+agb rename <key> <label>           # any row; <key> may be a unique prefix
 agb rename <key> <label> [--host <host>] [--statedir <path>]
 ```
 
 Sets the **label** a row is titled from (`label · host · cwd · pane`).
 
+Keys are 16 random hex characters, so there are two ways not to type one: **omit it** and the row
+this terminal's agent owns is renamed (resolved from the tmux/pid anchor, and it will never *mint* a
+key — naming a thing must not create it), or give a **unique prefix**, which is refused rather than
+guessed if it matches more than one. `agb doctor` lists the keys this host can see.
+
+⚠️ A lone argument that looks like a key (8+ hex characters) is **refused**, because
+`agb rename b7ed51ad0b5d2952` reads as "rename this key" but would otherwise parse as "label the
+current row `b7ed51ad0b5d2952`" — the wrong row, named something nobody meant, silently.
+
 | Flag | Default | Meaning |
 |---|---|---|
-| `<key>` (positional) | — | **required**, validated as a minted key |
+| `<key>` (positional) | this terminal's own row | a whole key or a unique prefix |
 | `<label>` (positional) | — | **required**. 1–40 characters, no control characters, no leading or trailing space, and not containing ` · ` — a label carrying the title's own separator would read as two fields |
 | `--host <host>` | this host | whose entry to rename |
 | `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | which statedir |

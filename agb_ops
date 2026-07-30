@@ -3515,8 +3515,48 @@ def valid_label(label):
     return label.strip() == label
 
 
+def current_key(sd):
+    """This agent's own key, from the idx anchor -- **without minting one**.
+
+    `resolve_identity` would create a key if the anchor had none, which is right
+    for a hook and wrong here: `rename` must not bring a session into existence
+    as a side effect of trying to name it.
+    """
+    record = agb.read_idx(agb.idx_path(sd, agb.resolve_anchor()))
+    if not isinstance(record, dict):
+        return None
+    return record.get("key")
+
+
+def resolve_key(sd, host, given):
+    """A whole key, or the one key on `host` that `given` is a prefix of.
+
+    `agb.valid_key` already accepts 1-64 hex characters, so a prefix is a valid
+    key by that definition and needs no second validator. Keys are 16 random hex
+    characters, which nobody is going to read off a row and retype. Everything else here addresses things by a prefix -- agterm's
+    own `--target` takes one -- so this does too, and refuses an ambiguous one
+    rather than picking.
+    """
+    if agb.valid_key(given) and agb.read_record_quiet(sd, given, host):
+        return given
+    matches = [key for key in agb.list_session_keys(sd, host)
+               if key.startswith(given)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise agb.AgbError(
+            "rename: %s matches %d keys on %s: %s"
+            % (given, len(matches), host, " ".join(sorted(matches))))
+    return given          # unchanged; the caller reports "no record"
+
+
 def parse_rename_args(argv):
-    """`rename <key> <label> [--host H] [--statedir SD]`."""
+    """`rename [<key>] <label> [--host H] [--statedir SD]`.
+
+    One positional is the label and the key is this session's own -- renaming
+    the row you are sitting in is the common case, and requiring 16 hex
+    characters for it would be the tool's least usable moment.
+    """
     opts = {"key": None, "label": None, "statedir": None, "host": None}
     rest = list(argv)
     positional = []
@@ -3533,13 +3573,25 @@ def parse_rename_args(argv):
             raise agb.AgbError("rename: unknown option: %s" % (name,))
         else:
             positional.append(arg)
-    if len(positional) != 2:
+    if len(positional) == 1:
+        # `agb rename <16 hex>` reads as "rename THIS key" but would parse as
+        # "label this row <16 hex>" -- renaming the wrong thing, to a string
+        # nobody meant, with no error. Refuse the shape instead of guessing.
+        if agb.valid_key(positional[0]) and len(positional[0]) >= 8:
+            raise agb.AgbError(
+                "rename: %s looks like a key, not a label. Give both: "
+                "`agb rename %s <label>` -- or a label alone to rename the row "
+                "this terminal is in" % (positional[0], positional[0]))
+        opts["label"] = positional[0]
+    elif len(positional) == 2:
+        opts["key"], opts["label"] = positional
+    else:
         raise agb.AgbError(
-            "rename: needs exactly <key> and <label>, got %d argument%s"
-            % (len(positional), "" if len(positional) == 1 else "s"))
-    opts["key"], opts["label"] = positional
-    if not agb.valid_key(opts["key"]):
-        raise agb.AgbError("rename: not a minted key: %s" % (opts["key"],))
+            "rename: needs <label>, or <key> <label> -- got %d arguments"
+            % (len(positional),))
+    if opts["key"] is not None and not agb.valid_key(opts["key"]):
+        raise agb.AgbError("rename: not a key or key prefix: %s"
+                           % (opts["key"],))
     if not valid_label(opts["label"]):
         raise agb.AgbError(
             "rename: a label must be 1-%d characters, no control characters, "
@@ -3576,7 +3628,16 @@ def run_rename(argv, out=None):
     opts = parse_rename_args(argv)
     sd = opts["statedir"] or agb.statedir()
     host = opts["host"] or agb.own_host()
-    key = opts["key"]
+    if opts["key"] is None:
+        key = current_key(sd)
+        if not key:
+            out.write("rename: no agent recorded for this terminal, so there "
+                      "is no row to rename. Name one explicitly: "
+                      "`agb rename <key> <label>` (`agb doctor` lists them)\n")
+            out.flush()
+            return 1
+    else:
+        key = resolve_key(sd, host, opts["key"])
 
     record = agb.read_record_quiet(sd, key, host)
     if not record:

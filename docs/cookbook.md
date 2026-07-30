@@ -128,8 +128,11 @@ Rows are titled `label · host · cwd · pane`, where the label is the tmux sess
 afterwards, on the host:
 
 ```sh
-agb rename <key> a-better-name
+agb rename a-better-name          # the agent you are sitting in
+agb rename b7ed a-better-name     # another row, by key prefix
 ```
+
+`agb doctor` lists the keys this host can see.
 
 Renaming the tmux session does **not** work — the name was read once when the agent started, and
 changing it only breaks click-to-attach.
