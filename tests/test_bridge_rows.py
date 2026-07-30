@@ -881,6 +881,44 @@ def test_the_notice_survives_the_real_warn_channel(mac, capsys):
     assert err.count("agtermctl session rename failed") == 1
 
 
+def test_every_bridge_warning_carries_a_timestamp(mac, capsys):
+    """The launchd log is appended across every restart for the life of the
+    machine, while the dedup is per process -- so without a stamp, a block of
+    `no such session` from three restarts ago reads exactly like one happening
+    now. It cost a diagnosis round: a row map that had already been repaired
+    read as broken.
+    """
+    reported = set()
+    mac._bridge_warn(reported, "agtermctl session rename failed")
+    mac._bridge_warn(reported, mac.NOTICE + "the feed is gone (watchdog)")
+    lines = [line for line in capsys.readouterr().err.splitlines() if line]
+    assert len(lines) == 2
+    for line in lines:
+        stamp = line.split()[2]        # "agb bridge: <stamp> ..."
+        assert stamp.endswith("Z") and stamp.count(":") == 2, line
+        # Parsed, not pattern-matched: a stamp that is not a real time is worse
+        # than none, because it will be believed.
+        time.strptime(stamp.split(".")[0], "%Y-%m-%dT%H:%M:%S")
+
+
+def test_the_timestamp_does_not_disable_the_dedup(mac, capsys, monkeypatch):
+    """The trap in stamping: hand `_warn_once` the stamped line and every line
+    is unique, so the dedup silently stops working and the broken-agtermctl
+    warning becomes one line per poll. The dedup key must stay the raw text.
+
+    The clock is **forced to advance**. Written against the real one this test
+    passes either way: five polls in a tight loop land inside the same
+    millisecond, `iso_stamp` returns the same string, and the broken version
+    dedups by accident -- a mutation of the code under test left it green.
+    """
+    ticks = iter(["2026-07-30T00:00:%02d.000Z" % (n,) for n in range(5)])
+    monkeypatch.setattr(mac.agb, "iso_stamp", lambda now=None: next(ticks))
+    reported = set()
+    for _poll in range(5):
+        mac._bridge_warn(reported, "agtermctl session rename failed")
+    assert capsys.readouterr().err.count("rename failed") == 1
+
+
 def test_a_quiet_period_does_not_announce_a_death(bridge, mac):
     """`BRIDGE_QUIET` (10 s) renders `[?]` and keeps reading; only the watchdog
     and a real EOF end the connection. Announcing "the feed is gone" at 10 s
