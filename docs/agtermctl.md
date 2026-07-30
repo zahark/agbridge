@@ -12,11 +12,11 @@ This file therefore has two layers, and they are kept **visually separate on pur
 2. **The verbatim recording** — `--help` output captured on the Mac. `session split` and
    `session type` are recorded below.
 
-**As of 2026-07-30 every clause this tool depends on has been exercised against a live agterm.**
-What remains `ASSUMED` is narrow and marked: the CLI *spelling* of `--blink`/`--auto-reset` (the
-underlying arguments are confirmed from `agr`'s wire messages), and that `session rename` may be
-called repeatedly — which the bridge does on every update, so a failure would be loud and constant
-rather than subtle.
+**As of 2026-07-30 every clause this tool depends on has been exercised against a live agterm**,
+including the spelling of `--blink` (observed blinking a live row). What remains `ASSUMED` is that
+`session rename` may be called repeatedly — which the bridge does on every update, so a failure
+would be loud and constant rather than subtle — and the spelling of `--auto-reset`, which agbridge
+does not use (see "`--auto-reset`: deliberately dropped").
 
 When the recording lands, reconcile layer 1 against it and update `tests/stubs/agtermctl`
 (created by Task 4b). Nothing in the plan blocks on that: the assumed contract is complete enough
@@ -120,8 +120,11 @@ matters more than any other (see *Fallbacks*):
   {"cmd":"session.status","target":"<id>","args":{"status":"active","blink":true,"autoReset":true}}
   ```
 
-  so the CLI flags are **ASSUMED** to be spelled `--blink` / `--auto-reset` (which is how `agr`'s
-  own front-end spells them, `agr:213`).
+  and the CLI spells them `--blink` / `--auto-reset` (which is how `agr`'s own front-end spells
+  them, `agr:213`).
+- **CONFIRMED** (2026-07-30, live): `--blink` is accepted and takes effect — a row that had shown no
+  status came up blinking on the next transition into `active`. Only `--blink` was exercised;
+  `--auto-reset` is not emitted by agbridge at all, so its spelling stays unverified and unused.
 - **ASSUMED**: `--target` is required, and setting a status is **level, not edge** — re-applying the
   same status is a harmless no-op. The bridge relies on this: it repaints from every snapshot.
 
@@ -187,11 +190,11 @@ agbridge keeps `--blink` on `active` so the sidebar behaves the way the user's e
 trained, **but only on an actual transition into `active`** — never on a snapshot repaint or a
 reconnect resync.
 
-The reason is a genuine unknown: it is not established whether `blink` is a **sticky attribute** or
-a **one-shot animation trigger**. If it is one-shot, re-sending it on every snapshot would make a
-row that has been quietly `active` for an hour flash on every bridge reconnect. Gating on
-transitions is correct under both readings, so the ambiguity costs nothing and need not be resolved
-before Task 4b. Record the answer here when the Mac is available.
+The flag itself is **CONFIRMED** live (2026-07-30) — a row began blinking on a transition into
+`active`. What is still not established is whether `blink` is a **sticky attribute** or a
+**one-shot animation trigger**. If it is one-shot, re-sending it on every snapshot would make a row
+that has been quietly `active` for an hour flash on every bridge reconnect. Gating on transitions is
+correct under both readings, so the ambiguity costs nothing and does not need resolving.
 
 ### `--auto-reset`: **deliberately dropped**
 
@@ -318,7 +321,7 @@ _not recorded_
 ### Checks to make while recording
 
 - does `session new` print the row id, and in what format?
-- is `blink` sticky or one-shot?
+- is `blink` sticky or one-shot? (the flag itself is confirmed accepted; this is still open)
 - can `rename` be applied repeatedly to a live row?
 - does `session close` exist, and does it take `--target`?
 - is any status outside the four-word vocabulary accepted (it must not be)?
