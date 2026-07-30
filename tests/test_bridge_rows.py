@@ -881,6 +881,41 @@ def test_the_notice_survives_the_real_warn_channel(mac, capsys):
     assert err.count("agtermctl session rename failed") == 1
 
 
+def test_recovery_repaints_every_row_even_when_nothing_changed(bridge):
+    """A reconnect is a full repaint, and this pins *why* -- it is not obvious.
+
+    A row's state only moves when Claude Code fires a hook, so an idle agent's
+    state is usually identical either side of an outage, and `_status` skips a
+    repaint that matches what was last emitted. What makes the repaint land
+    anyway is that `_render_stale` painted `idle` on the way down, so the
+    remembered status differs from the real one on the way back up.
+
+    Break that pairing -- stop painting `idle` when going stale, or start
+    forcing the repaint on the way back -- and the row silently keeps agterm's
+    `[?]`/no-glyph rendering, which is indistinguishable from a live idle agent.
+    """
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="active"))
+    b.stale("eof")                       # the connection died: `[?]` + idle
+    assert b.renderer.applied["aaaa1111"] == "idle"    # the load-bearing step
+    painted = len(b.run.statuses())
+    b.upsert(wire("aaaa1111", state="active", seq=2))   # reconnect, same state
+
+    states = [state for state, _row, _blink in b.run.statuses()][painted:]
+    assert "active" in states, "the row was never given its status back"
+
+
+def test_a_recovery_repaint_does_not_blink(bridge):
+    """Forcing the repaint must not turn every VPN hiccup into a flash: a
+    recovery is not a transition into `active`."""
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="active"))
+    b.stale("eof")
+    b.upsert(wire("aaaa1111", state="active", seq=2))
+    assert [blink for _s, _r, blink in b.run.statuses()] == [False] * len(
+        b.run.statuses())
+
+
 def test_every_bridge_warning_carries_a_timestamp(mac, capsys):
     """The launchd log is appended across every restart for the life of the
     machine, while the dedup is per process -- so without a stamp, a block of

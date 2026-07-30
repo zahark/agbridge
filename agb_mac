@@ -1789,7 +1789,29 @@ class RowRenderer(object):
                          "its status is not being updated" % (reason,))
 
     def _render_live(self):
-        """The feed is back: lift `[?]` and re-assert the level state."""
+        """The feed is back: lift `[?]` and re-assert the level state.
+
+        This **always** repaints, and needs no `force` flag to do it, which is
+        worth writing down because it looks like it needs one: `_title` and
+        `_status` each skip a repaint matching what this process last emitted,
+        and a row's state only moves when Claude Code fires a hook, so an idle
+        agent's state is usually identical either side of an outage.
+
+        What closes the gap is that `_render_stale` already painted every bound
+        row `idle` + `[?]`, so the memory says `idle` by the time we get here
+        and the real state differs from it. And if that stale paint *failed*,
+        the memory was not updated either -- agterm never received the `[?]`,
+        so there is nothing to undo. The memory tracks what was successfully
+        applied, which is what makes suppression safe in both directions.
+
+        Every reconnect passes through here: `bridge_supervise` marks the model
+        stale when a connection ends, and the first line of the next one lifts
+        it. So a reconnect is a full repaint.
+
+        No blink, deliberately: `_status` defaults it off and a recovery is not
+        a transition. A row that was already `active` must not flash every time
+        the VPN hiccups.
+        """
         self.stale = False
         for key in self.rows.bound_keys():
             row = self.rows.row_for(key)
