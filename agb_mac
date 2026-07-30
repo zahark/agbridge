@@ -1931,9 +1931,24 @@ def _bridge_warn(reported, text):
     record that prints an event once per *process* is not a record. The desktop
     banner is what is rate limited instead (NOTIFY_INTERVAL), which is the split
     `RowRenderer._notify` documents.
+
+    Every line is **stamped**, unlike the hook's stderr. This log is a launchd
+    `StandardErrorPath`: it is appended across every restart for the life of the
+    machine, while the dedup above is per *process*. Reading it back, a block of
+    `no such session` from three restarts ago is indistinguishable from one
+    happening now -- which cost a whole diagnosis round, a map that had already
+    been repaired reading as broken. UTC, like `agb.iso_stamp` everywhere else.
+
+    The dedup is therefore done **here, on the unstamped text**, and `_warn_once`
+    is handed a throwaway set. Passing it the stamped line instead would make
+    every line unique and silently disable the dedup this function exists to
+    apply -- one `agtermctl is broken` per poll, for ever.
     """
-    agb._warn_once(set() if text.startswith(NOTICE) else reported,
-                   "bridge", text)
+    if not text.startswith(NOTICE):
+        if text in reported:
+            return
+        reported.add(text)
+    agb._warn_once(set(), "bridge", "%s %s" % (agb.iso_stamp(), text))
 
 
 def run_bridge(argv):
