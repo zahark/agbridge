@@ -382,6 +382,7 @@ having forgotten its rows** — closed, reset or reinstalled — while the map s
 |---|---|---|
 | `--key <key>` | every binding | forget one; repeatable. Use it when only one row was closed — dropping the whole map mints duplicates for rows that are still live |
 | `--rows <path>` | `~/.config/agbridge/rows` | the map |
+| `--workspace <name>` | config `workspace`, else agterm's current one | which agterm workspace new rows are created in |
 | `--dry-run` | off | name the bindings and change nothing |
 
 Exits 1 if a named key was not in the map (and says so), 0 otherwise. **Nothing on the farm is

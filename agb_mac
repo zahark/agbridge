@@ -562,6 +562,7 @@ BRIDGE_VALUE_ARGS = {
     "--watchdog": "watchdog",
     "--connections": "connections",
     "--rows": "rows",
+    "--workspace": "workspace",
 }
 
 BRIDGE_FLAGS = {
@@ -584,7 +585,7 @@ def parse_bridge_args(argv):
     opts = {"from_stdin": False, "no_agterm": False, "feed_host": None,
             "mac_id": None, "statedir": None, "remote_path": None,
             "remote_python": None, "watchdog": None, "connections": None,
-            "rows": None}
+            "rows": None, "workspace": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -1533,12 +1534,25 @@ class RowRenderer(object):
         command = pane_command(session, settings.get("agb_path"),
                                settings.get("python"), jump_for(session, settings))
         name = row_title(session, self.model.now)
-        out = self._agtermctl([
-            "session", "new",
-            "--name", name,
-            "--cwd", str(session.get("cwd") or ""),
-            "--command", command,
-        ])
+        args = ["session", "new",
+                "--name", name,
+                "--cwd", str(session.get("cwd") or ""),
+                "--command", command,
+                # A row appearing must never take the screen away from you. An
+                # agent starting on the farm is a thing to notice in the
+                # sidebar, not an interruption -- and a refresh recreating
+                # several rows would otherwise yank the selection once per row.
+                "--no-select"]
+        # `--workspace-name` + `--create-workspace`: by NAME rather than id,
+        # because an id is not something a human puts in a config file, and
+        # `--create-workspace` makes the setting idempotent -- the workspace is
+        # made once and reused for ever after. Without this agterm uses whatever
+        # workspace happens to be current, so rows recreated by a refresh land
+        # wherever you were looking at the time.
+        workspace = (self.settings or {}).get("workspace")
+        if workspace:
+            args.extend(["--workspace-name", workspace, "--create-workspace"])
+        out = self._agtermctl(args)
         if out is None:
             return None
         row = ""
@@ -1774,6 +1788,7 @@ def render_settings(opts, config=None):
         config = agb.read_config()
     return {
         "rows": opts.get("rows") or rows_path(),
+        "workspace": opts.get("workspace") or config.get("workspace"),
         "agb_path": local_agb_path(),
         "python": sys.executable,
         "jump_host": config.get("jump_host"),

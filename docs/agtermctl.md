@@ -44,12 +44,37 @@ to implement and to stub.
 The bridge nevertheless treats the id as an **opaque string**: never parsed, never generated, only
 stored and echoed back via `--target`. A UUID today is an observation, not a guarantee.
 
+Verbatim from `agtermctl session new --help` (2026-07-30), the flags agbridge uses:
+
+```
+  --cwd <cwd>              Working directory (defaults to $HOME).
+  --workspace <workspace>  Target workspace by id/prefix/active (defaults to the current one).
+                           Mutually exclusive with --workspace-name.
+  --workspace-name <name>  Target workspace by name; errors if not found unless --create-workspace.
+  --create-workspace       With --workspace-name, create the workspace when it does not exist.
+  --command <command>      Run this command as the session's process instead of the login shell.
+  --name <name>            Initial session name.
+  --no-select              Create the session in the background without selecting or focusing it
+                           (leaves the current selection untouched).
+```
+
 agbridge uses it as:
 
 ```
 agtermctl session new --name '<label> · <host> · <cwd> · <pane> · <beat-age>' --cwd <cwd> \
-  --command '<python> -S -E <agb> pane <key> --host <host> [--tmux <session>] [--pane %N] [--jump <j>]'
+  --command '<python> -S -E <agb> pane <key> --host <host> [--tmux <session>] [--pane %N] [--jump <j>]' \
+  --no-select [--workspace-name <name> --create-workspace]
 ```
+
+Two flags there are not decoration:
+
+- **`--no-select`** — without it every row creation takes the screen. An agent starting on the farm
+  is something to notice in the sidebar, not an interruption, and a refresh recreating several rows
+  would otherwise yank the selection once per row.
+- **`--workspace-name` + `--create-workspace`**, by *name* rather than id: an id is not something a
+  human puts in a config file, and creating-if-absent makes the setting idempotent. Without it
+  agterm uses whichever workspace is current, so rows recreated by a refresh land wherever the
+  operator happened to be looking. `--workspace` and `--workspace-name` are mutually exclusive.
 
 Two things about that invocation are easy to get wrong:
 
