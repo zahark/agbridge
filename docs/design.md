@@ -1189,8 +1189,18 @@ interpreter shutdown, and with the pipe gone that raises `BrokenPipeError` and e
 clean disconnect would reach the supervisor as a crash.
 
 The ssh the bridge spawns is
-`ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 <feed_host> env AGB_STATEDIR=<path>
-<remote_python> -S -E <agb_remote_path> feed <mac-id>`. It is built by a pure function that
+`ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ConnectTimeout=20 -o BatchMode=yes
+<feed_host> env AGB_STATEDIR=<path> <remote_python> -S -E <agb_remote_path> feed <mac-id>`.
+
+The last two options cover what `ServerAlive` cannot, both observed in a real launchd log.
+`ServerAlive` starts only once a session exists, so it does not bound the **connect**: a laptop that
+loses its VPN mid-session sat in the kernel's TCP timeout and reported `Operation timed out` minutes
+later, with every row `[?]` throughout. `BatchMode` is the more serious one — a LaunchAgent has no
+tty, so an ssh that decides to ask for a passphrase or a host-key confirmation blocks on a prompt
+nobody can answer, for ever. That is a *hung* bridge with a live process, which from the outside is
+indistinguishable from a quiet farm: exactly the failure class this design exists to remove.
+
+It is built by a pure function that
 **refuses rather than interpolates**: ssh joins its command words with spaces and the remote login
 shell re-splits them, so a statedir containing a space — or a `~`, which would expand against the
 *Mac's* home — is an error, not a connection that fails invisibly on the far side. Reconnect backoff

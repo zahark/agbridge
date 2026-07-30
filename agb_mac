@@ -36,6 +36,22 @@ import agb
 BRIDGE_ALIVE_INTERVAL = 15
 BRIDGE_ALIVE_COUNT = 3
 
+# Two things ServerAlive cannot do, both seen in a real launchd log.
+#
+# `ConnectTimeout` bounds the *connect*, which ServerAlive never reaches: it
+# only starts once a session exists. A laptop that loses the VPN mid-session
+# produced `Read from remote host ...: Operation timed out` after minutes of
+# nothing, because the default is the kernel's TCP timeout. 20 s is longer than
+# any healthy connect to a farm host and far shorter than that.
+#
+# `BatchMode` is the more serious of the two: a LaunchAgent has no tty, so an
+# ssh that decides to ask for a passphrase or a host-key confirmation blocks on
+# a prompt nobody can answer, for ever. That is a *hung* bridge with a live
+# process -- indistinguishable from a quiet farm from the outside, which is the
+# failure class this project exists to remove. Declining to prompt turns it
+# into a loud, restarting failure with the reason on stderr.
+BRIDGE_CONNECT_TIMEOUT = 20
+
 # The farm-side interpreter. Constraint #14: an absolute path, because `ssh host
 # cmd` sources no profile and a bare `python3` that fails to resolve would kill
 # the feed with nothing on the Mac able to tell that apart from a quiet farm.
@@ -145,6 +161,8 @@ def bridge_ssh_argv(feed_host, sd, mac_id, agb_remote_path,
         "ssh",
         "-o", "ServerAliveInterval=%d" % (BRIDGE_ALIVE_INTERVAL,),
         "-o", "ServerAliveCountMax=%d" % (BRIDGE_ALIVE_COUNT,),
+        "-o", "ConnectTimeout=%d" % (BRIDGE_CONNECT_TIMEOUT,),
+        "-o", "BatchMode=yes",
         feed_host,
         "env", "AGB_STATEDIR=" + sd,
         remote_python, "-S", "-E", agb_remote_path,
