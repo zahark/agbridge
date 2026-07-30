@@ -668,6 +668,47 @@ def test_a_snapshot_repaint_never_blinks(bridge):
     assert [blink for _s, _r, blink in b.run.statuses()] == [False]
 
 
+def test_a_freshly_minted_row_is_painted_even_if_nothing_changed(bridge):
+    """Reported live: a row that showed no glyph and agterm's own default name
+    until the agent was typed at.
+
+    `_title` and `_status` both suppress a repaint that matches what this
+    process last emitted, and that memory is per *key*. Forget the binding under
+    a running bridge -- which `agb forget-rows` does, in another process, with
+    no `save()` here to run `_forget_unmapped` -- and the next upsert mints a
+    brand new agterm row while the memory still describes the old one. The
+    unchanged state must not be read as "already applied": the new row is blank.
+    """
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="active", seq=1))
+    first = b.run.statuses()[0][1]
+    b.rows.forget("aaaa1111")
+    b.upsert(wire("aaaa1111", state="active", seq=2))    # same state, new row
+
+    second = b.rows.row_for("aaaa1111")
+    assert second and second != first, "a new row should have been minted"
+    assert b.run.statuses()[-1] == ("active", second, False)
+    assert b.run.renames()[-1][1] == second
+    # A first paint never blinks -- and now genuinely so: before this, a stale
+    # `applied` could make the new row's opening paint flash.
+    assert [blink for _s, row, blink in b.run.statuses() if row == second] \
+        == [False]
+
+
+def test_a_rebound_done_row_keeps_its_applied_memory(bridge):
+    """The counter-case, so the fix above is not over-applied. `rebind` reuses
+    the *same* agterm row, which still carries the `[done]` title and the `idle`
+    the removal painted on it -- that memory is about this row and is still
+    true, so it must survive and keep suppressing redundant repaints."""
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="active", seq=1))
+    row = b.rows.row_for("aaaa1111")
+    b.remove("aaaa1111")
+    b.upsert(wire("aaaa1111", state="active", seq=2))
+    assert b.rows.row_for("aaaa1111") == row
+    assert b.run.verbs().count("new") == 1
+
+
 def test_auto_reset_is_never_passed(bridge):
     """Deliberately dropped (docs/agtermctl.md): it lets agterm repaint a row on
     its own timer with no notification back, which is exactly the
