@@ -191,11 +191,113 @@ def test_the_key_must_be_a_minted_one(ops, agb, seeded, set_host):
                        out=Out())
 
 
-@pytest.mark.parametrize("argv", [[KEY], [KEY, "a", "b"], []])
-def test_it_needs_exactly_a_key_and_a_label(ops, agb, argv):
+@pytest.mark.parametrize("argv", [[KEY, "a", "b"], []])
+def test_it_needs_a_label_and_at_most_a_key(ops, agb, argv):
     with pytest.raises(agb.AgbError):
         ops.parse_rename_args(argv)
 
 
+def test_a_lone_key_is_refused_rather_than_used_as_a_label(ops, agb):
+    """`agb rename <16 hex>` reads as "rename this key" and would otherwise
+    parse as "label the current row <16 hex>" -- the wrong row, named something
+    nobody meant, with no error anywhere."""
+    with pytest.raises(agb.AgbError) as excinfo:
+        ops.parse_rename_args([KEY])
+    assert "looks like a key" in str(excinfo.value)
+    assert KEY in str(excinfo.value)
+
+
+def test_a_short_hex_label_is_still_a_label(ops):
+    """`ab` is hex, but nobody means it as a key. The refusal is for things long
+    enough to actually be one."""
+    assert ops.parse_rename_args(["ab"])["label"] == "ab"
+
+
 def test_rename_is_reachable_through_the_shared_ops_door(agb):
     assert "rename" in agb.OPS_COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# addressing: nobody retypes 16 hex characters
+# ---------------------------------------------------------------------------
+
+def test_one_argument_renames_the_row_this_terminal_is_in(ops, agb, seeded,
+                                                          set_host, set_tmux,
+                                                          monkeypatch):
+    """The common case: you are sitting in the agent you want to rename, and
+    requiring its key would be the tool's least usable moment."""
+    sd = seeded[0]
+    set_host(HOST)
+    set_tmux("/tmp/tmux-1/default,4242,0", "%24")
+    anchor = agb.resolve_anchor(HOST)
+    agb.link_idx(agb.idx_path(sd, anchor), KEY, seeded[1], seeded[2])
+    out = Out()
+    assert ops.run_rename(["from-here", "--statedir", sd], out=out) == 0
+    assert _record(agb, sd)["label"] == "from-here"
+
+
+def test_one_argument_never_mints_a_key(ops, agb, statedir, set_host,
+                                        set_tmux):
+    """`resolve_identity` would create one. Naming a thing must not be what
+    brings it into existence."""
+    sd = str(statedir)
+    set_host(HOST)
+    set_tmux("/tmp/tmux-1/default,4242,0", "%24")
+    out = Out()
+    assert ops.run_rename(["whatever", "--statedir", sd], out=out) == 1
+    assert "no agent recorded for this terminal" in out.text
+    assert agb.list_session_keys(sd, HOST) == []
+    assert not os.path.exists(agb.idx_dir(sd)) or \
+        os.listdir(agb.idx_dir(sd)) == []
+
+
+def test_a_key_prefix_addresses_the_row(ops, agb, seeded, set_host):
+    sd = seeded[0]
+    set_host(HOST)
+    assert ops.run_rename([KEY[:4], "by-prefix", "--statedir", sd],
+                          out=Out()) == 0
+    assert _record(agb, sd)["label"] == "by-prefix"
+
+
+def test_an_ambiguous_prefix_is_refused_rather_than_guessed(ops, agb, statedir,
+                                                            set_host):
+    """Two keys, one prefix: picking either would rename the wrong row, and the
+    operator would not find out until they looked at the sidebar."""
+    sd = str(statedir)
+    set_host(HOST)
+    agb.ensure_session_dir(sd, HOST)
+    pid, starttime = conftest.live_agent()
+    for key in ("abcd0000" + "0" * 8, "abcd1111" + "0" * 8):
+        agb.atomic_write(agb.record_path(sd, key, HOST), json.dumps(
+            {"v": 1, "key": key, "label": "x", "seq": 1},
+            sort_keys=True).encode("utf-8"))
+        agb.write_in_place(agb.state_path(sd, key, HOST),
+                           agb.format_state("active", HOST, pid, starttime, 1))
+    with pytest.raises(agb.AgbError) as excinfo:
+        ops.run_rename(["abcd", "new", "--statedir", sd], out=Out())
+    assert "matches 2 keys" in str(excinfo.value)
+
+
+def test_a_whole_key_is_not_treated_as_a_prefix_of_another(ops, agb, statedir,
+                                                           set_host):
+    """An exact key that exists wins outright, even if it prefixes others."""
+    sd = str(statedir)
+    set_host(HOST)
+    agb.ensure_session_dir(sd, HOST)
+    pid, starttime = conftest.live_agent()
+    short = "abcd0000" + "0" * 8
+    for key in (short, short[:-1] + "f"):
+        agb.atomic_write(agb.record_path(sd, key, HOST), json.dumps(
+            {"v": 1, "key": key, "label": "x", "seq": 1},
+            sort_keys=True).encode("utf-8"))
+        agb.write_in_place(agb.state_path(sd, key, HOST),
+                           agb.format_state("active", HOST, pid, starttime, 1))
+    assert ops.run_rename([short, "exact", "--statedir", sd], out=Out()) == 0
+    with open(agb.record_path(sd, short, HOST)) as handle:
+        assert json.load(handle)["label"] == "exact"
+
+
+@pytest.mark.parametrize("given", ["", "zz", "nothex", "g" * 4])
+def test_something_that_is_not_hex_is_refused(ops, agb, given):
+    with pytest.raises(agb.AgbError):
+        ops.parse_rename_args([given, "label"])
