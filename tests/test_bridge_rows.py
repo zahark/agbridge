@@ -1959,3 +1959,78 @@ def test_forget_rows_names_the_row_id_of_a_done_entry(mac, tmp_path):
     mac.run_forget_rows(["--rows", path, "--dry-run"], out=out)
     assert "ROW-2" in out.text
     assert "?" not in out.text
+
+
+def test_forget_rows_closes_the_agterm_session_before_forgetting_it(mac,
+                                                                    tmp_path):
+    """⚠️ Two claims, and the second is the subtle one.
+
+    First: it closes at all. The original version only dropped the mapping, so
+    agterm kept the session and the bridge minted a fresh row beside it -- the
+    operator was left closing duplicates by hand.
+
+    Second: the row id is READ from the map before anything forgets it. That
+    read is the load-bearing step, not the order of the close and the forget:
+    the id lives only in the map, so a version that forgot first would close
+    nothing and could never name that session again. Mutating the *read* past
+    the forget fails this test; swapping the two calls does not, because the id
+    is already in hand by then."""
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+
+    seen = []
+
+    def run(argv):
+        # what the map still holds AT THE MOMENT of the close
+        seen.append((argv, mac.load_rows(path).known("aaaa1111")))
+        return (0, "", "")
+
+    out = _RowOut()
+    assert mac.run_forget_rows(["--rows", path], out=out, run=run) == 0
+    assert len(seen) == 1
+    argv, still_known = seen[0]
+    assert argv == ["agtermctl", "session", "close", "--target", "ROW-1"]
+    assert still_known                        # closed while it was still named
+    assert mac.load_rows(path).bound_keys() == []
+    assert "closed row ROW-1" in out.text
+
+
+def test_a_close_that_fails_is_not_fatal(mac, tmp_path):
+    """agterm having already dropped the row is the ORIGINAL reason this command
+    exists, so a failing close is the expected answer there, not an error."""
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+    out = _RowOut()
+    assert mac.run_forget_rows(
+        ["--rows", path], out=out,
+        run=lambda argv: (1, "", "error: no such session: ROW-1")) == 0
+    assert mac.load_rows(path).bound_keys() == []      # forgotten anyway
+    assert "not closed" in out.text
+
+
+def test_no_close_leaves_the_session_alone(mac, tmp_path):
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+    calls = []
+    assert mac.run_forget_rows(["--rows", path, "--no-close"], out=_RowOut(),
+                               run=lambda argv: calls.append(argv) or 0) == 0
+    assert calls == []
+    assert mac.load_rows(path).bound_keys() == []
+
+
+def test_a_dry_run_closes_nothing(mac, tmp_path):
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+    calls = []
+    mac.run_forget_rows(["--rows", path, "--dry-run"], out=_RowOut(),
+                        run=lambda argv: calls.append(argv) or 0)
+    assert calls == []
+    assert mac.load_rows(path).bound_keys() == ["aaaa1111"]

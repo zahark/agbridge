@@ -37,6 +37,8 @@ usage: agb-refresh [--key <key>]... [--dry-run] [options]
 
   --key <key>        forget one binding; repeatable. Default: all of them
   --dry-run          say what would happen; change nothing
+  --no-close         leave agterm's sessions open (they become duplicates
+                     when the bridge mints fresh rows)
   --label <name>     launchd label                     (default com.agbridge)
   --launch-agents <dir>                     (default ~/Library/LaunchAgents)
   --agb <path>       the installed agb          (default ~/.local/lib/agbridge/agb)
@@ -47,6 +49,7 @@ EOF
 }
 
 label=$DEFAULT_LABEL; agentsdir=$DEFAULT_AGENTS; agb=$DEFAULT_AGB
+noclose=no
 python=""; rows=""; dry=no; keys=""
 
 need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
@@ -55,6 +58,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --key) need $# "$1"; keys="$keys $2"; shift 2 ;;
         --dry-run) dry=yes; shift ;;
+        --no-close) noclose=yes; shift ;;
         --label) need $# "$1"; label=$2; shift 2 ;;
         --launch-agents) need $# "$1"; agentsdir=$2; shift 2 ;;
         --agb) need $# "$1"; agb=$2; shift 2 ;;
@@ -81,6 +85,7 @@ set -- forget-rows
 for k in $keys; do set -- "$@" --key "$k"; done
 [ -n "$rows" ] && set -- "$@" --rows "$rows"
 [ "$dry" = yes ] && set -- "$@" --dry-run
+[ "$noclose" = yes ] && set -- "$@" --no-close
 
 if [ "$dry" = yes ]; then
     say "dry run:  would stop $label, forget the bindings below, then start it"
