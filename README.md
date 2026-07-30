@@ -237,14 +237,15 @@ Verified in real use, not just in tests:
 | a finished agent's row goes `[done]`, stays visible | ✅ |
 | `agb close-done` → `agtermctl session close` | ✅ |
 | automatic reap of dead own-host agents | ✅ |
+| `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 
 **Every `agtermctl` clause this tool depends on has now been exercised against a live agterm.**
 
 Still not exercised, and worth knowing:
 
-- **The CLI spelling of `--blink`** (the underlying argument is confirmed from `agr`'s wire
-  messages; a wrong spelling would fail loudly on every transition into `active`, and does not).
-  `--auto-reset` is never sent — it was deliberately dropped.
+- **Whether `blink` is sticky or a one-shot animation.** The flag is confirmed accepted; agbridge
+  sends it only on an actual transition into `active`, which is correct under either reading.
+  `--auto-reset` is never sent — it was deliberately dropped, so its spelling stays unverified.
 - **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
   host.
 
