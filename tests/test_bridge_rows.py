@@ -1520,8 +1520,8 @@ def test_nothing_in_the_mac_module_unlinks_or_renames(mac_tree):
     temp *it created itself* over a Mac-local file under `~/.config`; it removes
     nothing of anyone else's, and it reaches no NFS path from here (the
     companion guard below forbids every statedir helper). So the exemption is
-    granted to exactly one function, by name, and the assertion that it is
-    exactly one is the part that keeps this honest.
+    granted by name to exactly the functions listed below, and the assertion
+    that the list is exactly those is the part that keeps this honest.
     """
     users = []
     for name, node in conftest.functions(mac_tree).items():
@@ -1531,7 +1531,12 @@ def test_nothing_in_the_mac_module_unlinks_or_renames(mac_tree):
             assert forbidden not in made, "%s in %s" % (forbidden, name)
         if ("agb", "atomic_write") in made or (None, "atomic_write") in made:
             users.append(name)
-    assert users == ["save"], users
+    # `write_placements` is the second, and the exemption is granted on the
+    # same terms: a placement file is CONTENT whose torn read would silently
+    # move rows to the wrong workspace, it is Mac-local under ~/.config beside
+    # the map, and it removes nothing of anyone else's. Sorted, because the
+    # claim is which functions -- not what order the walk happened to find them.
+    assert sorted(users) == ["save", "write_placements"], users
 
 
 def test_nothing_in_the_mac_module_touches_the_shared_statedir(mac_tree):
@@ -1989,8 +1994,10 @@ def test_forget_rows_closes_the_agterm_session_before_forgetting_it(mac,
 
     out = _RowOut()
     assert mac.run_forget_rows(["--rows", path], out=out, run=run) == 0
-    assert len(seen) == 1
-    argv, still_known = seen[0]
+    closes = [(argv, known) for argv, known in seen
+              if argv[1:3] == ["session", "close"]]
+    assert len(closes) == 1
+    argv, still_known = closes[0]
     assert argv == ["agtermctl", "session", "close", "--target", "ROW-1"]
     assert still_known                        # closed while it was still named
     assert mac.load_rows(path).bound_keys() == []
@@ -2018,9 +2025,11 @@ def test_no_close_leaves_the_session_alone(mac, tmp_path):
     rows.bind("aaaa1111", "ROW-1", "one")
     rows.save(force=True)
     calls = []
-    assert mac.run_forget_rows(["--rows", path, "--no-close"], out=_RowOut(),
-                               run=lambda argv: calls.append(argv) or 0) == 0
-    assert calls == []
+    # The runner answers (rc, stdout, stderr): `tree_workspaces` reads all three.
+    assert mac.run_forget_rows(
+        ["--rows", path, "--no-close"], out=_RowOut(),
+        run=lambda argv: (calls.append(argv), (0, "", ""))[1]) == 0
+    assert [c for c in calls if c[1:3] == ["session", "close"]] == []
     assert mac.load_rows(path).bound_keys() == []
 
 
@@ -2031,7 +2040,7 @@ def test_a_dry_run_closes_nothing(mac, tmp_path):
     rows.save(force=True)
     calls = []
     mac.run_forget_rows(["--rows", path, "--dry-run"], out=_RowOut(),
-                        run=lambda argv: calls.append(argv) or 0)
+                        run=lambda argv: (calls.append(argv), (0, "", ""))[1])
     assert calls == []
     assert mac.load_rows(path).bound_keys() == ["aaaa1111"]
 
@@ -2067,3 +2076,143 @@ def test_no_workspace_configured_means_no_workspace_flag(bridge):
     created = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]][0]
     assert not [a for a in created if a.startswith("--workspace")]
     assert "--create-workspace" not in created
+
+
+# ---------------------------------------------------------------------------
+# remembered placements: a refresh must put rows back where they were
+# ---------------------------------------------------------------------------
+
+def bridge_with(mac, tmp_path, settings):
+    """A Harness whose renderer sees `settings` (workspace, placements path)."""
+    return Harness(mac, tmp_path / "rows-ws", None, settings)
+
+TREE_JSON = (
+    '{"ok":true,"result":{"tree":{"workspaces":['
+    '{"name":"working repos","id":"W1","sessions":['
+    '{"id":"ROW-1","name":"one"},{"id":"ROW-2","name":"two"}]},'
+    '{"name":"agbridge","id":"W2","sessions":[{"id":"ROW-3","name":"three"}]},'
+    '{"name":"empty","id":"W3","sessions":[]}]}}}')
+
+
+def test_tree_workspaces_maps_row_ids_to_workspace_names(mac):
+    got = mac.tree_workspaces(run=lambda argv: (0, TREE_JSON, ""))
+    assert got == {"ROW-1": "working repos", "ROW-2": "working repos",
+                   "ROW-3": "agbridge"}
+
+
+@pytest.mark.parametrize("answer", [
+    (1, TREE_JSON, "boom"),          # agtermctl failed
+    (0, "", ""),                     # nothing on stdout
+    (0, "not json", ""),             # unparseable
+    (0, '{"ok":true}', ""),          # no tree
+    (0, '{"result":{"tree":{"workspaces":"nope"}}}', ""),
+])
+def test_an_unreadable_tree_is_none_not_empty(mac, answer):
+    """None means "could not ask", which must leave remembered placements alone.
+    An empty dict would erase every one of them."""
+    assert mac.tree_workspaces(run=lambda argv: answer) is None
+
+
+def test_forget_rows_records_where_each_row_lived(mac, tmp_path):
+    path = str(tmp_path / "rows")
+    places = str(tmp_path / "placements")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.bind("bbbb2222", "ROW-3", "three")
+    rows.save(force=True)
+
+    def run(argv):
+        if argv[1] == "tree":
+            return (0, TREE_JSON, "")
+        return (0, "", "")
+
+    out = _RowOut()
+    assert mac.run_forget_rows(["--rows", path, "--placements", places],
+                               out=out, run=run) == 0
+    assert mac.read_placements(places) == {"aaaa1111": "working repos",
+                                           "bbbb2222": "agbridge"}
+    assert "remembered the workspace of 2 rows" in out.text
+
+
+def test_the_tree_is_read_before_any_row_is_closed(mac, tmp_path):
+    """Once a session is closed its workspace is as unknowable as its id, so the
+    order here is the difference between remembering and not."""
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+    order = []
+
+    def run(argv):
+        order.append(argv[1])
+        return (0, TREE_JSON if argv[1] == "tree" else "", "")
+
+    mac.run_forget_rows(["--rows", path, "--placements",
+                         str(tmp_path / "p")], out=_RowOut(), run=run)
+    assert order.index("tree") < order.index("session")
+
+
+def test_a_tree_that_cannot_be_read_leaves_placements_alone(mac, tmp_path):
+    """Erasing them would scatter every row on the next snapshot -- worse than
+    the problem this feature exists to solve."""
+    path = str(tmp_path / "rows")
+    places = str(tmp_path / "placements")
+    mac.write_placements({"aaaa1111": "kept"}, places)
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+    out = _RowOut()
+    mac.run_forget_rows(["--rows", path, "--placements", places], out=out,
+                        run=lambda argv: (1, "", "no"))
+    assert mac.read_placements(places) == {"aaaa1111": "kept"}
+    assert "left as they stand" in out.text
+
+
+def test_a_remembered_placement_beats_the_configured_workspace(mac, tmp_path):
+    """The operator moved that row on purpose; `workspace` is only where rows
+    are born."""
+    places = str(tmp_path / "placements")
+    mac.write_placements({"aaaa1111": "working repos"}, places)
+    b = bridge_with(mac, tmp_path, {"workspace": "agents",
+                                    "placements": places})
+    b.upsert(wire("aaaa1111"))
+    created = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]][0]
+    assert created[created.index("--workspace-name") + 1] == "working repos"
+
+
+def test_a_key_with_no_placement_falls_back_to_the_config(mac, tmp_path):
+    places = str(tmp_path / "placements")
+    mac.write_placements({"zzzz9999": "elsewhere"}, places)
+    b = bridge_with(mac, tmp_path, {"workspace": "agents",
+                                    "placements": places})
+    b.upsert(wire("aaaa1111"))
+    created = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]][0]
+    assert created[created.index("--workspace-name") + 1] == "agents"
+
+
+@pytest.mark.parametrize("name", ["", "has=equals", "with\nnewline",
+                                  " leading", "trailing ", "x" * 101])
+def test_workspace_names_that_would_break_the_file_are_refused(mac, name):
+    """The placement file is `key = value`, so `=` would split the line in the
+    wrong place and a control character would break it outright."""
+    assert not mac.valid_workspace(name)
+
+
+@pytest.mark.parametrize("name", ["agents", "working repos", "w4", "Ünïcode"])
+def test_ordinary_workspace_names_are_accepted(mac, name):
+    assert mac.valid_workspace(name)
+
+
+def test_placements_survive_a_round_trip(mac, tmp_path):
+    path = str(tmp_path / "placements")
+    places = {"aaaa1111": "working repos", "bbbb2222": "agbridge"}
+    mac.write_placements(places, path)
+    assert mac.read_placements(path) == places
+
+
+def test_a_malformed_placement_line_is_skipped_not_fatal(mac, tmp_path):
+    """Losing a placement costs a row its position, not its row."""
+    path = tmp_path / "placements"
+    path.write_text("aaaa1111 = good\nnot a key = x\nbbbb2222 = also good\n")
+    assert mac.read_placements(str(path)) == {"aaaa1111": "good",
+                                              "bbbb2222": "also good"}
