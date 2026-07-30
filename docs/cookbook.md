@@ -111,6 +111,7 @@ agb-claude api-refactor       # new named session, or re-attach if it exists
 agb-claude                    # named after the current directory
 agb-claude docs -- --model opus   # everything after `--` goes to claude
 agb-claude work -- --resume <session-id>   # options need the `--`
+agb-claude -d review          # start it in the background; the row appears on its own
 ```
 
 Your sidebar then reads something like:
@@ -161,7 +162,9 @@ agb close-done
    afterwards leaves the row pointing at a name that no longer exists.
 2. **A row appears on the first hook, not at launch.** Starting `claude` writes nothing — type a
    prompt and the row appears. There is deliberately no `SessionStart` hook, because a row with no
-   glyph would be indistinguishable from a finished one.
+   glyph would be indistinguishable from a finished one. `agb-claude -d` handles this for you: it
+   starts the session in the background with an opening prompt, so the row appears without you
+   attaching. (Not in a directory Claude has not been trusted in yet — it waits on that prompt.)
 3. **An agent started outside tmux gets a status-only row.** It shows state correctly but has
    nothing to attach to. That is by design, not a failure.
 

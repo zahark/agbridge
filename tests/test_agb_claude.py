@@ -129,3 +129,58 @@ def test_names_tmux_cannot_address_are_rewritten(wrapper):
     wrapper.run(["my.proj:v2"], inside_tmux=False)
     argv = wrapper.new_session()[0]
     assert "my-proj-v2" in argv
+
+
+# ---------------------------------------------------------------------------
+# -d: a row without attaching
+# ---------------------------------------------------------------------------
+
+def test_detach_starts_the_session_in_the_background(wrapper):
+    """A row appears on the first HOOK, not at launch, so a detached session
+    with nothing typed into it stays invisible. `-d` hands claude an opening
+    prompt for exactly that reason."""
+    code, out, _err = wrapper.run(["-d", "work"])
+    assert code == 0
+    argv = wrapper.new_session()[0]
+    assert "-d" in argv                      # tmux's detach flag
+    assert argv[-1] == "hi"                  # the prompt claude is given
+    assert argv[argv.index("claude") + 1] == "hi"
+    assert "detached" in out
+
+
+def test_the_greeting_is_the_last_word_after_claudes_own_options(wrapper):
+    """`claude [options] [prompt]` -- a prompt placed before the options would
+    be read as one."""
+    wrapper.run(["-d", "work", "--greet", "say OK", "--", "--model", "opus"])
+    argv = wrapper.new_session()[0]
+    assert argv[-1] == "say OK"
+    assert argv[-3:] == ["--model", "opus", "say OK"]
+
+
+def test_detach_never_attaches_or_switches(wrapper):
+    """The whole point: it returns immediately."""
+    wrapper.run(["-d", "work"])
+    verbs = [c[0] for c in wrapper.calls()]
+    assert "attach-session" not in verbs
+    assert "switch-client" not in verbs
+
+
+def test_detach_does_not_start_a_second_agent_in_an_existing_session(wrapper):
+    code, out, _err = wrapper.run(["-d", "work"], has_session=True)
+    assert code == 0
+    assert wrapper.new_session() == []
+    assert "already exists" in out
+
+
+def test_greet_without_detach_is_refused(wrapper):
+    """Without `-d` you are about to type in the session anyway, so a greeting
+    would be a silently ignored argument."""
+    code, _out, err = wrapper.run(["work", "--greet", "hello"])
+    assert code != 0
+    assert "-d" in err
+
+
+def test_greet_needs_a_value(wrapper):
+    code, _out, err = wrapper.run(["-d", "work", "--greet"])
+    assert code != 0
+    assert "needs a value" in err
