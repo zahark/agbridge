@@ -190,6 +190,12 @@ The interesting constraints, all of which the code and tests enforce:
 - **A dead row must not look like a live one.** `agterm`'s `idle` renders as *no glyph*, so a
   removed row would be pixel-identical to a live idle agent. Removed rows are marked `[done]` and
   stale ones `[?]` in the title.
+- **Every row's status is re-sent every 30 s**, changed or not. The bridge remembers what it last
+  painted and skips redundant repaints, but that memory describes what it *sent*, not what agterm is
+  showing — and agterm changes rows for its own reasons. It resets a session's status when the
+  session's command starts, so attaching to a row used to clear its glyph until the agent's state
+  next changed, which for an idle agent can be hours. The re-assert never blinks, never runs while
+  the feed is stale, and costs one call per row per interval.
 
 ## Documentation
 

@@ -167,6 +167,11 @@ environment — several are version- or mount-specific.
   value is a missing-value error in all of them.
 - Function-local imports (`json`, `select`, `subprocess`, `re`, `fcntl`) are deliberate. `agb`'s
   module-level imports are pinned to exactly `{errno, os, sys, time}` by a test.
+- **`RowRenderer.applied`/`.titles` are an optimisation, never a source of truth.** They record what
+  the bridge last *sent*, which is not what agterm is *showing* — agterm resets a row's status when
+  the row's command starts, so attaching clears the glyph with no error anywhere. `_reassert` re-sends
+  every status every `REASSERT_INTERVAL` (30 s) so no divergence can be permanent. If you add another
+  suppress-if-unchanged path, give it the same escape hatch.
 
 ## Known gaps
 

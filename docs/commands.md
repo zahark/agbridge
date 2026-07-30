@@ -103,6 +103,14 @@ agb bridge [--from-stdin] [--no-agterm] [--feed-host H] [--mac-id M] [--statedir
 | `--connections <n>` | unset — reconnect for ever | stop after `n` connections. Must be ≥ 1 |
 | `--rows <path>` | `~/.config/agbridge/rows` | the persisted `key → agterm row` map, on the Mac |
 
+**Two intervals have no flag**, deliberately — neither is a tuning knob, and a flag would invite
+setting them wrong:
+
+| Constant | Value | What it does |
+|---|---|---|
+| `REASSERT_INTERVAL` | 30 s | re-sends **every** row's status, changed or not. agterm resets a session's status when the session's command starts, so attaching to a row clears its glyph; without this the bridge would not repaint, because the status it last *sent* is still correct. Ticks only, never while stale, never blinks |
+| `NOTIFY_INTERVAL` | 300 s | at most one desktop banner per 5 minutes, across reconnect cycles. The stderr `NOTICE` line is not limited |
+
 ## `agb close-done` — Mac
 
 ```
