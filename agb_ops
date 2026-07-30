@@ -1749,21 +1749,34 @@ def run_prune(argv, out=None, ask=None, run=None):
 # reachable only through box #2, which is `jump_host`. `ssh_target_for` is
 # shared with `prune --via-ssh` because the question is identical.
 
-PANE_PROMPT = "[enter] attach   [s] shell   [q] quit > "
+PANE_PROMPT = "[enter] attach   [s] split   [d] drawer   [q] quit > "
 
 PANE_QUIT_WORDS = ("q", "quit", "exit")
 
 PANE_SPLIT_WORDS = ("s", "shell", "split")
+
+# `shell` deliberately stays with the SPLIT. The prompt's label changed from
+# `shell` to `split` when the drawer arrived -- both panes hold shells now, so
+# the pane is the distinction -- but the WORD keeps its old meaning, or someone
+# typing it out of habit silently gets a different pane than yesterday.
+#
+# The two sets, and `PANE_QUIT_WORDS`, must stay pairwise disjoint: the dispatch
+# is keyed on string membership and whichever branch is tested first wins, so an
+# overlap makes another branch unreachable with no error anywhere. Three of these
+# words start with `s`. A test enforces it.
+PANE_DRAWER_WORDS = ("d", "drawer", "scratch")
 
 PANE_VALUE_ARGS = ("--host", "--tmux", "--pane", "--jump", "--cwd")
 
 AGTERMCTL = "agtermctl"
 
 # agterm's own words, verified against `agtermctl session split --help` and
-# `session type --help` on 2026-07-29:
+# `session type --help` on 2026-07-29, and `session scratch --help` on
+# 2026-07-30:
 #
-#   session split [on|off|toggle] [--target <id|prefix|active>]
-#   session type  [<text>] [--stdin] [--pane left|right|scratch] [--target ...]
+#   session split   [on|off|toggle] [--target <id|prefix|active>]
+#   session scratch [on|off|toggle] [--command <command>] [--target ...]
+#   session type    [<text>] [--stdin] [--pane left|right|scratch] [--target ...]
 #
 # `on` rather than the default `toggle`, because this can be asked for twice and
 # a toggle would CLOSE the pane the second time. `--target active` because this
@@ -1777,13 +1790,27 @@ AGTERMCTL = "agtermctl"
 SPLIT_ON = ("session", "split", "on", "--target", "active")
 TYPE_RIGHT = ("session", "type", "--target", "active", "--pane", "right")
 
-PANE_SPLIT_NO_CTL = (
-    "agtermctl is not on PATH, so the split cannot be opened from here. It is "
-    "agterm's own CLI and ships with the app.")
+# The drawer, same shape. `--pane scratch` requiring the scratch to exist first
+# is ASSUMED rather than observed -- the recorded help constrains only `--select`
+# and only for a split -- and it is unobservable here, since `scratch on` always
+# goes first. The ordering costs nothing if the constraint turns out not to
+# exist, and the split's precedent says keep it.
+SCRATCH_ON = ("session", "scratch", "on", "--target", "active")
+TYPE_SCRATCH = ("session", "type", "--target", "active", "--pane", "scratch")
+
+# Named for agtermctl's absence rather than for either pane: both keys print it,
+# and a message about "the split" when `[d]` was pressed is a small lie.
+PANE_NO_CTL = (
+    "agtermctl is not on PATH, so agterm's panes cannot be opened from here. It "
+    "is agterm's own CLI and ships with the app.")
 
 PANE_SPLIT_HINT = (
     "the shell opens in agterm's split pane, beside this one. Both panes belong "
     "to the same row.")
+
+PANE_DRAWER_HINT = (
+    "the shell opens in agterm's scratch drawer, over this pane rather than "
+    "beside it. Hide it and it stays alive; press [d] again to bring it back.")
 
 PANE_NO_ATTACH = (
     "no attach target: this agent is recorded with neither a tmux session nor "
@@ -2018,11 +2045,25 @@ def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None):
             if split_line is None:
                 out.write("    no shell target recorded for this row\n")
             elif not _have(AGTERMCTL):
-                out.write("    " + PANE_SPLIT_NO_CTL + "\n")
+                out.write("    " + PANE_NO_CTL + "\n")
             else:
                 out.write("    " + PANE_SPLIT_HINT + "\n")
                 out.write("    shell:  %s\n" % (split_line,))
                 open_split(split_line, ctl, out)
+            out.flush()
+            continue
+        # The drawer, same three guards in the same order. `split_line` feeds
+        # both keys and keeps its name: the line itself is pane-agnostic, and
+        # renaming the parameter would churn every caller for nothing.
+        if answer is not None and answer.lower() in PANE_DRAWER_WORDS:
+            if split_line is None:
+                out.write("    no shell target recorded for this row\n")
+            elif not _have(AGTERMCTL):
+                out.write("    " + PANE_NO_CTL + "\n")
+            else:
+                out.write("    " + PANE_DRAWER_HINT + "\n")
+                out.write("    drawer: %s\n" % (split_line,))
+                open_drawer(split_line, ctl, out)
             out.flush()
             continue
         if answer is None or answer.lower() in PANE_QUIT_WORDS:
@@ -2090,6 +2131,45 @@ def open_split(line, run=None, out=None):
         if code:
             out.write("    agtermctl %s exited %s -- the split was not opened\n"
                       % (" ".join(args[:3]), code))
+            out.flush()
+            return code
+    return 0
+
+
+def open_drawer(line, run=None, out=None):
+    """Open agterm's scratch drawer and start `line` in it.
+
+    A near-copy of `open_split` on purpose, not an oversight and not a candidate
+    for merging: the two are expected to DIVERGE. `session scratch` takes a
+    `--command`, which `session split` has no equivalent for, so this one may
+    yet collapse to a single call while the split cannot.
+
+    ⚠️ Which raises the obvious question, since `--command` is right there and
+    would remove both the keystroke injection and the quoting layer under it:
+
+        agtermctl session scratch on --command "<line>" --target active
+
+    Its own help says it is "run-once; **respawns the scratch if one is already
+    open**". `[d]` is two keystrokes and gets pressed twice, and the second press
+    would then destroy a shell somebody was working in. What this does instead is
+    type a second ssh line into the shell that is already there -- an ssh nested
+    inside an ssh, which `exit` undoes, and which is exactly what `[s]` has
+    always done. A shrug rather than an incident.
+
+    Two calls in this order, the second skipped if the first fails, neither
+    fatal: a failure leaves the row exactly as it was and the main pane is still
+    attachable.
+    """
+    if out is None:
+        out = sys.stdout
+    if run is None:
+        import subprocess
+        run = subprocess.call
+    for args in (list(SCRATCH_ON), list(TYPE_SCRATCH) + [line + "\n"]):
+        code = run([AGTERMCTL] + args)
+        if code:
+            out.write("    agtermctl %s exited %s -- the drawer was not "
+                      "opened\n" % (" ".join(args[:3]), code))
             out.flush()
             return code
     return 0

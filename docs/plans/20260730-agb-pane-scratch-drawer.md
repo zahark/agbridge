@@ -179,43 +179,43 @@ the two differ costs more than the tidiness is worth.
 - Modify: `tests/test_pane.py`
 - Modify: `tests/test_identity.py`
 
-- [ ] add `SCRATCH_ON` and `TYPE_SCRATCH` beside `SPLIT_ON`/`TYPE_RIGHT` (`agb_ops:1777`), under
+- [x] add `SCRATCH_ON` and `TYPE_SCRATCH` beside `SPLIT_ON`/`TYPE_RIGHT` (`agb_ops:1777`), under
       the existing verbatim-`--help` comment block; extend that block with `session scratch`'s
       recorded usage
-- [ ] add `PANE_DRAWER_WORDS = ("d", "drawer", "scratch")` beside `PANE_SPLIT_WORDS`
-- [ ] add `PANE_DRAWER_HINT` — opens over this pane; hidden, it stays alive; `[d]` brings it back
-- [ ] add `open_drawer(line, run=None, out=None)` after `open_split`, same two-call ordering, same
+- [x] add `PANE_DRAWER_WORDS = ("d", "drawer", "scratch")` beside `PANE_SPLIT_WORDS`
+- [x] add `PANE_DRAWER_HINT` — opens over this pane; hidden, it stays alive; `[d]` brings it back
+- [x] add `open_drawer(line, run=None, out=None)` after `open_split`, same two-call ordering, same
       bail-out on the first failure, `"the drawer was not opened"` in the message
-- [ ] comment in `open_drawer` recording why `scratch on --command <line>` was **not** used
+- [x] comment in `open_drawer` recording why `scratch on --command <line>` was **not** used
       (respawns an open scratch → destroys a shell in use; nesting is recoverable)
-- [ ] add `"open_drawer"` to the `import subprocess` holder set at `tests/test_identity.py:1016-1018`
+- [x] add `"open_drawer"` to the `import subprocess` holder set at `tests/test_identity.py:1016-1018`
       — an **existing** test that fails until this is done — and extend that test's docstring
       (`:995-1001`), which currently names `open_split` as the second door: it is now a third
-- [ ] ⚠️ also correct that test's **count**: `tests/test_identity.py:961` says "**Eight** legitimate
+- [x] ⚠️ also correct that test's **count**: `tests/test_identity.py:961` says "**Eight** legitimate
       sites and no more, counted across all three files". `open_drawer` makes nine. This is prose,
       so **the suite stays green with the count wrong** — the whole value of that test is that the
       list is enumerated and justified, and a wrong count discredits it
-- [ ] write tests: the scratch is shown before anything is typed into it (call order)
-- [ ] write tests: `on` not `toggle`, `--pane scratch`, and the trailing newline on the line
-- [ ] write tests: a failed first call makes exactly **one** call and says so
-- [ ] mutation-test each: reverse the order, change `on`→`toggle`, drop the bail-out — each must
+- [x] write tests: the scratch is shown before anything is typed into it (call order)
+- [x] write tests: `on` not `toggle`, `--pane scratch`, and the trailing newline on the line
+- [x] write tests: a failed first call makes exactly **one** call and says so
+- [x] mutation-test each: reverse the order, change `on`→`toggle`, drop the bail-out — each must
       fail a *named* test
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 2
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 2
 
 ### Task 2: Wire `[d]` into the prompt and the dispatch loop
 
 **Files:**
 - Modify: `agb_ops`
 
-- [ ] change `PANE_PROMPT` to `"[enter] attach   [s] split   [d] drawer   [q] quit > "`
-- [ ] rename `PANE_SPLIT_NO_CTL` to `PANE_NO_CTL` and drop "the split" from its text — see the
+- [x] change `PANE_PROMPT` to `"[enter] attach   [s] split   [d] drawer   [q] quit > "`
+- [x] rename `PANE_SPLIT_NO_CTL` to `PANE_NO_CTL` and drop "the split" from its text — see the
       warning under Technical Details
-- [ ] add the `PANE_DRAWER_WORDS` branch to **`pane_attach`**'s loop (`agb_ops:2017`, the function
+- [x] add the `PANE_DRAWER_WORDS` branch to **`pane_attach`**'s loop (`agb_ops:2017`, the function
       at `:1998` — *not* `run_pane`), mirroring the split branch's three guards, ending in
       `out.flush()` then `continue`
-- [ ] update the existing `test_the_prompt_offers_the_shell` to assert both `[s] split` and
+- [x] update the existing `test_the_prompt_offers_the_shell` to assert both `[s] split` and
       `[d] drawer`
-- [ ] write a dispatch test — **and get its mechanism right, or it proves nothing.** Call
+- [x] write a dispatch test — **and get its mechanism right, or it proves nothing.** Call
       `pane_attach` **directly** with `ctl=<recorder>` (`run_pane` has no `ctl` parameter, so the
       recorder cannot be injected through it), and monkeypatch `ops._have` to return True (`_have`
       scans `$PATH`, and there is no `agtermctl` on the farm, so guard #2 fires and **zero calls
@@ -223,9 +223,9 @@ the two differ costs more than the tidiness is worth.
       `"q"`. **Assert the call list is non-empty first**, then
       assert it says `scratch`. Without the non-emptiness assertion, "no call mentions split"
       passes against an empty list — the vacuous-pass failure mode `CLAUDE.md` warns about
-- [ ] write a test: `"shell"` still opens the **split** (the compatibility promise, pinned so a
+- [x] write a test: `"shell"` still opens the **split** (the compatibility promise, pinned so a
       later tidy-up cannot quietly drop it). Same mechanism and same non-vacuity assertion
-- [ ] write a test: the `agtermctl`-missing guard fires for `[d]` — the branch most likely to be
+- [x] write a test: the `agtermctl`-missing guard fires for `[d]` — the branch most likely to be
       forgotten in a copy. ⚠️ **Force `_have` to return False** (`monkeypatch.setattr(ops, "_have",
       lambda _p: False)`); do **not** rely on the ambient `$PATH` lacking `agtermctl`. That is true
       on the farm and false on the **Mac**, which is the machine this code actually runs on — and
@@ -233,24 +233,24 @@ the two differ costs more than the tidiness is worth.
       real and opens a pane on the developer's live agterm. Pass a recording `ctl=` as well, so a
       regression records a call instead of spawning one. (`tests/stubs/agtermctl` is not an
       alternative: its default case exits 2 for any verb outside `new|status|rename|close`)
-- [ ] mutation-test: point the `[d]` branch at `open_split` and confirm the dispatch test fails.
+- [x] mutation-test: point the `[d]` branch at `open_split` and confirm the dispatch test fails.
       **If it still passes, the test is vacuous — fix the test before continuing**
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 3
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 3
 
 ### Task 3: Guard the two word sets against overlap
 
 **Files:**
 - Modify: `tests/test_pane.py`
 
-- [ ] write a test asserting all **three** word tuples are pairwise disjoint —
+- [x] write a test asserting all **three** word tuples are pairwise disjoint —
       `PANE_SPLIT_WORDS`, `PANE_DRAWER_WORDS` and `PANE_QUIT_WORDS` (`agb_ops:1754`). Quit is
       matched in the same loop and is checked *after* both others, so it has the identical
       silent-shadowing property
-- [ ] document in the test *why*: both new sets contain s-words (`split`, `scratch`, `shell`), the
+- [x] document in the test *why*: both new sets contain s-words (`split`, `scratch`, `shell`), the
       dispatch is keyed on string membership, and whichever branch is checked first wins — an
       overlap makes the other silently unreachable, with no error anywhere
-- [ ] mutation-test: add `"scratch"` to `PANE_SPLIT_WORDS` and confirm this test fails
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 4
+- [x] mutation-test: add `"scratch"` to `PANE_SPLIT_WORDS` and confirm this test fails
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 4
 
 ### Task 4: Record the agtermctl contract
 

@@ -958,14 +958,15 @@ def test_subprocess_is_imported_only_inside_the_farm_and_bridge_sites(
     """A module-level `import subprocess` would be paid by every hook; a
     subprocess on the transition path would be paid by every state change.
 
-    Eight legitimate sites and no more, counted across **all three** files: the
+    Nine legitimate sites and no more, counted across **all three** files: the
     tmux resolver (once per mint, on the farm), the two halves of the bridge's
     ssh handling, Task 4b's `_run_command` -- the single door to `agtermctl`
     and to the notifier (Mac only, in `agb_mac`, and never reachable from
     `cmd_hook`) -- Task 6b's `prune_via_ssh`, Task 7's `pane_attach` and Task
-    9a's `_probe_run`. `_wait_or_kill` is a named function precisely so it can
-    be listed here rather than hiding inside a method called `close`, which
-    would collide by name with every other `close` in the file.
+    9a's `_probe_run`, plus the two pane openers. `_wait_or_kill` is a named
+    function precisely so it can be listed here rather than hiding inside a
+    method called `close`, which would collide by name with every other `close`
+    in the file.
 
     ⚠️ `_probe_run` was added by Task 9a and is the site that makes
     `install-hooks` a *probe* rather than an existence check: it runs
@@ -992,13 +993,18 @@ def test_subprocess_is_imported_only_inside_the_farm_and_bridge_sites(
     invocation is data, never an exception and never a hang" is a property of
     one place rather than of every call site.
 
-    ⚠️ `open_split` opens agterm's split pane for `agb pane`'s `[s] shell`.
-    It is a *second* door to `agtermctl`, which needs saying: `agb_mac`'s
-    `_run_command` is the renderer's single door, and this one exists because
-    `agb pane` runs on the Mac but lives in `agb_ops`, which never loads
-    `agb_mac`. Both obey the same rule -- a failure is written out and returned,
-    never raised, so a missing or broken `agtermctl` costs the row its split and
-    nothing else. It takes an injectable `run` like every other spawning site.
+    ⚠️ `open_split` and `open_drawer` open agterm's split pane and its scratch
+    drawer for `agb pane`'s `[s]` and `[d]`. They are the *second and third*
+    doors to `agtermctl`, which needs saying: `agb_mac`'s `_run_command` is the
+    renderer's single door, and these exist because `agb pane` runs on the Mac
+    but lives in `agb_ops`, which never loads `agb_mac`. All three obey the same
+    rule -- a failure is written out and returned, never raised, so a missing or
+    broken `agtermctl` costs the row its pane and nothing else. Both take an
+    injectable `run` like every other spawning site.
+
+    The pair is duplicated rather than parametrised, and deliberately: they are
+    expected to diverge, since `session scratch` takes a `--command` that
+    `session split` has no equivalent for. Merging them is not a tidy-up.
 
     The three bridge sites keep their imports function-local even though
     `agb_mac`'s module scope costs a hook nothing -- so that this stays one rule
@@ -1015,7 +1021,8 @@ def test_subprocess_is_imported_only_inside_the_farm_and_bridge_sites(
                         holders.add(name)
     assert holders == set(["resolve_tmux_session", "bridge_spawn",
                            "_wait_or_kill", "_run_command", "prune_via_ssh",
-                           "pane_attach", "_probe_run", "open_split"])
+                           "pane_attach", "_probe_run", "open_split",
+                           "open_drawer"])
 
 
 def test_minting_never_uses_o_excl_to_create_the_idx_file(agb_tree):

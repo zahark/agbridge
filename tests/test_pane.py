@@ -728,7 +728,7 @@ def test_the_operator_file_still_carries_the_bulk(ops_source, agb_source):
 
 
 # ---------------------------------------------------------------------------
-# `[s] shell` -- agterm's split pane
+# `[s] split` and `[d] drawer` -- agterm's split pane and its scratch drawer
 # ---------------------------------------------------------------------------
 
 class _Out(object):
@@ -800,5 +800,127 @@ def test_a_failed_split_leaves_the_row_alone_and_says_so(ops):
     assert "was not opened" in out.text
 
 
-def test_the_prompt_offers_the_shell(ops):
-    assert "[s] shell" in ops.PANE_PROMPT
+def test_the_drawer_is_shown_before_anything_is_typed_into_it(ops):
+    """Mirrors the split's ordering test. Whether `--pane scratch` really errors
+    before the scratch exists is ASSUMED rather than observed -- the recorded
+    help constrains only `--select`, and only for a split -- but the ordering
+    costs nothing and the split's precedent says keep it."""
+    calls = []
+    ops.open_drawer("ssh -t box2", run=lambda argv: calls.append(argv) or 0,
+                    out=_Out())
+    assert [c[1:3] for c in calls] == [["session", "scratch"],
+                                       ["session", "type"]]
+
+
+def test_the_drawer_is_turned_on_not_toggled(ops):
+    """Asked for twice, `toggle` would CLOSE the drawer the second time -- the
+    same rule that already governs the split."""
+    calls = []
+    ops.open_drawer("ssh -t box2", run=lambda argv: calls.append(argv) or 0,
+                    out=_Out())
+    assert calls[0] == ["agtermctl", "session", "scratch", "on",
+                        "--target", "active"]
+    assert calls[1][:6] == ["agtermctl", "session", "type", "--target",
+                            "active", "--pane"]
+    assert calls[1][6] == "scratch"
+    assert calls[1][7] == "ssh -t box2\n"      # a newline, or nothing runs
+
+
+def test_a_failed_drawer_leaves_the_row_alone_and_says_so(ops):
+    out = _Out()
+    calls = []
+    code = ops.open_drawer("ssh -t box2",
+                           run=lambda argv: calls.append(argv) or 3, out=out)
+    assert code == 3
+    assert len(calls) == 1                     # never typed into a pane that is not there
+    assert "was not opened" in out.text
+
+
+def test_the_drawer_never_uses_the_command_flag(ops):
+    """`scratch on --command <line>` is the nicer single call and is rejected:
+    its help says it "respawns the scratch if one is already open", so a second
+    press of `[d]` would destroy a shell in use. Typing into the existing shell
+    nests an ssh instead, which `exit` undoes."""
+    calls = []
+    ops.open_drawer("ssh -t box2", run=lambda argv: calls.append(argv) or 0,
+                    out=_Out())
+    assert not any("--command" in argv for argv in calls)
+
+
+def test_the_prompt_offers_both_panes(ops):
+    assert "[s] split" in ops.PANE_PROMPT
+    assert "[d] drawer" in ops.PANE_PROMPT
+
+
+def test_the_three_key_word_sets_are_pairwise_disjoint(ops):
+    """The dispatch is keyed on string membership and the branches are tested in
+    order, so whichever matches first wins and the rest become unreachable --
+    silently, with no error anywhere and every unit test still green.
+
+    Not hypothetical: `shell`, `split` and `scratch` all start with `s`, and
+    `scratch` is a plausible synonym for either pane. `PANE_QUIT_WORDS` is in
+    here too because it is matched in the same loop, after both others.
+    """
+    sets = {"split": set(ops.PANE_SPLIT_WORDS),
+            "drawer": set(ops.PANE_DRAWER_WORDS),
+            "quit": set(ops.PANE_QUIT_WORDS)}
+    for left in sets:
+        for right in sets:
+            if left < right:
+                assert not sets[left] & sets[right], \
+                    "%s and %s share %s" % (left, right,
+                                            sorted(sets[left] & sets[right]))
+
+
+def _dispatch(ops, monkeypatch, answer, have=True):
+    """Drive `pane_attach`'s key loop and return the recorded agtermctl calls.
+
+    Three things this has to get right, and each of them is a way the test goes
+    vacuous rather than red:
+
+    * `pane_attach`, not `run_pane` -- only the former takes `ctl`, so only the
+      former can be given a recorder.
+    * `_have` forced, never inherited. It scans $PATH, and `agtermctl` is absent
+      on the farm and present on the Mac: left to the ambient value this test
+      records nothing on one machine and opens a real pane on the other.
+    * `split_line` supplied, or guard #1 swallows the branch before either of
+      the others is reached.
+    """
+    monkeypatch.setattr(ops, "_have", lambda _program: have)
+    ctl = Run()
+    out = Out()
+    ops.pane_attach(["ssh", "box2"], out, ask=Ask(answer, "q"),
+                    run=Run(), split_line="ssh -t box2", ctl=ctl)
+    return ctl.calls, out.text
+
+
+def test_d_reaches_the_drawer_and_not_the_split(ops, monkeypatch):
+    """The unit tests above prove `open_drawer`; this proves the key gets there.
+    Without it, pointing the `[d]` branch at `open_split` passes everything."""
+    calls, _text = _dispatch(ops, monkeypatch, "d")
+    # Non-vacuity FIRST. "no call mentions split" is true of an empty list, and
+    # an empty list is exactly what a wrong `_have` produces.
+    assert calls, "no agtermctl call was recorded at all"
+    assert calls[0][1:3] == ["session", "scratch"]
+    assert not any("split" in word for argv in calls for word in argv)
+
+
+def test_shell_still_opens_the_split(ops, monkeypatch):
+    """The compatibility promise: the prompt's label moved from `shell` to
+    `split`, but the WORD keeps its old meaning. Pinned so a later tidy-up
+    cannot quietly reassign it to the drawer."""
+    calls, _text = _dispatch(ops, monkeypatch, "shell")
+    assert calls, "no agtermctl call was recorded at all"
+    assert calls[0][1:3] == ["session", "split"]
+    assert not any("scratch" in word for argv in calls for word in argv)
+
+
+def test_the_drawer_says_so_when_agtermctl_is_missing(ops, monkeypatch):
+    """The guard most likely to be forgotten in a copied branch. `_have` is
+    forced False rather than trusted: on a Mac the real one returns True and
+    this test would spawn agtermctl against a live agterm."""
+    calls, text = _dispatch(ops, monkeypatch, "d", have=False)
+    assert calls == []
+    assert "agtermctl is not on PATH" in text
+    # The message must not name the split when `[d]` was pressed.
+    assert "the split" not in text
