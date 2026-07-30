@@ -1970,8 +1970,17 @@ def run_forget_rows(argv, out=None):
     if out is None:
         out = sys.stdout
     opts = parse_forget_args(argv)
-    rows = load_rows(opts["rows"])
-    known = sorted(rows.bound_keys()) + [e["key"] for e in rows.done_entries()]
+    # `or rows_path()`: `read_rows_file(None)` answers [] -- "there is no map" --
+    # so passing the unresolved None here reported every map as empty and
+    # forgot nothing, silently. A recovery command that does nothing and says
+    # it succeeded is the failure class this tool exists to remove, and it
+    # shipped in one.
+    rows = load_rows(opts["rows"] or rows_path())
+    # `done_entries()` yields (key, row) PAIRS, not dicts -- the tests only
+    # ever seeded `bound` rows, so this list never ran until a real map with a
+    # [done] entry reached it.
+    known = list(rows.bound_keys()) + [key for key, _row in
+                                       rows.done_entries()]
     targets = opts["keys"] or sorted(set(known))
     if not targets:
         out.write("no rows to forget: the map is already empty\n")
@@ -1982,9 +1991,13 @@ def run_forget_rows(argv, out=None):
         out.write("not in the map: %s\n" % (key,))
     dropped = [k for k in targets if rows.known(k)]
     for key in dropped:
-        out.write("%sforget %s -> %s\n"
+        # `row_for` answers only for BOUND rows, so a [done] entry would print
+        # "?" -- the id is right there in the entry, and naming it is the point.
+        entry = rows.entries.get(key)
+        out.write("%sforget %s -> %s%s\n"
                   % ("would " if opts["dry_run"] else "", key,
-                     rows.row_for(key) or "?"))
+                     entry[0] if entry else "?",
+                     "" if entry and entry[1] else "  [done]"))
         if not opts["dry_run"]:
             rows.forget(key)
     if not opts["dry_run"]:
