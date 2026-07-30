@@ -1667,6 +1667,18 @@ class RowRenderer(object):
         # The map remembers the name from the moment the row exists, so even a
         # bridge that dies before its first rename leaves an identity behind.
         self.rows.bind(key, row, name)
+        # A row agterm has just minted carries no title and no status, so
+        # whatever this process last *applied* describes some other row. Both
+        # `_title` and `_status` suppress a repaint that matches memory, so
+        # leaving it would leave the new row blank -- no glyph, and agterm's own
+        # default name -- until the agent's state happened to change. That is
+        # reachable: `agb forget-rows` under a running bridge drops the binding
+        # without going through `_forget_unmapped`, which only prunes on a
+        # `save()`. Reported as a live row that showed nothing until it was
+        # typed at. `seen` is deliberately kept: it is the wire record, not a
+        # claim about what agterm is displaying.
+        self.applied.pop(key, None)
+        self.titles.pop(key, None)
         return row
 
     # -- the ops ----------------------------------------------------------
