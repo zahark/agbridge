@@ -774,6 +774,38 @@ desktop five times, the exact reverse of the split above. The bridge's warn chan
 exempts `NOTICE: ` lines from the dedup and nothing else, so the rate limiting lives only where it
 was designed to live.
 
+### The renderer's memory is not a description of the screen
+
+`_title` and `_status` each remember what they last emitted per key and skip a repaint that matches
+it. That is a real saving — the bridge repaints from every snapshot, and without it a quiet farm
+would still produce two `agtermctl` calls per row per poll — but for one release it was also being
+trusted as an account of *what agterm is currently showing*. It is not one, and it cannot be:
+**agterm changes rows for its own reasons.**
+
+The case that proved it: attaching to a row for the first time made its glyph disappear. agterm
+resets a session's status when the session's command starts. The remembered status still matched the
+real one, so the bridge never repainted, and the row stayed blank **until the agent's state next
+changed** — which, since state only moves when Claude Code fires a hook, can be hours for an idle
+agent. Nothing was logged, because nothing failed.
+
+So every row's status is re-sent **every `REASSERT_INTERVAL` (30 s)** whether it changed or not. The
+memory keeps its job as an optimisation; it can no longer make a divergence permanent. An attach, an
+agterm restart or a display bug self-heals within one interval.
+
+Four constraints, each with a test that fails if it is removed:
+
+| | why |
+|---|---|
+| on **ticks only** | a tick is emitted when the farm has nothing to say, and a row nobody is updating is exactly the row that stays wrong |
+| never while **stale** | `[?]` + `idle` is the correct rendering then; restoring the last known status would assert something no longer observed |
+| never **blinks** | a re-assert is not a transition — otherwise every row flashes twice a minute, for ever |
+| **rate limited** to the interval | a tick arrives every 2 s; one `agtermctl` per row per tick, for a display that is almost always already right |
+
+The interval trades how long a wrong row may stay wrong against one `agtermctl` per row per 30 s.
+The counter is seeded at construction rather than left unset, so the first re-assert lands a full
+interval in — the initial paint has just happened, and repeating it immediately is pure duplicate
+traffic.
+
 ### Rule 2 — liveness flows back through the same channel
 
 The `feed` process runs on machine #2 and is alive exactly as long as the Mac's ssh is alive. On
