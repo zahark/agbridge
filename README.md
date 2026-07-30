@@ -109,6 +109,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb close-done` | Mac | reclaim rows whose agent has finished |
 | `agb forget-rows` | Mac | drop `key → row` bindings so rows are re-created |
 | `agb pane <key> …` | Mac | what a row's command runs: print identity, attach on demand |
+| `agb list` | cluster | every session the statedir knows about, with addressable keys |
 | `agb rename <key> <label>` | cluster | set a row's label |
 | `agb doctor` | cluster | diagnostics that **probe** rather than check existence |
 | `agb prune` | cluster | the only destructive command; per-entry confirmation |

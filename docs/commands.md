@@ -174,6 +174,37 @@ agb doctor [--statedir P] [--mac-id ID] [--quiet-after S] [--tail N]
 Exit **1** only on a failed probe. Warnings — unadjudicable entries, a stale bridge beat — exit 0:
 an exit status that cries wolf is one nobody reads.
 
+## `agb list` — farm
+
+```
+agb list [--host <host>] [--statedir <path>]
+```
+
+Every session the statedir can account for, on **every** host — which is what the sidebar shows,
+so it is what this shows.
+
+```
+KEY       LABEL             STATE       BEAT    PANE   HOST
+6926895e  deploy-review     active      9.5 h   %6     buildbox03  (not this host)
+523760c2  api-refactor      completed   16 s    %0     buildbox01
+b7ed51ad  my-agent          active      4 s     %2     buildbox01
+```
+
+The key is truncated to 8 characters on purpose: nobody retypes 16, and every command taking
+`<key>` takes a **unique prefix**, so what this prints can be pasted straight into the next one.
+Foreign hosts are marked, because whether this machine can act on an entry is a different question
+from whether it can see it — `rename` and `prune` both depend on the answer.
+
+Keys come from each host's marker **content**, never from `readdir(sessions/<host>/)`: that listing
+can be served from the attribute cache for up to `acdirmax` seconds and would hide a key created a
+minute ago (constraint #5). An entry whose `.state` cannot be read is **not listed** — a short or
+malformed read is no information, and inventing a row from it would be a claim nothing supports.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--host <host>` | every host | show one host's sessions |
+| `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | which statedir |
+
 ## `agb rename <key> <label>` — farm
 
 ```
@@ -184,6 +215,7 @@ agb rename <key> <label> [--host <host>] [--statedir <path>]
 
 Sets the **label** a row is titled from (`label · host · cwd · pane`).
 
+`agb list` prints the keys; `agb rename` with no arguments prints it too, alongside the usage.
 Keys are 16 random hex characters, so there are two ways not to type one: **omit it** and the row
 this terminal's agent owns is renamed (resolved from the tmux/pid anchor, and it will never *mint* a
 key — naming a thing must not create it), or give a **unique prefix**, which is refused rather than
