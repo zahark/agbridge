@@ -3489,8 +3489,118 @@ def run_install_config(argv, out=None):
 
 
 # ==========================================================================
+# `agb list` -- what is out there, and the keys to address it by
+# ==========================================================================
+
+LIST_VALUE_ARGS = {"--statedir": "statedir", "--host": "host"}
+
+# Enough of a key to be a usable prefix without being unreadable. Collisions in
+# the first 8 hex characters are ~1 in 4 billion per pair, and `resolve_key`
+# refuses an ambiguous prefix anyway rather than guessing.
+KEY_SHOWN = 8
+
+
+def parse_list_args(argv):
+    """`list [--host H] [--statedir SD]`."""
+    opts = {"statedir": None, "host": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name not in LIST_VALUE_ARGS:
+            raise agb.AgbError("list: unknown option: %s" % (name,))
+        if not sep and rest:
+            inline = rest.pop(0)
+        if not inline:
+            raise agb.AgbError("list: %s needs a value" % (name,))
+        opts[LIST_VALUE_ARGS[name]] = inline
+    return opts
+
+
+def all_entries(sd, now, host=None):
+    """Every session the statedir can account for, own host and others.
+
+    Keys come from each host's marker **content**, never from
+    `readdir(sessions/<host>/)` -- that listing can be served from cache for up
+    to `acdirmax` seconds, and a stale one would hide a key created a minute ago
+    (constraint #5). Same rule, and the same `describe_entry` shape, as
+    `unadjudicable_entries`: two derivations of "what is out there" would be two
+    places for it to drift.
+    """
+    found = []
+    for other in agb.list_marker_hosts(sd):
+        if host and other != host:
+            continue
+        keys = agb.read_marker_keys(sd, other)
+        if keys is None:
+            continue                  # no information this pass, not "none"
+        quiet = host_quiet_age(sd, other, now)
+        for key in keys:
+            parsed, beat = agb.read_state_entry(sd, other, key)
+            if parsed is agb.STATE_GONE or parsed is None:
+                continue
+            found.append(describe_entry(sd, other, key, parsed, beat, quiet,
+                                        now))
+    found.sort(key=lambda entry: (entry["host"], entry["label"] or "",
+                                  entry["key"]))
+    return found
+
+
+def format_list(entries, mine):
+    """The table. `key` is truncated because the whole point is that nobody
+    retypes 16 hex characters -- and every command that takes one takes a
+    prefix."""
+    lines = ["%-*s  %-16s  %-10s  %-6s  %-5s  %s"
+             % (KEY_SHOWN, "KEY", "LABEL", "STATE", "BEAT", "PANE", "HOST")]
+    for entry in entries:
+        lines.append("%-*s  %-16s  %-10s  %-6s  %-5s  %s%s" % (
+            KEY_SHOWN, entry["key"][:KEY_SHOWN],
+            (entry["label"] or "-")[:16],
+            entry["state"] or "-",
+            age_text(entry["beat_age"]),
+            entry["pane"] or "-",
+            entry["host"],
+            "" if entry["host"] == mine else "  (not this host)"))
+    return "\n".join(lines) + "\n"
+
+
+def run_list(argv, out=None):
+    """`agb list` -- the sessions this statedir knows about.
+
+    Exists because every other command takes a key, and `doctor` was the only
+    way to see one: a diagnostic report is the wrong place to look up an
+    identifier you need several times a day.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_list_args(argv)
+    sd = opts["statedir"] or agb.statedir()
+    probe, stamped = probe_atomicity(sd)
+    now = stamped if stamped is not None else time.time()
+    entries = all_entries(sd, now, opts["host"])
+    if not entries:
+        out.write("no sessions in %s%s\n"
+                  % (sd, " for " + opts["host"] if opts["host"] else ""))
+        if probe.status != PROBE_OK:
+            out.write("    ...and the statedir did not probe clean: "
+                      "`agb doctor` says why\n")
+        out.flush()
+        return 0
+    out.write(format_list(entries, agb.own_host()))
+    out.write("\n%d session%s. Any command taking <key> takes a unique "
+              "prefix.\n" % (len(entries), "" if len(entries) == 1 else "s"))
+    out.flush()
+    return 0
+
+
+# ==========================================================================
 # `agb rename` -- change a row's label
 # ==========================================================================
+
+RENAME_USAGE = """usage: agb rename <label>                 # the row this terminal is in
+       agb rename <key> <label>           # any row; <key> may be a unique prefix
+
+"""
 
 RENAME_VALUE_ARGS = {"--statedir": "statedir", "--host": "host"}
 
@@ -3585,6 +3695,8 @@ def parse_rename_args(argv):
         opts["label"] = positional[0]
     elif len(positional) == 2:
         opts["key"], opts["label"] = positional
+    elif not positional:
+        raise agb.AgbError("rename: needs <label>, or <key> <label>")
     else:
         raise agb.AgbError(
             "rename: needs <label>, or <key> <label> -- got %d arguments"
@@ -3691,7 +3803,17 @@ def run_ops(name, argv):
     `cmd_install_config`, no dispatch arm. That answer stays reachable only by a
     future entry, which is exactly why it is still here.
     """
+    if name == "list":
+        return run_list(argv)
     if name == "rename":
+        # No arguments at all is someone looking for the shape and probably for
+        # a key too, so answer both rather than with an argument error.
+        if not argv:
+            # stdout, and flushed, so the usage precedes the table instead of
+            # racing it through a different stream.
+            sys.stdout.write(RENAME_USAGE)
+            sys.stdout.flush()
+            return run_list([])
         return run_rename(argv)
     if name == "doctor":
         return run_doctor(argv)

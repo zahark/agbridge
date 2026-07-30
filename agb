@@ -2658,7 +2658,7 @@ def cmd_close_done(argv):
 # Task 6a left ~600 bytes under the parse budget, and one hop per command is the
 # wrong way to spend it. Which of them exist yet is `agb_ops`' business.
 OPS_COMMANDS = ("doctor", "prune", "pane", "status-line", "install-hooks",
-                "install-config", "rename")
+                "install-config", "rename", "list")
 
 
 def cmd_ops(name, argv):
@@ -2685,6 +2685,7 @@ commands:
   doctor              probe the statedir, the mount and the bridge beat
   prune               remove unadjudicable entries, per-entry confirmation
   rename <key> <label>  set a row's label (farm)
+  list                sessions this statedir knows about (farm)
   status-line         tmux segment: bridge:UP/DOWN
   install-hooks       merge agb hooks into ~/.claude/settings.json
   install-config      write ~/.config/agbridge/config (mac_id, statedir)

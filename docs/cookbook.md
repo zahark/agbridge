@@ -140,7 +140,8 @@ agb rename a-better-name          # the agent you are sitting in
 agb rename b7ed a-better-name     # another row, by key prefix
 ```
 
-`agb doctor` lists the keys this host can see.
+`agb list` shows every session and its key; `agb rename` with no arguments prints the same table
+alongside the usage.
 
 Renaming the tmux session does **not** work — the name was read once when the agent started, and
 changing it only breaks click-to-attach.
