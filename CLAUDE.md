@@ -178,7 +178,7 @@ environment — several are version- or mount-specific.
   ever sent on a transition, correct either way), and the spelling of `--auto-reset`, which
   agbridge never emits.
 - **Long-running behaviour is still unexercised** — reconnects, the watchdog firing, `prune`
-  against a genuinely dead host. This is why the version is 0.2.0 and not 1.0.0.
+  against a genuinely dead host. This is why the version is 0.2.x and not 1.0.0.
 - **Two doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single door;
   `agb_ops.open_split` is a second one, because `agb pane` runs on the Mac but lives in `agb_ops`,
   which never loads `agb_mac`. Both obey the same rule: a failure is written out and returned,
