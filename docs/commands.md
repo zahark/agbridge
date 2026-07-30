@@ -329,10 +329,12 @@ tmux session**, which is what makes the resulting row attachable.
 | Argument | Default | Meaning |
 |---|---|---|
 | `name` | the current directory's name | tmux session name. `.`, `:` and spaces become `-`, because tmux cannot address them as a target |
-| `--` | — | everything after it is passed to `claude` untouched |
+| `--` | — | everything after it is passed to `claude` untouched. **Required for anything starting with `-`**: `agb-claude --resume <id>` is refused, `agb-claude work -- --resume <id>` is not |
 
 Re-running with the same name **attaches** to the existing session rather than starting a second
 agent in it, matched exactly (`-t "=name"`), so `agb-claude api` will not attach to `api-refactor`.
+Nothing is restarted in that case, so any `--` arguments cannot take effect — they are reported as
+ignored rather than dropped silently.
 Run from inside tmux it creates a *sibling* session and switches: a nested session cannot be
 attached to from outside, and agbridge would record the outer session's name for the inner agent.
 

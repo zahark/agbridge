@@ -102,6 +102,7 @@ ln -s ~/agbridge/agb-claude ~/bin/agb-claude
 agb-claude api-refactor       # new named session, or re-attach if it exists
 agb-claude                    # named after the current directory
 agb-claude docs -- --model opus   # everything after `--` goes to claude
+agb-claude work -- --resume <session-id>   # options need the `--`
 ```
 
 Your sidebar then reads something like:
