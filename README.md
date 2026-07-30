@@ -117,7 +117,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb install-hooks` | cluster | merge the four Claude Code hooks idempotently |
 | `agb install-config` | both | write/merge `~/.config/agbridge/config` |
 | `agb version` | both | load-bearing: both installers probe with it |
-| `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable |
+| `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable. `-d` starts it in the background with the row already showing |
 | `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows |
 
 Full flag reference: [`docs/commands.md`](docs/commands.md).

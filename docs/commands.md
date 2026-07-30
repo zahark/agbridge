@@ -415,7 +415,27 @@ tmux session**, which is what makes the resulting row attachable.
 | Argument | Default | Meaning |
 |---|---|---|
 | `name` | the current directory's name | tmux session name. `.`, `:` and spaces become `-`, because tmux cannot address them as a target |
+| `-d`, `--detach` | off | start it in the background and return immediately, with the row already showing |
+| `--greet <text>` | `hi` | the opening prompt `-d` gives Claude. Refused without `-d`, where it would be silently ignored |
 | `--` | — | everything after it is passed to `claude` untouched. **Required for anything starting with `-`**: `agb-claude --resume <id>` is refused, `agb-claude work -- --resume <id>` is not |
+
+### `-d`, and why it needs a greeting
+
+A row appears on the first **hook**, not at launch, so a session started and left alone writes
+nothing and stays invisible. `-d` therefore hands Claude an opening prompt — answering it fires
+`UserPromptSubmit`, which mints the key and creates the row. The prompt goes **last**, because
+`claude [options] [prompt]`.
+
+```sh
+agb-claude -d api-refactor                    # row appears, nothing to detach from
+agb-claude -d api-refactor --greet "ready?"
+```
+
+⚠️ **It does not work in a directory Claude has not been trusted in yet.** Claude stops on *"Is this
+a project you trust?"* and waits, so nothing is submitted and no row appears. That prompt is
+deliberately **not** answered for you — it is a security decision belonging to the human, and a
+wrapper that clicked through it would be doing what this tool exists to stop. Attach once
+(`tmux attach -t <name>`), answer it, and `-d` works there from then on.
 
 Re-running with the same name **attaches** to the existing session rather than starting a second
 agent in it, matched exactly (`-t "=name"`), so `agb-claude api` will not attach to `api-refactor`.
