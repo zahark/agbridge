@@ -222,17 +222,23 @@ Verified in real use, not just in tests:
 | rows created and updated in agterm | ✅ |
 | clicking a row runs `agb pane` with the right identity | ✅ |
 | `agtermctl session new` returns the row id on stdout | ✅ — the largest assumption in the design; it held |
-| `session split` / `session type` | ✅ `--help`-verified before being coded against |
+| `session split` / `session type` | ✅ `--help`-verified, then run |
+| click-to-attach → right host, session **and pane** | ✅ |
+| detach returns to the prompt, row survives | ✅ |
+| `[s] shell` → split pane with a shell on the agent's host | ✅ |
+| a finished agent's row goes `[done]`, stays visible | ✅ |
+| `agb close-done` → `agtermctl session close` | ✅ |
+| automatic reap of dead own-host agents | ✅ |
 
-Not yet exercised, and worth knowing before you rely on them:
+**Every `agtermctl` clause this tool depends on has now been exercised against a live agterm.**
 
-- **`agb close-done`** — `session close` is still `ASSUMED`. If it does not exist, `close-done`
-  degrades to printing the rows you should close by hand.
-- **`[s] shell`** — the split pane was built after the last live run and has only been tested
-  against a stub.
-- **`--blink` / `--auto-reset` spellings**, and whether `session rename` may be called repeatedly on
-  an existing row.
-- **Long-running behaviour** — reconnects, watchdog firing, `prune` against a genuinely dead host.
+Still not exercised, and worth knowing:
+
+- **The CLI spelling of `--blink`** (the underlying argument is confirmed from `agr`'s wire
+  messages; a wrong spelling would fail loudly on every transition into `active`, and does not).
+  `--auto-reset` is never sent — it was deliberately dropped.
+- **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
+  host.
 
 [`docs/agtermctl.md`](docs/agtermctl.md) tags every clause `CONFIRMED` or `ASSUMED` and records a
 fallback for each assumption. If your `agtermctl` differs, that file is the one to correct.

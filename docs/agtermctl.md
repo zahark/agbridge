@@ -9,7 +9,14 @@ This file therefore has two layers, and they are kept **visually separate on pur
 
 1. **The assumed contract** — what Tasks 4b, 8 and 9b code against *today*. Every clause is tagged
    with its evidence class.
-2. **The verbatim recording** — `--help` output captured on the Mac. `session split` and `session type` are recorded below; the rest is still outstanding.
+2. **The verbatim recording** — `--help` output captured on the Mac. `session split` and
+   `session type` are recorded below.
+
+**As of 2026-07-30 every clause this tool depends on has been exercised against a live agterm.**
+What remains `ASSUMED` is narrow and marked: the CLI *spelling* of `--blink`/`--auto-reset` (the
+underlying arguments are confirmed from `agr`'s wire messages), and that `session rename` may be
+called repeatedly — which the bridge does on every update, so a failure would be loud and constant
+rather than subtle.
 
 When the recording lands, reconcile layer 1 against it and update `tests/stubs/agtermctl`
 (created by Task 4b). Nothing in the plan blocks on that: the assumed contract is complete enough
@@ -95,9 +102,11 @@ matters more than any other (see *Fallbacks*):
 
 ### `agtermctl session close --target <id>`
 
-- **ASSUMED** entirely. Used only by `agb close-done` and by the no-title fallback below.
-- If it does not exist, `agb close-done` degrades to a no-op that prints the rows the operator
-  should close by hand. It must never be emitted on the `remove` path.
+- **CONFIRMED** (2026-07-30, live): `agb close-done` closed a `[done]` row and agterm removed it
+  from the sidebar. Also reached from `forget-rows`, which closes each session as it forgets it.
+- The degradation is kept anyway, because it costs nothing and covers a future agterm that drops the
+  subcommand: on a non-zero exit the entry stays in the map and is printed for the operator to close
+  by hand. It must never be emitted on the `remove` path.
 
 ### `agtermctl session split [on|off|toggle] [--target <id>]`  — **CONFIRMED**
 
