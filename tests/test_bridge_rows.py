@@ -1896,3 +1896,66 @@ class _RowOut(object):
 
     def flush(self):
         pass
+
+
+def test_forget_rows_uses_the_default_map_when_none_is_named(mac, tmp_path,
+                                                             monkeypatch):
+    """⚠️ Regression, found in live use. `read_rows_file(None)` answers `[]` --
+    "there is no map" -- so passing the unresolved `--rows` default straight
+    through reported EVERY map as empty and forgot nothing, while saying it had
+    succeeded. `agb-refresh` never worked, silently, which is the exact failure
+    class this tool exists to remove.
+
+    Every earlier test passed `--rows` explicitly, so none of them went near the
+    default. That is what made it invisible.
+    """
+    home = tmp_path / "home"
+    (home / ".config" / "agbridge").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    rows = mac.RowMap(mac.rows_path())
+    rows.bind("aaaa1111", "ROW-1", "one")
+    rows.save(force=True)
+
+    out = _RowOut()
+    assert mac.run_forget_rows([], out=out) == 0        # no --rows at all
+    assert "already empty" not in out.text
+    assert "aaaa1111" in out.text
+    assert mac.load_rows(mac.rows_path()).bound_keys() == []
+
+
+def test_forget_rows_also_forgets_done_entries(mac, tmp_path):
+    """⚠️ Regression: `done_entries()` yields (key, row) PAIRS, and this read
+    them as dicts. Every earlier test seeded only `bound` rows, so the line
+    never executed until a real map with a `[done]` entry reached it -- and then
+    it raised TypeError rather than doing anything.
+
+    It matters that they are included: a `[done]` entry is exactly what survives
+    when agterm has forgotten the row, which is what `agb-refresh` is for.
+    """
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("aaaa1111", "ROW-1", "live")
+    rows.bind("bbbb2222", "ROW-2", "finished")
+    rows.unbind("bbbb2222")                     # -> done
+    rows.save(force=True)
+    assert mac.load_rows(path).done_entries()   # the fixture really has one
+
+    out = _RowOut()
+    assert mac.run_forget_rows(["--rows", path], out=out) == 0
+    after = mac.load_rows(path)
+    assert after.bound_keys() == [] and after.done_entries() == []
+    assert "bbbb2222" in out.text
+
+
+def test_forget_rows_names_the_row_id_of_a_done_entry(mac, tmp_path):
+    """`row_for` answers only for BOUND rows, so a [done] entry printed `?`.
+    The id is in the entry, and naming it is the whole point of the line."""
+    path = str(tmp_path / "rows")
+    rows = mac.RowMap(path)
+    rows.bind("bbbb2222", "ROW-2", "finished")
+    rows.unbind("bbbb2222")
+    rows.save(force=True)
+    out = _RowOut()
+    mac.run_forget_rows(["--rows", path, "--dry-run"], out=out)
+    assert "ROW-2" in out.text
+    assert "?" not in out.text
