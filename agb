@@ -2642,6 +2642,11 @@ def cmd_bridge(argv):
     return _load_mac().run_bridge(argv)
 
 
+def cmd_forget_rows(argv):
+    """`agb forget-rows` -- Mac-side. One lazy hop, like `close-done`."""
+    return _load_mac().run_forget_rows(argv)
+
+
 def cmd_close_done(argv):
     """`agb close-done` -- Mac-side, and deliberately its own command rather
     than a `bridge` subcommand; the reason is in `agb_mac`, beside the code."""
@@ -2675,7 +2680,7 @@ commands:
   hook <state>        record an agent state transition (hot path)
   feed <mac-id>       stream NDJSON session state to the Mac
   bridge              consume the feed and drive agterm rows (Mac)
-  close-done          close rows marked [done] (Mac)
+  close-done          close rows marked [done] (Mac)\n  forget-rows         drop key->row bindings so rows are re-created (Mac)
   pane <key>          print identity, attach on demand
   doctor              probe the statedir, the mount and the bridge beat
   prune               remove unadjudicable entries, per-entry confirmation
@@ -2710,6 +2715,8 @@ def main(argv):
         return cmd_bridge(rest)
     if cmd == "close-done":
         return cmd_close_done(rest)
+    if cmd == "forget-rows":
+        return cmd_forget_rows(rest)
     if cmd in OPS_COMMANDS:
         return cmd_ops(cmd, rest)
     if cmd == "version":

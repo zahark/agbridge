@@ -1916,6 +1916,86 @@ def _rebound_on_disk(path, key):
     return False
 
 
+FORGET_FLAGS = {"--dry-run": "dry_run"}
+FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key"}
+
+
+def parse_forget_args(argv):
+    """`forget-rows [--key K]... [--rows PATH] [--dry-run]`."""
+    opts = {"rows": None, "keys": [], "dry_run": False}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in FORGET_FLAGS:
+            if sep:
+                raise agb.AgbError("forget-rows: %s takes no value" % (name,))
+            opts[FORGET_FLAGS[name]] = True
+        elif name in FORGET_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("forget-rows: %s needs a value" % (name,))
+            if name == "--key":
+                opts["keys"].append(inline)
+            else:
+                opts["rows"] = inline
+        else:
+            raise agb.AgbError("forget-rows: unknown option: %s" % (name,))
+    return opts
+
+
+def run_forget_rows(argv, out=None):
+    """Drop `key -> row` bindings so the next snapshot re-creates the rows.
+
+    The recovery for agterm having forgotten its rows -- it was closed, reset or
+    reinstalled -- while the map still names them. Every `rename`/`status` then
+    fails with `no such session`, and nothing else clears a *bound* entry:
+    `close-done` only touches `[done]` ones and `prune` works from farm-side
+    state, which has nothing to do with this.
+
+    Nothing on the farm is touched. The agents, their keys and their state are
+    untouched; only this Mac's binding is discarded, so the rows come back with
+    the same identities.
+
+    ⚠️ Not a file deletion, deliberately. The map ends in an `#end <count>`
+    sentinel, so removing a line with `sed` leaves the count wrong and the whole
+    map is discarded as corrupt on the next read -- taking the bindings you
+    meant to keep with it. Going through `RowMap` keeps the sentinel right.
+
+    Stop the bridge first. It holds the map in memory and merges-then-writes on
+    every save, so an edit underneath a running bridge can simply be rewritten.
+    `agb-refresh` does the whole sequence.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_forget_args(argv)
+    rows = load_rows(opts["rows"])
+    known = sorted(rows.bound_keys()) + [e["key"] for e in rows.done_entries()]
+    targets = opts["keys"] or sorted(set(known))
+    if not targets:
+        out.write("no rows to forget: the map is already empty\n")
+        out.flush()
+        return 0
+    missing = [k for k in targets if not rows.known(k)]
+    for key in missing:
+        out.write("not in the map: %s\n" % (key,))
+    dropped = [k for k in targets if rows.known(k)]
+    for key in dropped:
+        out.write("%sforget %s -> %s\n"
+                  % ("would " if opts["dry_run"] else "", key,
+                     rows.row_for(key) or "?"))
+        if not opts["dry_run"]:
+            rows.forget(key)
+    if not opts["dry_run"]:
+        rows.save(force=True)
+    out.write("%s%d of %d binding%s; the next snapshot re-creates the rows\n"
+              % ("dry run: " if opts["dry_run"] else "forgot ",
+                 len(dropped), len(targets), "" if len(targets) == 1 else "s"))
+    out.flush()
+    return 1 if missing else 0
+
+
 def run_close_done(argv, run=None, out=None):
     """Close every `[done]` row and forget it. Bound rows are never touched.
 

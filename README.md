@@ -63,8 +63,8 @@ ten minutes. The rest of this section is the reference.
 
 `agbridge` is three files that must live in the same directory. `install.sh` has two roles.
 
-**1. On the Mac** — copies the three files, mints a `mac_id`, writes the config, renders and loads
-the launchd job:
+**1. On the Mac** — copies the three files (plus the `agb-refresh` helper), mints a `mac_id`,
+writes the config, renders and loads the launchd job:
 
 ```sh
 sh install.sh mac \
@@ -102,6 +102,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb feed <mac-id>` | cluster | long-lived; streams NDJSON to the Mac over the bridge's ssh |
 | `agb bridge` | Mac | long-lived launchd job; owns the key → row bijection |
 | `agb close-done` | Mac | reclaim rows whose agent has finished |
+| `agb forget-rows` | Mac | drop `key → row` bindings so rows are re-created |
 | `agb pane <key> …` | Mac | what a row's command runs: print identity, attach on demand |
 | `agb doctor` | cluster | diagnostics that **probe** rather than check existence |
 | `agb prune` | cluster | the only destructive command; per-entry confirmation |
@@ -110,6 +111,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb install-config` | both | write/merge `~/.config/agbridge/config` |
 | `agb version` | both | load-bearing: both installers probe with it |
 | `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable |
+| `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows |
 
 Full flag reference: [`docs/commands.md`](docs/commands.md).
 

@@ -288,6 +288,14 @@ role_mac() {
             [ -f "$dest/$f" ] || die "copy of $f to $dest did not land"
         done
         say "copied:   $FILES -> $dest"
+        # The Mac-side helper. Not in $FILES: that is the three-file core the
+        # tree is verified through, and agb-refresh is a convenience whose
+        # absence breaks nothing.
+        if [ -f "$SELF/agb-refresh" ]; then
+            cp "$SELF/agb-refresh" "$dest/agb-refresh" \
+                && chmod +x "$dest/agb-refresh" \
+                && say "copied:   agb-refresh -> $dest"
+        fi
         installed="$dest/agb"
         verify_tree "$python" "$installed"
     fi

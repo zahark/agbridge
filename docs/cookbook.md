@@ -160,14 +160,16 @@ Most common cause: `agtermctl` is not on the **launchd job's** `PATH`, which is 
 Compare `agb doctor`'s statedir line against `statedir` in the Mac's `~/.config/agbridge/config`;
 they must be the same path.
 
-**`error: no such session: <uuid>` in the bridge log** — agterm has forgotten rows the map still
-names (a reinstall or state reset). On the Mac:
+**Rows gone after closing agterm**, or `error: no such session: <uuid>` in the bridge log — agterm
+has forgotten rows the map still names. On the Mac:
 
 ```sh
-launchctl bootout gui/$(id -u)/com.agbridge
-rm -f ~/.config/agbridge/rows
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agbridge.plist
+~/.local/lib/agbridge/agb-refresh              # all rows
+~/.local/lib/agbridge/agb-refresh --key <key>  # just one, if the others are still live
 ```
+
+Nothing on the farm is touched; rows come back with the same identities on the next snapshot.
+Reopen agterm first if it is closed.
 
 **Clicking a row says `Could not resolve hostname`** — the `host_<hostname>` mapping is missing.
 Add it to the Mac's config (takes effect on the next click, no restart):

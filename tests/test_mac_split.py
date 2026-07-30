@@ -185,13 +185,23 @@ def test_the_loader_is_reached_only_from_the_mac_side_commands(agb_tree):
     `cmd_close_done` (Task 4b) is the second: `close-done` is Mac-side too --
     it drives `agtermctl` against the locally persisted row map -- and it is
     deliberately not a `bridge` subcommand, which would start a second
-    long-lived launchd-owned bridge. Both are `agb` stubs of two lines; the
-    implementations are in `agb_mac`, which no hook ever loads.
+    long-lived launchd-owned bridge.
+
+    `cmd_forget_rows` is the third, and is here for the same reason as the
+    second: it edits that same locally persisted map, which only `agb_mac`
+    knows the format of. It is a command rather than a shell script precisely
+    because the map ends in an `#end <count>` sentinel -- a hand-edited line
+    leaves the count wrong, and the whole map then reads as corrupt, discarding
+    the bindings that were meant to survive.
+
+    All three are `agb` stubs of two lines; the implementations are in
+    `agb_mac`, which no hook ever loads.
     """
     funcs = conftest.functions(agb_tree)
     callers = set(name for name, node in funcs.items()
                   if (None, "_load_mac") in conftest.calls(node))
-    assert callers == set(["cmd_bridge", "cmd_close_done"])
+    assert callers == set(["cmd_bridge", "cmd_close_done",
+                           "cmd_forget_rows"])
     for name in callers:
         assert (None, "main") not in conftest.calls(funcs[name])
         assert (None, name) in conftest.calls(funcs["main"])

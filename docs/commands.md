@@ -281,6 +281,42 @@ why. The merge preserves comments, layout and keys this tool does not know; the 
 write is re-parsed and refused if it would not read back as the values reported. The previous file is
 copied to `config.agb.bak`, and a run that would change nothing writes neither.
 
+## `agb forget-rows` — Mac
+
+```
+agb forget-rows [--key <key>]... [--rows <path>] [--dry-run]
+```
+
+Drops `key → row` bindings so the next snapshot re-creates the rows. The recovery for **agterm
+having forgotten its rows** — closed, reset or reinstalled — while the map still names them. Every
+`rename`/`status` then fails with `error: no such session`, and nothing else clears a *bound* entry:
+`close-done` only touches `[done]` rows, and `prune` works from farm-side state.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--key <key>` | every binding | forget one; repeatable. Use it when only one row was closed — dropping the whole map mints duplicates for rows that are still live |
+| `--rows <path>` | `~/.config/agbridge/rows` | the map |
+| `--dry-run` | off | name the bindings and change nothing |
+
+Exits 1 if a named key was not in the map (and says so), 0 otherwise. **Nothing on the farm is
+touched** — agents, keys and state are untouched, so rows return with the same identities.
+
+⚠️ Not a file deletion, and not a `sed`. The map ends in an `#end <count>` sentinel; a hand-edited
+line leaves the count wrong, the whole map then reads as corrupt, and the bindings you meant to keep
+go with it. Stop the bridge first — it holds the map in memory and merges-then-writes on every save.
+`agb-refresh` does the whole sequence.
+
+## `agb-refresh` — Mac, a convenience
+
+```
+agb-refresh [--key <key>]... [--dry-run] [--label <name>] [--agb <path>] [--rows <path>]
+```
+
+Stop the bridge → `agb forget-rows` → start it again. A separate POSIX-sh script, installed beside
+`agb` on the Mac. It restarts the bridge **whatever the middle step reported**: leaving it down
+because one key was not in the map would turn a small surprise into a dark sidebar. A bridge that
+was already stopped is a fine starting state, not an error.
+
 ## `agb-claude [name]` — farm, a convenience
 
 ```

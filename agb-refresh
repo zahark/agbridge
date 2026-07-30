@@ -1,0 +1,125 @@
+#!/bin/sh
+# agb-refresh -- rebuild agterm's rows after agterm has forgotten them.
+#
+# Use it when agterm was closed, reset or reinstalled and the sidebar comes back
+# empty (or a row is gone) while the bridge keeps logging:
+#
+#   agb bridge: agtermctl session rename failed (exit 1): error: no such session: <id>
+#
+# The Mac's `key -> row` map still names ids agterm has dropped. Nothing else
+# clears a *bound* entry -- `close-done` only touches `[done]` rows and `prune`
+# works from farm-side state -- so the binding has to be forgotten and re-minted.
+#
+#   agb-refresh                  # forget every binding; all rows come back
+#   agb-refresh --key a3f9c1e0   # just one, when the other rows are still fine
+#   agb-refresh --dry-run        # say what would happen
+#
+# NOTHING ON THE FARM IS TOUCHED. The agents, their keys and their state are
+# untouched; only this Mac's binding is discarded, so rows return with the same
+# identities.
+#
+# The three steps are a sequence for a reason: the bridge holds the map in
+# memory and merges-then-writes on every save, so an edit underneath a running
+# bridge can simply be rewritten.
+
+set -eu
+
+DEFAULT_LABEL="com.agbridge"
+DEFAULT_AGENTS="$HOME/Library/LaunchAgents"
+DEFAULT_AGB="$HOME/.local/lib/agbridge/agb"
+
+die() { printf 'agb-refresh: %s\n' "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+usage() {
+    cat >&2 <<'EOF'
+usage: agb-refresh [--key <key>]... [--dry-run] [options]
+
+  --key <key>        forget one binding; repeatable. Default: all of them
+  --dry-run          say what would happen; change nothing
+  --label <name>     launchd label                     (default com.agbridge)
+  --launch-agents <dir>                     (default ~/Library/LaunchAgents)
+  --agb <path>       the installed agb          (default ~/.local/lib/agbridge/agb)
+  --python <path>    interpreter to run it with
+  --rows <path>      the rows map            (default ~/.config/agbridge/rows)
+  -h, --help         this message
+EOF
+}
+
+label=$DEFAULT_LABEL; agentsdir=$DEFAULT_AGENTS; agb=$DEFAULT_AGB
+python=""; rows=""; dry=no; keys=""
+
+need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
+
+while [ $# -gt 0 ]; do
+    case $1 in
+        --key) need $# "$1"; keys="$keys $2"; shift 2 ;;
+        --dry-run) dry=yes; shift ;;
+        --label) need $# "$1"; label=$2; shift 2 ;;
+        --launch-agents) need $# "$1"; agentsdir=$2; shift 2 ;;
+        --agb) need $# "$1"; agb=$2; shift 2 ;;
+        --python) need $# "$1"; python=$2; shift 2 ;;
+        --rows) need $# "$1"; rows=$2; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage; die "unknown option: $1" ;;
+    esac
+done
+
+[ -f "$agb" ] || die "no agb at $agb (pass --agb <path>)"
+
+if [ -z "$python" ]; then
+    python=$(command -v python3 2>/dev/null || :)
+    [ -n "$python" ] || die "no python3 found; pass --python <absolute path>"
+fi
+
+plist="$agentsdir/$label.plist"
+uid=$(id -u)
+
+# `agb` is not executable and has no shebang on purpose, so it is always run as
+# an argument to the interpreter.
+set -- forget-rows
+for k in $keys; do set -- "$@" --key "$k"; done
+[ -n "$rows" ] && set -- "$@" --rows "$rows"
+[ "$dry" = yes ] && set -- "$@" --dry-run
+
+if [ "$dry" = yes ]; then
+    say "dry run:  would stop $label, forget the bindings below, then start it"
+    "$python" -S -E "$agb" "$@" || :
+    say "dry run:  nothing was changed"
+    exit 0
+fi
+
+# 1. stop. `|| :` because "not running" is a fine state to start from -- this is
+#    a recovery command and refusing to run when the bridge is already down
+#    would be the opposite of helpful.
+if command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || :
+    say "stopped:  $label"
+else
+    say "note:     launchctl not found; skipping stop/start"
+fi
+
+# 2. forget. Through `agb`, never with sed: the map ends in an `#end <count>`
+#    sentinel and a hand-edited line leaves the count wrong, which makes the
+#    whole map read as corrupt and discards the bindings you meant to keep.
+code=0
+"$python" -S -E "$agb" "$@" || code=$?
+
+# 3. start again, whatever step 2 said: leaving the bridge down because one key
+#    was not in the map would turn a small surprise into a dark sidebar.
+if command -v launchctl >/dev/null 2>&1; then
+    if [ -f "$plist" ]; then
+        if launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
+            say "started:  $label"
+        else
+            launchctl load -w "$plist" >/dev/null 2>&1 \
+                && say "started:  $label (legacy load -w)" \
+                || say "WARNING:  could not start $label -- run install.sh mac again"
+        fi
+    else
+        say "WARNING:  no plist at $plist -- the bridge was not restarted"
+    fi
+fi
+
+say "next:     reopen agterm if it is closed; rows return on the next snapshot"
+exit $code

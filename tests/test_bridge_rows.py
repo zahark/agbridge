@@ -1814,3 +1814,85 @@ def test_a_failure_with_no_target_does_not_produce_the_hint(mac, bridge):
     b.upsert(wire("a3f9c1e0"))
 
     assert [text for text in b.warned if "delete" in text] == []
+
+
+# ---------------------------------------------------------------------------
+# `agb forget-rows` -- the recovery when agterm has dropped its rows
+# ---------------------------------------------------------------------------
+
+def _seeded(mac, tmp_path):
+    rows = mac.RowMap(str(tmp_path / "rows"))
+    rows.bind("aaaa1111", "ROW-1", "build · box2")
+    rows.bind("bbbb2222", "ROW-2", "docs · box2")
+    rows.save(force=True)
+    return str(tmp_path / "rows")
+
+
+def test_forget_rows_drops_every_binding_by_default(mac, tmp_path):
+    """agterm was closed or reset: every id in the map is dead, so the whole
+    map goes and the next snapshot re-creates the rows."""
+    path = _seeded(mac, tmp_path)
+    out = _RowOut()
+    assert mac.run_forget_rows(["--rows", path], out=out) == 0
+    assert mac.load_rows(path).bound_keys() == []
+    assert "aaaa1111" in out.text and "bbbb2222" in out.text
+
+
+def test_forget_rows_can_target_one_key(mac, tmp_path):
+    """One row closed while the others are still live: dropping the whole map
+    would mint duplicates for the survivors."""
+    path = _seeded(mac, tmp_path)
+    assert mac.run_forget_rows(["--rows", path, "--key", "aaaa1111"],
+                               out=_RowOut()) == 0
+    rows = mac.load_rows(path)
+    assert rows.bound_keys() == ["bbbb2222"]
+    assert rows.row_for("bbbb2222") == "ROW-2"
+
+
+def test_forget_rows_keeps_the_sentinel_correct(mac, tmp_path):
+    """The reason this is not `sed`: the map ends in `#end <count>`, and a
+    hand-edited line leaves the count wrong -- which makes the whole map read as
+    corrupt and discards the bindings that were meant to survive."""
+    path = _seeded(mac, tmp_path)
+    mac.run_forget_rows(["--rows", path, "--key", "aaaa1111"], out=_RowOut())
+    text = open(path).read()
+    assert text.rstrip().endswith("#end 1")
+    assert mac.load_rows(path).known("bbbb2222")     # still readable
+
+
+def test_forget_rows_dry_run_changes_nothing(mac, tmp_path):
+    path = _seeded(mac, tmp_path)
+    before = open(path).read()
+    out = _RowOut()
+    assert mac.run_forget_rows(["--rows", path, "--dry-run"], out=out) == 0
+    assert open(path).read() == before
+    assert "would forget" in out.text
+
+
+def test_forget_rows_names_a_key_it_does_not_hold(mac, tmp_path):
+    """A typo must be said out loud rather than reported as a successful
+    no-op -- the operator is trying to fix a row that will not come back."""
+    path = _seeded(mac, tmp_path)
+    out = _RowOut()
+    code = mac.run_forget_rows(["--rows", path, "--key", "nosuchkey"], out=out)
+    assert code == 1
+    assert "not in the map" in out.text
+    assert mac.load_rows(path).bound_keys() == ["aaaa1111", "bbbb2222"]
+
+
+def test_forget_rows_on_an_empty_map_is_not_an_error(mac, tmp_path):
+    out = _RowOut()
+    assert mac.run_forget_rows(["--rows", str(tmp_path / "none")],
+                               out=out) == 0
+    assert "already empty" in out.text
+
+
+class _RowOut(object):
+    def __init__(self):
+        self.text = ""
+
+    def write(self, data):
+        self.text += data
+
+    def flush(self):
+        pass
