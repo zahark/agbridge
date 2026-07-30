@@ -134,7 +134,10 @@ three guards in the same order, then `continue` so the prompt returns.
 |---|---|---|
 | 1 | `split_line is None` | `"no shell target recorded for this row"` |
 | 2 | `not _have(AGTERMCTL)` | `PANE_NO_CTL` — see below |
-| 3 | otherwise | print `PANE_DRAWER_HINT`, print the exact line, then `open_drawer`, then `out.flush()` |
+| 3 | otherwise | print `PANE_DRAWER_HINT`, print the line as `"    drawer:  %s\n"`, then `open_drawer`, then `out.flush()` |
+
+The label is `drawer:` where the split's is `shell:` (`agb_ops:2024`). No test depends on either, but
+with two keys the pane is the useful word — and leaving it unstated would make an implementer guess.
 
 ⚠️ **`PANE_SPLIT_NO_CTL` must be reworded, not reused as-is.** Its text (`agb_ops:1780-1782`) says
 *"agtermctl is not on PATH, so **the split** cannot be opened from here"* — so sharing it would
@@ -276,6 +279,9 @@ the two differ costs more than the tidiness is worth.
 - Modify: `docs/commands.md`
 - Modify: `docs/cookbook.md`
 - Modify: `README.md`
+- Modify: `docs/agtermctl.md` (the verification-claim reconciliation)
+- Modify: `CLAUDE.md` (same)
+- Modify: `tests/test_pane.py` (the `[s] shell` section comment and the test name)
 
 The prompt string is quoted **verbatim in four places**; after the `shell`→`split` relabel every
 one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none are missed.
@@ -320,6 +326,10 @@ one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none 
 
 ### Task 7: [Final] Update documentation and close out
 
+**Files:**
+- Modify: `CLAUDE.md`
+- Modify: `agb` (the `VERSION` line only)
+
 - [ ] `CLAUDE.md:99-101`, invariant #12 — it says `agtermctl session split` is used as `on`, never
       `toggle`. The same rule now governs `session scratch`; widen the invariant
 - [ ] `CLAUDE.md:187-190`, "**Two doors to `agtermctl`, deliberately**" — `open_drawer` makes three.
@@ -330,8 +340,9 @@ one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none 
 - [ ] promote the version in `agb` (`VERSION`, `agb:24`) — a new key is a minor bump: `0.3.0`.
       Length-neutral (both strings are 5 characters), so the parse budget is untouched
 - [ ] `CLAUDE.md:186` says "This is why the version is 0.2.x and not 1.0.0" — stale after the bump
-- [ ] `CLAUDE.md:6` says "1271 tests"; the real count is 1412 and rising. Pre-existing drift, but
-      this is the cheap place to fix it
+- [ ] `CLAUDE.md:8` says "1271 tests"; **re-measure and write what the suite reports at that
+      moment** — do not copy a number from this plan, which was written before these tasks added
+      roughly seven more and is therefore wrong on arrival by construction
 - [ ] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
