@@ -197,6 +197,9 @@ has forgotten rows the map still names. On the Mac:
 Nothing on the farm is touched; rows come back with the same identities on the next snapshot.
 Reopen agterm first if it is closed.
 
+**After upgrading the Mac's files**, run it too: a row's `agb pane` loads its code when the row is
+created and keeps it, so new features do not reach existing rows until they are recreated.
+
 **Clicking a row says `Could not resolve hostname`** — the `host_<hostname>` mapping is missing.
 Add it to the Mac's config (takes effect on the next click, no restart):
 

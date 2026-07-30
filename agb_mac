@@ -1916,13 +1916,14 @@ def _rebound_on_disk(path, key):
     return False
 
 
-FORGET_FLAGS = {"--dry-run": "dry_run"}
+FORGET_FLAGS = {"--dry-run": "dry_run", "--no-close": "no_close"}
 FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key"}
 
 
 def parse_forget_args(argv):
-    """`forget-rows [--key K]... [--rows PATH] [--dry-run]`."""
-    opts = {"rows": None, "keys": [], "dry_run": False}
+    """`forget-rows [--key K]... [--rows PATH] [--no-close] [--dry-run]`."""
+    opts = {"rows": None, "keys": [], "dry_run": False,
+            "no_close": False}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -1945,7 +1946,7 @@ def parse_forget_args(argv):
     return opts
 
 
-def run_forget_rows(argv, out=None):
+def run_forget_rows(argv, out=None, run=None):
     """Drop `key -> row` bindings so the next snapshot re-creates the rows.
 
     The recovery for agterm having forgotten its rows -- it was closed, reset or
@@ -1969,6 +1970,8 @@ def run_forget_rows(argv, out=None):
     """
     if out is None:
         out = sys.stdout
+    if run is None:
+        run = _run_command
     opts = parse_forget_args(argv)
     # `or rows_path()`: `read_rows_file(None)` answers [] -- "there is no map" --
     # so passing the unresolved None here reported every map as empty and
@@ -1994,12 +1997,32 @@ def run_forget_rows(argv, out=None):
         # `row_for` answers only for BOUND rows, so a [done] entry would print
         # "?" -- the id is right there in the entry, and naming it is the point.
         entry = rows.entries.get(key)
+        row = entry[0] if entry else None
         out.write("%sforget %s -> %s%s\n"
-                  % ("would " if opts["dry_run"] else "", key,
-                     entry[0] if entry else "?",
+                  % ("would " if opts["dry_run"] else "", key, row or "?",
                      "" if entry and entry[1] else "  [done]"))
-        if not opts["dry_run"]:
-            rows.forget(key)
+        if opts["dry_run"]:
+            continue
+        # The row id is read from the map ABOVE, before anything forgets it --
+        # that read is the load-bearing part, not the order of the two calls
+        # below. The id lives only in the map, so once it is gone the agterm
+        # session cannot be named by anything, and that is what happened in
+        # practice: the bridge minted fresh rows beside the old ones and the
+        # operator was left closing duplicates by hand.
+        #
+        # Best effort: when agterm has already dropped the row -- the original
+        # reason this command exists -- the close fails and that is the expected
+        # answer, not an error worth stopping for.
+        if row and not opts["no_close"]:
+            rc, _stdout, err = run([AGTERMCTL, "session", "close",
+                                    "--target", row])
+            if rc == 0:
+                out.write("    closed row %s\n" % (row,))
+            else:
+                out.write("    row %s not closed (%s) -- agterm may have "
+                          "dropped it already\n"
+                          % (row, err.strip() or "exit %s" % (rc,)))
+        rows.forget(key)
     if not opts["dry_run"]:
         rows.save(force=True)
     out.write("%s%d of %d binding%s; the next snapshot re-creates the rows\n"

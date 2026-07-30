@@ -389,7 +389,16 @@ touched** — agents, keys and state are untouched, so rows return with the same
 
 ⚠️ Not a file deletion, and not a `sed`. The map ends in an `#end <count>` sentinel; a hand-edited
 line leaves the count wrong, the whole map then reads as corrupt, and the bindings you meant to keep
-go with it. Stop the bridge first — it holds the map in memory and merges-then-writes on every save.
+go with it. It also **closes each agterm session as it forgets it** (`--no-close` to skip). Dropping the
+mapping alone leaves agterm's session and its running `agb pane` in place, so the bridge mints a
+fresh row beside it and you are left closing duplicates by hand. A close that fails is not an error:
+agterm having already dropped the row is the original reason this command exists.
+
+⚠️ A row's behaviour is **frozen when the row is created** — its `agb pane` process loads the code
+that existed then. After upgrading the Mac's files, `agb-refresh` is what gets rows onto the new
+code; nothing refreshes a running row in place.
+
+Stop the bridge first — it holds the map in memory and merges-then-writes on every save.
 `agb-refresh` does the whole sequence.
 
 ## `agb-refresh` — Mac, a convenience
