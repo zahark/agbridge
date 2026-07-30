@@ -52,6 +52,9 @@ BRIDGE_ALIVE_COUNT = 3
 # into a loud, restarting failure with the reason on stderr.
 BRIDGE_CONNECT_TIMEOUT = 20
 
+# When the bridge truncates its own stderr file. See `cap_stderr_log`.
+BRIDGE_LOG_CAP = 4 << 20
+
 # The farm-side interpreter. Constraint #14: an absolute path, because `ssh host
 # cmd` sources no profile and a bare `python3` that fails to resolve would kill
 # the feed with nothing on the Mac able to tell that apart from a quiet farm.
@@ -1940,6 +1943,57 @@ def bridge_sink(model, opts, warn=None, config=None, run=None):
     return (OpTee([bridge_report, renderer]), renderer)
 
 
+def cap_stderr_log(fd=2, cap=None, now=None):
+    """Truncate the bridge's own stderr file once it passes `cap`. -> did it?
+
+    launchd's `StandardErrorPath` is an append-only file with no rotation, and
+    two things write to it: this process, and the `ssh` it spawns. A farm that
+    is unreachable for an afternoon puts one `Could not resolve hostname` in it
+    per reconnect attempt, and none of those go through `_bridge_warn` -- they
+    are `ssh`'s stderr, inherited -- so neither the dedup nor the timestamp
+    applies to them.
+
+    That log became unreadable in practice: a screenful of identical undated
+    failures from hours earlier, hiding the state of the last 30 seconds. Three
+    separate diagnosis rounds were spent re-reading the same history.
+
+    Deliberately a **truncate, not a rotation**. A `.1` file is a second thing
+    to explain, to clean up and to get wrong, and the value here is bounded
+    growth, not archaeology: what matters is always the newest lines. The one
+    line written back says the history is gone, so a short log is never mistaken
+    for a quiet one.
+
+    Works off the **fd**, never a path. The path lives in the plist, which this
+    process does not read, and `F_GETPATH` would tie it to macOS. A non-regular
+    fd -- a tty, a pipe, `/dev/null` -- is left alone, which is also what keeps
+    this from truncating a test runner's captured output.
+    """
+    import stat
+
+    cap = BRIDGE_LOG_CAP if cap is None else cap
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode) or st.st_size <= cap:
+        return False
+    try:
+        # Flushed first: `sys.stderr` block-buffers to a file, and truncating
+        # underneath a buffer would write the pending bytes back at offset 0
+        # after this line, interleaving them into the new log.
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, ("agb bridge: %s this log passed %d bytes and was "
+                      "truncated; everything before this line is gone\n"
+                      % (agb.iso_stamp(now), cap)).encode("utf-8"))
+    except OSError:
+        return False
+    return True
+
+
 def _bridge_warn(reported, text):
     """`agb._warn_once`, except that an outage NOTICE is never deduplicated.
 
@@ -2003,6 +2057,11 @@ def run_bridge(argv):
                                settings["remote_python"])
 
     def connect():
+        # Before each attempt, not once at startup: an unreachable farm is
+        # retried inside *this* process (backoff 1->60 s), and `ssh`'s own
+        # stderr is inherited straight into the log, so the growth happens
+        # without the bridge ever exiting.
+        cap_stderr_log()
         return bridge_spawn(ssh_argv)
 
     return bridge_supervise(connect, model, sink,

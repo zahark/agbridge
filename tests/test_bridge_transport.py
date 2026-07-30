@@ -1224,3 +1224,61 @@ def test_the_bridge_uses_a_monotonic_clock_for_its_own_timeout(mac_tree):
         child.attr for child in ast.walk(node)
         if isinstance(child, ast.Attribute)] or "monotonic" in names
     assert ("time", "time") not in conftest.calls(node)
+
+
+# ---------------------------------------------------------------------------
+# the bridge's own log: bounded, because nothing else bounds it
+# ---------------------------------------------------------------------------
+
+def test_the_log_is_truncated_once_it_passes_the_cap(mac, tmp_path):
+    """launchd's `StandardErrorPath` is append-only with no rotation, and `ssh`'s
+    stderr goes into it inherited -- outside the dedup and outside the stamp. An
+    afternoon of `Could not resolve hostname` made the last 30 seconds
+    unfindable, three diagnosis rounds running."""
+    path = tmp_path / "bridge.err.log"
+    path.write_bytes(b"x" * 5000)
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND)
+    try:
+        assert mac.cap_stderr_log(fd, cap=1000) is True
+    finally:
+        os.close(fd)
+    body = path.read_text()
+    assert "x" * 100 not in body, "the history should be gone"
+    # A short log must never be mistakable for a quiet one.
+    assert "truncated" in body and "before this line is gone" in body
+    assert body.count("\n") == 1
+
+
+def test_a_log_under_the_cap_is_left_alone(mac, tmp_path):
+    path = tmp_path / "bridge.err.log"
+    path.write_bytes(b"x" * 500)
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND)
+    try:
+        assert mac.cap_stderr_log(fd, cap=1000) is False
+    finally:
+        os.close(fd)
+    assert path.read_bytes() == b"x" * 500
+
+
+def test_a_non_regular_stderr_is_never_truncated(mac):
+    """A tty, a pipe or /dev/null is somebody else's fd. This is also what stops
+    it truncating a test runner's captured output when fd 2 is a pipe."""
+    read_fd, write_fd = os.pipe()
+    try:
+        assert mac.cap_stderr_log(write_fd, cap=0) is False
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+    assert mac.cap_stderr_log(-1, cap=0) is False
+
+
+def test_the_truncation_line_is_stamped(mac, tmp_path):
+    """Same reason every other bridge line is: this log has no other clock."""
+    path = tmp_path / "bridge.err.log"
+    path.write_bytes(b"x" * 5000)
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND)
+    try:
+        mac.cap_stderr_log(fd, cap=1000, now=0)
+    finally:
+        os.close(fd)
+    assert "1970-01-01T00:00:00.000Z" in path.read_text()
