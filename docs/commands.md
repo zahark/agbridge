@@ -18,6 +18,19 @@ be added, and kept correct, in each. `agb` is also within a few hundred bytes of
 that three consecutive tasks declined to raise. **This file is the reference instead.** If `--help`
 is ever added, it is added here first.
 
+## `agb` is not directly executable
+
+It has no shebang and is not executable on purpose: a hook is invoked as
+`<abs-python> -S -E <path>/agb hook <state>`, and neither a shebang nor `env` can pass `-S -E`.
+Every `agb <cmd>` below therefore assumes the wrapper `install.sh` writes into `~/.local/bin`:
+
+```sh
+#!/bin/sh
+exec /usr/bin/python3 -S -E /path/to/agb "$@"
+```
+
+Without it, spell the whole thing: `/usr/bin/python3 -S -E /path/to/agb doctor`.
+
 ## Conventions shared by every command
 
 - Every option takes both spellings: `--flag value` and `--flag=value`. An `=` with nothing after it

@@ -88,6 +88,11 @@ config are per-host.
 > Before either installer rewrites a file it copies the previous contents to `<path>.agb.bak`,
 > preserving the mode. A file it cannot parse is never rewritten at all.
 
+Both roles write an `agb` wrapper into `~/.local/bin` (`--bin-dir` to change it, `--no-wrapper` to
+skip). It exists because `agb` is deliberately **not executable and has no shebang** — a hook must
+pass `-S -E`, and neither a shebang nor `env` can — so `agb <cmd>` needs something to supply them.
+The installer warns if the directory is not on your `$PATH`.
+
 Then check it:
 
 ```sh

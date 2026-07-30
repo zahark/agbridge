@@ -71,9 +71,17 @@ Run this on **every** host that runs agents. It writes the config and merges fou
 
 ## Step 5 — Check
 
+`install.sh farm` writes an `agb` wrapper into `~/.local/bin`. If that is not on your `$PATH` it
+says so — add it, or use the full form below.
+
 ```sh
 agb doctor
+# or, without the wrapper:
+/usr/bin/python3 -S -E ~/agbridge/agb doctor
 ```
+
+> `agb` itself is deliberately **not executable and has no shebang**: a hook must pass `-S -E`, and
+> neither a shebang nor `env` can. The wrapper is what makes `agb <cmd>` work.
 
 Every line should be `[ok]`. The one that proves the whole chain is **`bridge beat`** — a fresh
 beat means your Mac is connected and consuming. `no beat file at all` means the bridge is not

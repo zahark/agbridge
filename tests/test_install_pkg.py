@@ -1464,3 +1464,75 @@ def test_no_probe_makes_no_ssh_call_at_all(run_sh, mac_args, stub_bin):
     _ssh_answering(stub_bin, "buildbox07")
     assert run_sh(mac_args())[0] == 0          # mac_args already has --no-probe
     assert stub_bin.calls("ssh") == []
+
+
+# ---------------------------------------------------------------------------
+# the `agb` wrapper -- what makes every doc example true
+# ---------------------------------------------------------------------------
+
+def _farm(tmp_path, **over):
+    """The farm role with every path pinned inside tmp_path."""
+    args = {"--mac-id": "mac-0001",
+            "--config": str(tmp_path / "config"),
+            "--statedir": str(tmp_path / "state"),
+            "--settings": str(tmp_path / "settings.json"),
+            "--python": sys.executable}
+    args.update(over)
+    argv = ["farm"]
+    for name, value in sorted(args.items()):
+        argv.extend([name, value])
+    return argv
+
+
+def test_the_farm_role_writes_a_working_agb_wrapper(run_sh, tmp_path):
+    """`agb` has no shebang and is not executable on purpose (constraint #1):
+    a hook must pass `-S -E`, and neither a shebang nor `env` can. Every doc
+    writes `agb doctor`, so something has to make that true."""
+    bindir = tmp_path / "bin"
+    code, out, err = run_sh(_farm(tmp_path, **{"--bin-dir": str(bindir)}))
+    assert code == 0, err
+    wrapper = bindir / "agb"
+    assert wrapper.exists()
+    assert os.access(str(wrapper), os.X_OK)
+    assert "wrapper:" in out
+
+    # ...and it is not merely present: it runs, through all three files.
+    proc = subprocess.Popen([str(wrapper), "version"], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, stdin=subprocess.PIPE)
+    stdout, stderr = conftest.communicate(proc, b"")
+    assert proc.returncode == 0, stderr
+    assert stdout.startswith(b"agb ")
+
+
+def test_the_wrapper_passes_the_interpreter_flags(run_sh, tmp_path):
+    """`-S -E` is the whole reason the wrapper exists rather than a symlink."""
+    bindir = tmp_path / "bin"
+    run_sh(_farm(tmp_path, **{"--bin-dir": str(bindir)}))
+    text = (bindir / "agb").read_text()
+    assert "-S" in text and "-E" in text
+    assert text.startswith("#!")
+
+
+def test_a_bin_dir_that_is_not_on_path_is_called_out(run_sh, tmp_path):
+    """A wrapper nobody can reach is the silent-no-op shape this tool exists to
+    remove, so its absence from $PATH is said rather than left to be noticed."""
+    bindir = tmp_path / "nowhere"
+    _code, out, _err = run_sh(_farm(tmp_path, **{"--bin-dir": str(bindir)}))
+    assert "not on your $PATH" in out
+
+
+def test_no_wrapper_writes_none(run_sh, tmp_path):
+    bindir = tmp_path / "bin"
+    argv = _farm(tmp_path, **{"--bin-dir": str(bindir)}) + ["--no-wrapper"]
+    code, out, err = run_sh(argv)
+    assert code == 0, err
+    assert not (bindir / "agb").exists()
+    assert "wrapper:" not in out
+
+
+def test_a_dry_run_writes_no_wrapper(run_sh, tmp_path):
+    bindir = tmp_path / "bin"
+    argv = _farm(tmp_path, **{"--bin-dir": str(bindir)}) + ["--dry-run"]
+    _code, out, _err = run_sh(argv)
+    assert not (bindir / "agb").exists()
+    assert "would write the wrapper" in out
