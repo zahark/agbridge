@@ -419,6 +419,15 @@ Stop the bridge → `agb forget-rows` → start it again. A separate POSIX-sh sc
 because one key was not in the map would turn a small surprise into a dark sidebar. A bridge that
 was already stopped is a fine starting state, not an error.
 
+**The stop is waited on, not just requested.** `launchctl bootout` returns once launchd has accepted
+the request, not once the process is gone, and the bridge is normally blocked reading its ssh. A
+forget that lands while the old bridge is still alive is the thing this script exists to prevent:
+that bridge holds the row map in memory and merges-then-writes on every save, so it can re-mint rows
+against ids `forget-rows` has just closed — reinstating the `no such session` spam that sent you
+here. So it polls (`pgrep -f "<agb> bridge"`) until the process is actually gone, for at most **10
+seconds**; past that it says so and goes on, because a recovery command that hangs is worse than one
+that proceeds with the risk named.
+
 ## `agb-claude [name]` — farm, a convenience
 
 ```

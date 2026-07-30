@@ -51,6 +51,7 @@ EOF
 label=$DEFAULT_LABEL; agentsdir=$DEFAULT_AGENTS; agb=$DEFAULT_AGB
 noclose=no
 python=""; rows=""; dry=no; keys=""
+pgrep=""            # set once launchctl is known to exist; `set -u` needs it
 
 need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
 
@@ -94,11 +95,38 @@ if [ "$dry" = yes ]; then
     exit 0
 fi
 
-# 1. stop. `|| :` because "not running" is a fine state to start from -- this is
-#    a recovery command and refusing to run when the bridge is already down
-#    would be the opposite of helpful.
+# 1. stop, and WAIT for it. `|| :` because "not running" is a fine state to
+#    start from -- this is a recovery command and refusing to run when the
+#    bridge is already down would be the opposite of helpful.
+#
+#    `bootout` returns as soon as launchd has accepted the request, not when the
+#    process is gone, and the bridge is usually blocked reading its ssh. A
+#    forget that lands while the old bridge is still alive is the thing this
+#    script exists to prevent: that bridge holds the row map in memory and
+#    merges-then-writes on every save, so it can re-mint rows against ids
+#    `forget-rows` has just closed -- reinstating the "no such session" spam
+#    that sent you here. So poll until the process is actually gone.
+bridge_alive() {
+    [ -n "$pgrep" ] || return 1
+    "$pgrep" -f "$agb bridge" >/dev/null 2>&1
+}
+
 if command -v launchctl >/dev/null 2>&1; then
+    pgrep=$(command -v pgrep 2>/dev/null || :)
     launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || :
+    waited=0
+    while bridge_alive; do
+        # 40 x 0.25s. A bound rather than a spin: if something is holding the
+        # process open we still go on and do the useful work, with the risk
+        # named out loud rather than hanging for ever in a recovery command.
+        if [ "$waited" -ge 40 ]; then
+            say "WARNING:  $label is still running after 10s; forgetting anyway."
+            say "          If rows come back wrong, run agb-refresh again."
+            break
+        fi
+        sleep 0.25 2>/dev/null || sleep 1
+        waited=$((waited + 1))
+    done
     say "stopped:  $label"
 else
     say "note:     launchctl not found; skipping stop/start"
