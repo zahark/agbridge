@@ -64,15 +64,17 @@ name=$(sanitize "$name")
 # a sibling session and switching to it keeps one agent to one addressable pane.
 if [ -n "${TMUX:-}" ]; then
     if tmux has-session -t "=$name" 2>/dev/null; then
+        [ $# -gt 0 ] && say "agb-claude: NOTE '$name' already exists, so it is not being restarted -- these arguments are ignored: $*"
         say "agb-claude: switching to existing session '$name'"
         exec tmux switch-client -t "=$name"
     fi
     say "agb-claude: creating '$name' as a sibling session (you are inside tmux)"
-    tmux new-session -d -s "$name" -c "$(pwd)" "$@" claude
+    tmux new-session -d -s "$name" -c "$(pwd)" claude "$@"
     exec tmux switch-client -t "=$name"
 fi
 
 if tmux has-session -t "=$name" 2>/dev/null; then
+    [ $# -gt 0 ] && say "agb-claude: NOTE '$name' already exists, so it is not being restarted -- these arguments are ignored: $*"
     say "agb-claude: attaching to existing session '$name'"
     exec tmux attach-session -t "=$name"
 fi
