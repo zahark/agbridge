@@ -126,7 +126,8 @@ exists, exactly as `--pane right` is before the split does.
 | `PANE_SPLIT_WORDS` | `s`, `shell`, `split` (unchanged) |
 | `PANE_DRAWER_WORDS` | `d`, `drawer`, `scratch` |
 
-**Dispatch** gains one branch in `run_pane`'s loop, identical in shape to the split's: the same
+**Dispatch** gains one branch in `pane_attach`'s loop (`agb_ops:2015-2039`), identical in shape to
+the split's (`:2017-2027`): the same
 three guards in the same order, then `continue` so the prompt returns.
 
 | # | condition | behaviour |
@@ -148,6 +149,10 @@ the flush the drawer's output sits buffered where the split's does not.
 **Hint text.** `PANE_DRAWER_HINT` is its own constant: the shell opens *over* this pane, and hiding
 it keeps it alive so `[d]` brings it back. That second sentence is the drawer's actual selling point
 and is not obvious from the UI.
+
+**`pane_attach`'s `split_line` parameter keeps its name** even though it now feeds both keys.
+Renaming it would churn every caller and every test for a cosmetic gain; the line itself is
+pane-agnostic. Said here so the next reader does not read it as an oversight.
 
 **The typed line** is `split_shell_line(...)` unchanged — `ssh -t [-J jump] <target> 'cd <cwd> &&
 exec $SHELL -l'`, every word `shlex.quote`d — plus a trailing `"\n"`, or the shell never runs it.
@@ -180,9 +185,13 @@ the two differ costs more than the tidiness is worth.
       bail-out on the first failure, `"the drawer was not opened"` in the message
 - [ ] comment in `open_drawer` recording why `scratch on --command <line>` was **not** used
       (respawns an open scratch → destroys a shell in use; nesting is recoverable)
-- [ ] add `"open_drawer"` to the `import subprocess` holder set at `tests/test_identity.py:1017-1018`
+- [ ] add `"open_drawer"` to the `import subprocess` holder set at `tests/test_identity.py:1016-1018`
       — an **existing** test that fails until this is done — and extend that test's docstring
-      (`:995-1002`), which currently names `open_split` as the second door: it is now a third
+      (`:995-1001`), which currently names `open_split` as the second door: it is now a third
+- [ ] ⚠️ also correct that test's **count**: `tests/test_identity.py:961` says "**Eight** legitimate
+      sites and no more, counted across all three files". `open_drawer` makes nine. This is prose,
+      so **the suite stays green with the count wrong** — the whole value of that test is that the
+      list is enumerated and justified, and a wrong count discredits it
 - [ ] write tests: the scratch is shown before anything is typed into it (call order)
 - [ ] write tests: `on` not `toggle`, `--pane scratch`, and the trailing newline on the line
 - [ ] write tests: a failed first call makes exactly **one** call and says so
@@ -207,13 +216,20 @@ the two differ costs more than the tidiness is worth.
       `pane_attach` **directly** with `ctl=<recorder>` (`run_pane` has no `ctl` parameter, so the
       recorder cannot be injected through it), and monkeypatch `ops._have` to return True (`_have`
       scans `$PATH`, and there is no `agtermctl` on the farm, so guard #2 fires and **zero calls
-      are recorded**). Answer `"d"` then `"q"`. **Assert the call list is non-empty first**, then
+      are recorded**). Pass `split_line=` too, or guard #1 swallows the branch. Answer `"d"` then
+      `"q"`. **Assert the call list is non-empty first**, then
       assert it says `scratch`. Without the non-emptiness assertion, "no call mentions split"
       passes against an empty list — the vacuous-pass failure mode `CLAUDE.md` warns about
 - [ ] write a test: `"shell"` still opens the **split** (the compatibility promise, pinned so a
       later tidy-up cannot quietly drop it). Same mechanism and same non-vacuity assertion
 - [ ] write a test: the `agtermctl`-missing guard fires for `[d]` — the branch most likely to be
-      forgotten in a copy. This one wants `_have` **not** patched, and asserts the message
+      forgotten in a copy. ⚠️ **Force `_have` to return False** (`monkeypatch.setattr(ops, "_have",
+      lambda _p: False)`); do **not** rely on the ambient `$PATH` lacking `agtermctl`. That is true
+      on the farm and false on the **Mac**, which is the machine this code actually runs on — and
+      there the guard is not taken, so the test reaches `subprocess.call(["agtermctl", ...])` for
+      real and opens a pane on the developer's live agterm. Pass a recording `ctl=` as well, so a
+      regression records a call instead of spawning one. (`tests/stubs/agtermctl` is not an
+      alternative: its default case exits 2 for any verb outside `new|status|rename|close`)
 - [ ] mutation-test: point the `[d]` branch at `open_split` and confirm the dispatch test fails.
       **If it still passes, the test is vacuous — fix the test before continuing**
 - [ ] run `python3 -m pytest tests/ -q` — must pass before Task 3
@@ -243,8 +259,12 @@ the two differ costs more than the tidiness is worth.
 - [ ] record `session overlay` as **known to exist and deliberately not used**, with the reason:
       it is ephemeral and closes when its command exits, so a hidden drawer would be destroyed
 - [ ] record the `--command` decision — the one-call spelling that was rejected, and why
-- [ ] note that `--pane scratch` requires the scratch to exist first, the same constraint already
-      documented for `--pane right`
+- [ ] tag the "`--pane scratch` requires the scratch to exist first" claim **ASSUMED**, not
+      CONFIRMED. The captured help (`docs/agtermctl.md:157-160`) says only that *a split pane* must
+      already exist for `--select`; nothing observed says the same of the scratch. It is an
+      inference by analogy, and since `open_drawer` always sends `scratch on` first it is
+      **unobservable** — no test and no manual check will ever falsify it. Say that explicitly:
+      the ordering is kept on the split's precedent, and costs nothing if the constraint is absent
 - [ ] `docs/agtermctl.md:150` says "`[s] shell` can be pressed twice" — relabel to `[s] split` and
       extend the sentence to cover `[d]`, which is governed by the same rule
 - [ ] no tests (documentation only); run the suite anyway to confirm nothing regressed
@@ -270,8 +290,18 @@ one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none 
 - [ ] `docs/cookbook.md:128` (prompt block) and `:133-134` (the `s` bullet)
 - [ ] `README.md:186-189` — "One row, two panes" becomes three; state the split-vs-drawer
       trade-off in one sentence (side by side, versus over the top and free of width)
-- [ ] `README.md:242` — the verified-against-live-agterm table row reads `[s] shell → split pane`;
-      relabel it, and add a `[d]` row marked **unverified** until the Post-Completion check is done
+- [ ] `README.md:239` — the `session split` / `session type` row is the natural home for
+      `session scratch`; `:242` — the row reading `[s] shell → split pane`; relabel it and add a
+      `[d]` row marked **unverified** until the Post-Completion check is done
+- [ ] ⚠️ **Reconcile the three "everything is verified" claims** with that unverified row, or the
+      repo ships contradicting itself: `README.md:248` ("Every `agtermctl` clause this tool depends
+      on has now been exercised against a live agterm"), `docs/agtermctl.md:15` (same claim, then
+      an **exhaustive** list of what remains ASSUMED — omitting `session scratch` makes it wrong,
+      not merely incomplete) and `CLAUDE.md:178-184`. Each should name `session scratch`'s
+      behaviour as help-verified but not yet exercised, and say the Post-Completion Mac check is
+      what clears it
+- [ ] `tests/test_pane.py:731` — the section header comment reads `# \`[s] shell\``; relabel, and
+      rename `test_the_prompt_offers_the_shell` (`:803`) if it no longer describes what it asserts
 - [ ] no tests (documentation only); run the suite anyway
 
 ### Task 6: Verify acceptance criteria
@@ -297,7 +327,11 @@ one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none 
 - [ ] `CLAUDE.md` — record the duplication decision: the two pane openers are kept separate
       *because they are expected to diverge* (`scratch` has `--command`, `split` has no
       equivalent), not by oversight. Without this a future reader will "fix" it by merging them
-- [ ] promote the version in `agb` (`VERSION`, `agb:24`) — a new key is a minor bump: `0.3.0`
+- [ ] promote the version in `agb` (`VERSION`, `agb:24`) — a new key is a minor bump: `0.3.0`.
+      Length-neutral (both strings are 5 characters), so the parse budget is untouched
+- [ ] `CLAUDE.md:186` says "This is why the version is 0.2.x and not 1.0.0" — stale after the bump
+- [ ] `CLAUDE.md:6` says "1271 tests"; the real count is 1412 and rising. Pre-existing drift, but
+      this is the cheap place to fix it
 - [ ] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
