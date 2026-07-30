@@ -2034,3 +2034,36 @@ def test_a_dry_run_closes_nothing(mac, tmp_path):
                         run=lambda argv: calls.append(argv) or 0)
     assert calls == []
     assert mac.load_rows(path).bound_keys() == ["aaaa1111"]
+
+
+def test_a_new_row_never_steals_the_selection(bridge):
+    """`--no-select`: an agent starting on the farm is something to notice in
+    the sidebar, not an interruption. Without it every row creation focuses the
+    new session, and a refresh recreating several yanks the selection once per
+    row."""
+    b = bridge()
+    b.upsert(wire("aaaa1111"))
+    created = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]][0]
+    assert "--no-select" in created
+
+
+def test_rows_go_to_the_configured_workspace(bridge):
+    """Without a workspace agterm uses whichever one is current, so rows
+    recreated by a refresh land wherever the operator happened to be looking."""
+    b = bridge(settings={"workspace": "agents"})
+    b.upsert(wire("aaaa1111"))
+    created = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]][0]
+    assert "--workspace-name" in created
+    assert created[created.index("--workspace-name") + 1] == "agents"
+    # by NAME with --create-workspace: an id is not something a human puts in a
+    # config file, and creating-if-absent makes the setting idempotent.
+    assert "--create-workspace" in created
+    assert "--workspace" not in created        # mutually exclusive with the name
+
+
+def test_no_workspace_configured_means_no_workspace_flag(bridge):
+    b = bridge()
+    b.upsert(wire("aaaa1111"))
+    created = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]][0]
+    assert not [a for a in created if a.startswith("--workspace")]
+    assert "--create-workspace" not in created

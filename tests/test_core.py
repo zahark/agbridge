@@ -202,6 +202,7 @@ def test_parse_config_reads_the_documented_keys(agb, ops):
         "agb_remote_path = /opt/agbridge/agb\n"
         "remote_python = /bin/python3\n"
         "jump_host = vncbox\n"
+        "workspace = agents\n"
         "host_machine3 = m3.example.com\n"
     )
     assert malformed == []
