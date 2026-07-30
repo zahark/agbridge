@@ -3488,6 +3488,136 @@ def run_install_config(argv, out=None):
     return 0
 
 
+# ==========================================================================
+# `agb rename` -- change a row's label
+# ==========================================================================
+
+RENAME_VALUE_ARGS = {"--statedir": "statedir", "--host": "host"}
+
+# The title is `label · host · cwd · pane`, joined by this. A label carrying it
+# would read as two fields and there would be no way to tell which.
+TITLE_SEP = "\u00b7"
+
+RENAME_MAX = 40
+
+
+def valid_label(label):
+    """A label is display text, but it also ends up in a row title the operator
+    reads to decide which agent to open -- so the two things that make a title
+    unreadable are refused rather than rendered."""
+    if not label or len(label) > RENAME_MAX:
+        return False
+    if TITLE_SEP in label:
+        return False
+    for char in label:
+        if ord(char) < 0x20 or ord(char) == 0x7f:
+            return False
+    return label.strip() == label
+
+
+def parse_rename_args(argv):
+    """`rename <key> <label> [--host H] [--statedir SD]`."""
+    opts = {"key": None, "label": None, "statedir": None, "host": None}
+    rest = list(argv)
+    positional = []
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in RENAME_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("rename: %s needs a value" % (name,))
+            opts[RENAME_VALUE_ARGS[name]] = inline
+        elif name.startswith("--"):
+            raise agb.AgbError("rename: unknown option: %s" % (name,))
+        else:
+            positional.append(arg)
+    if len(positional) != 2:
+        raise agb.AgbError(
+            "rename: needs exactly <key> and <label>, got %d argument%s"
+            % (len(positional), "" if len(positional) == 1 else "s"))
+    opts["key"], opts["label"] = positional
+    if not agb.valid_key(opts["key"]):
+        raise agb.AgbError("rename: not a minted key: %s" % (opts["key"],))
+    if not valid_label(opts["label"]):
+        raise agb.AgbError(
+            "rename: a label must be 1-%d characters, no control characters, "
+            "no leading or trailing space, and no %s (the title's field "
+            "separator)" % (RENAME_MAX, TITLE_SEP))
+    return opts
+
+
+def run_rename(argv, out=None):
+    """`agb rename <key> <label>` -- set the label a row is titled from.
+
+    Why the label and not the row: the bridge repaints the title from the record
+    on every update, so an `agtermctl session rename` is overwritten within
+    seconds. The record is the thing to change, and it is durable --
+    `build_record` takes `ident.label or old.get("label")`, and `ident.label` is
+    only populated at mint time, so every later transition carries this forward.
+
+    ⚠️ **Propagation costs a beat, so it is only taken when it can be proven.**
+    The feed re-reads `.json` only when `seq` moves, and `seq` lives in `.state`
+    whose **mtime is the beat**. Rewriting it to publish a label would therefore
+    assert the agent is alive -- which is a liveness claim this command has no
+    business making. So `.state` is touched only when `proof_of_life` says so on
+    this host; otherwise the record is updated alone and the row picks it up at
+    the agent's next transition, which is said out loud rather than looking like
+    a no-op.
+
+    The `.json` write cannot lose a state change: `state`, `seq`, `pid` and
+    `starttime` all reach the wire from `.state` (see `feed_record`), so the
+    only fields at stake here are the static ones -- and `build_record` merges
+    those forward from the record it reads.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_rename_args(argv)
+    sd = opts["statedir"] or agb.statedir()
+    host = opts["host"] or agb.own_host()
+    key = opts["key"]
+
+    record = agb.read_record_quiet(sd, key, host)
+    if not record:
+        out.write("rename: no record for %s/%s -- `agb doctor` lists the "
+                  "entries this host can see\n" % (host, key))
+        out.flush()
+        return 1
+    was = record.get("label") or key
+    # (answer, beat), three-valued: a dict, STATE_GONE, or None for "no
+    # information". Only the first is a basis for touching anything.
+    parsed, _beat = agb.read_state_entry(sd, host, key)
+    if not isinstance(parsed, dict):
+        out.write("rename: %s/%s has no readable .state, so the label would "
+                  "not reach the row -- nothing was changed\n" % (host, key))
+        out.flush()
+        return 1
+
+    record["label"] = opts["label"]
+    record["seq"] = parsed["seq"] + 1
+    agb.atomic_write(agb.record_path(sd, key, host),
+                     agb._json().dumps(record, sort_keys=True).encode("utf-8"))
+    out.write("%s/%s: %s -> %s\n" % (host, key, was, opts["label"]))
+
+    mine = host == agb.own_host()
+    if mine and agb.proof_of_life(parsed["pid"], parsed["starttime"]):
+        agb.write_in_place(
+            agb.state_path(sd, key, host),
+            agb.format_state(parsed["state"], host, parsed["pid"],
+                             parsed["starttime"], record["seq"]))
+        out.write("    published: kill(pid) answers here and the starttime "
+                  "matches, so the beat this refreshes is honest and the row "
+                  "updates on the feed's next poll\n")
+    else:
+        out.write("    the row updates at this agent's next state change: "
+                  "publishing it now would mean refreshing a beat, and %s\n"
+                  % ("kill(pid) does not answer for that agent here" if mine
+                     else "%s is not this host" % (host,)))
+    out.flush()
+    return 0
+
+
 def run_ops(name, argv):
     """The single door `agb.cmd_ops` hops through.
 
@@ -3500,6 +3630,8 @@ def run_ops(name, argv):
     `cmd_install_config`, no dispatch arm. That answer stays reachable only by a
     future entry, which is exactly why it is still here.
     """
+    if name == "rename":
+        return run_rename(argv)
     if name == "doctor":
         return run_doctor(argv)
     if name == "prune":
