@@ -161,6 +161,36 @@ agb doctor [--statedir P] [--mac-id ID] [--quiet-after S] [--tail N]
 Exit **1** only on a failed probe. Warnings — unadjudicable entries, a stale bridge beat — exit 0:
 an exit status that cries wolf is one nobody reads.
 
+## `agb rename <key> <label>` — farm
+
+```
+agb rename <key> <label> [--host <host>] [--statedir <path>]
+```
+
+Sets the **label** a row is titled from (`label · host · cwd · pane`).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `<key>` (positional) | — | **required**, validated as a minted key |
+| `<label>` (positional) | — | **required**. 1–40 characters, no control characters, no leading or trailing space, and not containing ` · ` — a label carrying the title's own separator would read as two fields |
+| `--host <host>` | this host | whose entry to rename |
+| `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | which statedir |
+
+**Why the label and not the row.** The bridge repaints the title from the record on every update, so
+an `agtermctl session rename` is overwritten within seconds. The record is the durable thing:
+`build_record` is `ident.label or old.get("label")`, and `ident.label` is populated only at mint
+time, so every later transition carries this forward.
+
+⚠️ **Publishing costs a beat, so it is only taken when it can be proven.** The feed re-reads the
+record only when `seq` moves, and `seq` lives in `.state` — whose mtime *is* the beat. Rewriting it
+to publish a label would assert the agent is alive. So `.state` is touched only when `kill(pid,0)`
+answers on this host and the `starttime` matches; otherwise the record alone is updated and the row
+picks the new label up at the agent's next state change. Either way the command says which happened,
+rather than looking like a no-op.
+
+Renaming the **tmux session** does not do this, and breaks `agb pane`: the session name was resolved
+once at mint time, so the row would keep trying to attach to a name that no longer exists.
+
 ## `agb prune` — farm, the only destructive command
 
 ```

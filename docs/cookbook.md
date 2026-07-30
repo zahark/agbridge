@@ -124,6 +124,16 @@ Your sidebar then reads something like:
 - **`s`** — open agterm's split pane beside this one with a plain shell on the same host, in the
   agent's directory. Both panes belong to the same row.
 
+Rows are titled `label · host · cwd · pane`, where the label is the tmux session name. To change it
+afterwards, on the host:
+
+```sh
+agb rename <key> a-better-name
+```
+
+Renaming the tmux session does **not** work — the name was read once when the agent started, and
+changing it only breaks click-to-attach.
+
 When an agent finishes its row is marked `[done]`. Reclaim them on the Mac with:
 
 ```sh
