@@ -13,10 +13,16 @@ This file therefore has two layers, and they are kept **visually separate on pur
    `session type` are recorded below.
 
 **As of 2026-07-30 every clause this tool depends on has been exercised against a live agterm**,
-including the spelling of `--blink` (observed blinking a live row). What remains `ASSUMED` is that
-`session rename` may be called repeatedly — which the bridge does on every update, so a failure
-would be loud and constant rather than subtle — and the spelling of `--auto-reset`, which agbridge
-does not use (see "`--auto-reset`: deliberately dropped").
+including the spelling of `--blink` (observed blinking a live row) — **with one exception, below.**
+What remains `ASSUMED` is that `session rename` may be called repeatedly — which the bridge does on
+every update, so a failure would be loud and constant rather than subtle — and the spelling of
+`--auto-reset`, which agbridge does not use (see "`--auto-reset`: deliberately dropped").
+
+⚠️ **The exception is `session scratch`**, added for `agb pane`'s `[d] drawer`. Its *spelling* is
+recorded verbatim from `--help`, but its **behaviour has not yet been exercised**: nobody has
+watched a scratch drawer open, been hidden and come back with the same shell alive. Until that
+happens it sits one evidence class below everything else here. The check that clears it is in
+`docs/plans/completed/20260730-agb-pane-scratch-drawer.md` under Post-Completion.
 
 When the recording lands, reconcile layer 1 against it and update `tests/stubs/agtermctl`
 (created by Task 4b). Nothing in the plan blocks on that: the assumed contract is complete enough
@@ -147,8 +153,42 @@ USAGE: agtermctl session split [<mode>] [--target <target>] [--socket <socket>] 
   --target   Target session/workspace id, unique prefix, or 'active'. (default: active)
 ```
 
-agbridge uses **`on`**, never the default `toggle`: `[s] shell` can be pressed twice and a toggle
-would close the pane the second time.
+agbridge uses **`on`**, never the default `toggle`: `[s] split` can be pressed twice and a toggle
+would close the pane the second time. The same rule governs `session scratch` below, for `[d]`.
+
+### `agtermctl session scratch [on|off|toggle] [--command <command>] [--target <id>]` — **CONFIRMED**
+
+Verbatim from `agtermctl session scratch --help` (2026-07-30):
+
+```
+OVERVIEW: Show or hide a session scratch terminal (on|off|toggle).
+USAGE: agtermctl session scratch [<mode>] [--command <command>] [--target <target>] ...
+  <mode>     Mode: on (show), off (hide), or toggle (default). The hidden scratch shell stays
+             alive. (default: toggle)
+  --command  When showing, run this command as the scratch's process instead of a login shell
+             (run-once; respawns the scratch if one is already open).
+  --target   Target session/workspace id, unique prefix, or 'active'. (default: active)
+```
+
+- **`--command` is deliberately not used**, despite being the nicer single call — it would replace
+  `scratch on` + `type --pane scratch` with one invocation and remove the keystroke-injection layer
+  and its quoting entirely. The blocker is in its own help: *"respawns the scratch if one is already
+  open"*. `[d]` is two keystrokes and gets pressed twice, and the second press would then destroy a
+  shell somebody was working in. Typing into the shell that is already there nests an ssh instead,
+  which `exit` undoes — and which is exactly what `[s]` has always done.
+- **ASSUMED**: that `--pane scratch` errors before the scratch exists, the way `--pane right` does
+  before the split does. Nothing recorded says so — the help constrains only `--select`, and only
+  for a split. It is also **unobservable** from here, because `open_drawer` always sends `scratch
+  on` first: no test and no manual check can falsify it. The ordering is kept on the split's
+  precedent and costs nothing if the constraint turns out not to exist.
+
+### `agtermctl session overlay open|close|resize|result` — **CONFIRMED to exist, deliberately unused**
+
+*"Open, resize, or close an ephemeral overlay terminal on a session"*; `open` runs a command and
+*"it closes when COMMAND exits"*. It was the other candidate for `[d]` and was rejected: an
+interactive shell destroyed when it is dismissed is the opposite of a drawer. `scratch` was chosen
+because its help promises *"the hidden scratch shell stays alive"*. Recorded so the next reader does
+not re-evaluate it from scratch.
 
 ### `agtermctl session type [<text>] [--pane left|right|scratch] [--target <id>]` — **CONFIRMED**
 

@@ -257,20 +257,20 @@ the two differ costs more than the tidiness is worth.
 **Files:**
 - Modify: `docs/agtermctl.md`
 
-- [ ] add `session scratch`'s **verbatim** `--help` beside the existing `split` and `type`
+- [x] add `session scratch`'s **verbatim** `--help` beside the existing `split` and `type`
       recordings (`docs/agtermctl.md:139-175`), tagged **CONFIRMED** with the date
-- [ ] record `session overlay` as **known to exist and deliberately not used**, with the reason:
+- [x] record `session overlay` as **known to exist and deliberately not used**, with the reason:
       it is ephemeral and closes when its command exits, so a hidden drawer would be destroyed
-- [ ] record the `--command` decision — the one-call spelling that was rejected, and why
-- [ ] tag the "`--pane scratch` requires the scratch to exist first" claim **ASSUMED**, not
+- [x] record the `--command` decision — the one-call spelling that was rejected, and why
+- [x] tag the "`--pane scratch` requires the scratch to exist first" claim **ASSUMED**, not
       CONFIRMED. The captured help (`docs/agtermctl.md:157-160`) says only that *a split pane* must
       already exist for `--select`; nothing observed says the same of the scratch. It is an
       inference by analogy, and since `open_drawer` always sends `scratch on` first it is
       **unobservable** — no test and no manual check will ever falsify it. Say that explicitly:
       the ordering is kept on the split's precedent, and costs nothing if the constraint is absent
-- [ ] `docs/agtermctl.md:150` says "`[s] shell` can be pressed twice" — relabel to `[s] split` and
+- [x] `docs/agtermctl.md:150` says "`[s] shell` can be pressed twice" — relabel to `[s] split` and
       extend the sentence to cover `[d]`, which is governed by the same rule
-- [ ] no tests (documentation only); run the suite anyway to confirm nothing regressed
+- [x] no tests (documentation only); run the suite anyway to confirm nothing regressed
 
 ### Task 5: Update the user-facing docs
 
@@ -286,41 +286,41 @@ the two differ costs more than the tidiness is worth.
 The prompt string is quoted **verbatim in four places**; after the `shell`→`split` relabel every
 one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none are missed.
 
-- [ ] `docs/design.md:623` (the verbatim prompt) and `:630-651` (the `s`/`shell`/`split` section
+- [x] `docs/design.md:623` (the verbatim prompt) and `:630-651` (the `s`/`shell`/`split` section
       and its three load-bearing properties). **This file first**: `CLAUDE.md:54-56` names it the
       authority, reconciled against the implementation — the others follow it
-- [ ] `docs/commands.md:146-162` — update the prompt block and the key table with `[d]`, and
+- [x] `docs/commands.md:146-162` — update the prompt block and the key table with `[d]`, and
       describe the two-call sequence as it is already described for `[s]`
-- [ ] `docs/commands.md:143` — `--cwd`'s description says "used by `[s] shell` below"; it is now
+- [x] `docs/commands.md:143` — `--cwd`'s description says "used by `[s] shell` below"; it is now
       used by both keys
-- [ ] `docs/cookbook.md:128` (prompt block) and `:133-134` (the `s` bullet)
-- [ ] `README.md:186-189` — "One row, two panes" becomes three; state the split-vs-drawer
+- [x] `docs/cookbook.md:128` (prompt block) and `:133-134` (the `s` bullet)
+- [x] `README.md:186-189` — "One row, two panes" becomes three; state the split-vs-drawer
       trade-off in one sentence (side by side, versus over the top and free of width)
-- [ ] `README.md:239` — the `session split` / `session type` row is the natural home for
+- [x] `README.md:239` — the `session split` / `session type` row is the natural home for
       `session scratch`; `:242` — the row reading `[s] shell → split pane`; relabel it and add a
       `[d]` row marked **unverified** until the Post-Completion check is done
-- [ ] ⚠️ **Reconcile the three "everything is verified" claims** with that unverified row, or the
+- [x] ⚠️ **Reconcile the three "everything is verified" claims** with that unverified row, or the
       repo ships contradicting itself: `README.md:248` ("Every `agtermctl` clause this tool depends
       on has now been exercised against a live agterm"), `docs/agtermctl.md:15` (same claim, then
       an **exhaustive** list of what remains ASSUMED — omitting `session scratch` makes it wrong,
       not merely incomplete) and `CLAUDE.md:178-184`. Each should name `session scratch`'s
       behaviour as help-verified but not yet exercised, and say the Post-Completion Mac check is
       what clears it
-- [ ] `tests/test_pane.py:731` — the section header comment reads `# \`[s] shell\``; relabel, and
+- [x] `tests/test_pane.py:731` — the section header comment reads `# \`[s] shell\``; relabel, and
       rename `test_the_prompt_offers_the_shell` (`:803`) if it no longer describes what it asserts
-- [ ] no tests (documentation only); run the suite anyway
+- [x] no tests (documentation only); run the suite anyway
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] `[s]` behaviour is unchanged: same two calls, same order, same words accepted. The **one**
+- [x] `[s]` behaviour is unchanged: same two calls, same order, same words accepted. The **one**
       deliberate exception is `PANE_SPLIT_NO_CTL` → `PANE_NO_CTL`, whose text no longer names the
       split (Task 2)
-- [ ] `[d]` opens the scratch and types the same line `[s]` would
-- [ ] both keys return to the prompt, so either can be pressed after the other
-- [ ] a row with no host still says "no shell target recorded" for both keys
-- [ ] a missing `agtermctl` is a message, not a traceback, for both keys
-- [ ] run the full suite: `python3 -m pytest tests/ -q`
-- [ ] confirm `agb`'s parse budget is untouched: `wc -c agb` (102,429 against a 102,500 ceiling —
+- [x] `[d]` opens the scratch and types the same line `[s]` would
+- [x] both keys return to the prompt, so either can be pressed after the other
+- [x] a row with no host still says "no shell target recorded" for both keys
+- [x] a missing `agtermctl` is a message, not a traceback, for both keys
+- [x] run the full suite: `python3 -m pytest tests/ -q`
+- [x] confirm `agb`'s parse budget is untouched: `wc -c agb` (102,429 against a 102,500 ceiling —
       `tests/conftest.py:63`). This plan edits `agb_ops` only, so the number must not move here;
       Task 7's version bump is length-neutral (`0.2.2` → `0.3.0`) and must not move it either
 
@@ -330,20 +330,20 @@ one of them is wrong. Grep `\[enter\] attach` and `\[s\] shell` to confirm none 
 - Modify: `CLAUDE.md`
 - Modify: `agb` (the `VERSION` line only)
 
-- [ ] `CLAUDE.md:99-101`, invariant #12 — it says `agtermctl session split` is used as `on`, never
+- [x] `CLAUDE.md:99-101`, invariant #12 — it says `agtermctl session split` is used as `on`, never
       `toggle`. The same rule now governs `session scratch`; widen the invariant
-- [ ] `CLAUDE.md:187-190`, "**Two doors to `agtermctl`, deliberately**" — `open_drawer` makes three.
+- [x] `CLAUDE.md:187-190`, "**Two doors to `agtermctl`, deliberately**" — `open_drawer` makes three.
       Correct the count and the sentence
-- [ ] `CLAUDE.md` — record the duplication decision: the two pane openers are kept separate
+- [x] `CLAUDE.md` — record the duplication decision: the two pane openers are kept separate
       *because they are expected to diverge* (`scratch` has `--command`, `split` has no
       equivalent), not by oversight. Without this a future reader will "fix" it by merging them
-- [ ] promote the version in `agb` (`VERSION`, `agb:24`) — a new key is a minor bump: `0.3.0`.
+- [x] promote the version in `agb` (`VERSION`, `agb:24`) — a new key is a minor bump: `0.3.0`.
       Length-neutral (both strings are 5 characters), so the parse budget is untouched
-- [ ] `CLAUDE.md:186` says "This is why the version is 0.2.x and not 1.0.0" — stale after the bump
-- [ ] `CLAUDE.md:8` says "1271 tests"; **re-measure and write what the suite reports at that
+- [x] `CLAUDE.md:186` says "This is why the version is 0.2.x and not 1.0.0" — stale after the bump
+- [x] `CLAUDE.md:8` says "1271 tests"; **re-measure and write what the suite reports at that
       moment** — do not copy a number from this plan, which was written before these tasks added
       roughly seven more and is therefore wrong on arrival by construction
-- [ ] move this plan to `docs/plans/completed/`
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

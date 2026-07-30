@@ -183,10 +183,13 @@ The interesting constraints, all of which the code and tests enforce:
 - **Nothing fails silently.** Every failure leaves a breadcrumb; `doctor` probes rather than
   checking existence (it really writes a file, renames it, and reads it back); the hook exits 0 on
   every path and never writes to stdout, because Claude Code injects hook stdout into the prompt.
-- **One row, two panes.** Clicking a row runs `agb pane`, which prints the agent's identity and
-  offers `[enter] attach   [s] shell   [q] quit`. Enter joins the agent's own tmux pane; `s` opens
-  agterm's split beside it with a shell on the same host, in the agent's directory. Detaching
-  returns to the prompt rather than closing the row.
+- **One row, three panes.** Clicking a row runs `agb pane`, which prints the agent's identity and
+  offers `[enter] attach   [s] split   [d] drawer   [q] quit`. Enter joins the agent's own tmux
+  pane; `s` opens agterm's split *beside* it with a shell on the same host, in the agent's
+  directory; `d` puts that shell in the scratch drawer *over* it instead, which costs no width and
+  stays alive while hidden. Neither replaces the other — the split shows you the agent and the
+  shell at once, the drawer gives the agent its full width back. Detaching returns to the prompt
+  rather than closing the row.
 - **A dead row must not look like a live one.** `agterm`'s `idle` renders as *no glyph*, so a
   removed row would be pixel-identical to a live idle agent. Removed rows are marked `[done]` and
   stale ones `[?]` in the title.
@@ -237,18 +240,26 @@ Verified in real use, not just in tests:
 | clicking a row runs `agb pane` with the right identity | ✅ |
 | `agtermctl session new` returns the row id on stdout | ✅ — the largest assumption in the design; it held |
 | `session split` / `session type` | ✅ `--help`-verified, then run |
+| `session scratch` | ⬜ `--help`-verified, **not yet run** |
 | click-to-attach → right host, session **and pane** | ✅ |
 | detach returns to the prompt, row survives | ✅ |
-| `[s] shell` → split pane with a shell on the agent's host | ✅ |
+| `[s] split` → split pane with a shell on the agent's host | ✅ |
+| `[d] drawer` → the same shell in the scratch drawer | ⬜ not yet run |
 | a finished agent's row goes `[done]`, stays visible | ✅ |
 | `agb close-done` → `agtermctl session close` | ✅ |
 | automatic reap of dead own-host agents | ✅ |
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 
-**Every `agtermctl` clause this tool depends on has now been exercised against a live agterm.**
+**Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except
+`session scratch`** — the two rows marked ⬜ above. Its spelling is recorded verbatim from `--help`
+and its call path is mutation-tested, but nobody has yet watched a drawer open, be hidden, and come
+back with the same shell alive.
 
 Still not exercised, and worth knowing:
 
+- **`session scratch`'s behaviour**, as above. The `[s]` split it is modelled on *is* verified, and
+  the two are the same two calls with different constants, so the risk is narrow — but "narrow" is
+  not "none", which is the whole reason this table exists.
 - **Whether `blink` is sticky or a one-shot animation.** The flag is confirmed accepted; agbridge
   sends it only on an actual transition into `active`, which is correct under either reading.
   `--auto-reset` is never sent — it was deliberately dropped, so its spelling stays unverified.

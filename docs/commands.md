@@ -140,26 +140,34 @@ word, and the two are tested against each other.
 | `--host <hostname>` | — | **required**. The Mac cannot read the shared statedir, so the identity has to arrive on the command line. It is a *hostname*; `host_<name>` in the config maps it to an ssh target, and without such a key the hostname is used as the target |
 | `--tmux <session>` | none | the tmux session to attach to. **Without it there is no attach at all**: `pane` prints the identity, says so, and exits 0 without prompting |
 | `--pane %N` | none | tmux pane id, `%` plus digits. Accepted without `--tmux` (that record exists), and then rendered in the identity like any other field |
-| `--cwd <path>` | none | the agent's working directory, used by `[s] shell` below so the split pane opens there. Optional: rows created before it existed carry none, and the shell then lands wherever ssh does |
+| `--cwd <path>` | none | the agent's working directory, used by `[s]` and `[d]` below so the shell opens there. Optional: rows created before it existed carry none, and the shell then lands wherever ssh does |
 | `--jump <host>` | config `jump_host` | ssh jump host for machine #3. The bridge's hint wins over the config, and either is dropped when it names the resolved target or the `--host` value itself — hopping through the box you are already going to |
 
 ### The prompt
 
 ```
-[enter] attach   [s] shell   [q] quit >
+[enter] attach   [s] split   [d] drawer   [q] quit >
 ```
 
 | Key | Effect |
 |---|---|
 | **enter** | `ssh -t <target> 'tmux select-window -t %N ; tmux select-pane -t %N ; exec tmux attach-session -t <session>'`. Runs in a **loop**, not `exec`: detaching returns to this prompt instead of closing the row's terminal. A non-zero exit is reported and prompted again rather than being fatal |
-| **s** / `shell` / `split` | opens agterm's split pane beside this one and starts `ssh -t [-J <jump>] <target> 'cd <cwd> && exec $SHELL -l'` in it. Both panes belong to the same row |
+| **s** / `shell` / `split` | opens agterm's split pane **beside** this one and starts `ssh -t [-J <jump>] <target> 'cd <cwd> && exec $SHELL -l'` in it. Both panes belong to the same row |
+| **d** / `drawer` / `scratch` | the same shell in agterm's scratch **drawer**, which overlays this pane rather than taking width from it. Hidden, it stays alive; `[d]` brings it back |
 | **q** / `quit` / `exit`, or EOF | leaves without attaching. Changes nothing about the agent |
 
-`[s]` is two `agtermctl` calls in a fixed order — `session split on --target active`, then
-`session type --target active --pane right` — because `--pane right` is an error when there is no
-split yet. `on` rather than `toggle`, since pressing `s` twice would otherwise close the pane.
-`--target active` needs no row id: this command is running *inside* the row's own session.
-A missing or failing `agtermctl` costs the row its split and nothing else.
+Both keys are two `agtermctl` calls in a fixed order — `session split on` then
+`session type --pane right`, or `session scratch on` then `session type --pane scratch`, always
+`--target active` — because `--pane right` is an error when there is no split yet. `on` rather than
+`toggle`, since pressing the key twice would otherwise close the pane. `--target active` needs no
+row id: this command is running *inside* the row's own session. A missing or failing `agtermctl`
+costs the row its pane and nothing else.
+
+**`shell` stays a synonym for the split**, not the drawer: the label changed, the word did not.
+Pressing either key twice types a second ssh line into the shell already there, nesting an ssh that
+`exit` undoes — which is why `session scratch`'s `--command` is *not* used, despite being a tidier
+single call: it *"respawns the scratch if one is already open"*, so a second press would destroy a
+shell in use.
 
 Values are rejected at parse time if empty or if they carry surrounding whitespace or a newline;
 the ssh target and the jump host are checked again before the attach, against a character whitelist

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1271 tests, ~20 s)
+python3 -m pytest tests/ -q                                    # full suite (1420 tests, ~21 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -96,9 +96,13 @@ These are not style preferences. Each one has a test, and most were re-learned t
 11. **`agb bridge` has no statedir default.** `agb`'s own `~/.agbridge` is right for a process on
     the farm and wrong for the Mac, which would resolve `~` locally and ship a path meaning
     something else. There is no value that side can invent, so it asks. This shipped broken once.
-12. **`agtermctl session split` is used as `on`, never `toggle`**, and the split must exist before
-    anything is typed into it (`--pane right` errors otherwise, and `--select` is main-pane only).
-    Both are `--help`-verified, recorded in `docs/agtermctl.md`, and mutation-tested.
+12. **`agtermctl session split` and `session scratch` are used as `on`, never `toggle`** — either
+    key can be pressed twice, and a toggle would close the pane the second time — and the pane must
+    exist before anything is typed into it (`--pane right` errors otherwise, and `--select` is
+    main-pane only; the same claim for `--pane scratch` is **ASSUMED** and unobservable, since
+    `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
+    `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
+    a second `[d]` would destroy a shell in use.
 
 ## Testing conventions
 
@@ -177,17 +181,23 @@ environment — several are version- or mount-specific.
 
 - **Verified against a live agterm.** `session new` returning the row id on stdout, `session
   split`, `session type`, `session close` and `--blink` are all **CONFIRMED** — see
-  [`docs/agtermctl.md`](docs/agtermctl.md), which tags every clause. What is left: repeated
-  `rename` (**ASSUMED**, with a fallback recorded — but the bridge does it on every update, so a
-  failure would be constant rather than subtle), whether `blink` is sticky or one-shot (it is only
-  ever sent on a transition, correct either way), and the spelling of `--auto-reset`, which
-  agbridge never emits.
+  [`docs/agtermctl.md`](docs/agtermctl.md), which tags every clause. What is left: `session
+  scratch`'s *behaviour* (its spelling is `--help`-verified and its call path mutation-tested, but
+  no drawer has yet been opened, hidden and found still alive), repeated `rename` (**ASSUMED**,
+  with a fallback recorded — but the bridge does it on every update, so a failure would be constant
+  rather than subtle), whether `blink` is sticky or one-shot (it is only ever sent on a transition,
+  correct either way), and the spelling of `--auto-reset`, which agbridge never emits.
 - **Long-running behaviour is still unexercised** — reconnects, the watchdog firing, `prune`
-  against a genuinely dead host. This is why the version is 0.2.x and not 1.0.0.
-- **Two doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single door;
-  `agb_ops.open_split` is a second one, because `agb pane` runs on the Mac but lives in `agb_ops`,
-  which never loads `agb_mac`. Both obey the same rule: a failure is written out and returned,
-  never raised.
+  against a genuinely dead host. This is why the version is 0.x and not 1.0.0.
+- **Three doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single
+  door; `agb_ops.open_split` and `agb_ops.open_drawer` are the other two, because `agb pane` runs
+  on the Mac but lives in `agb_ops`, which never loads `agb_mac`. All obey the same rule: a failure
+  is written out and returned, never raised.
+- **`open_split` and `open_drawer` are duplicated on purpose — merging them is not a tidy-up.**
+  They differ in two constants and one noun, which normally argues for a parameter. The reason not
+  to: they are expected to **diverge**. `session scratch` takes a `--command` that `session split`
+  has no equivalent for, so the drawer may yet become a single call while the split cannot. The
+  same reasoning is recorded at the call site and in `tests/test_identity.py`'s enumeration.
 - `agb <cmd> --help` is not implemented — it would need a `--help` arm in nine hand-rolled parsers
   across three files, against the byte cap. [`docs/commands.md`](docs/commands.md) is the reference.
 - The nine `parse_*_args` functions share scaffolding that could collapse into one helper. It was
