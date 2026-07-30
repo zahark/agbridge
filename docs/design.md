@@ -620,7 +620,7 @@ The interpreter is spelled out because `agb` has no shebang and is not executabl
 `agb pane` row command would simply never run.
 
 `agb pane` prints the agent's identity, then prompts
-(`[enter] attach   [s] shell   [q] quit > `), and attaches only if you ask it to:
+(`[enter] attach   [s] split   [d] drawer   [q] quit > `), and attaches only if you ask it to:
 
 ```sh
 ssh -t [-J jump] <target> \
@@ -651,6 +651,39 @@ tool invents. Three properties of that pair are load-bearing, and all three come
 That last point is also why the split is **offered rather than opened automatically**. A row nobody
 has clicked is a never-shown session whose split pane cannot be realized — and splitting every row
 at creation would open one idle ssh per agent.
+
+**`d`, `drawer` or `scratch` puts the same shell in agterm's scratch drawer**, which overlays the
+pane instead of taking width from it:
+
+```sh
+agtermctl session scratch on --target active
+agtermctl session type    --target active --pane scratch "ssh -t [-J jump] <target> 'cd <cwd> && exec \$SHELL -l'\n"
+```
+
+Same shape, same fixed order, same non-fatal failure. **Both keys stay** because neither subsumes
+the other: the split can show you the agent and the shell at once, which is exactly what an overlay
+cannot do; the drawer costs no width, which is exactly what a split cannot avoid.
+
+Three things about the pair are worth stating, because each looks like an oversight:
+
+- **The two openers are duplicated, not parametrised.** They differ in two constants and one noun.
+  The reason not to merge them is that they are expected to **diverge**: `session scratch` takes a
+  `--command` that `session split` has no equivalent for, so the drawer may yet collapse to a single
+  call. A shared function would make that change awkward; two make it local.
+- **`--command` is not used**, though it would remove the keystroke injection and the shell-quoting
+  under it. Its help says it *"respawns the scratch if one is already open"* — so a second press of
+  `[d]` would destroy a shell in use. Typing into the existing shell nests an ssh instead, which
+  `exit` undoes, and which is what `[s]` has always done. A shrug rather than an incident.
+- **`--pane scratch` requiring the scratch to exist first is ASSUMED**, not observed, and is
+  unobservable here — `scratch on` always goes first, so nothing can falsify it. It is kept on the
+  split's precedent and costs nothing if the constraint does not exist.
+
+`shell` remains a synonym for the **split**, not the drawer. The prompt's label moved from `shell`
+to `split` when the second pane arrived — both hold shells now, so the pane is the distinction — but
+the word keeps its old meaning, or someone typing it out of habit silently gets a different pane
+than they got yesterday. A test pins it, along with the rule that the three key-word sets stay
+pairwise disjoint: the dispatch matches on membership in order, so an overlap makes a branch
+unreachable with no error anywhere, and `shell`/`split`/`scratch` all begin with `s`.
 
 **`q`, `quit`, `exit` and EOF leave without attaching**, exit 0, and print that nothing about the
 agent's state was changed — a row command whose stdin is not a terminal therefore ends instead of

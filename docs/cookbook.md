@@ -125,13 +125,19 @@ Your sidebar then reads something like:
 **Click the row that wants you**, then choose at the prompt:
 
 ```
-[enter] attach   [s] shell   [q] quit >
+[enter] attach   [s] split   [d] drawer   [q] quit >
 ```
 
 - **Enter** — attach to the agent's own tmux pane. `Ctrl-b d` detaches and returns you here, so you
   can re-attach without going back to the sidebar.
 - **`s`** — open agterm's split pane beside this one with a plain shell on the same host, in the
   agent's directory. Both panes belong to the same row.
+- **`d`** — the same shell in agterm's scratch drawer, which lies *over* this pane instead of taking
+  width from it. Hide it and it stays alive; `d` brings it back.
+
+Which to reach for: `s` when you want to watch the agent **while** you type — a test run beside the
+output that provoked it. `d` for a look-and-leave: `git log`, `ls`, checking a path. The drawer
+cannot show you both at once, and the split cannot give the agent its full width back.
 
 Rows are titled `label · host · cwd · pane`, where the label is the tmux session name. To change it
 afterwards, on the host:
