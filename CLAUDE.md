@@ -63,6 +63,49 @@ reconciled against the implementation.
 **The owning host is in the path.** That is what makes every marker rebuild a `readdir` with zero
 opens, and makes "only sweep your own entries" structural rather than a runtime check.
 
+### Everything the bridge tells agterm
+
+Every one of these is a subprocess call through `_run_command`, and every one is best-effort — a
+failure is written to the log and returned, never raised. `docs/agtermctl.md` tags each clause with
+its evidence class; nothing here may be added from a guess.
+
+| When | Call |
+|---|---|
+| a key with no row | `session new --name … --cwd … --command … --no-select [--workspace-name …]` |
+| identity or marker changed | `session rename <title> --target <row>` |
+| status changed, or every 30 s | `session status <state> --target <row> [--blink]` |
+| transition **into** `blocked` | `notify <body> --title … --target <row>` |
+| `agb close-done` | `session close --target <row>` |
+
+Two of these are gated on a **transition**, not on the level state, and for the same reason: they
+are events, not renderings. `--blink` fires only on a real move into `active`; the banner only on a
+real move into `blocked`. Both would otherwise repeat on every snapshot and on the 30 s re-assert.
+
+The banner is the only one with a config gate — `notify_on_blocked`, **on by default**, read through
+`agb_mac.config_flag` (which lives there and not in `agb`: the hot path never reads a flag, and
+`agb` has no bytes to spare). It spells out what counts as false, because `"0"` is truthy in Python
+and a key that silently means its opposite is worse than one that does not exist. Whether the Dock
+icon *bounces* is agterm's own setting, not ours — which events are worth announcing is this tool's
+business; how loudly the machine interrupts you is the machine's.
+
+`agb pane` adds two more calls from `agb_ops` — `session split` / `session scratch` plus
+`session type` — which is why there are **three** doors to `agtermctl` rather than one.
+
+### The status vocabulary is closed
+
+`active | blocked | completed | idle`, and **there is no `unknown`**. Agents report only the first
+three (hooks: `UserPromptSubmit`/`PostToolUse` → `active`, `Notification` `permission_prompt` →
+`blocked`, `Stop` → `completed`). `idle` is emitted by the *bridge alone*, for two renderings that
+must not be confusable with a live agent, which is why each also carries a title prefix:
+
+| Bridge emits `idle` | Title prefix |
+|---|---|
+| feed went quiet / connection lost | `[?] ` |
+| agent removed (finished, reaped, pruned) | `[done] ` |
+
+`idle` renders as **no glyph**, so a row showing nothing is either one of those two cases or a row
+that has not been painted yet. "No glyph" is never evidence about the agent.
+
 ## Invariants that are easy to break
 
 These are not style preferences. Each one has a test, and most were re-learned the hard way.
@@ -176,19 +219,51 @@ environment — several are version- or mount-specific.
   the row's command starts, so attaching clears the glyph with no error anywhere. `_reassert` re-sends
   every status every `REASSERT_INTERVAL` (30 s) so no divergence can be permanent. If you add another
   suppress-if-unchanged path, give it the same escape hatch.
+- ⚠️ **`applied` is also the wrong gate for "did the AGENT change".** It is the right gate for
+  `--blink`, which is about what was painted — but `_render_stale` writes `idle` into it on *any*
+  disconnect, including a routine 10 s quiet spell. Anything that should fire once per real agent
+  transition needs its own memory, or a network hiccup replays it. `RowRenderer.blocked` (the set
+  behind the `blocked` banner) is the worked example; substituting `applied` there fails five named
+  tests. This distinction has now caused two separate bugs — assume it will cause a third.
+
+## Where the project is (2026-07-31)
+
+Released **0.3.0**; `CHANGELOG.md` carries an **Unreleased** section with the `blocked` banner in it.
+`agb` is at 102,429 of its 102,500-byte parse budget — **71 bytes of headroom**, which is the single
+hardest constraint on any change to the hot path. 1425 tests.
+
+Verified against a live agterm, in this order of confidence: row creation and the returned id,
+`rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
+pane, `[s] shell` opening a split, `notify --target` producing a banner, and the **whole banner path
+end to end** — an agent driven into `blocked` with agterm in the background produced the banner and
+a bouncing Dock icon.
+
+**Still unverified, and the honest list:**
+
+- **`session scratch`'s behaviour** — the `[d]` drawer added in 0.3.0. Its spelling is
+  `--help`-verified and its call path is mutation-tested against the `[s]` split it copies, but
+  nobody has watched a drawer open, be hidden, and come back with **the same shell still alive**.
+  That claim is the entire reason `scratch` was chosen over `overlay`, so it is the one worth
+  checking first. `README.md`'s verification table carries unchecked rows for it.
+- **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
+  host. This is why the version is 0.x.
+
+**Considered and not built:** bringing agterm to the front on `blocked`. `agtermctl window select`
+is recorded verbatim in `docs/agtermctl.md` with its trap — given no id it raises whichever window
+is *already active*, so targeting the blocked row's window needs the id from `tree --json`, which
+`tree_workspaces` already parses. Deferred deliberately: a bouncing Dock says "come here when you
+are ready" and a window jumping in front says "stop what you are doing", and the banner may well
+turn out to be enough. If it is built, it wants a config gate and an **off** default — focus-stealing
+is a thing to choose, not to inherit.
 
 ## Known gaps
 
-- **Verified against a live agterm.** `session new` returning the row id on stdout, `session
-  split`, `session type`, `session close` and `--blink` are all **CONFIRMED** — see
-  [`docs/agtermctl.md`](docs/agtermctl.md), which tags every clause. What is left: `session
-  scratch`'s *behaviour* (its spelling is `--help`-verified and its call path mutation-tested, but
-  no drawer has yet been opened, hidden and found still alive), repeated `rename` (**ASSUMED**,
-  with a fallback recorded — but the bridge does it on every update, so a failure would be constant
-  rather than subtle), whether `blink` is sticky or one-shot (it is only ever sent on a transition,
-  correct either way), and the spelling of `--auto-reset`, which agbridge never emits.
-- **Long-running behaviour is still unexercised** — reconnects, the watchdog firing, `prune`
-  against a genuinely dead host. This is why the version is 0.x and not 1.0.0.
+- **What is and is not verified against a live agterm** is above, under "Where the project is".
+  [`docs/agtermctl.md`](docs/agtermctl.md) tags every individual clause. Three clauses stay
+  **ASSUMED** and are fine that way: repeated `rename` (the bridge does it on every update, so a
+  failure would be constant rather than subtle), whether `blink` is sticky or one-shot (it is only
+  ever sent on a transition, so it is correct under either reading), and the spelling of
+  `--auto-reset`, which agbridge never emits.
 - **Three doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single
   door; `agb_ops.open_split` and `agb_ops.open_drawer` are the other two, because `agb pane` runs
   on the Mac but lives in `agb_ops`, which never loads `agb_mac`. All obey the same rule: a failure
