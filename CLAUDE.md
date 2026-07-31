@@ -263,7 +263,13 @@ almost certainly the source of the `no such session` spam in the bridge log. Ful
 [`docs/agtermctl.md`](docs/agtermctl.md) → "agterm closes a session when its command exits". Read it
 before reasoning about row lifetime; it is not in agterm's own reference and nothing here assumed it.
 
-**agbridge uses 8 of agterm's ~70 subcommands.** The unused surface was surveyed on 2026-07-31 and
+⚠️ **Never plan against `agterm.com/commands` without running the command on the Mac first.** That
+site documents a **newer** agterm than the installed one: `events` and `pick` do not exist here, and
+`restore` is top-level rather than under `session` (verified 2026-07-31). A full design for an
+`events`-based feedback loop was written and is shelved in `docs/plans/blocked/` for exactly this
+reason — caught by a "capture the real output first" task, which is why that task exists.
+
+**agbridge uses 8 of agterm's ~70 documented subcommands.** The unused surface was surveyed on 2026-07-31 and
 the useful part is recorded in [`docs/agtermctl.md`](docs/agtermctl.md) → "What agbridge does not use
 yet", with what each would buy. The standout is **`events`**, agterm's control-event ring: the
 bridge is write-only today, which is why nothing notices when a row is closed by hand or agterm
