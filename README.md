@@ -202,6 +202,23 @@ The interesting constraints, all of which the code and tests enforce:
   next changed, which for an idle agent can be hours. The re-assert never blinks, never runs while
   the feed is stale, and costs one call per row per interval.
 
+## Ask Claude Code how to use it
+
+The repo ships a [Claude Code skill](.claude/skills/agbridge/SKILL.md) covering the recipes people
+actually need — adding a cluster host, running a second Mac, removing a host, rows that are missing
+or stale or duplicated, notifications, workspaces — plus pointers into the docs below.
+
+It works automatically when Claude Code is run **inside this checkout**. To have it everywhere,
+symlink it once:
+
+```sh
+mkdir -p ~/.claude/skills
+ln -sfn "$PWD/.claude/skills/agbridge" ~/.claude/skills/agbridge
+```
+
+A symlink rather than a copy, so `git pull` updates it. Then ask normally — *"how do I add another
+cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
+
 ## Documentation
 
 | File | Contents |
