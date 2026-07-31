@@ -1018,6 +1018,149 @@ def test_the_remote_statedir_is_never_expanded_against_the_macs_home(mac, agb):
 
 
 # ---------------------------------------------------------------------------
+# `--config`: one path, and everything an instance owns derived from it
+# ---------------------------------------------------------------------------
+#
+# A Mac talking to two farms that share no disk needs two statedirs, so two
+# feeds, so two bridges. The whole of that second instance hangs off ONE flag:
+# the rows map, the placements file and the `host_<name>` table its rows resolve
+# against are all derived from the config's directory. These tests assert the
+# derivation itself, because the derivation *is* the isolation -- a `--config`
+# that were merely read and not derived from would give two bridges one shared
+# bijection, which is worse than no isolation at all.
+
+def _instance_config(tmp_path, name, text=""):
+    """A second instance's config file, written and returned as a str path."""
+    home = tmp_path / "instances" / name
+    os.makedirs(str(home))
+    path = home / "config"
+    with open(str(path), "w") as handle:
+        handle.write(text)
+    return str(path)
+
+
+def test_the_config_flag_moves_everything_the_instance_owns(mac, tmp_path,
+                                                            config_file):
+    """Rows, placements and the values themselves come from that one file."""
+    config_file("workspace = default-space\njump_host = default-jump\n")
+    path = _instance_config(tmp_path, "hostb", "workspace = hostb-space\n")
+    settings = mac.render_settings(mac.parse_bridge_args(["--config", path]))
+    assert settings["rows"] == os.path.join(os.path.dirname(path), "rows")
+    assert settings["placements"] == os.path.join(os.path.dirname(path),
+                                                  "placements")
+    assert settings["config"] == path
+    # Non-vacuity, and the point of the whole flag: the settings were read from
+    # the instance's config and not from the default one, which has both keys.
+    assert settings["workspace"] == "hostb-space"
+    assert settings["jump_host"] is None
+
+
+def test_without_the_flag_every_path_is_exactly_what_it_was(mac, agb,
+                                                            fake_home):
+    """The default install must not move by a byte -- including the published
+    `config`, which stays None so that no row command starts carrying a flag."""
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["rows"] == mac.rows_path()
+    assert settings["placements"] == mac.placements_path()
+    assert settings["config"] is None
+    assert os.path.dirname(settings["rows"]) == os.path.dirname(
+        agb.config_path())
+
+
+def test_an_explicit_rows_file_still_wins(mac, tmp_path):
+    """`--rows` predates this and is a debugging seam; it keeps working."""
+    path = _instance_config(tmp_path, "hostb")
+    elsewhere = str(tmp_path / "scratch-rows")
+    settings = mac.render_settings(mac.parse_bridge_args(
+        ["--config", path, "--rows", elsewhere]))
+    assert settings["rows"] == elsewhere
+    # ...and drags nothing else with it. Deriving the config path from
+    # `dirname(rows)` -- the obvious-looking shortcut -- would name
+    # `<tmp>/config` here: a file that does not exist, so `agb pane` would fall
+    # back to the bare hostname and click-to-attach would reach nothing.
+    assert settings["config"] == path
+    assert settings["placements"] == os.path.join(os.path.dirname(path),
+                                                  "placements")
+
+
+def test_the_published_config_key_is_independent_of_rows(mac, tmp_path):
+    """The one-line version of the rule above, stated where Task 2 reads it."""
+    path = _instance_config(tmp_path, "hostc")
+    assert mac.render_settings({"config": path})["config"] == path
+    assert mac.render_settings(
+        {"config": path, "rows": "/tmp/rows"})["config"] == path
+
+
+def test_the_sink_binds_the_instances_own_row_map(mac, tmp_path):
+    """render_settings -> RowRenderer, which is where a decorative flag would
+    show up as a shared bijection."""
+    path = _instance_config(tmp_path, "hostb")
+    _sink, renderer = mac.bridge_sink(
+        mac.BridgeModel(), mac.parse_bridge_args(["--config", path]))
+    assert renderer is not None
+    assert renderer.rows.path == os.path.join(os.path.dirname(path), "rows")
+    assert renderer.settings["placements"] == os.path.join(
+        os.path.dirname(path), "placements")
+
+
+def test_the_missing_value_message_names_the_instances_own_config(
+        mac, agb, tmp_path, config_file):
+    """An error that points at the wrong file is worse than none: it is
+    believed. The default config here is complete, so reaching the failure at
+    all proves the instance's config was the one read."""
+    config_file("feed_host = vncbox\nmac_id = mac-abc123\n"
+                "statedir = /shared/.agbridge\n")
+    path = _instance_config(tmp_path, "hostb")
+    with pytest.raises(agb.AgbError) as excinfo:
+        mac.bridge_settings(mac.parse_bridge_args(["--config", path]))
+    message = str(excinfo.value)
+    assert path in message
+    assert agb.config_path() not in message
+
+
+def test_the_missing_value_message_still_names_the_default_config(mac, agb):
+    """The other half: with no `--config` it names the file it always named."""
+    with pytest.raises(agb.AgbError) as excinfo:
+        mac.bridge_settings(mac.parse_bridge_args([]))
+    assert agb.config_path() in str(excinfo.value)
+
+
+def test_the_bridge_reads_its_config_exactly_once(mac, agb, tmp_path,
+                                                  monkeypatch):
+    """Two reads are two chances to read two different files.
+
+    Shaped deliberately around the **ssh** path: `run_bridge` reaches
+    `render_settings` on every path but `bridge_settings` only when it is about
+    to connect, so a `--from-stdin` drive would count one read both before and
+    after this change and prove nothing. `bridge_supervise` is stubbed out at
+    the last moment, which is also the non-vacuity assertion below.
+    """
+    path = _instance_config(tmp_path, "hostb",
+                            "feed_host = vncbox\nmac_id = mac-abc123\n"
+                            "statedir = /shared/.agbridge\n")
+    reads = []
+    real_read = agb.read_config
+
+    def counting(config_path=None, warnings=None):
+        reads.append(config_path)
+        return real_read(config_path, warnings)
+
+    monkeypatch.setattr(agb, "read_config", counting)
+
+    supervised = []
+
+    def no_supervise(connect, model, on_ops=None, **kwargs):
+        supervised.append(connect)
+        return 0
+
+    monkeypatch.setattr(mac, "bridge_supervise", no_supervise)
+
+    assert mac.run_bridge(["--config", path]) == 0
+    assert supervised                     # the ssh path really did run
+    assert reads == [path]                # it was two before this change
+
+
+# ---------------------------------------------------------------------------
 # the command, end to end
 # ---------------------------------------------------------------------------
 

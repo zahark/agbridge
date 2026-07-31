@@ -207,33 +207,33 @@ this simply omit the flag and fall back to the default config, which is correct 
 - Modify: `agb_mac`
 - Modify: `tests/test_bridge_transport.py`
 
-- [ ] add `--config` to `BRIDGE_VALUE_ARGS` (`agb_mac:577`)
-- [ ] `run_bridge` reads the config **once** from `opts["config"]` (default `agb.config_path()`) and
+- [x] add `--config` to `BRIDGE_VALUE_ARGS` (`agb_mac:577`)
+- [x] `run_bridge` reads the config **once** from `opts["config"]` (default `agb.config_path()`) and
       passes that dict to both `bridge_settings` and `bridge_sink`/`render_settings`, which already
       accept `config=` and today each read it themselves (`:673`, `:2176`)
-- [ ] `render_settings` derives `rows` and `placements` from `dirname(<config path>)` when the
+- [x] `render_settings` derives `rows` and `placements` from `dirname(<config path>)` when the
       caller passed no explicit `--rows`. **This derivation *is* the isolation** — assert the paths.
       ⚠️ Note `BRIDGE_VALUE_ARGS` has **no** `--placements`, so there is no override to honour on
       this path — and `RowRenderer` reads `settings.get("placements")` (`agb_mac:1571`), which
       **nothing populates today**, so an instance's bridge currently picks row workspaces from the
       *default* placements file. Deriving it is a fix, not just plumbing
-- [ ] `render_settings` also publishes a **`"config"`** key, taken from `opts["config"]` and
+- [x] `render_settings` also publishes a **`"config"`** key, taken from `opts["config"]` and
       **independent of `--rows`** — Task 2 needs it, and deriving it from the rows path is wrong
       (see Technical Details)
-- [ ] write the one-line assertion for it here rather than leaving it to Task 2:
+- [x] write the one-line assertion for it here rather than leaving it to Task 2:
       `mac.render_settings({"config": X})["config"] == X`, and unchanged when `--rows` is passed
-- [ ] ⚠️ `bridge_settings`' missing-value message (`agb_mac:692`) interpolates `agb.config_path()`
+- [x] ⚠️ `bridge_settings`' missing-value message (`agb_mac:692`) interpolates `agb.config_path()`
       and would name the **wrong file** for an instance: *"set it in ~/.config/agbridge/config"*
       while reading `hostb/config`. Pass the resolved path in and use it
-- [ ] write tests: `--config` puts rows and placements beside that config; no `--config` is
+- [x] write tests: `--config` puts rows and placements beside that config; no `--config` is
       byte-identical to today; an explicit `--rows` still wins; the error message names the
       resolved path
-- [ ] ⚠️ the read-once test needs a shape, or it is vacuous: `run_bridge` reaches
+- [x] ⚠️ the read-once test needs a shape, or it is vacuous: `run_bridge` reaches
       `render_settings` first and `bridge_settings` **only on the ssh path**, so a `--from-stdin`
       test reads the config once before *and* after the change. Drive `mac.run_bridge([...])`
       in-process with `mac.bridge_supervise` monkeypatched to a no-op and `agb.read_config`
       counted, and assert the pre-change count would have been 2
-- [ ] run `python3 -m pytest tests/ -q`
+- [x] run `python3 -m pytest tests/ -q`
 
 ### Task 2: the row command carries the config — ⚠️ the one that matters
 
