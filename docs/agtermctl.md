@@ -195,8 +195,12 @@ blocker. Whether the Dock icon also bounces is **agterm's** setting, not agbridg
 deliberate: which events are worth announcing is agbridge's business; how loudly the machine
 interrupts you is the machine's.
 
-- **CONFIRMED**: the flag names and defaults, from `agterm.com/commands`.
-- **Not yet exercised** against a live agterm, like `session scratch`.
+- **CONFIRMED** (2026-07-31, live): run by hand against a bound row, it produced a banner. The flag
+  names and defaults come from `agterm.com/commands`; `--target` was additionally proven by its
+  *rejection* of a stale row id — `error: no such session: <uuid>` means the flag parsed and the
+  lookup ran.
+- **Not yet exercised**: the bridge sending it on an actual transition into `blocked`. The call is
+  identical; what is unproven is the trigger, not the command.
 
 ### `agtermctl window select [<id>]` — **CONFIRMED, not yet used**
 
