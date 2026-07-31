@@ -31,10 +31,12 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   never touches the agterm row, so agterm does not clear it on its own.
 
   Only for a badge agbridge itself raised, and only while `notify_on_blocked` is on: *unwind what
-  you did*, so one switch governs the whole feature rather than half of it. Five limitations are
-  written out in `docs/agtermctl.md` under `session seen`; the two that look like bugs are that an
-  agent **killed** while blocked keeps its badge (it leaves through a removal, not a transition) and
-  that a **bridge restart** orphans one (the memory is per-process).
+  you did*, so one switch governs the whole feature rather than half of it. Six limitations are
+  written out in `docs/agtermctl.md` under `session seen`; the three that look like bugs are that an
+  agent **killed** while blocked keeps its badge (it leaves through a removal, not a transition),
+  that a **bridge restart** orphans one (the memory is per-process), and that **agterm never badges
+  the row you are currently viewing** — nothing is unseen about a session you are looking at, which
+  makes that row the one place this cannot be observed.
 
   ⚠️ **The transition is tracked separately from the painted status.** Gating on `applied` — what
   `--blink` uses — is the obvious implementation and is wrong: `_render_stale` paints every row

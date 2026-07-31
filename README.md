@@ -245,6 +245,7 @@ Verified in real use, not just in tests:
 | `session scratch` | ⬜ `--help`-verified, **not yet run** |
 | `notify --target <row>` → banner on the right row | ✅ run by hand |
 | the bridge sending it on a `blocked` transition → banner + Dock bounce | ✅ |
+| the badge clearing when the agent leaves `blocked` | ✅ — on a row that is **not** selected; agterm never badges the row you are viewing |
 | click-to-attach → right host, session **and pane** | ✅ |
 | detach returns to the prompt, row survives | ✅ |
 | `[s] split` → split pane with a shell on the agent's host | ✅ |
