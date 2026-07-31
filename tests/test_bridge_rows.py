@@ -2754,3 +2754,173 @@ def test_a_malformed_placement_line_is_skipped_not_fatal(mac, tmp_path):
     path.write_text("aaaa1111 = good\nnot a key = x\nbbbb2222 = also good\n")
     assert mac.read_placements(str(path)) == {"aaaa1111": "good",
                                               "bbbb2222": "also good"}
+
+
+# ---------------------------------------------------------------------------
+# `--config` on the row-map commands
+# ---------------------------------------------------------------------------
+#
+# Two bridges on one Mac keep two maps, and these are the two commands that
+# repair a map. Given only `--rows`, repairing instance B means naming three
+# paths by hand and getting all three right; `--config` names the instance once
+# and derives them.
+#
+# ⚠️ The one that must not be skipped is `placements`. `agb-refresh` passes no
+# `--placements` at all, so a `--config` that derived only `rows` would have
+# `forget-rows` read instance A's placements, add instance B's rows to them and
+# write the result back over A's file -- the recovery command corrupting the
+# instance it was not run against, while reporting success in the usual words.
+
+def _instance(tmp_path, name=None):
+    """A config file for `name`, or for the default instance, under $HOME."""
+    base = tmp_path / "home" / ".config" / "agbridge"
+    if name:
+        base = base / name
+    if not base.is_dir():
+        base.mkdir(parents=True)
+    path = base / "config"
+    path.write_text("")
+    return str(path)
+
+
+def _done_map(mac, path, key, row):
+    rows = mac.RowMap(path)
+    rows.bind(key, row, "title")
+    rows.unbind(key)
+    rows.save(force=True)
+
+
+def _bound_map(mac, path, key, row):
+    rows = mac.RowMap(path)
+    rows.bind(key, row, "title")
+    rows.save(force=True)
+
+
+def _tree_run(argv):
+    """agterm answers the tree, and closes whatever it is asked to close."""
+    return (0, TREE_JSON if argv[1] == "tree" else "", "")
+
+
+def test_close_done_reclaims_the_map_beside_its_config(mac, agb, tmp_path):
+    """The rows map follows `--config`, and the *other* instance's map is not
+    touched -- which is what makes the default map's surviving `[done]` entry
+    the non-vacuity check: there was something there to close by mistake."""
+    default = _instance(tmp_path)
+    hostb = _instance(tmp_path, "hostb")
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+
+    runner = Runner()
+    out = Out()
+    assert mac.run_close_done(["--config", hostb], run=runner, out=out) == 0
+    assert runner.agterm() == [["agtermctl", "session", "close",
+                                "--target", "ROW-3"]]
+    assert mac.load_rows(mac.rows_path(hostb)).done_entries() == []
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == [
+        ("aaaa1111", "ROW-1")]
+
+
+def test_forget_rows_follows_its_config_to_the_map_and_the_placements(
+        mac, agb, tmp_path):
+    """⚠️ The worst defect this task closes, asserted at both ends.
+
+    `agb-refresh --instance hostb` runs exactly this. If `--config` derived
+    only the rows path, instance B's `key = workspace` lines would land in
+    instance A's placements file -- so the assertion that matters most is the
+    one about the file that was NOT named on the command line.
+    """
+    default = _instance(tmp_path)
+    hostb = _instance(tmp_path, "hostb")
+    mac.write_placements({"aaaa1111": "kept"}, mac.placements_path(default))
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+
+    out = _RowOut()
+    assert mac.run_forget_rows(["--config", hostb], out=out,
+                               run=_tree_run) == 0
+    # the instance's own two files, both moved
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == []
+    assert mac.read_placements(mac.placements_path(hostb)) == {
+        "bbbb2222": "agbridge"}
+    # ...and the other instance's two files, neither touched
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == ["aaaa1111"]
+    assert mac.read_placements(mac.placements_path(default)) == {
+        "aaaa1111": "kept"}
+
+
+def test_an_explicit_rows_or_placements_still_beats_the_config(mac, tmp_path):
+    """Both flags predate `--config` and are a debugging seam: pointing one
+    somewhere else is a deliberate act, so it wins."""
+    hostb = _instance(tmp_path, "hostb")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    rows = str(tmp_path / "elsewhere-rows")
+    places = str(tmp_path / "elsewhere-placements")
+    _bound_map(mac, rows, "aaaa1111", "ROW-1")
+
+    out = _RowOut()
+    assert mac.run_forget_rows(["--config", hostb, "--rows", rows,
+                                "--placements", places], out=out,
+                               run=_tree_run) == 0
+    assert mac.load_rows(rows).bound_keys() == []
+    assert mac.read_placements(places) == {"aaaa1111": "working repos"}
+    # the config's own files are exactly as they were
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == ["bbbb2222"]
+    assert not os.path.exists(mac.placements_path(hostb))
+
+
+def test_close_done_with_an_explicit_rows_ignores_the_config(mac, tmp_path):
+    hostb = _instance(tmp_path, "hostb")
+    _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    rows = str(tmp_path / "elsewhere-rows")
+    _done_map(mac, rows, "aaaa1111", "ROW-1")
+
+    runner = Runner()
+    assert mac.run_close_done(["--config", hostb, "--rows", rows], run=runner,
+                              out=Out()) == 0
+    assert runner.agterm() == [["agtermctl", "session", "close",
+                                "--target", "ROW-1"]]
+    assert mac.load_rows(mac.rows_path(hostb)).done_entries() == [
+        ("bbbb2222", "ROW-3")]
+
+
+def _run_row_command(mac, name, argv, out):
+    if name == "close-done":
+        return mac.run_close_done(argv, run=Runner(), out=out)
+    return mac.run_forget_rows(argv, out=out, run=_tree_run)
+
+
+@pytest.mark.parametrize("name", ["close-done", "forget-rows"])
+def test_a_row_map_command_says_which_instance_it_acted_on(mac, tmp_path,
+                                                           name):
+    """The mitigation for the one silent failure this shape has: a helper run
+    without `--instance` repairs the *default* instance and reports success in
+    exactly the words it would have used on the right one. So the banner is
+    unconditional, and it names the paths rather than the flag."""
+    hostb = _instance(tmp_path, "hostb")
+    out = _RowOut()
+    _run_row_command(mac, name, ["--config", hostb], out)
+    assert hostb in out.text
+    assert mac.rows_path(hostb) in out.text
+
+
+@pytest.mark.parametrize("name", ["close-done", "forget-rows"])
+def test_the_banner_names_the_default_config_when_no_flag_is_passed(
+        mac, agb, tmp_path, name):
+    """`opts["config"]` is `None` on every run that passes no flag, and the
+    banner is printed on every one of those runs -- so resolving it is not
+    cosmetic: the unresolved value prints `config None`, which names no file
+    and is worse than saying nothing."""
+    _instance(tmp_path)
+    out = _RowOut()
+    _run_row_command(mac, name, [], out)
+    assert agb.config_path() in out.text
+    assert "None" not in out.text
+
+
+def test_forget_rows_names_the_placements_file_it_will_write(mac, tmp_path):
+    """The file nobody named on the command line is the one worth printing:
+    it is the one that would be wrong if `--config` derived only `rows`."""
+    hostb = _instance(tmp_path, "hostb")
+    out = _RowOut()
+    mac.run_forget_rows(["--config", hostb], out=out, run=_tree_run)
+    assert mac.placements_path(hostb) in out.text

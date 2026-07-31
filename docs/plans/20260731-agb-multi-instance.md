@@ -283,19 +283,28 @@ this simply omit the flag and fall back to the default config, which is correct 
 - Modify: `agb_mac`
 - Modify: `tests/test_bridge_rows.py`
 
-- [ ] `agb close-done --config <path>` and `agb forget-rows --config <path>`; both take `--rows`
+- [x] `agb close-done --config <path>` and `agb forget-rows --config <path>`; both take `--rows`
       today, and `--config` derives it
-- [ ] ⚠️ **`forget-rows` also takes `--placements`** (`FORGET_VALUE_ARGS`, `agb_mac:2419`), and
+- [x] ⚠️ **`forget-rows` also takes `--placements`** (`FORGET_VALUE_ARGS`, `agb_mac:2419`), and
       `--config` must derive **that too**. *Review finding 1, the worst one:* deriving only `rows`
       means `agb-refresh --instance hostb` forgets B's rows and then writes B's `key = workspace`
       entries into **A's** placements file (`agb_mac:2492`, `:2537`) — the normal recovery command
       corrupting the other instance. `agb-refresh` passes no `--placements` today, so there is no
       existing escape hatch
-- [ ] an explicit `--rows` still wins, so nothing existing changes
-- [ ] both print the config they are acting on (limitation 1's mitigation, half of it)
-- [ ] write tests: `--config` selects the right map **and the right placements file**; explicit
+      — one door for both: `instance_paths(opts)` returns `(config, rows, placements)`, so the two
+      commands cannot drift about what `--config <B>` means
+- [x] an explicit `--rows` still wins, so nothing existing changes
+- [x] both print the config they are acting on (limitation 1's mitigation, half of it) —
+      `_say_acting_on`, unconditional; `forget-rows` names the placements file too, because that is
+      the one nobody passed on the command line
+- [x] write tests: `--config` selects the right map **and the right placements file**; explicit
       `--rows`/`--placements` override; the printed line names the path
-- [ ] run tests
+- [x] mutation-tested (no checkbox in the plan, but the standing rule): 7 mutations, each failing a
+      *named* test — dropping the placements derivation fails
+      `test_forget_rows_follows_its_config_to_the_map_and_the_placements`, dropping the config
+      default fails `test_the_banner_names_the_default_config_when_no_flag_is_passed` on the literal
+      `config None`, dropping either banner fails only its own command's naming test
+- [x] run tests
 
 ### Task 4: the plist template and `install.sh --instance`
 

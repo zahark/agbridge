@@ -2452,14 +2452,48 @@ def run_bridge(argv):
 # waits. There is no agent scrollback in it to preserve.
 
 
-CLOSE_DONE_VALUE_ARGS = {"--rows": "rows"}
+def instance_paths(opts):
+    """(config, rows, placements) for a row-map command's `--config`.
+
+    One flag in, every path out -- the same rule as `render_settings`, so a
+    bridge and the commands that repair its map cannot disagree about which
+    instance they are on.
+
+    ⚠️ `placements` is derived too, and that is the load-bearing half.
+    `agb-refresh` passes `--rows` and `--placements` **never**, so a `--config`
+    that derived only `rows` would make `forget-rows --config <B>` forget
+    instance B's bindings and then write B's `key = workspace` lines into
+    **A's** placements file: the normal recovery command silently corrupting
+    the other instance's row layout, with both maps then wrong.
+
+    An explicit `--rows`/`--placements` still wins. They predate this and are a
+    debugging seam -- pointing one of them somewhere else is a deliberate act,
+    and nothing that exists today passes both a config and an override.
+    """
+    config = opts.get("config") or agb.config_path()
+    return (config,
+            opts.get("rows") or rows_path(config),
+            opts.get("placements") or placements_path(config))
+
+
+# Printed by both row-map commands on **every** run, not only on failure.
+# Without `--instance`/`--config` these act on the default instance and report
+# success in the usual words, so an operator repairing the wrong Mac-side map
+# sees nothing at all to say so -- the one failure this shape has, and it is
+# silent. The banner is the whole mitigation, which is why it is unconditional.
+def _say_acting_on(out, command, pairs):
+    out.write("%s: %s\n"
+              % (command, "; ".join("%s %s" % pair for pair in pairs)))
+
+
+CLOSE_DONE_VALUE_ARGS = {"--rows": "rows", "--config": "config"}
 
 CLOSE_DONE_FLAGS = {"--dry-run": "dry_run"}
 
 
 def parse_close_done_args(argv):
-    """`close-done [--rows PATH] [--dry-run]`."""
-    opts = {"rows": None, "dry_run": False}
+    """`close-done [--rows PATH] [--config PATH] [--dry-run]`."""
+    opts = {"rows": None, "config": None, "dry_run": False}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -2502,13 +2536,14 @@ def _rebound_on_disk(path, key):
 
 FORGET_FLAGS = {"--dry-run": "dry_run", "--no-close": "no_close"}
 FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key",
-                     "--placements": "placements"}
+                     "--placements": "placements", "--config": "config"}
 
 
 def parse_forget_args(argv):
-    """`forget-rows [--key K]... [--rows PATH] [--no-close] [--dry-run]`."""
+    """`forget-rows [--key K]... [--rows P] [--placements P] [--config P]
+    [--no-close] [--dry-run]`."""
     opts = {"rows": None, "keys": [], "dry_run": False,
-            "no_close": False, "placements": None}
+            "no_close": False, "placements": None, "config": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -2558,12 +2593,16 @@ def run_forget_rows(argv, out=None, run=None):
     if run is None:
         run = _run_command
     opts = parse_forget_args(argv)
-    # `or rows_path()`: `read_rows_file(None)` answers [] -- "there is no map" --
-    # so passing the unresolved None here reported every map as empty and
-    # forgot nothing, silently. A recovery command that does nothing and says
-    # it succeeded is the failure class this tool exists to remove, and it
-    # shipped in one.
-    rows = load_rows(opts["rows"] or rows_path())
+    # `instance_paths` resolves all three: `read_rows_file(None)` answers [] --
+    # "there is no map" -- so passing the unresolved None here reported every
+    # map as empty and forgot nothing, silently. A recovery command that does
+    # nothing and says it succeeded is the failure class this tool exists to
+    # remove, and it shipped in one.
+    config, rows_file, places_file = instance_paths(opts)
+    _say_acting_on(out, "forget-rows", [("config", config),
+                                        ("rows", rows_file),
+                                        ("placements", places_file)])
+    rows = load_rows(rows_file)
     # `done_entries()` yields (key, row) PAIRS, not dicts -- the tests only
     # ever seeded `bound` rows, so this list never ran until a real map with a
     # [done] entry reached it.
@@ -2574,7 +2613,7 @@ def run_forget_rows(argv, out=None, run=None):
         out.write("no rows to forget: the map is already empty\n")
         out.flush()
         return 0
-    remembered = read_placements(opts["placements"])
+    remembered = read_placements(places_file)
     # Ask agterm where these rows live BEFORE any of them is closed: once the
     # session is gone its workspace is as unknowable as its id. None means
     # "could not ask", which must leave the remembered placements alone rather
@@ -2619,7 +2658,7 @@ def run_forget_rows(argv, out=None, run=None):
     if not opts["dry_run"]:
         rows.save(force=True)
         if placed is not None:
-            write_placements(remembered, opts["placements"])
+            write_placements(remembered, places_file)
             kept = [k for k in dropped if k in remembered]
             if kept:
                 out.write("remembered the workspace of %d row%s, so the next "
@@ -2657,7 +2696,11 @@ def run_close_done(argv, run=None, out=None):
     def warn(text):
         agb._warn_once(reported, "close-done", text)
 
-    path = opts["rows"] or rows_path()
+    # Only `rows` is spent here -- `close-done` has no placements of its own --
+    # but it is resolved through the same door as `forget-rows` so the two
+    # cannot drift about what `--config <B>` means.
+    config, path, _places = instance_paths(opts)
+    _say_acting_on(out, "close-done", [("config", config), ("rows", path)])
     rows = load_rows(path, warn)
     done = rows.done_entries()
     if not done:
