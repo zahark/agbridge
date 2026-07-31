@@ -1045,6 +1045,41 @@ def test_a_burst_of_rows_at_startup_is_silent(bridge):
     assert len(list(b.rows.bound_keys())) == 5, "the rows were still created"
 
 
+def test_a_slow_connect_does_not_expire_the_quiet_window(mac, bridge):
+    """⚠️ Why the window is armed by the first BATCH and not at construction.
+
+    The renderer is built before ssh connects; the burst arrives with the
+    snapshot, whenever that is. Armed at construction, a slow connect -- a VPN,
+    a cold host -- lets the window expire before a single row exists, so the
+    burst banners anyway: the thing it protects against is exactly the thing
+    that would defeat it.
+    """
+    clock = _Clock()
+    b = bridge()
+    b.renderer.clock = clock
+    b.renderer.quiet_until = None                 # nothing armed yet
+    clock.advance(mac.NEW_ROW_QUIET * 10)         # ssh took its time
+
+    for n in range(3):
+        b.upsert(wire("aaaa111%d" % (n,), state="active"))
+    assert _notifies(b) == [], "the burst banners after a slow connect"
+
+
+def test_the_window_is_armed_once_not_per_batch(mac, bridge):
+    """Otherwise every batch would re-arm it and no new agent would ever be
+    announced -- the feature would be silent for ever, with nothing to see."""
+    clock = _Clock()
+    b = bridge()
+    b.renderer.clock = clock
+    b.renderer.quiet_until = None
+    b.upsert(wire("aaaa1111", state="active"))    # arms; inside the window
+    assert _notifies(b) == []
+
+    clock.advance(mac.NEW_ROW_QUIET + 1)
+    b.upsert(wire("bbbb2222", state="active"))    # a genuinely new agent
+    assert len(_notifies(b)) == 1
+
+
 def test_a_reconnect_re_arms_the_quiet_window(bridge):
     """A reconnect is the other catch-up moment: the snapshot that follows can
     mint rows for keys a previous bridge had bound."""
