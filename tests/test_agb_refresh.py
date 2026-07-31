@@ -9,6 +9,7 @@ map write.
 
 import os
 import subprocess
+import sys
 
 import pytest
 
@@ -407,3 +408,53 @@ def test_an_empty_instance_name_is_refused_rather_than_ignored(refresh):
     assert rc != 0
     assert "--instance" in err
     assert refresh.calls() == []
+
+
+# ---------------------------------------------------------------------------
+# the acceptance criterion, through the REAL `agb`
+# ---------------------------------------------------------------------------
+
+def test_an_instance_refresh_leaves_the_other_instances_map_alone(refresh, mac,
+                                                                  tmp_path):
+    """⚠️ Acceptance: `agb-refresh --instance hostb` leaves instance A's rows
+    untouched -- asserted end to end, against the real `agb`.
+
+    Everywhere else in this file `agb` is a stub that records its argv, which
+    can only prove that the right *flag* was passed. That is one half of the
+    claim; the other half lives in `agb_mac.instance_paths`, and between the
+    two halves is the failure -- a `--config` that reached `forget-rows` and
+    was then spent on only one of the two files it owns. So this run swaps the
+    stub for the real thing and asks the question the operator asks: after
+    repairing B, is A's map exactly as it was?
+
+    Byte-identical, not merely "still has its keys": a rewritten-but-equivalent
+    map would mean the other instance's file was opened for writing at all,
+    which is the thing that must not happen while its bridge is running.
+    """
+    default_rows = mac.rows_path(refresh.config())
+    hostb_rows = mac.rows_path(refresh.config("hostb"))
+    for path, key in ((default_rows, "aaaa1111"), (hostb_rows, "bbbb2222")):
+        rows = mac.RowMap(path)
+        rows.bind(key, "ROW-" + key[:2], "title")
+        rows.save(force=True)
+    mac.write_placements({"aaaa1111": "farm-a"},
+                         mac.placements_path(refresh.config()))
+    before = open(default_rows, "rb").read()
+    before_placements = open(
+        mac.placements_path(refresh.config()), "rb").read()
+
+    refresh.write_plist("com.agbridge.hostb", instance="hostb")
+    rc, out, err = refresh.run(["--instance", "hostb", "--no-close",
+                                "--agb", conftest.AGB_PATH,
+                                "--python", sys.executable])
+    assert rc == 0, err
+
+    # B was repaired: its binding is gone, and the banner said whose it was.
+    assert mac.load_rows(hostb_rows).bound_keys() == []
+    assert "forget bbbb2222" in out
+    assert refresh.config("hostb") in out
+    # ...and A was not touched, by either of the two files `--config` derives.
+    assert open(default_rows, "rb").read() == before
+    assert open(mac.placements_path(refresh.config()),
+                "rb").read() == before_placements
+    assert mac.load_rows(default_rows).bound_keys() == ["aaaa1111"]
