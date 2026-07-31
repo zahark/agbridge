@@ -199,8 +199,9 @@ interrupts you is the machine's.
   names and defaults come from `agterm.com/commands`; `--target` was additionally proven by its
   *rejection* of a stale row id — `error: no such session: <uuid>` means the flag parsed and the
   lookup ran.
-- **Not yet exercised**: the bridge sending it on an actual transition into `blocked`. The call is
-  identical; what is unproven is the trigger, not the command.
+- **CONFIRMED** (2026-07-31, live): the bridge's own path, end to end. An agent was driven into
+  `blocked` while agterm was in the background; the banner arrived and the Dock icon bounced. So
+  the trigger is proven as well as the command.
 
 ### `agtermctl window select [<id>]` — **CONFIRMED, not yet used**
 
