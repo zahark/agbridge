@@ -137,6 +137,21 @@ is nine banners for agents that have been running all day. A heuristic, delibera
 genuinely starts inside that window is missed, which is the safe direction to fail. A `[done]` row
 reported again is a **return, not an arrival**, and never banners.
 
+### A row agterm has forgotten
+
+`agtermctl` answers `error: no such session: <id>` (exit 1) for a row that no longer exists —
+closed by hand, or lost when its pane's command exited, which is what typing `exit` at the
+`agb pane` prompt does. On that answer the bridge **marks the row dead**: one line naming the row,
+the map and `agb-refresh`, and nothing is ever sent to that row again.
+
+⚠️ **The binding is kept, so the row stays gone.** Forgetting it would mint a replacement within
+seconds, and closing a row is how you dismiss it. `agb-refresh` is the deliberate way back.
+
+⚠️ **The match is narrow.** `agtermctl` exits 1 for every failure, so this keys on agterm's own
+words. A missing binary, a hung call or a permissions problem keeps being retried — otherwise one
+broken `agtermctl` would stop the bridge painting anything at all, silently, which is far worse than
+the noise it replaces.
+
 **Two intervals have no flag**, deliberately — neither is a tuning knob, and a flag would invite
 setting them wrong:
 
