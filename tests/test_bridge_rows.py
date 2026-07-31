@@ -522,6 +522,70 @@ def test_the_created_row_is_given_the_command_the_cwd_and_the_title(bridge):
 
 
 # ---------------------------------------------------------------------------
+# the row command carries the instance's config
+# ---------------------------------------------------------------------------
+#
+# Clicking a row runs `agb pane`, which resolves `--host` through its OWN config
+# read on the far side of the click. With two bridges on one Mac, a row command
+# that does not name its config resolves against the DEFAULT `host_<name>`
+# table: the ssh reaches the wrong machine, or nowhere, while every test in this
+# file passes -- nothing here performs that read. So the flag is asserted at
+# both ends, and the renderer end is the one that matters.
+
+def test_the_row_command_carries_a_non_default_config(mac, tmp_path):
+    path = str(tmp_path / "hostb" / "config")
+    argv = mac.pane_argv(wire("aaaa1111"), agb_path="/a/agb", python="/py",
+                         config=path)
+    assert argv[argv.index("--config") + 1] == path
+
+
+def test_a_default_install_mints_the_command_it_always_did(mac, agb):
+    """Three spellings of "this is the default config", all of which must leave
+    the command byte-identical.
+
+    `None` is the one an implementer drops: it is the parameter's default and
+    what `settings.get("config")` returns for every bridge started without the
+    flag, and `None != agb.config_path()` is True -- so a predicate missing its
+    `config and` half puts the literal string `None` on every row command on
+    every Mac. `normpath` covers the third: `install.sh` renders the path
+    independently, and a `$HOME` with a trailing slash would otherwise have
+    every default install re-mint every row command it already has.
+    """
+    base = mac.pane_argv(wire("aaaa1111"), agb_path="/a/agb", python="/py")
+    assert "--config" not in base
+    same_file = os.path.join(os.path.dirname(agb.config_path()), ".", "config")
+    for spelling in (None, agb.config_path(), same_file):
+        assert mac.pane_argv(wire("aaaa1111"), agb_path="/a/agb",
+                             python="/py", config=spelling) == base
+
+
+def test_the_minted_row_command_carries_the_instances_config(mac, tmp_path):
+    """The whole link -- `render_settings` -> `RowRenderer` -> `pane_command` --
+    which is why this goes through `bridge_sink` and not the `bridge` fixture.
+
+    That fixture hands `RowRenderer` a settings dict written by hand and never
+    calls `render_settings`, so it could only ever prove that the renderer
+    passes on what it was given. The seam that breaks silently is the published
+    `config` key and the call site that reads it, and neither exists on the
+    fixture's path.
+    """
+    home = tmp_path / "hostb"
+    os.makedirs(str(home))
+    path = str(home / "config")
+    with open(path, "w") as handle:
+        handle.write("")
+    runner = Runner()
+    model = mac.BridgeModel()
+    sink, renderer = mac.bridge_sink(model, {"config": path}, run=runner)
+    assert renderer is not None
+    sink(model.apply({"t": "upsert", "now": NOW, "session": wire("aaaa1111")}))
+    created = runner.news()[0]
+    # Not `startswith`: an omission is at the END of the command, so a prefix
+    # assertion is green either way.
+    assert " --config %s" % (path,) in created["--command"]
+
+
+# ---------------------------------------------------------------------------
 # titles: identity, and the beat age that must never become a state
 # ---------------------------------------------------------------------------
 

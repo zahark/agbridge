@@ -392,6 +392,76 @@ def test_the_config_file_is_read_when_no_config_is_injected(ops, config_file):
 
 
 # ---------------------------------------------------------------------------
+# `--config`: WHICH `host_<name>` table this row resolves against
+# ---------------------------------------------------------------------------
+#
+# A Mac running two bridges has two configs, and this read is where a row's
+# `host` becomes an ssh target. Get it wrong and instance B's rows resolve
+# through instance A's table: the click lands on the wrong machine, or on a
+# bare hostname that resolves nowhere, and no test in the bridge can see it
+# because the bridge never performs this read. Hence a *different* mapping for
+# the same host in each file below -- a shared table would be indistinguishable
+# from an isolated one if both named the same target.
+
+def _instance_config(tmp_path, name, text=""):
+    """A second instance's config file, written and returned as a str path."""
+    home = tmp_path / "instances" / name
+    os.makedirs(str(home))
+    path = home / "config"
+    with open(str(path), "w") as handle:
+        handle.write(text)
+    return str(path)
+
+
+def test_the_row_command_round_trips_the_config_too(mac, ops, tmp_path):
+    """The same two-file contract as the round trip above, for the flag that
+    decides which machine a click reaches."""
+    path = _instance_config(tmp_path, "hostb")
+    session = {"key": KEY, "host": HOST, "tmux": "build", "pane": "%24"}
+    argv = mac.pane_argv(session, agb_path="/opt/agb/agb", python="/py",
+                         config=path)
+    opts = ops.parse_pane_args(argv[5:])
+    assert opts["config"] == path
+
+
+def test_the_instances_own_host_table_is_the_one_that_resolves(ops, tmp_path,
+                                                               config_file):
+    config_file("host_box3 = user@instance-a.example\n")
+    path = _instance_config(tmp_path, "hostb",
+                            "host_box3 = user@instance-b.example\n")
+    opts = ops.parse_pane_args(args() + ["--config", path])
+    target, _jump = ops.pane_settings(opts)
+    assert target == "user@instance-b.example"
+
+
+def test_a_row_minted_before_the_flag_still_reads_the_default_config(
+        ops, tmp_path, config_file):
+    """The other half, and the reason `config` is absent from the parser's
+    initializer rather than defaulted in it: rows already on somebody's screen
+    carry no `--config` for as long as they live."""
+    config_file("host_box3 = user@instance-a.example\n")
+    _instance_config(tmp_path, "hostb", "host_box3 = user@instance-b.example\n")
+    opts = ops.parse_pane_args(args())
+    assert "config" not in opts        # `opts.get`, never `opts[...]`
+    target, _jump = ops.pane_settings(opts)
+    assert target == "user@instance-a.example"
+
+
+def test_pane_resolves_through_the_instance_config_end_to_end(ops, tmp_path,
+                                                              config_file):
+    """Through `run_pane`, which is what the row's command actually reaches."""
+    config_file("host_box3 = user@instance-a.example\njump_host = jump-a\n")
+    path = _instance_config(tmp_path, "hostb",
+                            "host_box3 = user@instance-b.example\n"
+                            "jump_host = jump-b\n")
+    out = Out()
+    ops.run_pane(args() + ["--config", path], out=out, ask=Ask(), run=Run())
+    assert "ssh target user@instance-b.example" in out.text
+    assert "via jump host jump-b" in out.text
+    assert "instance-a" not in out.text and "jump-a" not in out.text
+
+
+# ---------------------------------------------------------------------------
 # the loop: attach, detach, come back
 # ---------------------------------------------------------------------------
 
