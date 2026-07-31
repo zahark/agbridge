@@ -883,9 +883,33 @@ def test_the_template_is_a_valid_plist_and_carries_every_placeholder():
         parsed = plistlib.loads(handle.read())
     assert parsed["Label"] == "@LABEL@"
     assert parsed["ProgramArguments"] == ["@PYTHON@", "-S", "-E", "@AGB@",
-                                          "bridge"]
+                                          "bridge", "--config", "@CONFIG@"]
     assert parsed["EnvironmentVariables"]["PATH"] == "@PATH@"
     assert "@LOGDIR@" in parsed["StandardOutPath"]
+
+
+def test_the_templates_config_flag_comes_after_the_command_name(tmp_path):
+    """⚠️ The order is the whole thing, and getting it wrong is a restart loop.
+
+    `agb` dispatches on its FIRST argument, so `agb --config X bridge` is not a
+    bridge with a flag -- it is the command `--config`, refused as unknown. Under
+    `KeepAlive <true/>` launchd would then restart that job once every
+    `ThrottleInterval` for ever, and the only evidence would be a log nobody
+    reads. Asserted against the real dispatch rather than by eye: the wrong
+    order is *run* here and has to fail."""
+    with open(PLIST_TEMPLATE, "rb") as handle:
+        args = plistlib.loads(handle.read())["ProgramArguments"]
+    assert args.index("--config") == args.index("bridge") + 1
+
+    proc = subprocess.Popen(
+        [sys.executable, "-S", "-E", conftest.AGB_PATH,
+         "--config", str(tmp_path / "config"), "bridge", "--from-stdin",
+         "--no-agterm"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE)
+    _out, err = conftest.communicate(proc, b"")
+    assert proc.returncode != 0                    # the order this test forbids
+    assert b"unknown command: --config" in err
 
 
 def test_the_plist_declares_keepalive_and_runatload():
@@ -907,7 +931,8 @@ def test_the_rendered_plist_names_the_installed_agb(run_sh, mac_args,
         raw = handle.read()
     parsed = plistlib.loads(raw)
     assert parsed["ProgramArguments"] == [
-        sys.executable, "-S", "-E", str(tmp_path / "dest" / "agb"), "bridge"]
+        sys.executable, "-S", "-E", str(tmp_path / "dest" / "agb"), "bridge",
+        "--config", str(tmp_path / "cfg" / "config")]
     assert parsed["StandardOutPath"].startswith(str(tmp_path / "logs"))
     assert parsed["Label"] == "com.agbridge"
     assert b"@" not in raw.split(b"<plist")[1]     # no placeholder survived
@@ -1023,7 +1048,16 @@ def test_the_plist_template_does_not_name_its_own_placeholders(run_sh,
     with open(PLIST_TEMPLATE) as handle:
         text = handle.read()
     comment = text.split("<!--", 1)[1].split("-->", 1)[0]
-    for name in ("@LABEL@", "@PYTHON@", "@AGB@", "@LOGDIR@", "@PATH@"):
+    # ⚠️ Every placeholder, and a new one has to be added here BY HAND: a name
+    # missing from this list is not a weaker assertion, it is no assertion at
+    # all for that placeholder -- the guard passes vacuously for exactly the one
+    # nobody thought about, which is the class it was written for. Derived from
+    # the template so the count cannot drift, then checked against the literal
+    # names so a template that stopped using at-signs could not empty the list.
+    named = set(re.findall(r"@[A-Z_][A-Z_]*@", text))
+    assert named == set(["@LABEL@", "@PYTHON@", "@AGB@", "@LOGDIR@", "@PATH@",
+                         "@CONFIG@"]), named
+    for name in sorted(named):
         assert name not in comment, name
 
 
@@ -1099,6 +1133,234 @@ def test_a_launchctl_that_can_load_nothing_at_all_is_fatal(run_sh, mac_args,
     assert code != 0
     assert "could not load" in err
     assert "loaded" not in out.replace("not loaded", "")
+
+
+# ---------------------------------------------------------------------------
+# --instance: a second machine, which shares no disk with the first
+# ---------------------------------------------------------------------------
+#
+# Everything an instance is, is three paths -- a config, a launchd label and a
+# log directory -- and all three already had flags. `--instance <name>` is sugar
+# that moves them TOGETHER, which is the whole point: a plist and a config that
+# disagree is a bridge writing rows against a map nobody reads, with an install
+# that reported success. The three refusals below are the other half of the
+# same claim, and each of them exists because the failure it prevents is silent.
+
+
+def _instance_args(mac_args, name="hostb", **over):
+    """The instance shape of `mac_args`.
+
+    ⚠️ `--config` and `--log-dir` are dropped, because deriving those two is the
+    feature: a test that kept the fixture's pinned values would assert the sugar
+    while overriding it. `--launch-agents` and `--statedir` stay pinned -- the
+    first keeps the plist inside the test's tree, the second is *required* by
+    `--instance` and pinning it is what the refusal test removes.
+    """
+    args = {"--config": None, "--log-dir": None, "--instance": name}
+    args.update(over)
+    return mac_args(**args)
+
+
+def _instance_config(fake_home, name="hostb"):
+    return fake_home / ".config" / "agbridge" / name / "config"
+
+
+def test_an_instance_install_agrees_about_its_label_config_and_logs(
+        run_sh, mac_args, tmp_path, fake_home, stub_bin, agb):
+    """One flag, and the label, the config and the logs all follow it.
+
+    They are asserted together on purpose: any one of them alone can be right
+    while the set is incoherent, and an incoherent set is the failure -- a job
+    called `com.agbridge.hostb` reading the default config would drive the
+    default rows map from the second machine's feed.
+    """
+    stub_bin.install("plutil")            # the macOS half of the render guard
+    code, out, err = run_sh(_instance_args(mac_args))
+    assert code == 0, err
+
+    config = _instance_config(fake_home)
+    plist = tmp_path / "agents" / "com.agbridge.hostb.plist"
+    parsed = plistlib.loads(read_bytes(plist))       # parses == valid XML
+    assert parsed["Label"] == "com.agbridge.hostb"
+    assert parsed["ProgramArguments"][-2:] == ["--config", str(config)]
+    assert parsed["StandardOutPath"] == str(
+        fake_home / "Library" / "Logs" / "agbridge" / "hostb" / "bridge.log")
+    # ...and `plutil` was asked about the rendered file, where it exists.
+    assert [call[0] for call in stub_bin.calls("plutil")] == ["-lint"]
+
+    # The config is real, and it carries the statedir that was demanded.
+    assert agb.read_config(str(config))["statedir"] == str(tmp_path / "state")
+    assert "instance: hostb" in out
+
+    # Non-vacuity, and the isolation claim: the DEFAULT instance was not
+    # written -- no config beside it, no plist, no log directory.
+    assert not (fake_home / ".config" / "agbridge" / "config").exists()
+    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+    assert (fake_home / "Library" / "Logs" / "agbridge" / "hostb").is_dir()
+
+
+def test_the_farm_hint_for_an_instance_names_that_instances_statedir(
+        run_sh, mac_args, tmp_path):
+    """A confirmation, not a change: the hint is built from one argv that always
+    carried `--statedir`. It matters more here than anywhere else -- the whole
+    reason this instance exists is that its farm keeps its state somewhere the
+    other one cannot see."""
+    code, out, err = run_sh(_instance_args(mac_args))
+    assert code == 0, err
+    argv = _farm_hint(out)
+    assert argv[argv.index("--statedir") + 1] == str(tmp_path / "state")
+
+
+def test_an_explicit_flag_still_beats_the_instance_sugar(run_sh, mac_args,
+                                                         tmp_path, fake_home):
+    """Sugar, not a mode: each of the three is still `[ -n ... ] ||`, so an
+    operator who wants an instance whose plist lives elsewhere keeps saying
+    so."""
+    code, out, err = run_sh(_instance_args(
+        mac_args, **{"--label": "com.agbridge.custom",
+                     "--config": str(tmp_path / "cfg" / "config"),
+                     "--log-dir": str(tmp_path / "logs")}))
+    assert code == 0, err
+    plist = tmp_path / "agents" / "com.agbridge.custom.plist"
+    parsed = plistlib.loads(read_bytes(plist))
+    assert parsed["ProgramArguments"][-1] == str(tmp_path / "cfg" / "config")
+    assert parsed["StandardOutPath"].startswith(str(tmp_path / "logs"))
+    assert not _instance_config(fake_home).exists()
+
+
+def test_an_instance_adopts_the_macs_existing_mac_id(run_sh, mac_args,
+                                                     fake_home, agb):
+    """Decision 4. The id names THIS MAC, not this connection.
+
+    Each instance's bridge writes `bridge/<mac-id>.beat` inside its OWN
+    statedir, and those two statedirs share no disk -- so the same id in both is
+    the truth. Minting a second one would leave the new cluster's
+    `agb status-line` reading `bridge:DOWN` until every farm host there was
+    re-installed with the new id, which is the exact failure `install.sh` prints
+    the id to prevent.
+    """
+    code, out, err = run_sh(mac_args(**{"--config": None}))     # the default
+    assert code == 0, err
+    default = agb.read_config(str(fake_home / ".config" / "agbridge" / "config"))
+
+    code, out, err = run_sh(_instance_args(mac_args))
+    assert code == 0, err
+    assert agb.read_config(str(_instance_config(fake_home)))["mac_id"] \
+        == default["mac_id"]
+    assert "adopted %s" % (default["mac_id"],) in out
+
+
+def test_the_first_instance_on_a_mac_with_no_default_config_still_mints_one(
+        run_sh, mac_args, fake_home, agb):
+    """⚠️ The fall-back has to catch a NON-ZERO EXIT, not an empty answer.
+
+    With no default config `resolve_mac_id` *raises* rather than answering
+    nothing, and under `set -e` an unguarded command substitution would abort
+    the install outright -- so a Mac whose first instance is a named one would
+    be unable to install anything at all.
+    """
+    assert not (fake_home / ".config" / "agbridge" / "config").exists()
+    code, out, err = run_sh(_instance_args(mac_args))
+    assert code == 0, err
+    assert agb.valid_mac_id(
+        agb.read_config(str(_instance_config(fake_home)))["mac_id"])
+    assert "adopted" not in out
+
+
+def test_an_instance_without_a_statedir_is_refused_and_installs_nothing(
+        run_sh, mac_args, tmp_path, fake_home):
+    """⚠️ Decision 6, and the worst failure this plan can produce.
+
+    Without `--statedir`, `agb install-config` falls back to `agb.statedir()`,
+    which reads the DEFAULT config -- so the new instance would inherit the
+    FIRST machine's farm path: ssh to the right machine, look at the wrong
+    directory. `agb feed` would then create that directory over there and report
+    an empty farm for ever, which is what `bridge_settings`' required-statedir
+    rule exists to prevent, arriving by the one route that rule cannot see.
+
+    Refused before anything is copied, so a failed install leaves no half-tree.
+    """
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "--statedir" in err
+    assert not _instance_config(fake_home).exists()
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+
+
+@pytest.mark.parametrize("name", ["../../evil", "a/b", ".hidden", "-x",
+                                  "host b", "host;rm"])
+def test_an_instance_name_that_would_escape_its_own_directories_is_refused(
+        run_sh, mac_args, tmp_path, fake_home, name):
+    """⚠️ `shell_safe` is the wrong gate here and would pass `../../evil`.
+
+    It keeps `.` and `/` for the inside of paths and host names, which is right
+    for a value on a command line and wrong for this one: the name becomes a
+    launchd label component, a plist FILENAME, a log directory and a config
+    directory, so a `/` or a leading `.` in it writes all four somewhere other
+    than where they were meant to go -- and reports success.
+    """
+    code, out, err = run_sh(_instance_args(mac_args, name=name))
+    assert code != 0
+    assert "--instance" in err
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+    # Non-vacuity, and the escape itself: `../../evil` would resolve to
+    # `$HOME/evil/config`, which is neither under `.config/agbridge` nor
+    # anywhere this test names -- so the whole home is swept for a config file
+    # rather than one expected path.
+    assert list(fake_home.rglob("config")) == []
+
+
+def test_the_farm_role_refuses_the_instance_sugar(run_sh, tmp_path):
+    """⚠️ The option loop is ROLE-AGNOSTIC and `$config` is used by both roles.
+
+    ⚠️ `mac_args` cannot express this: it hardcodes `argv = ["mac", ...]`.
+
+    Nothing on the farm reads a per-instance config -- `agb hook` and
+    `agb status-line` resolve `agb.config_path()` and nothing else -- so
+    `install.sh farm --instance x` would write a real config to a path no
+    farm-side reader ever opens, and say `wrote:` about it.
+    """
+    code, out, err = run_sh(["farm", "--mac-id", "mac-0001",
+                             "--instance", "hostb",
+                             "--statedir", str(tmp_path / "state"),
+                             "--config", str(tmp_path / "config"),
+                             "--settings", str(tmp_path / "settings.json"),
+                             "--python", sys.executable])
+    assert code != 0
+    assert "--instance" in err and "mac" in err
+    assert not (tmp_path / "config").exists()
+    assert not (tmp_path / "settings.json").exists()
+
+
+def test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag(
+        run_sh, mac_args, tmp_path, fake_home):
+    """The upgrade claim, stated key by key.
+
+    The config flag renders for EVERY install, the default one included
+    (decision 5: the installer gets one path, not a conditional exercised only
+    on the second machine) -- so the guarantee for an existing install is not
+    "no change" but "this change and no other".
+    """
+    code, out, err = run_sh(mac_args(**{"--config": None}))
+    assert code == 0, err
+    parsed = plistlib.loads(
+        read_bytes(tmp_path / "agents" / "com.agbridge.plist"))
+    assert parsed["ProgramArguments"] == [
+        sys.executable, "-S", "-E", str(tmp_path / "dest" / "agb"), "bridge",
+        "--config", str(fake_home / ".config" / "agbridge" / "config")]
+    assert parsed["Label"] == "com.agbridge"
+    assert parsed["StandardOutPath"] == str(tmp_path / "logs" / "bridge.log")
+    assert parsed["StandardErrorPath"] == str(tmp_path / "logs"
+                                              / "bridge.err.log")
+    assert parsed["KeepAlive"] is True
+    assert parsed["RunAtLoad"] is True
+    assert parsed["ThrottleInterval"] == 10
+    assert parsed["ProcessType"] == "Background"
+    assert parsed["WorkingDirectory"] == "/tmp"
+    assert parsed["EnvironmentVariables"]["PATH"].startswith("/opt/homebrew")
+    assert "instance:" not in out
 
 
 # ---------------------------------------------------------------------------

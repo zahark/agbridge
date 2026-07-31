@@ -4,7 +4,7 @@
   agbridge: the Mac side, run by launchd.
 
   This is a TEMPLATE. `install.sh mac` renders it into
-  ~/Library/LaunchAgents/<label>.plist, substituting the five at-sign
+  ~/Library/LaunchAgents/<label>.plist, substituting the six at-sign
   placeholders below, and refuses to install a copy with any placeholder left
   in it. Nothing here is generated at run time, so what launchd runs can be read
   with `cat` and diffed against this file.
@@ -18,11 +18,26 @@
 
   Why each key is what it is:
 
-  * ProgramArguments: `<python> -S -E <agb> bridge`, the same shape as the hook
-    command on the farm. An ABSOLUTE interpreter path, because a LaunchAgent has
-    almost no PATH and a bare `python3` that fails to resolve would leave the job
-    dead with nothing to show for it; `-S -E` so a stray PYTHONPATH or a user
-    site-packages directory cannot change what the bridge imports.
+  * ProgramArguments: `<python> -S -E <agb> bridge`, plus the config flag and
+    its path, the same shape as the hook command on the farm. An ABSOLUTE
+    interpreter path, because a LaunchAgent has almost no PATH and a bare
+    `python3` that fails to resolve would leave the job dead with nothing to
+    show for it; `-S -E` so a stray PYTHONPATH or a user site-packages
+    directory cannot change what the bridge imports.
+
+    The config flag comes LAST, after `bridge`, and it is unconditional.
+
+    After, because `agb` dispatches on its FIRST argument: a flag in front of
+    the command name is read as the command name, refused as unknown, and the
+    job then exits non-zero once every ThrottleInterval for ever. KeepAlive
+    turns that mistake into a permanent restart loop rather than a one-off
+    error anybody would notice.
+
+    Unconditional, because that path is the whole of an instance's identity:
+    the rows map, the placements file and the host_<name> table the row's
+    `agb pane` resolves against all live beside it. Rendered for every install,
+    the default one included, the installer has ONE path to get right instead
+    of a conditional that is exercised only on the second machine.
 
   * KeepAlive <true/>: unconditional, including after a *clean* exit. The bridge
     exiting is exactly the condition the `[?]` stale rendering exists for: the
@@ -57,6 +72,8 @@
     <string>-E</string>
     <string>@AGB@</string>
     <string>bridge</string>
+    <string>--config</string>
+    <string>@CONFIG@</string>
   </array>
 
   <key>RunAtLoad</key>

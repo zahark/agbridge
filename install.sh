@@ -50,7 +50,11 @@ DEFAULT_LABEL="com.agbridge"
 DEFAULT_DEST="$HOME/.local/lib/agbridge"
 DEFAULT_AGENTS="$HOME/Library/LaunchAgents"
 DEFAULT_LOGDIR="$HOME/Library/Logs/agbridge"
-DEFAULT_CONFIG="$HOME/.config/agbridge/config"
+# One directory, two spellings of what lives in it: the default instance's
+# config is the file, a named instance's is a subdirectory of the same place.
+# Derived from one constant so the two cannot drift apart.
+DEFAULT_CONFIG_DIR="$HOME/.config/agbridge"
+DEFAULT_CONFIG="$DEFAULT_CONFIG_DIR/config"
 # A LaunchAgent inherits almost no PATH, and the bridge shells out to
 # `agtermctl` and `ssh`. Homebrew first (both architectures), then the system.
 DEFAULT_BINDIR="$HOME/.local/bin"
@@ -70,6 +74,8 @@ mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/config with a
   --feed-host <target>       ssh target of the farm box running `agb feed`  (required)
   --agb-remote-path <path>   absolute path of `agb` on the farm             (required)
   --statedir <path>          farm-side statedir            (default: agb's own default)
+  --instance <name>          a SECOND machine: its own config, label and logs
+                             under <name>. Requires --statedir; mac only
   --remote-python <path>     absolute farm-side interpreter        (default /bin/python3)
   --jump-host <target>       ssh jump host for machine #3
   --host <name>=<target>     ssh target for a record's host; repeatable
@@ -129,6 +135,24 @@ absolute() {
     case "$2" in
         /*) ;;
         *) die "$1 must be an absolute path, not: $2" ;;
+    esac
+}
+
+# `--instance <name>` is validated separately from shell_safe, and more
+# narrowly, because it is not a value on a command line -- it becomes FOUR
+# structural things at once: a launchd label component, a plist FILENAME, a log
+# DIRECTORY and a config DIRECTORY. shell_safe keeps `.` and `/` for the inside
+# of paths and host names, so `--instance ../../evil` passes it and then writes
+# a config, a log directory and a launchd plist three levels above where any of
+# them were meant to go -- with an install that reports success. Alphanumerics,
+# `-` and `_`: `.` is excluded too, so neither a leading dot nor a `..` segment
+# can be spelled at all, and `com.agbridge.<name>` stays one label component.
+instance_ok() {
+    case "$1" in
+        "") die "--instance needs a name" ;;
+        -*) die "--instance must not start with '-': $1" ;;
+        *[!A-Za-z0-9_-]*)
+            die "--instance must be letters, digits, '-' or '_': $1. It becomes a launchd label component, a plist filename, a log directory and a config directory, so a '/' or a '.' in it would place all four somewhere other than where they were meant to go" ;;
     esac
 }
 
@@ -255,7 +279,7 @@ esac
 dest=""; python=""; config=""; statedir=""; macid=""; feedhost=""
 remotepath=""; remotepython=""; jumphost=""; hosts=""; agentsdir=""
 logdir=""; launchpath=""; label=""; farm=""; settings=""; agbpath=""
-load=yes; hooks=yes; dry=no; probe=yes; bindir=""; wrapper=yes
+load=yes; hooks=yes; dry=no; probe=yes; bindir=""; wrapper=yes; instance=""
 
 need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
 
@@ -265,6 +289,10 @@ while [ $# -gt 0 ]; do
         --python) need $# "$1"; python=$2; shift 2 ;;
         --config) need $# "$1"; config=$2; shift 2 ;;
         --statedir) need $# "$1"; statedir=$2; shift 2 ;;
+        # Validated here rather than after the loop, like --host: `need` only
+        # counts arguments, so `--instance ""` would otherwise read as "not
+        # given" and install the DEFAULT instance while reporting the name back.
+        --instance) need $# "$1"; instance_ok "$2"; instance=$2; shift 2 ;;
         --mac-id) need $# "$1"; macid=$2; shift 2 ;;
         --feed-host) need $# "$1"; feedhost=$2; shift 2 ;;
         --agb-remote-path) need $# "$1"; remotepath=$2; shift 2 ;;
@@ -299,6 +327,33 @@ done
 [ -n "$python" ] || python=$(find_python)
 absolute "the interpreter" "$python"
 [ -x "$python" ] || die "$python is not executable"
+# --instance is SUGAR over three flags that already exist, applied here because
+# the option loop above is role-agnostic and `$config` is used by both roles.
+# Everything an instance is, is these three paths -- there is no fourth thing to
+# forget, and an explicit --config/--label/--log-dir still wins, because the
+# defaults below are all `[ -n ... ] ||`.
+if [ -n "$instance" ]; then
+    # Mac only. `--label` and `--log-dir` are mac-only already, so the sugar is
+    # mac-only by construction -- but `$config` is not, and nothing on the FARM
+    # reads a per-instance config: `agb hook` and `agb status-line` resolve it
+    # through `agb.config_path()`, the default path, and nothing else. So
+    # `install.sh farm --instance x` would write a real config to a path no
+    # farm-side reader ever opens and report success, which is the silent
+    # no-op class this tool exists to remove.
+    [ "$role" = mac ] || die "--instance is for the mac role only: nothing on the farm reads a per-instance config (agb hook and agb status-line resolve ~/.config/agbridge/config and nothing else), so 'install.sh farm --instance $instance' would write a config nothing opens and report success"
+    # And it REQUIRES --statedir. Without one, `agb install-config` falls back
+    # to `agb.statedir()`, which reads the DEFAULT config -- so a second
+    # instance would silently inherit the FIRST machine's farm path: ssh to the
+    # right machine, look at the wrong directory. `agb feed` would then create
+    # that directory over there and report an empty farm for ever. That is the
+    # failure `bridge_settings`' required-statedir rule exists to prevent,
+    # arriving by the one route that rule cannot see.
+    [ -n "$statedir" ] || die "--instance $instance needs --statedir: a second machine shares no disk with the first, and without an explicit statedir this instance would inherit the default config's one -- ssh to the right machine and read the wrong directory, with an empty farm reported for ever"
+    [ -n "$config" ] || config="$DEFAULT_CONFIG_DIR/$instance/config"
+    [ -n "$logdir" ] || logdir="$DEFAULT_LOGDIR/$instance"
+    [ -n "$label" ] || label="$DEFAULT_LABEL.$instance"
+fi
+
 [ -n "$config" ] || config="$DEFAULT_CONFIG"
 if [ -n "$statedir" ]; then shell_safe "--statedir" "$statedir"
                             absolute "--statedir" "$statedir"; fi
@@ -331,6 +386,12 @@ role_mac() {
 
     say "agb install (mac) -- from $SELF"
     say "python:   $python"
+    # Said out loud, every run: which instance this is acting on is the one
+    # thing that cannot be inferred from the rest of the output, and acting on
+    # the wrong one is this feature's worst (and quietest) failure.
+    if [ -n "$instance" ]; then
+        say "instance: $instance -- label $label, config $config"
+    fi
 
     if [ "$dry" = yes ]; then
         say "dry run:  would copy $FILES to $dest"
@@ -386,6 +447,35 @@ role_mac() {
         esac
     fi
 
+    # A second instance ADOPTS this Mac's existing mac-id rather than minting a
+    # second one. The id names THIS MAC, not this connection: each instance's
+    # bridge writes bridge/<mac-id>.beat inside its OWN statedir, and those
+    # statedirs share no disk, so the same id on both sides is the truth and not
+    # a collision. A freshly minted one would instead have to be re-installed on
+    # every farm host of the new cluster before its `agb status-line` could see
+    # a beat at all.
+    #
+    # Read back through `agb` itself -- a dry run that prints the id it resolved
+    # -- and never by grepping `key = value` here: a second reader of the config
+    # format is the sort that drifts from the first, which is why
+    # --print-mac-id exists at all.
+    #
+    # `|| adopted=""` catches a NON-ZERO EXIT, not an empty line. On a config
+    # with no mac_id (or none at all) `resolve_mac_id` RAISES rather than
+    # answering empty, and under `set -e` an unguarded command substitution
+    # would abort the install of the first instance on a Mac that never had a
+    # default one -- exactly the case the fall-back to minting is for.
+    if [ -n "$instance" ] && [ -z "$macid" ]; then
+        adopted=$(run_agb "$python" "$installed" install-config \
+                          --config "$DEFAULT_CONFIG" --dry-run --print-mac-id \
+                      2>/dev/null) || adopted=""
+        if [ -n "$adopted" ]; then
+            shell_safe "the adopted mac-id" "$adopted"
+            macid=$adopted
+            say "mac-id:   adopted $macid from $DEFAULT_CONFIG"
+        fi
+    fi
+
     # The config, and with it the mac-id: --print-mac-id puts the id alone on
     # stdout and the report on stderr, so this reads back the exact value that
     # was persisted instead of re-parsing `key = value` in sh.
@@ -414,6 +504,7 @@ role_mac() {
             -e "s|@AGB@|$(rep "$installed")|g" \
             -e "s|@LOGDIR@|$(rep "$logdir")|g" \
             -e "s|@PATH@|$(rep "$launchpath")|g" \
+            -e "s|@CONFIG@|$(rep "$config")|g" \
             "$SELF/$TEMPLATE" > "$tmp"
         # Validate what was RENDERED, not what the template looked like. A
         # leftover placeholder is only one of the two ways this file can be
