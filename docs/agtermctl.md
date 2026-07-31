@@ -274,6 +274,46 @@ never-shown session, and `--select` cannot realize its split pane. So the split 
 `agb pane`'s prompt — which runs *inside* the row's own session, making it the active one, so
 `--target active` needs no row-id lookup at all.
 
+## ⚠️ agterm closes a session when its command exits
+
+**CONFIRMED live, 2026-07-31**, in isolation: an agent (`closetest2`) was started detached, its row
+clicked, `exit` typed at the `agb pane` prompt without attaching. The row **vanished from the
+sidebar** while the agent stayed alive on the farm — tmux session running, key in the marker, state
+`completed`.
+
+This is not documented anywhere in agterm's own reference and nothing in agbridge assumed it. It has
+three consequences, and the first is a bug we lived with for a day without recognising it.
+
+**1. Leaving the prompt costs you the row.** `q`, `quit` and `exit` are all `PANE_QUIT_WORDS`, and
+any of them ends `agb pane` with status 0 — so agterm destroys the row of a perfectly healthy agent.
+That is not a *dismissal*, it is an accident: you stopped looking at a row and lost it. Nothing
+brings it back except `agb-refresh`.
+
+**2. It is almost certainly the source of the `no such session` spam.** Every `exit` leaves a
+`bound` entry naming a row agterm has already destroyed, and the bridge then renames and statuses
+that dead id on every poll for the life of the process. The screenfuls of it in
+`~/Library/Logs/agbridge/bridge.err.log` that took a morning to diagnose were, in all likelihood,
+just somebody leaving prompts.
+
+**3. It reverses the reasoning behind `session.closed` handling.** The obvious objection to
+"`session.closed` → forget the binding → let the next report re-mint the row" is that it makes a row
+*un-closable*. That objection is wrong **because a hand-`exit` is not an intent to close.** Re-minting
+is not the tool fighting you; it is the tool repairing a row you lost by leaving a prompt.
+
+There is a real cost, and it is recorded here rather than solved: **after that change there is no
+way to dismiss a live agent's row.** `agb prune` is the only remover and it is destructive on the
+farm side. The alternative considered and not taken was a *dismissed* set — a hand-closed key
+suppressed until its agent stops reporting — which gives both behaviours at the price of one more
+piece of per-process state. If dismissal is ever wanted, that is the door.
+
+⚠️ **`agb close-done` cannot clear an entry whose row is already gone.** It only drops an entry whose
+`session close` *succeeded*, so a `[done]` row you closed by hand leaves a permanent entry that no
+command touches. Two were sitting in a live rows map when this was found. Reacting to
+`session.closed` fixes it as a side effect.
+
+**`session restore` is the structural fix** and is not yet used: it pins the command a pane re-runs,
+which would let a row survive its command exiting at all. See the menu below.
+
 ## What agbridge does not use yet
 
 *Surveyed 2026-07-31 against `agterm.com/commands`. agterm exposes roughly **70** subcommands;
@@ -285,8 +325,8 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 
 | Command | What it would buy |
 |---|---|
-| **`events`** — *read the app's control-event ring for status changes and lifecycle events* | The big one. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row closed by hand, an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. With an event stream the bridge could unbind a dead row **by itself**. ⚠️ It is also a second long-lived input, so it is a second thing that can wedge — and "a live connection delivering nothing" is precisely the failure this project was built to remove. It would need its own liveness story. |
-| **`session restore`** — *pin the command a pane re-runs on restart* | Rows could re-run `agb pane <key>` when agterm comes back, instead of returning as dead panes. The other half of the reboot story (see `docs/cookbook.md`), and it would shrink what `agb-refresh` is needed for. |
+| **`events`** — *read the app's control-event ring* | The big one. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row lost by leaving its prompt (see the section above), an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. ✅ **The liveness objection recorded here originally was wrong**: `events` returns a batch and exits, with a `run`+`next` cursor to resume. It is an ordinary subprocess call like every other `agtermctl` call — no second stream, no new liveness story. |
+| **`session restore`** — *pin the command a pane re-runs* | Promoted after 2026-07-31: this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today (see the section above). It would also let rows come back alive after an agterm restart rather than as dead panes — the other half of the reboot story in `docs/cookbook.md` — and shrink what `agb-refresh` is needed for. |
 | **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
 
 ### New capability, no existing pain

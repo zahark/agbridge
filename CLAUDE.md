@@ -256,6 +256,13 @@ agterm, and think about which row you test it on.**
 - **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
   host. This is why the version is 0.x.
 
+⚠️ **agterm closes a session when its command exits** (confirmed live 2026-07-31, in isolation).
+`q`/`quit`/`exit` at the `agb pane` prompt therefore **destroys the row** of a live agent — not a
+dismissal, an accident — and leaves a bound entry naming a row that no longer exists, which is
+almost certainly the source of the `no such session` spam in the bridge log. Full write-up in
+[`docs/agtermctl.md`](docs/agtermctl.md) → "agterm closes a session when its command exits". Read it
+before reasoning about row lifetime; it is not in agterm's own reference and nothing here assumed it.
+
 **agbridge uses 8 of agterm's ~70 subcommands.** The unused surface was surveyed on 2026-07-31 and
 the useful part is recorded in [`docs/agtermctl.md`](docs/agtermctl.md) → "What agbridge does not use
 yet", with what each would buy. The standout is **`events`**, agterm's control-event ring: the
