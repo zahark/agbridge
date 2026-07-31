@@ -118,7 +118,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb install-config` | both | write/merge `~/.config/agbridge/config` |
 | `agb version` | both | load-bearing: both installers probe with it |
 | `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable. `-d` starts it in the background with the row already showing |
-| `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows |
+| `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows — a close, a reset, a reinstall, **a Mac reboot**, or an upgrade of the Mac's files |
 
 Full flag reference: [`docs/commands.md`](docs/commands.md).
 
@@ -209,6 +209,7 @@ The interesting constraints, all of which the code and tests enforce:
 | [`docs/tmux.md`](docs/tmux.md) | the status-line segment and its achievable resolution |
 | [`docs/agtermctl.md`](docs/agtermctl.md) | the `agtermctl` contract the bridge codes against |
 | [`docs/cookbook.md`](docs/cookbook.md) | **start here** — step-by-step onboarding and troubleshooting |
+| [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release, and why |
 | [`CLAUDE.md`](CLAUDE.md) | architecture and invariants, for working on this codebase |
 
 ## Development

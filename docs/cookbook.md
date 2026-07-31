@@ -209,6 +209,24 @@ Reopen agterm first if it is closed.
 **After upgrading the Mac's files**, run it too: a row's `agb pane` loads its code when the row is
 created and keeps it, so new features do not reach existing rows until they are recreated.
 
+**After rebooting the Mac** — the same thing, and the agents are fine. Nothing on the farm noticed:
+the tmux sessions, the agents inside them and their state files are untouched, because the Mac holds
+none of it. The bridge restarts itself (the LaunchAgent has `RunAtLoad`), reconnects, and its beat
+resumes within a second or two. Confirm from any farm host:
+
+```sh
+agb doctor          # bridge beat: seconds old, and every agent still listed
+```
+
+What does *not* survive is agterm: it comes back as a fresh app with no sessions, while the Mac's
+map still names the row ids from before. So the sequence is **open agterm, then `agb-refresh`** —
+without it the bridge logs `no such session: <uuid>` against every row and the sidebar stays empty.
+Rows return on the next snapshot with the same identities.
+
+A reboot needs no re-install and no farm-side command. If the prompt comes back reading `[s] shell`
+rather than `[s] split   [d] drawer`, that is unrelated — the Mac is on a pre-0.3.0 build; run
+`install.sh mac` and then `agb-refresh` again.
+
 **Clicking a row says `Could not resolve hostname`** — the `host_<hostname>` mapping is missing.
 Add it to the Mac's config (takes effect on the next click, no restart):
 

@@ -444,6 +444,22 @@ here. So it polls (`pgrep -f "<agb> bridge"`) until the process is actually gone
 seconds**; past that it says so and goes on, because a recovery command that hangs is worse than one
 that proceeds with the risk named.
 
+**When to reach for it.** All three cases are the same underlying one — agterm no longer knows a row
+id the Mac's map still names — and nothing else clears a *bound* entry: `close-done` only touches
+`[done]` rows, and `prune` works from cluster-side state.
+
+| | |
+|---|---|
+| agterm was closed, reset or reinstalled | its sessions are gone; the map is not |
+| **the Mac rebooted** | agterm comes back as a fresh app with no sessions |
+| the Mac's files were upgraded | rows keep the `agb pane` code they were *created* with, so new features do not reach them until they are recreated |
+
+A reboot is worth stating plainly because it looks alarming and is not: **nothing on the cluster
+notices.** The tmux sessions, the agents in them and their state files are untouched — the Mac holds
+none of that. The bridge restarts itself (`RunAtLoad` in the LaunchAgent) and its beat resumes within
+a second or two, which `agb doctor` on any cluster host will show. Open agterm, run this, and the
+rows return on the next snapshot with the same identities.
+
 ## `agb-claude [name]` — farm, a convenience
 
 ```
