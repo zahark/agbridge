@@ -228,15 +228,23 @@ environment — several are version- or mount-specific.
 
 ## Where the project is (2026-07-31)
 
-Released **0.3.0**; `CHANGELOG.md` carries an **Unreleased** section with the `blocked` banner in it.
+Released **0.4.0** — notifications: a banner when an agent blocks, one when a new agent appears, and
+the unseen badge cleared when a block is answered. `CHANGELOG.md` has no `Unreleased` section.
 `agb` is at 102,429 of its 102,500-byte parse budget — **71 bytes of headroom**, which is the single
-hardest constraint on any change to the hot path. 1425 tests.
+hardest constraint on any change to the hot path. 1436 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
-pane, `[s] shell` opening a split, `notify --target` producing a banner, and the **whole banner path
-end to end** — an agent driven into `blocked` with agterm in the background produced the banner and
-a bouncing Dock icon.
+pane, `[s] shell` opening a split, `notify --target` producing a banner, and **all three
+notification paths end to end** — a blocked agent, a new agent, and the badge clearing when the
+block was answered.
+
+⚠️ **Two of those three needed a fix *after* the live test, in ways 1400 tests could not catch.**
+The badge test was run against the row that was selected, and agterm never badges the session you
+are looking at — so a working feature read as broken. The new-row quiet window was armed at
+construction rather than at the first op batch, and was long enough to swallow a real agent started
+9 s after a reinstall. Neither was reachable from the test suite. **Live-test anything that talks to
+agterm, and think about which row you test it on.**
 
 **Still unverified, and the honest list:**
 
