@@ -52,8 +52,11 @@ adding checks:
 - **Cluster side:** Python **3.6.8+**, stdlib only. No packages, no virtualenv, nothing to build.
 - **Mac side:** Python 3, `agterm` with `agtermctl` on the launchd job's `PATH`, `ssh` to the
   cluster host that will run the feed.
-- **A shared directory** that every agent host and the feed resolve to the same files. A network
-  home satisfies this on most clusters; see [Configuration](#configuration) if yours differs.
+- **A shared directory** that every agent host and the feed resolve to the same files — **per
+  instance**, not per Mac. A network home satisfies this on most clusters; see
+  [Configuration](#configuration) if yours differs. A machine that shares no disk with the others
+  does not have to be left out: give it its own instance
+  (`install.sh mac --instance <name> --statedir <path>`, below) and its rows join the same sidebar.
 - Optional: `tmux`, for the status-line segment and for click-to-attach.
 
 ## Install
@@ -87,6 +90,22 @@ config are per-host.
 
 > Before either installer rewrites a file it copies the previous contents to `<path>.agb.bak`,
 > preserving the mode. A file it cannot parse is never rewritten at all.
+
+**3. A machine that shares no disk with the first** — its own statedir means its own feed and its
+own bridge, so it is a second **instance** on the same Mac:
+
+```sh
+sh install.sh mac --instance hostb \
+    --feed-host hostb-alias --agb-remote-path /opt/agbridge/agb \
+    --statedir /home/you/.agbridge
+```
+
+`--instance` is sugar over `--config`, `--label` and `--log-dir`: the config moves to
+`~/.config/agbridge/hostb/config`, and the rows map, the remembered workspaces and the `host_<name>`
+table move with it, because all three live beside the config. `--dest` stays shared — one code
+install, N configurations. Repair that one with `agb-refresh --instance hostb`; run the helpers
+**without** `--instance` and they act on the default instance and say so, which is the first of the
+seven limitations in [`docs/design.md`](docs/design.md) §5.
 
 Both roles write an `agb` wrapper into `~/.local/bin` (`--bin-dir` to change it, `--no-wrapper` to
 skip). It exists because `agb` is deliberately **not executable and has no shebang** — a hook must
@@ -124,11 +143,14 @@ Full flag reference: [`docs/commands.md`](docs/commands.md).
 
 ## Configuration
 
-`~/.config/agbridge/config`, `key = value`, read lazily and **never on the hot path**.
+`~/.config/agbridge/config`, `key = value`, read lazily and **never on the hot path**. On the Mac
+that is the *default* path: `--config <path>` (or `--instance <name>`, which spells
+`~/.config/agbridge/<name>/config`) points the bridge at another one, and the `rows` map, the
+`placements` file and this table's `host_<name>` keys all live beside whichever config is in use.
 
 | Key | Used by | Meaning |
 |---|---|---|
-| `statedir` | all | the shared directory. Overridden by `$AGB_STATEDIR` |
+| `statedir` | all | the shared directory. Overridden by `$AGB_STATEDIR`. One per instance — two instances that named the same statedir would be two bridges rendering the same agents twice |
 | `mac_id` | `bridge`, `status-line` | names `bridge/<mac-id>.beat`; minted at install |
 | `feed_host` | `bridge` | ssh target that runs the feed |
 | `agb_remote_path` | `bridge`, `prune --via-ssh` | absolute path of `agb` on the cluster |
@@ -151,8 +173,11 @@ Full flag reference: [`docs/commands.md`](docs/commands.md).
 
 Drag a row to another workspace and it stays there — the bridge only sets a workspace when a row is
 *created*, and never moves one afterwards. `agb-refresh` genuinely destroys and recreates rows, so
-before closing them it records where each one was (`~/.config/agbridge/placements`) and puts them
-back. The `workspace` config key is the fallback for rows that have no remembered place.
+before closing them it records where each one was (`~/.config/agbridge/placements`, beside the
+config in use) and puts them back. The `workspace` config key is the fallback for rows that have no
+remembered place — and with several instances it is also the practical way to tell them apart, since
+nothing in a row says which machine it came from: set `workspace = <cluster>` per instance and the
+sidebar groups by machine.
 
 ### Where the statedir lives
 
@@ -205,8 +230,9 @@ The interesting constraints, all of which the code and tests enforce:
 ## Ask Claude Code how to use it
 
 The repo ships a [Claude Code skill](.claude/skills/agbridge/SKILL.md) covering the recipes people
-actually need — adding a cluster host, running a second Mac, removing a host, rows that are missing
-or stale or duplicated, notifications, workspaces — plus pointers into the docs below.
+actually need — adding a cluster host, adding a machine that shares no disk, running a second Mac,
+removing a host, rows that are missing or stale or duplicated, notifications, workspaces — plus
+pointers into the docs below.
 
 It works automatically when Claude Code is run **inside this checkout**. To have it everywhere,
 symlink it once:
@@ -234,7 +260,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1271 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 1498 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -246,7 +272,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1287 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1498 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:
