@@ -13,6 +13,13 @@
 #   agb-refresh                  # forget every binding; all rows come back
 #   agb-refresh --key a3f9c1e0   # just one, when the other rows are still fine
 #   agb-refresh --dry-run        # say what would happen
+#   agb-refresh --instance hostb # the second Mac-side instance, not the default
+#
+# WHICH INSTANCE is the one thing this command cannot infer and the one thing
+# it is dangerous to get wrong: without --instance it stops com.agbridge,
+# forgets the default instance's bindings and starts it again, reporting
+# success in exactly the words it would have used for the instance you meant.
+# So it names the instance, the label and the config file on every run.
 #
 # NOTHING ON THE FARM IS TOUCHED. The agents, their keys and their state are
 # untouched; only this Mac's binding is discarded, so rows return with the same
@@ -27,6 +34,20 @@ set -eu
 DEFAULT_LABEL="com.agbridge"
 DEFAULT_AGENTS="$HOME/Library/LaunchAgents"
 DEFAULT_AGB="$HOME/.local/lib/agbridge/agb"
+# One directory, two spellings of what lives in it -- the same pair install.sh
+# derives its own from (install.sh:53-57): the default instance's config is the
+# file, a named instance's is a subdirectory of the same place.
+#
+# ⚠️ Unlike `$rows` and `$python` below, `$config` is NEVER left empty as the
+# spelling of "not given". Three things read it and all three break on "":
+# `forget-rows --config ""` is a missing-value error, the banner would name no
+# file at all, and -- the quiet one -- the liveness pattern would degenerate to
+# `agb bridge --config `, which the plist's UNCONDITIONAL `--config` makes a
+# prefix of EVERY instance's command line. A plain `agb-refresh` while another
+# instance was up would then poll a live process for the full 10 s and warn on
+# the single most common invocation there is.
+DEFAULT_CONFIG_DIR="$HOME/.config/agbridge"
+DEFAULT_CONFIG="$DEFAULT_CONFIG_DIR/config"
 
 die() { printf 'agb-refresh: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -39,17 +60,39 @@ usage: agb-refresh [--key <key>]... [--dry-run] [options]
   --dry-run          say what would happen; change nothing
   --no-close         leave agterm's sessions open (they become duplicates
                      when the bridge mints fresh rows)
+  --instance <name>  act on the instance installed as <name>: label
+                     com.agbridge.<name>, config <name>/config. Sugar for
+                     --label and --config, which must always move together
+  --config <path>    the instance's config   (default ~/.config/agbridge/config)
   --label <name>     launchd label                     (default com.agbridge)
   --launch-agents <dir>                     (default ~/Library/LaunchAgents)
   --agb <path>       the installed agb          (default ~/.local/lib/agbridge/agb)
   --python <path>    interpreter to run it with
-  --rows <path>      the rows map            (default ~/.config/agbridge/rows)
+  --rows <path>      the rows map                 (default: beside the config)
   -h, --help         this message
 EOF
 }
 
-label=$DEFAULT_LABEL; agentsdir=$DEFAULT_AGENTS; agb=$DEFAULT_AGB
+# The same rule, and the same words, as `install.sh`'s `instance_ok`
+# (install.sh:150): a name is a launchd label component, a plist FILENAME, a log
+# directory and a config DIRECTORY, so `.` and `/` are refused outright -- there
+# is no spelling of a `..` segment or a leading dot. The two validators have to
+# agree, because a name this one accepts and the installer refuses names a plist
+# that was never rendered.
+instance_ok() {
+    case "$1" in
+        "") die "--instance needs a name" ;;
+        -*) die "--instance must not start with '-': $1" ;;
+        *[!A-Za-z0-9_-]*)
+            die "--instance must be letters, digits, '-' or '_': $1. It names a launchd label component, a plist filename and a config directory, so a '/' or a '.' in it would look for all three somewhere other than where install.sh put them" ;;
+    esac
+}
+
+agentsdir=$DEFAULT_AGENTS; agb=$DEFAULT_AGB
 noclose=no
+# `label` and `config` start EMPTY rather than at their defaults so that "was it
+# given explicitly?" is still answerable below, where --instance fills them in.
+label=""; config=""; instance=""
 python=""; rows=""; dry=no; keys=""
 pgrep=""            # set once launchctl is known to exist; `set -u` needs it
 
@@ -60,6 +103,12 @@ while [ $# -gt 0 ]; do
         --key) need $# "$1"; keys="$keys $2"; shift 2 ;;
         --dry-run) dry=yes; shift ;;
         --no-close) noclose=yes; shift ;;
+        # Validated here rather than after the loop, exactly as install.sh does
+        # it: `need` only counts arguments, so `--instance ""` would otherwise
+        # read as "not given" and refresh the DEFAULT instance while echoing the
+        # name back.
+        --instance) need $# "$1"; instance_ok "$2"; instance=$2; shift 2 ;;
+        --config) need $# "$1"; config=$2; shift 2 ;;
         --label) need $# "$1"; label=$2; shift 2 ;;
         --launch-agents) need $# "$1"; agentsdir=$2; shift 2 ;;
         --agb) need $# "$1"; agb=$2; shift 2 ;;
@@ -69,6 +118,22 @@ while [ $# -gt 0 ]; do
         *) usage; die "unknown option: $1" ;;
     esac
 done
+
+# --instance is sugar over --label and --config, and the whole reason for the
+# sugar is that those two must move TOGETHER: a label without its config stops
+# instance B and forgets instance A's bindings. An explicit --label/--config
+# still wins, because both of these are `[ -n ... ] ||` and so are the plain
+# defaults below them.
+#
+# `--config` on its own stays supported and is not redundant: an install made
+# with `install.sh mac --config <nondefault>` and no --instance has no instance
+# name to pass, and would otherwise be unable to refresh against its own map.
+if [ -n "$instance" ]; then
+    [ -n "$config" ] || config="$DEFAULT_CONFIG_DIR/$instance/config"
+    [ -n "$label" ] || label="$DEFAULT_LABEL.$instance"
+fi
+[ -n "$config" ] || config="$DEFAULT_CONFIG"
+[ -n "$label" ] || label="$DEFAULT_LABEL"
 
 [ -f "$agb" ] || die "no agb at $agb (pass --agb <path>)"
 
@@ -80,9 +145,23 @@ fi
 plist="$agentsdir/$label.plist"
 uid=$(id -u)
 
+# Said out loud on EVERY run, not only on failure. Running this against the
+# wrong instance is its one real hazard and it is entirely silent: the stop, the
+# forget and the start all succeed, and every other line of output is identical
+# to the run you meant to make. The banner is the whole mitigation, which is why
+# it is unconditional and names both halves -- the label says which job was
+# bounced, the config says whose bindings were discarded.
+say "instance: ${instance:-(default)} -- label $label, config $config"
+
 # `agb` is not executable and has no shebang on purpose, so it is always run as
 # an argument to the interpreter.
-set -- forget-rows
+#
+# `--config` travels to `forget-rows`, which derives BOTH the rows map and the
+# placements file from it. Passing only a rows path would forget this instance's
+# bindings and then write its `key = workspace` lines into the DEFAULT
+# instance's placements file -- the recovery command corrupting the instance it
+# was not even asked about. An explicit --rows still wins, as it always did.
+set -- forget-rows --config "$config"
 for k in $keys; do set -- "$@" --key "$k"; done
 [ -n "$rows" ] && set -- "$@" --rows "$rows"
 [ "$dry" = yes ] && set -- "$@" --dry-run
@@ -106,9 +185,41 @@ fi
 #    merges-then-writes on every save, so it can re-mint rows against ids
 #    `forget-rows` has just closed -- reinstating the "no such session" spam
 #    that sent you here. So poll until the process is actually gone.
+#
+#    WHICH bridge, though. `--dest` is shared by every instance (one code
+#    install, N configurations), so a bare `pgrep -f "$agb bridge"` matches
+#    instance A's bridge while B is being refreshed: B boots out immediately,
+#    the poll never clears, and the run ends in "still running after 10s" --
+#    a warning that the forget may have been undone, printed on every single
+#    refresh, in a recovery command reached by someone already annoyed. The
+#    plist carries `--config <path>`, so that path separates them.
+#
+#    ⚠️ But the narrow pattern is DERIVED FROM THE PLIST, never assumed,
+#    because assuming it is the same bug pointing the other way -- and that one
+#    is silent. `install.sh mac --instance hostb` renders hostb's plist and does
+#    NOT restart the default job, while it does install this newer agb-refresh
+#    (shared --dest). So the normal state right after adding an instance is a
+#    default bridge running with no `--config` in its command line. Against it a
+#    narrow pattern matches nothing: `bridge_alive` answers false on the first
+#    call, the poll exits with zero waits and no warning at all, and the forget
+#    lands while that bridge is still alive -- re-minting rows against the ids
+#    it has just closed. That is the "no such session" spam this script exists
+#    to cure, reinstated by a fix aimed at a cosmetic warning.
+#
+#    So ask the plist what its bridge was actually started with: narrow when it
+#    carries the flag, broad when it does not (or does not exist), and say so.
+pattern="$agb bridge"
+if grep -q '<string>--config</string>' "$plist" 2>/dev/null; then
+    pattern="$pattern --config $config"
+else
+    say "note:     no --config in $plist, so the wait below matches ANY"
+    say "          bridge on this Mac. Re-run install.sh mac to render a"
+    say "          plist that carries it."
+fi
+
 bridge_alive() {
     [ -n "$pgrep" ] || return 1
-    "$pgrep" -f "$agb bridge" >/dev/null 2>&1
+    "$pgrep" -f "$pattern" >/dev/null 2>&1
 }
 
 if command -v launchctl >/dev/null 2>&1; then
