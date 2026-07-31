@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1546 tests, ~38 s)
+python3 -m pytest tests/ -q                                    # full suite (1557 tests, ~38 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -151,7 +151,8 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `placements`, so an equivalence test that keeps it — or that compares the path as text — is
     narrower than the map it guards, and the failure always has the same shape: the right map under
     the *wrong* label, i.e. bounce instance A while forgetting B's bindings under B's live bridge.
-    `agb-refresh`'s `canon_config` is the one place that comparison lives. ⚠️ **But *matching* the
+    `agb-refresh`'s `same_map` is the one place that comparison lives, over `config_map_dir`, which
+    is the canonicaliser it is spelled in terms of. ⚠️ **But *matching* the
     map and *choosing* between the matches are two questions**, and running them together is how the
     fourth instance of that failure arrived: the basename and "does this plist declare a config or
     merely imply one" break the tie among candidates that have already matched, so the job naming
@@ -274,7 +275,7 @@ Released **0.4.0** — notifications: a banner when an agent blocks, one when a 
 the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
 budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
 path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
-`agb_mac`/`agb_ops`). 1546 tests.
+`agb_mac`/`agb_ops`). 1557 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

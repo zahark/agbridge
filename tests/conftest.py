@@ -486,6 +486,37 @@ def config_file(fake_home):
 
 
 @pytest.fixture
+def instance_config(fake_home):
+    """Write a config for a *named* instance, or for the default one.
+
+    The layout `install.sh mac --instance <name>` produces:
+    `~/.config/agbridge/<name>/config`, with `name=None` giving
+    `~/.config/agbridge/config` -- which under `fake_home` is exactly
+    `agb.config_path()`, so both halves of a two-instance comparison come from
+    one helper and the default half is the real default path rather than a
+    look-alike.
+
+    Returns a `str`, because that is what a `--config` value is everywhere it
+    is passed: an argv word.
+
+    Three test modules span the same shape (which instance's rows, which
+    instance's `host_<name>` table, which instance's map a row command
+    resolves through) and had three copies of it, two byte-identical.
+    """
+    def write(name=None, text=""):
+        base = fake_home / ".config" / "agbridge"
+        if name:
+            base = base / name
+        os.makedirs(str(base), exist_ok=True)
+        path = base / "config"
+        with open(str(path), "w") as handle:
+            handle.write(text)
+        return str(path)
+
+    return write
+
+
+@pytest.fixture
 def statedir_path(tmp_path, monkeypatch):
     """A statedir location exported via $AGB_STATEDIR. **Not** created."""
     path = tmp_path / "state"

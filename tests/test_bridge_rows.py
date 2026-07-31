@@ -598,8 +598,8 @@ def test_the_minted_row_command_carries_the_instances_config(mac, tmp_path):
 # instance and a shared one are indistinguishable unless the two answers differ.
 
 
-def test_two_instances_side_by_side_paint_only_their_own_rows(mac, tmp_path,
-                                                              config_file):
+def test_two_instances_side_by_side_paint_only_their_own_rows(
+        mac, config_file, instance_config):
     """Acceptance: two bridges run side by side, rows from both appear, and
     each updates from its own machine.
 
@@ -610,7 +610,7 @@ def test_two_instances_side_by_side_paint_only_their_own_rows(mac, tmp_path,
     other's rows.
     """
     config_file("workspace = farm-a\n")                  # the default instance
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     with open(hostb, "w") as handle:
         handle.write("workspace = farm-b\n")
 
@@ -651,7 +651,7 @@ def test_two_instances_side_by_side_paint_only_their_own_rows(mac, tmp_path,
 
 
 def test_a_click_on_an_instances_row_reaches_that_instances_host(
-        mac, ops, tmp_path, config_file):
+        mac, ops, config_file, instance_config):
     """⚠️ Acceptance, and the failure three review passes were aimed at:
     clicking a row on instance B must reach **B's** host, resolved from B's
     own `host_<name>` table.
@@ -666,7 +666,7 @@ def test_a_click_on_an_instances_row_reaches_that_instances_host(
     import shlex
 
     config_file("host_box2 = user@instance-a.example\n")
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     with open(hostb, "w") as handle:
         handle.write("host_box2 = user@instance-b.example\n")
 
@@ -2881,18 +2881,6 @@ def test_a_malformed_placement_line_is_skipped_not_fatal(mac, tmp_path):
 # write the result back over A's file -- the recovery command corrupting the
 # instance it was not run against, while reporting success in the usual words.
 
-def _instance(tmp_path, name=None):
-    """A config file for `name`, or for the default instance, under $HOME."""
-    base = tmp_path / "home" / ".config" / "agbridge"
-    if name:
-        base = base / name
-    if not base.is_dir():
-        base.mkdir(parents=True)
-    path = base / "config"
-    path.write_text("")
-    return str(path)
-
-
 def _done_map(mac, path, key, row):
     rows = mac.RowMap(path)
     rows.bind(key, row, "title")
@@ -2911,12 +2899,13 @@ def _tree_run(argv):
     return (0, TREE_JSON if argv[1] == "tree" else "", "")
 
 
-def test_close_done_reclaims_the_map_beside_its_config(mac, agb, tmp_path):
+def test_close_done_reclaims_the_map_beside_its_config(mac, agb,
+                                                       instance_config):
     """The rows map follows `--config`, and the *other* instance's map is not
     touched -- which is what makes the default map's surviving `[done]` entry
     the non-vacuity check: there was something there to close by mistake."""
-    default = _instance(tmp_path)
-    hostb = _instance(tmp_path, "hostb")
+    default = instance_config()
+    hostb = instance_config("hostb")
     _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
     _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
 
@@ -2931,7 +2920,7 @@ def test_close_done_reclaims_the_map_beside_its_config(mac, agb, tmp_path):
 
 
 def test_forget_rows_follows_its_config_to_the_map_and_the_placements(
-        mac, agb, tmp_path):
+        mac, agb, instance_config):
     """⚠️ The worst defect this task closes, asserted at both ends.
 
     `agb-refresh --instance hostb` runs exactly this. If `--config` derived
@@ -2939,8 +2928,8 @@ def test_forget_rows_follows_its_config_to_the_map_and_the_placements(
     instance A's placements file -- so the assertion that matters most is the
     one about the file that was NOT named on the command line.
     """
-    default = _instance(tmp_path)
-    hostb = _instance(tmp_path, "hostb")
+    default = instance_config()
+    hostb = instance_config("hostb")
     mac.write_placements({"aaaa1111": "kept"}, mac.placements_path(default))
     _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
     _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
@@ -2958,10 +2947,11 @@ def test_forget_rows_follows_its_config_to_the_map_and_the_placements(
         "aaaa1111": "kept"}
 
 
-def test_an_explicit_rows_or_placements_still_beats_the_config(mac, tmp_path):
+def test_an_explicit_rows_or_placements_still_beats_the_config(
+        mac, tmp_path, instance_config):
     """Both flags predate `--config` and are a debugging seam: pointing one
     somewhere else is a deliberate act, so it wins."""
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
     rows = str(tmp_path / "elsewhere-rows")
     places = str(tmp_path / "elsewhere-placements")
@@ -2978,8 +2968,9 @@ def test_an_explicit_rows_or_placements_still_beats_the_config(mac, tmp_path):
     assert not os.path.exists(mac.placements_path(hostb))
 
 
-def test_close_done_with_an_explicit_rows_ignores_the_config(mac, tmp_path):
-    hostb = _instance(tmp_path, "hostb")
+def test_close_done_with_an_explicit_rows_ignores_the_config(
+        mac, tmp_path, instance_config):
+    hostb = instance_config("hostb")
     _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
     rows = str(tmp_path / "elsewhere-rows")
     _done_map(mac, rows, "aaaa1111", "ROW-1")
@@ -3000,13 +2991,13 @@ def _run_row_command(mac, name, argv, out):
 
 
 @pytest.mark.parametrize("name", ["close-done", "forget-rows"])
-def test_a_row_map_command_says_which_instance_it_acted_on(mac, tmp_path,
-                                                           name):
+def test_a_row_map_command_says_which_instance_it_acted_on(
+        mac, name, instance_config):
     """The mitigation for the one silent failure this shape has: a helper run
     without `--instance` repairs the *default* instance and reports success in
     exactly the words it would have used on the right one. So the banner is
     unconditional, and it names the paths rather than the flag."""
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     out = _RowOut()
     _run_row_command(mac, name, ["--config", hostb], out)
     assert hostb in out.text
@@ -3015,30 +3006,34 @@ def test_a_row_map_command_says_which_instance_it_acted_on(mac, tmp_path,
 
 @pytest.mark.parametrize("name", ["close-done", "forget-rows"])
 def test_the_banner_names_the_default_config_when_no_flag_is_passed(
-        mac, agb, tmp_path, name):
+        mac, agb, name, instance_config):
     """`opts["config"]` is `None` on every run that passes no flag, and the
     banner is printed on every one of those runs -- so resolving it is not
     cosmetic: the unresolved value prints `config None`, which names no file
     and is worse than saying nothing."""
-    _instance(tmp_path)
+    # Non-vacuity, and the one place `instance_config`'s no-name branch is
+    # pinned: it has to BE `agb.config_path()`, or this sets up a file the
+    # command never reads while asserting on a path it prints regardless.
+    assert instance_config() == agb.config_path()
     out = _RowOut()
     _run_row_command(mac, name, [], out)
     assert agb.config_path() in out.text
     assert "None" not in out.text
 
 
-def test_forget_rows_names_the_placements_file_it_will_write(mac, tmp_path):
+def test_forget_rows_names_the_placements_file_it_will_write(mac,
+                                                             instance_config):
     """The file nobody named on the command line is the one worth printing:
     it is the one that would be wrong if `--config` derived only `rows`."""
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     out = _RowOut()
     mac.run_forget_rows(["--config", hostb], out=out, run=_tree_run)
     assert mac.placements_path(hostb) in out.text
 
 
 @pytest.mark.parametrize("name", ["close-done", "forget-rows"])
-def test_a_dry_run_says_which_instance_it_would_have_acted_on(mac, tmp_path,
-                                                              name):
+def test_a_dry_run_says_which_instance_it_would_have_acted_on(
+        mac, name, instance_config):
     """⚠️ The dry run is the run that most needs the banner, and the easiest
     one to lose it on.
 
@@ -3048,7 +3043,7 @@ def test_a_dry_run_says_which_instance_it_would_have_acted_on(mac, tmp_path,
     withhold the answer from precisely the question being asked. It is emitted
     before anything is read for exactly that reason.
     """
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
     out = _RowOut()
     _run_row_command(mac, name, ["--config", hostb, "--dry-run"], out)
@@ -3063,7 +3058,8 @@ def test_a_dry_run_says_which_instance_it_would_have_acted_on(mac, tmp_path,
 # the stale-row hint names the instance whose log it is written into
 # ---------------------------------------------------------------------------
 
-def test_the_stale_row_hint_names_this_instances_own_refresh(mac, tmp_path):
+def test_the_stale_row_hint_names_this_instances_own_refresh(
+        mac, instance_config):
     """⚠️ A fixed `Run agb-refresh` is instance A's recipe in instance B's log.
 
     Followed literally from B's log it *succeeds*: it stops `com.agbridge`,
@@ -3081,7 +3077,7 @@ def test_the_stale_row_hint_names_this_instances_own_refresh(mac, tmp_path):
     the assertion below while bouncing the default job and forgetting THIS
     instance's map underneath its own live bridge.
     """
-    hostb = _instance(tmp_path, "hostb")
+    hostb = instance_config("hostb")
     warnings = []
     renderer = mac.RowRenderer(
         mac.BridgeModel(), mac.RowMap(mac.rows_path(hostb)),
@@ -3093,12 +3089,12 @@ def test_the_stale_row_hint_names_this_instances_own_refresh(mac, tmp_path):
     assert "agb-refresh --config %s" % (hostb,) in hint[0]
 
 
-def test_the_stale_row_hint_stays_short_for_the_default_instance(mac, agb,
-                                                                 tmp_path):
+def test_the_stale_row_hint_stays_short_for_the_default_instance(
+        mac, agb, instance_config):
     """The other half, and the reason the flag is conditional: a default
     install's advice must not grow a flag it does not need -- the same rule
     `pane_argv` follows, so that nothing about a one-instance Mac changes."""
-    _instance(tmp_path)
+    instance_config()
     warnings = []
     renderer = mac.RowRenderer(
         mac.BridgeModel(), mac.RowMap(mac.rows_path(agb.config_path())),

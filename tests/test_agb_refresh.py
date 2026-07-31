@@ -120,8 +120,6 @@ def refresh(tmp_path):
     os.chmod(str(python), 0o755)
 
     class Refresh(object):
-        agb_path = str(agb)
-
         def config(self, instance=None):
             """Where `install.sh` would have put this instance's config."""
             base = tmp_path / ".config" / "agbridge"
@@ -780,7 +778,7 @@ def test_a_plist_that_names_no_config_stands_for_the_default_one(refresh,
     A plist rendered before the flag existed carries no `--config`, so its value
     is the empty string. Two readings of that were both wrong. Skipping it
     outright is the silent wrong-job bounce the test above covers. Passing it
-    through unchanged is worse: `canon_config ""` is a perfectly good answer,
+    through unchanged is worse: `config_map_dir ""` is a perfectly good answer,
     the *current directory*, so `cd <dir> && agb-refresh --config <dir>/` would
     adopt the label of a job that names no config at all.
 
@@ -1009,6 +1007,30 @@ def test_several_jobs_over_one_map_are_named_rather_than_chosen_in_silence(
     assert refresh.index("agb forget-rows") > -1
     assert refresh.call("launchctl bootout").endswith("/com.agbridge.hostb"), \
         refresh.calls()
+
+
+def test_the_claimants_line_is_indented_like_the_rest_of_its_warning(refresh):
+    """⚠️ It lined up by ACCIDENT, and the accident was in the data.
+
+    Three of the four lines of this block indent by ten spaces; the claimants
+    line indented by nine and borrowed the tenth from `$claimants`, which is
+    accumulated as `"$claimants $name"` and so always carries a leading space.
+    Either half of that is a thing somebody tidies -- the odd nine, or the
+    accumulator's stray space -- and tidying either one alone re-indents the
+    block with no test to say so.
+    """
+    real = _existing_config(refresh, "hostb")
+    refresh.write_plist("com.agbridge.hostb", instance="hostb")
+    refresh.write_plist("com.agbridge.zz", config=real)
+    _rc, out, _err = refresh.run(["--config", real])
+    block = [line for line in out.split("\n")
+             if "more than one" in line or "com.agbridge.zz" in line
+             or "keep running and hold" in line or "Pass --label" in line]
+    assert len(block) == 4, out
+    # The heading is `WARNING:  `; the three continuations align under it.
+    for line in block[1:]:
+        assert line.startswith(" " * 10), repr(line)
+        assert not line.startswith(" " * 11), repr(line)
 
 
 def test_a_config_in_the_plist_survives_xml_escaping(refresh):
