@@ -247,6 +247,7 @@ Verified in real use, not just in tests:
 | `notify --target <row>` → banner on the right row | ✅ run by hand |
 | the bridge sending it on a `blocked` transition → banner + Dock bounce | ✅ |
 | the badge clearing when the agent leaves `blocked` | ✅ — on a row that is **not** selected; agterm never badges the row you are viewing |
+| a new agent's row → banner + Dock bounce, naming its directory | ✅ |
 | click-to-attach → right host, session **and pane** | ✅ |
 | detach returns to the prompt, row survives | ✅ |
 | `[s] split` → split pane with a shell on the agent's host | ✅ |
