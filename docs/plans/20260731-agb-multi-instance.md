@@ -341,11 +341,14 @@ this simply omit the flag and fall back to the default config, which is correct 
 - [ ] write tests: a real install into a throwaway `$HOME` renders a plist whose label, config and
       log paths agree; `plutil` validates it; the default instance's plist is unchanged apart from
       the two new lines
-- [ ] write tests for **both new guards**, which the first draft asserted only as acceptance
+- [ ] write tests for **all three new guards**, which the first draft asserted only as acceptance
       criteria: `--instance` without `--statedir` exits non-zero and installs **nothing**;
-      `--instance ../../evil` is refused; `install.sh farm --instance x` is refused. The `mac_args`
-      fixture takes `None` to drop a pinned flag, so
-      `mac_args(**{"--config": None, "--log-dir": None, "--instance": "hostb"})` is the shape
+      `--instance ../../evil` is refused; `install.sh farm --instance x` is refused.
+      ⚠️ **The fixture shape differs per test**: `mac_args` pins `--statedir`
+      (`tests/test_install_pkg.py:487`), so the no-statedir test needs `"--statedir": None` too; and
+      it hardcodes `argv = ["mac", …]` (`:497`), so the **farm-role test cannot use it at all**.
+      `mac_args(**{"--config": None, "--log-dir": None, "--instance": "hostb"})` is the shape for
+      the *happy-path* install test only
 - [ ] mutation-test each guard — Tasks 1, 3 and 4 introduce guards and only 2 and 5 had a mutation
       checkbox
 - [ ] run tests
@@ -361,6 +364,15 @@ this simply omit the flag and fall back to the default config, which is correct 
 - [ ] also accept a plain `--config <path>`: limitation 7's install (`install.sh --config
       <nondefault>`, no instance name) has no instance name to pass, so `--instance` alone leaves it
       unable to refresh against its own map
+- [ ] ⚠️ **give `$config` a real default — `DEFAULT_CONFIG="$HOME/.config/agbridge/config"`,
+      mirroring `install.sh:53`.** `agb-refresh`'s idiom for an unset path is the empty string
+      (`rows=""`, `:53`), and empty is the one value that breaks all three uses below. Since the
+      plist's `--config` is **unconditional** (decision 5), every instance's cmdline carries it — so
+      a pattern of `"$agb bridge --config "` matches **every** bridge. A plain `agb-refresh` while
+      instance B is up would then poll a live process for the full 10 s and print
+      `WARNING: … still running after 10s` on the *most common* invocation: the mirror image of the
+      symptom the previous checkbox removes. It would also print an empty path in the banner and
+      make `--config ""` a missing-value error in `forget-rows`
 - [ ] ⚠️ **print the instance and config path on every run**, not only on failure. Limitation 1 is
       silent otherwise: refreshing the wrong instance succeeds and says so
 - [ ] pass `--config` through to `agb forget-rows` (which now derives placements from it too)
@@ -399,7 +411,8 @@ this simply omit the flag and fall back to the default config, which is correct 
 - [ ] a default-only install behaves exactly as before — same plist but for the two new lines, same
       config path, same rows file, and **the same row commands** (no `--config` emitted)
 - [ ] `agb-refresh --instance hostb` does not print the "still running" warning while instance A is
-      up (the `pgrep` fix)
+      up, **and plain `agb-refresh` does not print it while instance B is up** — the pattern has to
+      be right in both directions, and only the first was checked
 - [ ] `--instance` without `--statedir` is **refused**, not defaulted
 - [ ] run the full suite: `python3 -m pytest tests/ -q`
 - [ ] `sh -n install.sh`
@@ -422,7 +435,7 @@ this simply omit the flag and fall back to the default config, which is correct 
       feed resolve to the same files" — it now needs the *per instance* qualifier
 - [ ] `.claude/skills/agbridge/SKILL.md`: a recipe. **The skill has no answer for this today**, which
       is how the question arose
-- [ ] all **six limitations** written down, with limitation 1 marked as the one that bites
+- [ ] all **seven limitations** written down, with limitation 1 marked as the one that bites
 - [ ] record the rejected one-bridge-many-feeds shape and why, so it is not re-proposed
 - [ ] `CHANGELOG.md` under `## Unreleased`, house style — say *why*, name the symptom, **and carry
       the one non-transparent upgrade** (limitation 7: an existing `--config <nondefault>` install
