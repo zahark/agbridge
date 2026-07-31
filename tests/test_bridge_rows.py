@@ -1009,6 +1009,72 @@ def test_the_banner_can_be_turned_off(bridge):
     assert "aaaa1111" in b.renderer.blocked
 
 
+def _past_quiet(bridge_obj):
+    """Move the renderer past its new-row quiet window."""
+    bridge_obj.renderer.quiet_until = 0
+    return bridge_obj
+
+
+def test_a_new_agent_gets_a_banner_naming_its_directory(mac, bridge):
+    """The counterpart to the blocked banner: that one says *you are needed*,
+    this one says *something new exists*. The cwd is in it because two agents
+    on one host share everything else -- the directory is what tells you which
+    piece of work turned up."""
+    b = _past_quiet(bridge())
+    b.upsert(wire("aaaa1111", label="build", host="box2",
+                  cwd="/work/api", state="active"))
+
+    sent = _notifies(b)
+    assert len(sent) == 1
+    body, title, target = sent[0]
+    assert "build" in body and "/work/api" in body
+    assert "box2" in title
+    assert target == b.rows.row_for("aaaa1111")
+
+
+def test_a_burst_of_rows_at_startup_is_silent(bridge):
+    """⚠️ The reason the quiet window exists. `agb-refresh` forgets every
+    binding and the bridge re-mints all of them; so does a first install or a
+    lost rows file. Nine rows would be nine banners and nine Dock bounces for
+    agents that have been running since breakfast -- which is how a feature
+    gets switched off on its first day."""
+    b = bridge()                          # NOT past the window
+    for n in range(5):
+        b.upsert(wire("aaaa111%d" % (n,), state="active"))
+    assert _notifies(b) == []
+    assert len(list(b.rows.bound_keys())) == 5, "the rows were still created"
+
+
+def test_a_reconnect_re_arms_the_quiet_window(bridge):
+    """A reconnect is the other catch-up moment: the snapshot that follows can
+    mint rows for keys a previous bridge had bound."""
+    b = _past_quiet(bridge())
+    b.stale("eof")
+    b.upsert(wire("aaaa1111", state="active"))   # lifts stale, then the row
+    assert _notifies(b) == []
+
+
+def test_a_done_row_coming_back_is_not_a_new_agent(bridge):
+    """`rebind` reuses the row of an agent we already knew about. It is a
+    return, not an arrival."""
+    b = _past_quiet(bridge())
+    b.upsert(wire("aaaa1111", state="active"))
+    before = len(_notifies(b))
+    b.remove("aaaa1111")                          # `[done]`, still in the map
+    b.upsert(wire("aaaa1111", state="active", seq=2))
+    assert len(_notifies(b)) == before
+
+
+def test_new_row_banners_can_be_turned_off_alone(bridge):
+    """Its own switch: wanting to hear about a new agent but not about a
+    blocked one -- or the reverse -- is an ordinary preference."""
+    b = _past_quiet(bridge(settings={"notify_new_row": False}))
+    b.upsert(wire("aaaa1111", state="active"))
+    assert _notifies(b) == []
+    b.upsert(wire("aaaa1111", state="blocked", seq=2))
+    assert len(_notifies(b)) == 1, "the blocked banner is a separate switch"
+
+
 def _seens(bridge_obj):
     """The `agtermctl session seen` calls, as targets."""
     return [_options(call).get("--target") for call in bridge_obj.run.agterm()

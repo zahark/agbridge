@@ -10,6 +10,21 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **A desktop banner when a new agent appears** — label, host and working directory, attributed to
+  its row. The counterpart to the one below: that says *you are needed here*, this says *something
+  new exists*. The directory is in it because two agents on one host share everything else.
+
+  Its own switch, `notify_on_new_row` (**on by default**), separate from `notify_on_blocked`:
+  wanting one without the other is an ordinary preference.
+
+  ⚠️ **Rows are minted in bursts and a burst is silent.** `agb-refresh` forgets every binding and
+  the bridge re-mints all of them; so does a first install or a lost rows file. Without this a
+  nine-row refresh would be nine banners and nine Dock bounces for agents running since breakfast —
+  how a feature gets switched off on its first day. Rows created within `NEW_ROW_QUIET` (10 s) of a
+  bridge start or a reconnect are silent. It is a heuristic: an agent that genuinely starts inside
+  that window is missed, which is the safe direction to fail. A `[done]` row being reported again is
+  a return, not an arrival, and never banners.
+
 - **A desktop banner when an agent starts waiting for you.** On a transition into `blocked` the
   bridge sends `agtermctl notify … --target <row>`: a macOS banner attributed to that row, which
   raises the row's unseen badge and jumps to the pane when clicked.
