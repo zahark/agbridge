@@ -199,9 +199,10 @@ interrupts you is the machine's.
   names and defaults come from `agterm.com/commands`; `--target` was additionally proven by its
   *rejection* of a stale row id — `error: no such session: <uuid>` means the flag parsed and the
   lookup ran.
-- **CONFIRMED** (2026-07-31, live): the bridge's own path, end to end. An agent was driven into
-  `blocked` while agterm was in the background; the banner arrived and the Dock icon bounced. So
-  the trigger is proven as well as the command.
+- **CONFIRMED** (2026-07-31, live): the bridge's own path, end to end, on **both** triggers. An
+  agent driven into `blocked` with agterm in the background produced the banner and a bouncing Dock
+  icon; so did a genuinely new agent appearing, naming its working directory. So the triggers are
+  proven as well as the command.
 
 ### `agtermctl session seen [--target T] [--window W]` — **CONFIRMED**
 
