@@ -208,6 +208,9 @@ interrupts you is the machine's.
 *"Clears the session's unseen-notification badge without changing the selection, focus, or agent
 status."* Idempotent, and the badge is a **count**, not a boolean.
 
+**CONFIRMED live** (2026-07-31): with the row *not* selected, the badge appeared on the block and
+went away when the agent moved off it.
+
 agbridge sends one when an agent **leaves** `blocked` — somebody answered it, so the badge is
 advertising something already dealt with. It is reached only for a key agbridge itself announced,
 and only while `notify_on_blocked` is on: *unwind what you did*, so one switch governs the whole
@@ -222,6 +225,7 @@ Five limitations, none escapable. The middle two look enough like bugs to be wor
 | ⚠️ a **bridge restart** orphans one badge | the "we announced this" memory is per-process, so an agent blocked before a restart and answered after one is not in the set at clear time. Same reason a restart re-announces a still-blocked agent. Persisting the set fixes both and is far more machinery than a stale badge is worth |
 | `notify_on_blocked = 0` clears nothing | including badges an earlier run raised while it was on |
 | clicking the banner or the row clears it first | agterm's own behaviour; the call is then a no-op, which is only harmless because `seen` is idempotent |
+| ⚠️ **a selected row never gets a badge at all** | observed 2026-07-31: nothing is "unseen" about the session you are looking at, so the badge is not raised and there is nothing to clear. The banner and the Dock bounce still fire. This makes the row you are watching **the one row where this feature cannot be tested** — the first attempt was invalid for exactly that reason |
 
 ### `agtermctl window select [<id>]` — **CONFIRMED, not yet used**
 
