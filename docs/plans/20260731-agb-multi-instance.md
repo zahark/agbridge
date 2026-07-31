@@ -313,48 +313,62 @@ this simply omit the flag and fall back to the default config, which is correct 
 - Modify: `install.sh`
 - Modify: `tests/test_install_pkg.py`
 
-- [ ] template: two **fixed** lines, `<string>--config</string>` and `<string>@CONFIG@</string>`,
+- [x] template: two **fixed** lines, `<string>--config</string>` and `<string>@CONFIG@</string>`,
       **after** `<string>bridge</string>` — before it renders `agb --config X bridge`, which the
       dispatch rejects as an unknown command and launchd then restarts for ever
-- [ ] `install.sh:412-416` needs a sixth `-e "s|@CONFIG@|$(rep "$config")|g"`; `rep()` already
+      — the ordering is asserted against the **real dispatch**
+      (`test_the_templates_config_flag_comes_after_the_command_name` runs the forbidden argv and
+      requires `unknown command: --config`), not by eye
+- [x] `install.sh:412-416` needs a sixth `-e "s|@CONFIG@|$(rep "$config")|g"`; `rep()` already
       handles the XML and sed escaping, and the post-render placeholder guard at `:425` makes an
       omission loud
-- [ ] ⚠️ three template-adjacent things break or go vacuous (*review finding 5*):
+- [x] ⚠️ three template-adjacent things break or go vacuous (*review finding 5*):
       `dist/com.agbridge.plist:7` says "the **five** at-sign placeholders" — now six;
       `tests/test_install_pkg.py:885` and `:909` each assert `ProgramArguments ==` an **exact
       list**; and `tests/test_install_pkg.py:1026` enumerates the placeholders for the guard that
       the template comment must not name them — omit `@CONFIG@` there and **the guard passes
       vacuously for the new placeholder**, which is the class its own docstring was written for
-- [ ] `install.sh`: `--instance <name>` sets the config (`:302`), log-dir (`:328`) and label
+      — the enumeration is now **derived from the template** (`re.findall(r"@[A-Z_]+@")`) and
+      pinned against the six literal names, so a seventh placeholder fails that test rather than
+      going unasserted
+- [x] `install.sh`: `--instance <name>` sets the config (`:302`), log-dir (`:328`) and label
       (`:330`) defaults. An explicit `--config`/`--label`/`--log-dir` still wins.
       ⚠️ *Lines `:326-327` are `dest` and `agentsdir` — the two that must stay **shared**; an
       earlier draft cited them by mistake*
-- [ ] ⚠️ **`--instance` refuses to run without `--statedir`** (decision 6). Silently inheriting the
+      — all three set in **one block** after the option loop, each still `[ -n … ] ||`, so the
+      existing defaults below it stay the single source of the non-instance answer
+- [x] ⚠️ **`--instance` refuses to run without `--statedir`** (decision 6). Silently inheriting the
       default instance's farm path is the worst failure in this plan
-- [ ] ⚠️ **`--instance` is refused outside the `mac` role.** `install.sh`'s option loop (`:262-292`)
+- [x] ⚠️ **`--instance` is refused outside the `mac` role.** `install.sh`'s option loop (`:262-292`)
       is role-agnostic and `$config` is used by the farm role too, so
       `install.sh farm --instance x` would write the farm's config to `~/.config/agbridge/x/config`
       — which nothing on the farm reads (`agb hook` uses `agb.config_path()` only) — and report
       success. `--label` and `--log-dir` are mac-only already, so this is mac-only sugar by
       construction
-- [ ] ⚠️ **validate `<name>`**: it becomes a launchd label component, a plist *filename*, a log
+- [x] ⚠️ **validate `<name>`**: it becomes a launchd label component, a plist *filename*, a log
       directory and a config *directory*, and `shell_safe` (`install.sh:119`) permits `.` and `/`
       — so `--instance ../../evil` passes it today. Alphanumerics, `-` and `_`; no `/`, no leading
       `.`
-- [ ] `--dest` and `--bin-dir` stay shared: one code install, N configurations
-- [ ] `mac_id` is **adopted** from the default config rather than minted (decision 4), via
+      — `instance_ok()`, validated **in the option loop** like `--host`, so `--instance ""` is
+      refused too instead of reading as "not given" and installing the default instance
+- [x] `--dest` and `--bin-dir` stay shared: one code install, N configurations
+- [x] `mac_id` is **adopted** from the default config rather than minted (decision 4), via
       `agb install-config --config <default> --dry-run --print-mac-id` — **not** by parsing
       `key = value` in shell, which `install.sh:390-392` explicitly refuses as "the sort of second
       reader that drifts". ⚠️ With an empty default config `resolve_mac_id` (`agb_ops:3301`)
       *raises*, so the fall-back-to-minting branch must catch a **non-zero exit**, not an empty
       string
-- [ ] **confirm** the `next:` hint already prints the farm command for this instance's statedir —
+      — `|| adopted=""`; without it `set -e` aborts the whole install of the first instance on a
+      Mac that never had a default one
+- [x] **confirm** the `next:` hint already prints the farm command for this instance's statedir —
       `install.sh:502` builds one argv carrying `--statedir "$statedir"` for both the printed and
       the `--farm` forms, so this is a check, not a change
-- [ ] write tests: a real install into a throwaway `$HOME` renders a plist whose label, config and
+      — confirmed unchanged, and pinned by
+      `test_the_farm_hint_for_an_instance_names_that_instances_statedir`
+- [x] write tests: a real install into a throwaway `$HOME` renders a plist whose label, config and
       log paths agree; `plutil` validates it; the default instance's plist is unchanged apart from
       the two new lines
-- [ ] write tests for **all three new guards**, which the first draft asserted only as acceptance
+- [x] write tests for **all three new guards**, which the first draft asserted only as acceptance
       criteria: `--instance` without `--statedir` exits non-zero and installs **nothing**;
       `--instance ../../evil` is refused; `install.sh farm --instance x` is refused.
       ⚠️ **The fixture shape differs per test**: `mac_args` pins `--statedir`
@@ -362,9 +376,19 @@ this simply omit the flag and fall back to the default config, which is correct 
       it hardcodes `argv = ["mac", …]` (`:497`), so the **farm-role test cannot use it at all**.
       `mac_args(**{"--config": None, "--log-dir": None, "--instance": "hostb"})` is the shape for
       the *happy-path* install test only
-- [ ] mutation-test each guard — Tasks 1, 3 and 4 introduce guards and only 2 and 5 had a mutation
+- [x] mutation-test each guard — Tasks 1, 3 and 4 introduce guards and only 2 and 5 had a mutation
       checkbox
-- [ ] run tests
+      — 9 mutations, each failing a *named* test: dropping the `@CONFIG@` sed line trips the
+      post-render placeholder guard; putting the config flag **before** `bridge` fails
+      `test_the_template_is_a_valid_plist_and_carries_every_placeholder`; dropping the role guard,
+      the statedir guard, the adoption block and the banner each fail only their own test;
+      swapping `instance_ok` for `shell_safe` fails
+      `…_name_that_would_escape_its_own_directories_is_refused[../../evil]`; replacing
+      `|| adopted=""` with a bare substitution fails the instance install outright; and dropping
+      `@CONFIG@` from the test's own enumeration fails
+      `test_the_plist_template_does_not_name_its_own_placeholders`
+- [x] run tests — `python3 -m pytest tests/ -q`: **1478 passed**; `sh -n install.sh` clean;
+      `wc -c agb` still 102,429
 
 ### Task 5: `agb-refresh --instance`, and saying which instance
 
