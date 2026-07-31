@@ -248,6 +248,13 @@ a bouncing Dock icon.
 - **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
   host. This is why the version is 0.x.
 
+**agbridge uses 8 of agterm's ~70 subcommands.** The unused surface was surveyed on 2026-07-31 and
+the useful part is recorded in [`docs/agtermctl.md`](docs/agtermctl.md) → "What agbridge does not use
+yet", with what each would buy. The standout is **`events`**, agterm's control-event ring: the
+bridge is write-only today, which is why nothing notices when a row is closed by hand or agterm
+forgets its sessions, and why `agb-refresh` exists. Read that section before adding any new call —
+it may already say why a thing was passed over.
+
 **Considered and not built:** bringing agterm to the front on `blocked`. `agtermctl window select`
 is recorded verbatim in `docs/agtermctl.md` with its trap — given no id it raises whichever window
 is *already active*, so targeting the blocked row's window needs the id from `tree --json`, which
