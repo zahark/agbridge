@@ -1354,6 +1354,11 @@ BEAT_BUCKET = 15
 # deliberately not rate-limited: it is the launchd log, and it is cheap.
 NOTIFY_INTERVAL = 300.0
 
+# How long after a catch-up moment new rows stay silent. See
+# `RowRenderer._notify_new_row`: a refresh re-mints every row at once, and a
+# banner each would be the feature's own undoing.
+NEW_ROW_QUIET = 10.0
+
 # How often every row's status is re-sent regardless of whether it changed.
 # See `RowRenderer._reassert`: agterm resets a row's status when the row's
 # command starts, so the renderer's memory cannot be trusted as a description of
@@ -1535,7 +1540,7 @@ class RowRenderer(object):
 
     __slots__ = ("model", "rows", "settings", "run", "warn",
                  "seen", "applied", "titles", "stale", "clock", "notified",
-                 "placements", "reasserted", "blocked")
+                 "placements", "reasserted", "blocked", "quiet_until")
 
     def __init__(self, model, rows, run=None, warn=None, settings=None,
                  clock=None):
@@ -1562,6 +1567,9 @@ class RowRenderer(object):
         # Keys announced as blocked. Deliberately NOT derived from `applied`:
         # see `_notify_blocked`.
         self.blocked = set()
+        # Armed here and re-armed by `_render_live`: both are catch-up moments,
+        # where every row is minted at once and none of them is news.
+        self.quiet_until = self.clock() + NEW_ROW_QUIET
 
     # -- the sink ---------------------------------------------------------
 
@@ -1742,6 +1750,8 @@ class RowRenderer(object):
                            "[done] and is now bound to it once more" % (key,))
             else:
                 row = self._create_row(session)
+                if row is not None:
+                    self._notify_new_row(row, session)
             if row is None:
                 return
         self._title(key, row, session)
@@ -1798,6 +1808,51 @@ class RowRenderer(object):
         label = (session or {}).get("label") or key
         host = (session or {}).get("host") or "?"
         self._agtermctl(["notify", "%s is waiting for a response" % (label,),
+                         "--title", "agbridge: %s" % (host,),
+                         "--target", row])
+
+    def _notify_new_row(self, row, session):
+        """One banner when an agent shows up that we had no row for.
+
+        The counterpart to the `blocked` banner: that one says *you are needed
+        here*, this one says *something new exists*. Different enough to have
+        their own switches -- `notify_on_new_row` and `notify_on_blocked` --
+        because wanting the first without the second is a perfectly ordinary
+        preference.
+
+        ⚠️ **Rows are minted in bursts, and a burst must be silent.**
+        `agb-refresh` forgets every binding and the bridge re-mints all of
+        them; so does a first install, or a lost rows file. Without the quiet
+        window a nine-row refresh is nine banners and nine Dock bounces for
+        agents that have been running since breakfast -- which is how a feature
+        gets switched off on its first day.
+
+        The window is armed at construction and re-armed by `_render_live`,
+        which are precisely the two catch-up moments: a bridge that has just
+        started, and a connection that has just come back. `agb-refresh`
+        restarts the bridge, so it is covered by the first.
+
+        It is a heuristic and says so. An agent that genuinely starts inside
+        those `NEW_ROW_QUIET` seconds gets no banner -- the safe direction to
+        fail, since the alternative is announcing a dozen rows nobody asked
+        about.
+
+        `rebind` deliberately does not come through here: a `[done]` row being
+        reported again is an agent we already knew about, not an arrival.
+        """
+        if not (self.settings or {}).get("notify_new_row", True):
+            return
+        if self.clock() < self.quiet_until:
+            return
+        label = (session or {}).get("label") or "an agent"
+        host = (session or {}).get("host") or "?"
+        cwd = (session or {}).get("cwd")
+        body = "%s started" % (label,)
+        if cwd:
+            # The directory is usually what tells you *which* piece of work
+            # this is -- two agents on one host share everything else.
+            body += " in %s" % (cwd,)
+        self._agtermctl(["notify", body,
                          "--title", "agbridge: %s" % (host,),
                          "--target", row])
 
@@ -1913,6 +1968,9 @@ class RowRenderer(object):
         the VPN hiccups.
         """
         self.stale = False
+        # A reconnect re-mints nothing by itself, but the snapshot that follows
+        # can create rows for keys bound by a bridge that is no longer running.
+        self.quiet_until = self.clock() + NEW_ROW_QUIET
         for key in self.rows.bound_keys():
             row = self.rows.row_for(key)
             session = self.seen.get(key)
@@ -2089,6 +2147,7 @@ def render_settings(opts, config=None):
         # nobody has. `agb.config_flag` reads absent as the default, so an
         # existing config gets the banners without being edited.
         "notify_blocked": config_flag(config, "notify_on_blocked", True),
+        "notify_new_row": config_flag(config, "notify_on_new_row", True),
     }
 
 

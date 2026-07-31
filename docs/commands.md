@@ -122,6 +122,21 @@ agent that merely stayed blocked would be announced again after every hiccup. Th
 changes only when the **agent's** state does, so it is one banner per block regardless of the
 network. A test asserts exactly this, and the wrong gate fails five of them.
 
+### The new-agent banner
+
+When a key arrives that has no row, the bridge mints one and sends
+`agtermctl notify "<label> started in <cwd>" --title "agbridge: <host>" --target <row>`. The
+directory is in the body because two agents on one host share everything else — it is what tells you
+which piece of work turned up. Config `notify_on_new_row`, **on by default**, separate from
+`notify_on_blocked`.
+
+⚠️ **Rows are minted in bursts, and a burst is silent.** `agb-refresh` forgets every binding and the
+bridge re-mints all of them; so does a first install or a lost rows file. Rows created within
+`NEW_ROW_QUIET` (10 s) of a bridge start or a reconnect send nothing — otherwise a nine-row refresh
+is nine banners for agents that have been running all day. A heuristic, deliberately: an agent that
+genuinely starts inside that window is missed, which is the safe direction to fail. A `[done]` row
+reported again is a **return, not an arrival**, and never banners.
+
 **Two intervals have no flag**, deliberately — neither is a tuning knob, and a flag would invite
 setting them wrong:
 
