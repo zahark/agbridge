@@ -1381,23 +1381,47 @@ ROW_STALE_HINT = (
     "every row back (map: %s).")
 
 
+def _non_default_config(config):
+    """The path when it names a *named* instance's config, else `None`.
+
+    ⚠️ **Both halves are load-bearing, and each was a bug first.**
+    `config and ...`: `None` is every caller's default and what
+    `settings.get("config")` returns for a bridge started without `--config`,
+    and `None != agb.config_path()` is True -- the bare comparison emits a
+    literal `--config None`. `normpath` on BOTH sides: `install.sh` spells
+    `DEFAULT_CONFIG` itself (invariant 14) and agrees with `agb.config_path()`
+    for a normal `$HOME` but not for one with a trailing slash, and a mismatch
+    there has EVERY default install re-mint every row command it already has.
+
+    One function rather than two spellings because its two callers must not
+    diverge: `pane_argv` decides whether a row's command carries the flag, and
+    `refresh_recipe` decides whether the recovery hint printed beside that row
+    carries it. Disagreeing means a row and its own repair instructions name
+    different instances -- which is not a divergence anyone would choose, so
+    the `open_split`/`open_drawer` exemption does not apply.
+    """
+    if config and os.path.normpath(config) != os.path.normpath(
+            agb.config_path()):
+        return config
+    return None
+
+
 def refresh_recipe(config=None):
     """`agb-refresh`, with the `--config` this instance needs and not otherwise.
 
-    The same predicate as `pane_argv`'s, and for the same reason: a default
-    install's advice must not grow a flag it does not need, and a non-default
-    one's must not omit the flag that makes it act on the right map. `normpath`
-    on both sides, because a `$HOME` with a trailing slash would otherwise make
-    every default install print the long form.
+    The same predicate as `pane_argv`'s -- literally, via
+    `_non_default_config` -- and for the same reason: a default install's
+    advice must not grow a flag it does not need, and a non-default one's must
+    not omit the flag that makes it act on the right map.
 
     ⚠️ The other end of this string is `agb-refresh`'s `bind_label_to_config`,
     which is what makes a bare `--config` stop the right launchd job. See the
     second warning above `ROW_STALE_HINT`: without it this recipe bounces the
     default bridge and forgets THIS instance's map underneath a live one.
     """
-    if config and os.path.normpath(config) != os.path.normpath(
-            agb.config_path()):
-        return "agb-refresh --config %s" % (config,)
+    named = _non_default_config(config)
+    if named:
+        return "agb-refresh --config %s" % (named,)
     return "agb-refresh"
 
 # What counts as agterm saying "that row does not exist". Matched on the text
@@ -1563,20 +1587,14 @@ def pane_argv(session, agb_path=None, python=None, jump=None, config=None):
         argv.extend(["--pane", str(session["pane"])])
     if jump:
         argv.extend(["--jump", str(jump)])
-    if config and os.path.normpath(config) != os.path.normpath(
-            agb.config_path()):
-        # Emitted ONLY for a non-default instance, so a default install's row
-        # commands stay byte-identical and nothing existing is re-minted.
-        #
-        # Both halves of the predicate are load-bearing. `config and ...`:
-        # `None` is this parameter's default and what `settings.get("config")`
-        # returns for a bridge started without `--config`, and
-        # `None != agb.config_path()` is True -- the bare comparison would emit
-        # a literal `--config None`. `normpath` on both sides: `install.sh`'s
-        # DEFAULT_CONFIG and `agb.config_path()` agree for a normal `$HOME` and
-        # not for one with a trailing slash, and a mismatch there would have
-        # EVERY default install re-mint its row commands.
-        argv.extend(["--config", str(config)])
+    # Emitted ONLY for a non-default instance, so a default install's row
+    # commands stay byte-identical and nothing existing is re-minted.
+    # `_non_default_config` is where that predicate lives and why -- shared
+    # with `refresh_recipe`, which must answer it the same way about the same
+    # row.
+    named = _non_default_config(config)
+    if named:
+        argv.extend(["--config", str(named)])
     return argv
 
 

@@ -403,20 +403,11 @@ def test_the_config_file_is_read_when_no_config_is_injected(ops, config_file):
 # the same host in each file below -- a shared table would be indistinguishable
 # from an isolated one if both named the same target.
 
-def _instance_config(tmp_path, name, text=""):
-    """A second instance's config file, written and returned as a str path."""
-    home = tmp_path / "instances" / name
-    os.makedirs(str(home))
-    path = home / "config"
-    with open(str(path), "w") as handle:
-        handle.write(text)
-    return str(path)
-
-
-def test_the_row_command_round_trips_the_config_too(mac, ops, tmp_path):
+def test_the_row_command_round_trips_the_config_too(mac, ops,
+                                                   instance_config):
     """The same two-file contract as the round trip above, for the flag that
     decides which machine a click reaches."""
-    path = _instance_config(tmp_path, "hostb")
+    path = instance_config("hostb")
     session = {"key": KEY, "host": HOST, "tmux": "build", "pane": "%24"}
     argv = mac.pane_argv(session, agb_path="/opt/agb/agb", python="/py",
                          config=path)
@@ -424,10 +415,10 @@ def test_the_row_command_round_trips_the_config_too(mac, ops, tmp_path):
     assert opts["config"] == path
 
 
-def test_the_instances_own_host_table_is_the_one_that_resolves(ops, tmp_path,
-                                                               config_file):
+def test_the_instances_own_host_table_is_the_one_that_resolves(
+        ops, config_file, instance_config):
     config_file("host_box3 = user@instance-a.example\n")
-    path = _instance_config(tmp_path, "hostb",
+    path = instance_config("hostb",
                             "host_box3 = user@instance-b.example\n")
     opts = ops.parse_pane_args(args() + ["--config", path])
     target, _jump = ops.pane_settings(opts)
@@ -435,23 +426,23 @@ def test_the_instances_own_host_table_is_the_one_that_resolves(ops, tmp_path,
 
 
 def test_a_row_minted_before_the_flag_still_reads_the_default_config(
-        ops, tmp_path, config_file):
+        ops, config_file, instance_config):
     """The other half, and the reason `config` is absent from the parser's
     initializer rather than defaulted in it: rows already on somebody's screen
     carry no `--config` for as long as they live."""
     config_file("host_box3 = user@instance-a.example\n")
-    _instance_config(tmp_path, "hostb", "host_box3 = user@instance-b.example\n")
+    instance_config("hostb", "host_box3 = user@instance-b.example\n")
     opts = ops.parse_pane_args(args())
     assert "config" not in opts        # `opts.get`, never `opts[...]`
     target, _jump = ops.pane_settings(opts)
     assert target == "user@instance-a.example"
 
 
-def test_pane_resolves_through_the_instance_config_end_to_end(ops, tmp_path,
-                                                              config_file):
+def test_pane_resolves_through_the_instance_config_end_to_end(
+        ops, config_file, instance_config):
     """Through `run_pane`, which is what the row's command actually reaches."""
     config_file("host_box3 = user@instance-a.example\njump_host = jump-a\n")
-    path = _instance_config(tmp_path, "hostb",
+    path = instance_config("hostb",
                             "host_box3 = user@instance-b.example\n"
                             "jump_host = jump-b\n")
     out = Out()
@@ -465,7 +456,7 @@ def test_pane_resolves_through_the_instance_config_end_to_end(ops, tmp_path,
 
 
 def test_a_config_the_row_names_but_this_mac_cannot_read_is_said_out_loud(
-        ops, tmp_path, config_file):
+        ops, fake_home, config_file):
     """⚠️ Otherwise it is silent, and silently WRONG.
 
     `read_config` answers `{}` for a missing file and `ssh_target_for` returns
@@ -475,7 +466,9 @@ def test_a_config_the_row_names_but_this_mac_cannot_read_is_said_out_loud(
     reached by the one path no bridge-side test performs.
     """
     config_file("host_box3 = user@instance-a.example\n")
-    gone = str(tmp_path / "instances" / "hostb" / "config")
+    # The layout `instance_config` writes -- but never written, which is
+    # the whole case: an instance moved, renamed or reinstalled away.
+    gone = str(fake_home / ".config" / "agbridge" / "hostb" / "config")
     out = Out()
     assert ops.run_pane(args() + ["--config", gone], out=out, ask=Ask(),
                         run=Run()) == 0
@@ -488,7 +481,7 @@ def test_a_config_the_row_names_but_this_mac_cannot_read_is_said_out_loud(
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
 def test_a_config_that_exists_but_cannot_be_read_warns_instead_of_raising(
-        ops, tmp_path, config_file):
+        ops, config_file, instance_config):
     """⚠️ A traceback on this path does not print an error -- it CLOSES THE ROW.
 
     agterm closes a session when its command exits (docs/agtermctl.md), so an
@@ -500,7 +493,7 @@ def test_a_config_that_exists_but_cannot_be_read_warns_instead_of_raising(
     was already `{}` and warned; this makes the unreadable one behave the same.
     """
     config_file("host_box3 = user@instance-a.example\n")
-    path = _instance_config(tmp_path, "hostb",
+    path = instance_config("hostb",
                             "host_box3 = user@instance-b.example\n")
     os.chmod(path, 0)
     try:
@@ -520,7 +513,8 @@ def test_a_config_that_exists_but_cannot_be_read_warns_instead_of_raising(
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
-def test_an_unreadable_config_is_empty_rather_than_an_exception(ops, tmp_path):
+def test_an_unreadable_config_is_empty_rather_than_an_exception(
+        ops, instance_config):
     """The same property one level down, where the read actually is.
 
     `run_pane` is not the only caller -- `pane_settings` is public and is
@@ -529,7 +523,7 @@ def test_an_unreadable_config_is_empty_rather_than_an_exception(ops, tmp_path):
     calling `pane_config_warning` would make the test above pass for the wrong
     reason.
     """
-    path = _instance_config(tmp_path, "hostb",
+    path = instance_config("hostb",
                             "host_box3 = user@instance-b.example\n")
     os.chmod(path, 0)
     try:
@@ -667,6 +661,30 @@ def test_a_config_that_is_a_directory_is_still_named_in_the_warning(
     assert out.text.count(str(d) + ": ") == 1, out.text
 
 
+def test_the_config_warning_is_one_line_indented_like_the_block_it_joins(
+        ops, fake_home, config_file):
+    """It joins `pane_identity_lines`' output, so it is written the way those
+    lines are: one logical line, with the indent applied at the call site.
+
+    ⚠️ It carried its own `\\n`s and a 13-space continuation indent for a
+    while, which made it the only string in `agb_ops` or `agb_mac` that decided
+    where a terminal should wrap -- and the only line of this block that could
+    not be re-indented with the rest of it.
+    """
+    config_file("host_box3 = user@instance-a.example\n")
+    gone = str(fake_home / ".config" / "agbridge" / "hostb" / "config")
+    out = Out()
+    ops.run_pane(args() + ["--config", gone], out=out, ask=Ask(), run=Run())
+    warned = [line for line in out.text.split("\n") if "WARNING" in line]
+    assert len(warned) == 1, out.text
+    # The same four spaces every other line of the block carries -- no more,
+    # and not baked into the string.
+    assert warned[0].startswith("    WARNING: "), repr(warned[0])
+    assert not warned[0].startswith("     "), repr(warned[0])
+    # ...and it wrapped nothing itself: no continuation line of its own.
+    assert "\n             " not in out.text, out.text
+
+
 def test_an_exception_that_carries_its_filename_is_not_named_twice(ops,
                                                                    tmp_path):
     """The other half, and the reason the path is not simply prepended always.
@@ -682,13 +700,13 @@ def test_an_exception_that_carries_its_filename_is_not_named_twice(ops,
     assert line.count(path) == 1, line
 
 
-def test_a_readable_instance_config_says_nothing_extra(ops, tmp_path,
-                                                       config_file):
+def test_a_readable_instance_config_says_nothing_extra(
+        ops, config_file, instance_config):
     """The negative control. A warning that fired on a healthy install would be
     noise on every click, and noise on every click is how a real one gets
     ignored."""
     config_file("host_box3 = user@instance-a.example\n")
-    path = _instance_config(tmp_path, "hostb",
+    path = instance_config("hostb",
                             "host_box3 = user@instance-b.example\n")
     out = Out()
     assert ops.run_pane(args() + ["--config", path], out=out, ask=Ask(),

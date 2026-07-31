@@ -163,9 +163,9 @@ plist_config() {
          }' "$1" 2>/dev/null
 }
 
-# The same MAP under a different spelling, so two config paths can be compared
+# WHERE A CONFIG'S MAP LIVES, canonically -- so two config paths can be compared
 # for "do these repair the same instance" rather than for "were they typed the
-# same way".
+# same way". The NAME says the rule; the block below says why it is the rule.
 #
 # ⚠️ It answers with the resolved DIRECTORY and NOTHING ELSE, because the
 # directory is the whole of what `forget-rows` uses: `rows_path` and
@@ -195,23 +195,48 @@ plist_config() {
 # reinvented here.
 #
 # ⚠️ It FAILS (non-zero, no output) rather than falling back to the string it
-# was given, and every caller has to treat that as "no answer". A `canon` that
-# quietly returned its input would make a directory that does not exist compare
-# EQUAL to a plist naming a path that does, which is the wrong-label-with-the-
-# wrong-map bounce the caller below exists to prevent.
-canon_config() {
+# was given, and every caller has to treat that as "no answer". One that quietly
+# returned its input would make a directory that does not exist compare EQUAL to
+# a plist naming a path that does, which is the wrong-label-with-the-wrong-map
+# bounce `same_map`'s callers exist to prevent.
+config_map_dir() {
     case $1 in
-        */*) canon_dir=${1%/*} ;;
+        */*) map_dir=${1%/*} ;;
         # No slash at all: `os.path.dirname("config")` is `""`, which
         # `os.path.join` turns into a plain `rows` -- relative to the cwd
         # `forget-rows` will run in, which is this one.
-        *)   canon_dir="." ;;
+        *)   map_dir="." ;;
     esac
     # `${1%/*}` of `/config` is empty, and `cd ""` is not `cd /`.
-    [ -n "$canon_dir" ] || canon_dir="/"
-    canon_dir=$(CDPATH= cd -P -- "$canon_dir" 2>/dev/null && pwd -P) || return 1
-    [ -n "$canon_dir" ] || return 1
-    printf '%s' "$canon_dir"
+    [ -n "$map_dir" ] || map_dir="/"
+    map_dir=$(CDPATH= cd -P -- "$map_dir" 2>/dev/null && pwd -P) || return 1
+    [ -n "$map_dir" ] || return 1
+    printf '%s' "$map_dir"
+}
+
+# DO THESE TWO PATHS NAME ONE MAP? The equivalence itself, in ONE place, because
+# two of them ask it -- `bind_label_to_config` below, and the untagged-bridge
+# gate in the launchctl branch -- and it is the comparison design.md §5 records
+# being got wrong four separate times. Spelled twice it had already drifted
+# cosmetically while claiming in a comment to be the same rule, which is the
+# state a fifth version arrives from.
+#
+# Raw FIRST: it is the answer for every ordinary invocation and it cannot fail,
+# whereas `config_map_dir` needs the directory to exist. Then canonical, and
+# FAIL CLOSED -- no canonical form on either side means the two are NOT known to
+# name the same map. See `config_map_dir` on why it must not fall back to the
+# string it was given.
+#
+# ⚠️ It answers a yes/no and nothing else, on purpose. The BASENAME plays no
+# part in the map (`rows_path` is `dirname(config)/rows`), so it can never
+# narrow this; where it does matter -- breaking the tie between two plists that
+# have already matched -- it is read straight off the two paths at the call
+# site, which is ranking, not matching.
+same_map() {
+    if [ "$1" = "$2" ]; then return 0; fi
+    sm_a=$(config_map_dir "$1") || return 1
+    sm_b=$(config_map_dir "$2") || return 1
+    [ "$sm_a" = "$sm_b" ]
 }
 
 # WHICH LABEL, when only a config was named. Sets `$label` (or leaves it empty
@@ -250,7 +275,7 @@ canon_config() {
 # the operator to type this path by hand, on precisely the rows whose config has
 # moved.
 #
-# ⚠️ So `canon_config` answers with a DIRECTORY, and two configs that share one
+# ⚠️ So `same_map` compares DIRECTORIES, and two configs that share one
 # match even when their basenames differ -- because they share a map, which is
 # the only thing this run can damage. Two instances deliberately installed into
 # ONE directory therefore both match, and that is right: they share the map too,
@@ -290,14 +315,12 @@ canon_config() {
 #     NOT implied, which is the pre-existing behaviour: no match, the default
 #     label, and the note that says so.
 #
-# The raw comparison is tried FIRST and kept: it is the answer for every
-# ordinary invocation and it cannot fail, whereas `canon_config` needs the
-# directory to exist. When canonicalisation cannot answer for either side the
-# match simply does not happen -- see `canon_config` on why it must not fall
-# back to the string it was given.
+# Whether two paths name one map is `same_map`'s question and is asked nowhere
+# else; the raw-then-canonical order and the fail-closed rule live with it.
 bind_label_to_config() {
+    # `bestrank=9` is the "nothing yet" sentinel: worse than any rank the loop
+    # below can produce, so the first match always wins its own comparison.
     matched=""; claimants=""; nclaim=0; bestrank=9
-    configcanon=$(canon_config "$config") || configcanon=""
     configbase=${config##*/}
     for candidate in "$agentsdir"/*.plist; do
         # An unmatched glob comes back as the pattern itself.
@@ -327,13 +350,12 @@ bind_label_to_config() {
         if [ "$value" = "$config" ]; then
             exact=yes
         else
-            # Not the same text. Same MAP? Only askable when both sides have a
-            # canonical form.
-            [ -n "$configcanon" ] || continue
-            candidatecanon=$(canon_config "$value") || continue
-            [ "$candidatecanon" = "$configcanon" ] || continue
+            # Not the same text. The same MAP?
+            same_map "$value" "$config" || continue
             # Same directory, so the same map either way; whether it is also
-            # the same FILE is what breaks the tie below.
+            # the same FILE is what breaks the tie below. Read off the paths,
+            # not off `same_map` -- the basename is a RANKING input and must
+            # never reach the match (see `same_map`).
             if [ "${value##*/}" = "$configbase" ]; then exact=yes; fi
         fi
         claimants="$claimants $name"
@@ -345,6 +367,12 @@ bind_label_to_config() {
         # flagless `com.agbridge.old.plist` sorts before `com.agbridge.plist` and
         # would be bounced instead of the job that actually names the path. The
         # rest is glob order, which is at least deterministic and is reported.
+        #
+        #   rank 1  names this exact file + declares a --config
+        #        2  names this exact file + only implies one
+        #        3  shares the directory  + declares a --config
+        #        4  shares the directory  + only implies one
+        #       (9  the sentinel above: no claimant seen yet)
         if [ "$exact" = yes ]; then rank=1; else rank=3; fi
         if [ "$declared" = no ]; then rank=$((rank + 1)); fi
         if [ "$rank" -lt "$bestrank" ]; then matched=$name; bestrank=$rank; fi
@@ -388,7 +416,10 @@ bind_label_to_config() {
     # command; it says so and gets on with it.
     if [ "$nclaim" -gt 1 ]; then
         say "WARNING:  more than one launchd job claims this config's map:"
-        say "         $claimants."
+        # `${claimants# }` strips the leading space the accumulator above leaves
+        # on every value, so this line indents like the other three rather than
+        # by nine and borrowing the tenth from the data.
+        say "          ${claimants# }."
         say "          Using $matched -- the others keep running and hold the"
         say "          same rows file. Pass --label to pick one."
     fi
@@ -682,17 +713,12 @@ if command -v launchctl >/dev/null 2>&1; then
         # the every-run false warning an ungated probe printed on every
         # `agb-refresh --instance <name>`.
         #
-        # Raw first, then canonical, the same order and the same
-        # fail-closed rule as `bind_label_to_config`: no canonical form on
-        # either side means the two are not known to be the same map, and a
-        # config whose directory does not exist has no map to protect anyway.
-        if [ "$config" != "$DEFAULT_CONFIG" ]; then
-            thiscanon=$(canon_config "$config") || thiscanon=""
-            defaultcanon=$(canon_config "$DEFAULT_CONFIG") || defaultcanon=""
-            if [ -z "$thiscanon" ] || [ "$thiscanon" != "$defaultcanon" ]; then
-                broad=""
-            fi
-        fi
+        # `same_map` is the whole test, and deliberately the SAME call
+        # `bind_label_to_config` makes: "is this the default instance's map"
+        # is not a second, looser question. Its fail-closed rule is what is
+        # wanted here too -- a config whose directory does not exist has no
+        # map to protect anyway.
+        same_map "$config" "$DEFAULT_CONFIG" || broad=""
     else
         say "note:     no --config in $plist, so the wait below matches ANY"
         say "          bridge on this Mac. Re-run install.sh mac to render a"

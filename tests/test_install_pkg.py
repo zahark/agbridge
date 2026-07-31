@@ -1162,7 +1162,13 @@ def _instance_args(mac_args, name="hostb", **over):
     return mac_args(**args)
 
 
-def _instance_config(fake_home, name="hostb"):
+def _instance_config_path(fake_home, name="hostb"):
+    """WHERE the installer should have put it -- a path, not a written file.
+
+    Named apart from `conftest.instance_config`, which writes one: these tests
+    assert what `install.sh` created (or, twice, that it created nothing), so
+    a helper that wrote the file would make every one of them vacuous.
+    """
     return fake_home / ".config" / "agbridge" / name / "config"
 
 
@@ -1179,7 +1185,7 @@ def test_an_instance_install_agrees_about_its_label_config_and_logs(
     code, out, err = run_sh(_instance_args(mac_args))
     assert code == 0, err
 
-    config = _instance_config(fake_home)
+    config = _instance_config_path(fake_home)
     plist = tmp_path / "agents" / "com.agbridge.hostb.plist"
     parsed = plistlib.loads(read_bytes(plist))       # parses == valid XML
     assert parsed["Label"] == "com.agbridge.hostb"
@@ -1226,7 +1232,7 @@ def test_an_explicit_flag_still_beats_the_instance_sugar(run_sh, mac_args,
     parsed = plistlib.loads(read_bytes(plist))
     assert parsed["ProgramArguments"][-1] == str(tmp_path / "cfg" / "config")
     assert parsed["StandardOutPath"].startswith(str(tmp_path / "logs"))
-    assert not _instance_config(fake_home).exists()
+    assert not _instance_config_path(fake_home).exists()
 
 
 def test_an_instance_adopts_the_macs_existing_mac_id(run_sh, mac_args,
@@ -1246,7 +1252,7 @@ def test_an_instance_adopts_the_macs_existing_mac_id(run_sh, mac_args,
 
     code, out, err = run_sh(_instance_args(mac_args))
     assert code == 0, err
-    assert agb.read_config(str(_instance_config(fake_home)))["mac_id"] \
+    assert agb.read_config(str(_instance_config_path(fake_home)))["mac_id"] \
         == default["mac_id"]
     assert "adopted %s" % (default["mac_id"],) in out
 
@@ -1264,7 +1270,7 @@ def test_the_first_instance_on_a_mac_with_no_default_config_still_mints_one(
     code, out, err = run_sh(_instance_args(mac_args))
     assert code == 0, err
     assert agb.valid_mac_id(
-        agb.read_config(str(_instance_config(fake_home)))["mac_id"])
+        agb.read_config(str(_instance_config_path(fake_home)))["mac_id"])
     assert "adopted" not in out
 
 
@@ -1284,7 +1290,7 @@ def test_an_instance_without_a_statedir_is_refused_and_installs_nothing(
     code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
     assert code != 0
     assert "--statedir" in err
-    assert not _instance_config(fake_home).exists()
+    assert not _instance_config_path(fake_home).exists()
     assert not (tmp_path / "dest").exists()
     assert not (tmp_path / "agents").exists()
 
@@ -1411,8 +1417,8 @@ def test_reinstalling_an_instance_keeps_the_mac_id_it_already_has(
     code, out, err = run_sh(_instance_args(mac_args))           # the upgrade
     assert code == 0, err
     assert agb.read_config(
-        str(_instance_config(fake_home)))["mac_id"] == "mac-b0b0"
-    assert "adopted mac-b0b0 from %s" % (_instance_config(fake_home),) in out
+        str(_instance_config_path(fake_home)))["mac_id"] == "mac-b0b0"
+    assert "adopted mac-b0b0 from %s" % (_instance_config_path(fake_home),) in out
     assert default not in out
 
 

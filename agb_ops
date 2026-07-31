@@ -2056,6 +2056,18 @@ def pane_identity_lines(opts, target, jump=None):
     return lines
 
 
+# One logical line, unwrapped, with the indent applied at the call site -- the
+# same shape as `PRUNE_UNREADABLE_WARNING` and `PRUNE_BLOCKED_WARNING`, and the
+# same shape `pane_identity_lines` produces. It carried its own `\n`s and a
+# 13-space continuation indent for a while, which made it the only string in
+# `agb_ops` or `agb_mac` that decided where the terminal should wrap.
+PANE_CONFIG_WARNING = (
+    "WARNING: this row's config could not be read (%s), so no host_<name> "
+    "table and no jump_host were found and the ssh target above is the bare "
+    "hostname. Fix the file's permissions, or re-run agb-refresh --config "
+    "<the instance's config> to re-mint the rows.")
+
+
 def pane_config_warning(path, exc=None):
     """A line, or None, for a config this Mac cannot read.
 
@@ -2116,11 +2128,7 @@ def pane_config_warning(path, exc=None):
     detail = "%s" % (exc,)
     if getattr(exc, "filename", None) is None:
         detail = "%s: %s" % (path, detail)
-    return ("    WARNING: this row's config could not be read (%s), so no "
-            "host_<name>\n             table and no jump_host were found and "
-            "the ssh target above is\n             the bare hostname. Fix the "
-            "file's permissions, or re-run\n             agb-refresh --config "
-            "<the instance's config> to re-mint the rows." % (detail,))
+    return (PANE_CONFIG_WARNING % (detail,))
 
 
 def pane_wait(prompt):
@@ -2330,7 +2338,9 @@ def run_pane(argv, out=None, ask=None, run=None, config=None):
         if exc is not None or path:
             warning = pane_config_warning(path or agb.config_path(), exc)
             if warning:
-                out.write(warning + "\n")
+                # The indent belongs here, not in the string -- every other
+                # line of this block is written the same way.
+                out.write("    " + warning + "\n")
     if not (opts["tmux"] or opts["pane"]):
         # Only the non-tmux identity tiers land here now: plain ssh on machine
         # #3 and the session-leader fallback record neither field. A pane with
