@@ -256,6 +256,47 @@ are ready" and a window jumping in front says "stop what you are doing", and the
 turn out to be enough. If it is built, it wants a config gate and an **off** default — focus-stealing
 is a thing to choose, not to inherit.
 
+## Changelog and releases
+
+**Every user-visible change gets a `CHANGELOG.md` entry in the same commit as the code.** Not at
+release time — by then the reason is gone, and the reason is the whole point of the file.
+
+Entries accumulate under `## Unreleased` until a release renames that heading to
+`## <version> — <date>`. Sub-headings are `### Added` / `### Fixed`; 0.3.0 also uses
+`### Decisions recorded, because they will look like mistakes later` and `### Not verified`, both
+worth copying when they apply.
+
+**The house style is that an entry says *why*.** A rule without its reason gets re-litigated, and in
+this project most reasons are a failure somebody actually hit — so entries name the symptom, not
+just the fix ("a row's status glyph disappeared on first attach and never came back", not "fixed
+status handling"). Where a decision will look wrong to a future reader, say what was rejected and
+why: `--command` and the duplicated pane openers are both in there for that reason. And **carry the
+caveats forward** rather than summarising them away — that the log cap truncates instead of
+rotating, that `session scratch` is unverified.
+
+Releasing, in order:
+
+1. `agb:24` `VERSION` — the **only** place it lives, and load-bearing: both installers probe
+   `agb <version>` and refuse to write anything without the right answer back. New key or feature →
+   minor; fixes only → patch.
+2. `wc -c agb` against `AGB_PARSE_BUDGET` in `tests/conftest.py`. A same-length version string
+   leaves it unchanged, which is the expected result for a release that touches no other line of
+   `agb` — if the number moves, something else got in.
+3. Rename `## Unreleased` to the version and date.
+4. `git commit -m "release: <version>"`, then an **annotated** tag `v<version>` whose message is a
+   short prose summary (not a commit list — that is what the changelog is for).
+5. `git push origin HEAD && git push origin v<version>`.
+6. GitHub Release from the tag, title `agbridge <version>`, body from the changelog section.
+
+⚠️ **A tag is only as good as what it points at.** Fixes landing after the tag are not in the
+release; move the tag with `git tag -f -a` and `git push --force origin v<version>` *before* cutting
+the GitHub Release, or say plainly that they are not included.
+
+⚠️ **A release is not installed by pulling.** The Mac loads `agb_mac`/`agb_ops` from
+`~/.local/lib/agbridge/`, not from the checkout, so `sh install.sh mac …` is required — and existing
+rows keep the `agb pane` code they were *created* with until `agb-refresh` re-mints them. Say this in
+the release notes every time; it is the single most common way a fix appears not to work.
+
 ## Known gaps
 
 - **What is and is not verified against a live agterm** is above, under "Where the project is".
