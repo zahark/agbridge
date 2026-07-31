@@ -1486,13 +1486,22 @@ def short_host(target):
     return name.split(".")[0]
 
 
-def pane_argv(session, agb_path=None, python=None, jump=None):
+def pane_argv(session, agb_path=None, python=None, jump=None, config=None):
     """The row's command, as argv. Pure, so its test is a list comparison.
 
     This line is the only thing connecting Task 7 to the system: clicking the
     row runs it, and it is what turns a status row into something you can attach
     to. The interpreter is spelled out because `agb` has **no shebang and is not
     executable** (constraint #1) -- `./agb` could not pass `-S -E` anyway.
+
+    `config` is what makes a second instance's rows attach to a second machine.
+    Clicking a row runs `agb pane`, which resolves `--host` through **its own**
+    config read (`agb_ops.ssh_target_for`, reached from `pane_settings`): with
+    two bridges on one Mac that read would otherwise hit the DEFAULT config, so
+    instance B's rows would look their ssh target up in instance A's
+    `host_<name>` table and click-to-attach would reach the wrong machine, or
+    nowhere -- with every unit test still green, because nothing in the bridge
+    ever performs that read.
     """
     if python is None:
         python = sys.executable
@@ -1511,14 +1520,29 @@ def pane_argv(session, agb_path=None, python=None, jump=None):
         argv.extend(["--pane", str(session["pane"])])
     if jump:
         argv.extend(["--jump", str(jump)])
+    if config and os.path.normpath(config) != os.path.normpath(
+            agb.config_path()):
+        # Emitted ONLY for a non-default instance, so a default install's row
+        # commands stay byte-identical and nothing existing is re-minted.
+        #
+        # Both halves of the predicate are load-bearing. `config and ...`:
+        # `None` is this parameter's default and what `settings.get("config")`
+        # returns for a bridge started without `--config`, and
+        # `None != agb.config_path()` is True -- the bare comparison would emit
+        # a literal `--config None`. `normpath` on both sides: `install.sh`'s
+        # DEFAULT_CONFIG and `agb.config_path()` agree for a normal `$HOME` and
+        # not for one with a trailing slash, and a mismatch there would have
+        # EVERY default install re-mint its row commands.
+        argv.extend(["--config", str(config)])
     return argv
 
 
-def pane_command(session, agb_path=None, python=None, jump=None):
+def pane_command(session, agb_path=None, python=None, jump=None, config=None):
     """`--command` takes one string, and agterm hands it to a shell."""
     import shlex
     return " ".join(shlex.quote(word)
-                    for word in pane_argv(session, agb_path, python, jump))
+                    for word in pane_argv(session, agb_path, python, jump,
+                                          config))
 
 
 def jump_for(session, settings):
@@ -1735,8 +1759,15 @@ class RowRenderer(object):
         """
         key = session["key"]
         settings = self.settings
+        # `settings["config"]` is `render_settings`' published path, and it has
+        # to travel all the way into the row's command: the row is what runs
+        # `agb pane`, and that process re-reads the config on the far side of a
+        # click. Drop it here and this instance's rows resolve their ssh target
+        # from the DEFAULT config's `host_<name>` table -- the silent failure,
+        # since `pane_argv` would keep emitting a perfectly valid command.
         command = pane_command(session, settings.get("agb_path"),
-                               settings.get("python"), jump_for(session, settings))
+                               settings.get("python"), jump_for(session, settings),
+                               settings.get("config"))
         name = row_title(session, self.model.now)
         args = ["session", "new",
                 "--name", name,

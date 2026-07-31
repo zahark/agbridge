@@ -1766,7 +1766,7 @@ PANE_SPLIT_WORDS = ("s", "shell", "split")
 # words start with `s`. A test enforces it.
 PANE_DRAWER_WORDS = ("d", "drawer", "scratch")
 
-PANE_VALUE_ARGS = ("--host", "--tmux", "--pane", "--jump", "--cwd")
+PANE_VALUE_ARGS = ("--host", "--tmux", "--pane", "--jump", "--cwd", "--config")
 
 AGTERMCTL = "agtermctl"
 
@@ -1820,7 +1820,7 @@ PANE_NO_ATTACH = (
 
 
 def parse_pane_args(argv):
-    """`pane <key> --host H [--tmux S] [--pane %N] [--jump J]`.
+    """`pane <key> --host H [--tmux S] [--pane %N] [--jump J] [--config C]`.
 
     The shape is `agb_mac.pane_argv`'s output verbatim -- the two are one
     contract, and `tests/test_pane.py` feeds this parser what that function
@@ -1832,6 +1832,12 @@ def parse_pane_args(argv):
     shell re-splits, and "looks like two arguments" is not something to discover
     at attach time.
     """
+    # `cwd` and `config` are deliberately NOT initialized here, and every reader
+    # of them uses `opts.get(...)`: the two flags postdate the rows that are
+    # already on somebody's screen. Every row minted before a flag existed
+    # re-enters this parser without it for as long as that row lives, so a
+    # required key would be a `KeyError` at attach time on exactly the rows
+    # nobody can re-mint without losing them.
     opts = {"key": None, "host": None, "tmux": None, "pane": None,
             "jump": None}
     rest = list(argv)
@@ -1897,9 +1903,18 @@ def pane_settings(opts, config=None):
     comparison against the resolved target rather than a second copy of "which
     host is this really", because that mapping already has one home in
     `ssh_target_for`.
+
+    `--config` names the instance's own config file, and it is read here rather
+    than assumed because THIS is where a row's `host` becomes an ssh target. A
+    Mac running two bridges has two `host_<name>` tables; without the flag this
+    read takes the default one, and instance B's rows would resolve their target
+    from instance A's table -- an ssh to the wrong machine, or to a bare
+    hostname that resolves nowhere. `opts.get`, not `opts[...]`: a row minted
+    before the flag existed carries no `--config` and must keep working against
+    the default config, which `read_config(None)` is exactly.
     """
     if config is None:
-        config = agb.read_config()
+        config = agb.read_config(opts.get("config"))
     target = ssh_target_for(opts["host"], config)
     jump = opts["jump"] or config.get("jump_host")
     if jump and jump in (target, opts["host"]):

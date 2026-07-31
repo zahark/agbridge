@@ -243,23 +243,23 @@ this simply omit the flag and fall back to the default config, which is correct 
 - Modify: `tests/test_pane.py`
 - Modify: `tests/test_bridge_rows.py`
 
-- [ ] `pane_command`/`pane_argv` (`agb_mac:1465`) gain a `config` parameter, fed from
+- [x] `pane_command`/`pane_argv` (`agb_mac:1465`) gain a `config` parameter, fed from
       `settings.get("config")` at the call site (`agb_mac:1714`), and emit `--config <path>` only
       when it differs from `agb.config_path()`
-- [ ] add `--config` to `PANE_VALUE_ARGS` (`agb_ops:1769`) and thread it to the config read behind
+- [x] add `--config` to `PANE_VALUE_ARGS` (`agb_ops:1769`) and thread it to the config read behind
       `ssh_target_for` — **`pane_settings` (`agb_ops:1902`) only**. ⚠️ Not `agb_ops:1489`: that is
       inside `prune_via_ssh` and out of scope (see Technical Details)
-- [ ] ⚠️ **do not add `"config"` to `parse_pane_args`' initializer** (`agb_ops:1836`);
+- [x] ⚠️ **do not add `"config"` to `parse_pane_args`' initializer** (`agb_ops:1836`);
       `tests/test_pane.py:242` asserts the opts dict **exactly**. Read `opts.get("config")`, which
       is how `cwd` is already handled — the alternative is a `KeyError` at attach time on every row
       minted before this change
-- [ ] a row minted **without** the flag keeps working against the default config
-- [ ] comment the reasoning at both ends: without this, instance B's rows resolve their ssh target
+- [x] a row minted **without** the flag keeps working against the default config
+- [x] comment the reasoning at both ends: without this, instance B's rows resolve their ssh target
       from instance A's `host_<name>` table and click-to-attach reaches the wrong machine — with
       every unit test passing
-- [ ] write tests: `pane_argv` carries the flag; `agb pane --config` resolves `host_<name>` from
+- [x] write tests: `pane_argv` carries the flag; `agb pane --config` resolves `host_<name>` from
       **that** file and not the default; omitting it falls back
-- [ ] write a test at the **renderer** level, and drive it through **`mac.bridge_sink(model,
+- [x] write a test at the **renderer** level, and drive it through **`mac.bridge_sink(model,
       {"config": X, …}, …)`** — ⚠️ *not* the `bridge` fixture, which constructs `RowRenderer` with a
       settings dict directly (`tests/test_bridge_rows.py:132-145`) and so never calls
       `render_settings`. Going through the fixture proves only `RowRenderer → pane_command`, which
@@ -267,11 +267,15 @@ this simply omit the flag and fall back to the default config, which is correct 
       which is the very link this task exists to protect. Assert the minted row's `--command`
       contains `--config X`; note `tests/test_bridge_rows.py:520` uses `.startswith(...)`, so it
       catches neither an addition nor an omission
-- [ ] ⚠️ **mutation-test the renderer call site, not the pure function**: drop
+- [x] ⚠️ **mutation-test the renderer call site, not the pure function**: drop
       `settings.get("config")` from the `pane_command(...)` call at `agb_mac:1714`. Mutating
       `pane_argv` alone only proves a pure function emits what it was handed — the silent bug lives
       in whether the renderer hands it anything at all
-- [ ] run tests
+      — done: exactly `test_the_minted_row_command_carries_the_instances_config` failed. Two more
+      mutations for the same reason: the bare `config != agb.config_path()` predicate (three tests,
+      including `test_a_default_install_mints_the_command_it_always_did` on the `--config None`
+      case) and `pane_settings` reading `agb.read_config()` (both `--config`-resolution tests)
+- [x] run tests
 
 ### Task 3: `--config` on the row-map commands
 
