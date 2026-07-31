@@ -1,5 +1,22 @@
 # Close the feedback loop: read agterm's event ring
 
+> ⛔ **BLOCKED — `agtermctl events` does not exist on the installed agterm.**
+>
+> Verified 2026-07-31 on the Mac, which is what Task 0 exists for: `agtermctl help events` falls
+> through to the top-level help, and `agtermctl events --json` fails with `Unknown option '--json'`.
+> The command is documented at `agterm.com/commands`, which describes a **newer build**. The same
+> check showed `pick` missing and `restore` living at top level rather than under `session`.
+>
+> **Nothing here is wrong, and nothing here is implementable yet.** The design survives an agterm
+> upgrade unchanged; when `events` appears, resume at Task 0 to capture the real JSON shape — which
+> is still unknown and still must not be guessed. Add a capability probe and a stated minimum
+> version at that point, since a build without `events` must degrade to today's behaviour rather
+> than warn on every poll.
+>
+> **The row-loss problem this was written to solve has a better answer available today**: top-level
+> `restore` pins the command a pane re-runs, which stops the row dying when `agb pane` exits —
+> attacking the cause instead of reacting to the symptom.
+
 *Revised after a review pass that found four critical defects, including one that made the
 headline feature unreachable. Where a fix is non-obvious, the defect it closes is named.*
 

@@ -316,6 +316,20 @@ which would let a row survive its command exiting at all. See the menu below.
 
 ## What agbridge does not use yet
 
+⚠️ **This survey was made against `agterm.com/commands`, which documents a NEWER agterm than the
+one installed here.** Confirmed 2026-07-31: `agtermctl help events` falls through to the top-level
+help and `agtermctl events --json` fails with `Unknown option '--json'` — there is no `events`
+subcommand, and no `pick` either. **Nothing in the list below may be planned against until it has
+been run on the Mac.** The verbatim top-level list of what this build actually has:
+
+```
+tree  workspace  session  surface  dashboard  window  quick  sidebar
+notify  font  keymap  config  theme  restore
+```
+
+Note `restore` is **top-level** here, not `session restore` as the website has it — so even the
+entries that do exist may be spelled differently.
+
 *Surveyed 2026-07-31 against `agterm.com/commands`. agterm exposes roughly **70** subcommands;
 agbridge calls **eight**: `session new`/`rename`/`status`/`close`/`split`/`scratch`/`type`, `notify`,
 and `tree --json`. This is the menu for later, not a backlog — nothing here is committed, and each
@@ -325,7 +339,7 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 
 | Command | What it would buy |
 |---|---|
-| **`events`** — *read the app's control-event ring* | The big one. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row lost by leaving its prompt (see the section above), an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. ✅ **The liveness objection recorded here originally was wrong**: `events` returns a batch and exits, with a `run`+`next` cursor to resume. It is an ordinary subprocess call like every other `agtermctl` call — no second stream, no new liveness story. |
+| ⛔ **`events`** — *read the app's control-event ring* | **DOES NOT EXIST on the installed agterm** (verified 2026-07-31). Design work is done and shelved in `docs/plans/20260731-agb-events-feedback-loop.md`, gated on an upgrade. The big one when it lands. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row lost by leaving its prompt (see the section above), an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. ✅ **The liveness objection recorded here originally was wrong**: `events` returns a batch and exits, with a `run`+`next` cursor to resume. It is an ordinary subprocess call like every other `agtermctl` call — no second stream, no new liveness story. |
 | **`session restore`** — *pin the command a pane re-runs* | Promoted after 2026-07-31: this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today (see the section above). It would also let rows come back alive after an agterm restart rather than as dead panes — the other half of the reboot story in `docs/cookbook.md` — and shrink what `agb-refresh` is needed for. |
 | **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
 
