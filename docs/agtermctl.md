@@ -182,6 +182,37 @@ USAGE: agtermctl session scratch [<mode>] [--command <command>] [--target <targe
   on` first: no test and no manual check can falsify it. The ordering is kept on the split's
   precedent and costs nothing if the constraint turns out not to exist.
 
+### `agtermctl notify <body> [--title T] [--target T] [--window W]` — **CONFIRMED**
+
+Top-level, not under `session`. `--target` addresses a session by id, which is what makes it usable
+from the bridge: the banner is attributed to the right row, clicking it jumps to that pane, and it
+raises that row's unseen badge. `--title` defaults to the session name; `--target` to the active
+session of the frontmost window, which is never what the bridge wants.
+
+agbridge sends one on a transition into **`blocked`** — the only state that means a human is the
+blocker. Whether the Dock icon also bounces is **agterm's** setting, not agbridge's
+(Settings ▸ Notifications: *off*, *once*, or *until you focus agterm*, off by default). That split is
+deliberate: which events are worth announcing is agbridge's business; how loudly the machine
+interrupts you is the machine's.
+
+- **CONFIRMED**: the flag names and defaults, from `agterm.com/commands`.
+- **Not yet exercised** against a live agterm, like `session scratch`.
+
+### `agtermctl window select [<id>]` — **CONFIRMED, not yet used**
+
+Verbatim from `agtermctl help window select` (2026-07-31):
+
+```
+OVERVIEW: Select (raise or open) a window.
+USAGE: agtermctl window select [<id>] [--socket <socket>] [--json]
+  <id>       Window id, unique prefix, or 'active'. (default: active)
+```
+
+Recorded because it is the primitive for a *bring-agterm-to-the-front* feature, which is being
+considered separately. Note the default: with no id it raises whichever window is **already
+active** — so raising the window that actually holds a blocked row needs its id, which
+`tree --json` reports and `tree_workspaces` already parses.
+
 ### `agtermctl session overlay open|close|resize|result` — **CONFIRMED to exist, deliberately unused**
 
 *"Open, resize, or close an ephemeral overlay terminal on a session"*; `open` runs a command and

@@ -103,6 +103,25 @@ agb bridge [--from-stdin] [--no-agterm] [--feed-host H] [--mac-id M] [--statedir
 | `--connections <n>` | unset — reconnect for ever | stop after `n` connections. Must be ≥ 1 |
 | `--rows <path>` | `~/.config/agbridge/rows` | the persisted `key → agterm row` map, on the Mac |
 
+### The blocked banner
+
+On a transition into **`blocked`** the bridge sends `agtermctl notify <body> --title … --target
+<row>`: a macOS banner attributed to that row, which also raises the row's unseen badge and jumps to
+the pane when clicked. `blocked` is the only state where *you* are the blocker — a permission prompt
+sitting unanswered — and the whole premise of a sidebar row is that you are not watching it.
+
+Config `notify_on_blocked`, **on by default**; `0`, `no`, `off` or `false` turns it off. Whether the
+Dock icon *bounces* is agterm's setting, not agbridge's (Settings ▸ Notifications: off, once, or
+until you focus agterm). Which events are worth announcing is this tool's business; how loudly the
+machine interrupts you is the machine's.
+
+⚠️ **The transition is tracked separately from the painted status**, which is not the obvious
+implementation. `--blink` gates on `applied`, the last status emitted — but `_render_stale` paints
+every row `idle` on *any* disconnect, including a routine 10 s quiet spell. Gated on `applied`, an
+agent that merely stayed blocked would be announced again after every hiccup. The banner's memory
+changes only when the **agent's** state does, so it is one banner per block regardless of the
+network. A test asserts exactly this, and the wrong gate fails five of them.
+
 **Two intervals have no flag**, deliberately — neither is a tuning knob, and a flag would invite
 setting them wrong:
 

@@ -937,6 +937,78 @@ def _reassert_bridge(mac, rows_file):
     return b, clock
 
 
+def _notifies(bridge_obj):
+    """The `agtermctl notify` calls, as (body, title, target)."""
+    out = []
+    for call in bridge_obj.run.agterm():
+        if call[1] != "notify":
+            continue
+        opts = _options(call)
+        out.append((call[2], opts.get("--title"), opts.get("--target")))
+    return out
+
+
+def test_a_block_raises_one_desktop_banner(bridge):
+    """`blocked` is the only state that means *you* are the blocker -- a
+    permission prompt waiting for an answer. A glyph is enough for `active`; it
+    is not enough for this, because the point of the row is that you are not
+    looking at it."""
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="active"))
+    b.upsert(wire("aaaa1111", state="blocked", seq=2))
+
+    sent = _notifies(b)
+    assert len(sent) == 1
+    body, title, target = sent[0]
+    assert "waiting" in body
+    assert target == b.rows.row_for("aaaa1111")   # attributed to the right row
+    assert title
+
+
+def test_a_block_that_persists_is_announced_once(bridge):
+    """It stays blocked until somebody answers it, and every snapshot repeats
+    the state. One banner per block, not one per poll."""
+    b = bridge()
+    for seq in range(1, 6):
+        b.upsert(wire("aaaa1111", state="blocked", seq=seq))
+    assert len(_notifies(b)) == 1
+
+
+def test_a_disconnect_does_not_re_announce_a_still_blocked_agent(bridge):
+    """⚠️ The reason this has a memory of its own instead of using `applied`.
+
+    `_render_stale` paints every row `idle` on any disconnect -- including a
+    10 s quiet spell, which is a routine event. Gated on `applied`, an agent
+    that simply stayed blocked would be announced again on every reconnect. The
+    gate must track what the AGENT did, not what we painted.
+    """
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="blocked"))
+    assert len(_notifies(b)) == 1
+    b.stale("eof")                                  # rows go idle + `[?]`
+    b.upsert(wire("aaaa1111", state="blocked", seq=2))   # same block, still open
+    assert len(_notifies(b)) == 1, "a hiccup re-announced an unchanged block"
+
+
+def test_answering_and_blocking_again_announces_again(bridge):
+    """The counter-case, so the memory is not simply never cleared: a second
+    permission prompt is a second thing waiting for you."""
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="blocked"))
+    b.upsert(wire("aaaa1111", state="active", seq=2))    # you answered it
+    b.upsert(wire("aaaa1111", state="blocked", seq=3))   # and it asks again
+    assert len(_notifies(b)) == 2
+
+
+def test_the_banner_can_be_turned_off(bridge):
+    """Unsolicited UI needs an off switch. The state is still tracked, so
+    turning it back on does not produce a backlog."""
+    b = bridge(settings={"notify_blocked": False})
+    b.upsert(wire("aaaa1111", state="blocked"))
+    assert _notifies(b) == []
+    assert "aaaa1111" in b.renderer.blocked
+
+
 def test_a_row_status_is_re_asserted_periodically(mac, rows_file):
     """Reported live: attach to a row for the first time and its glyph
     disappears. agterm resets a session's status when the session's command
