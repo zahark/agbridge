@@ -575,6 +575,12 @@ def bridge_spawn(argv, popen=None):
 
 
 BRIDGE_VALUE_ARGS = {
+    # One flag for a whole instance. The rows map, the placements file and the
+    # `host_<name>` table a row's `agb pane` resolves against all live beside
+    # this file, so a second bridge on the same Mac -- a second farm that shares
+    # no disk with the first -- needs exactly this one path to be right, and
+    # nothing can drift out of sync because there is nothing else to pass.
+    "--config": "config",
     "--feed-host": "feed_host",
     "--mac-id": "mac_id",
     "--statedir": "statedir",
@@ -606,7 +612,7 @@ def parse_bridge_args(argv):
     opts = {"from_stdin": False, "no_agterm": False, "feed_host": None,
             "mac_id": None, "statedir": None, "remote_path": None,
             "remote_python": None, "watchdog": None, "connections": None,
-            "rows": None, "workspace": None}
+            "rows": None, "workspace": None, "config": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -669,8 +675,14 @@ def bridge_settings(opts, config=None):
     farm for ever. There is no value this side can invent that is right on the
     far side, so it asks instead of guessing.
     """
+    # The file this instance was told to read, which is the one the message
+    # below must name. Interpolating `agb.config_path()` there sent an operator
+    # running two bridges to edit `~/.config/agbridge/config` while this process
+    # was reading `~/.config/agbridge/hostb/config` -- an error message that
+    # points at the wrong file is worse than no message, because it is believed.
+    path = opts.get("config") or agb.config_path()
     if config is None:
-        config = agb.read_config()
+        config = agb.read_config(path)
 
     def pick(name, key, default=None):
         return opts.get(name) or config.get(key) or default
@@ -689,7 +701,7 @@ def bridge_settings(opts, config=None):
         if not settings[name]:
             raise agb.AgbError(
                 "bridge: no %s configured (set it in %s or pass --%s)%s"
-                % (name, agb.config_path(), name.replace("_", "-"),
+                % (name, path, name.replace("_", "-"),
                    STATEDIR_HINT if name == "statedir" else ""))
     return settings
 
@@ -799,13 +811,18 @@ ROW_KINDS = (ROW_BOUND, ROW_DONE)
 ROW_ID_MAX = 128
 
 
-def rows_path():
+def rows_path(config=None):
     """`~/.config/agbridge/rows` -- beside the config, on the **Mac**.
 
     Never under the shared statedir: constraint #10 says the Mac cannot read
     that path at all, and this map is meaningless on the farm side anyway.
+
+    `config` names the config file this instance was started with. Beside *that*
+    file, so that a second machine -- a Mac running two bridges against two
+    farms that share no disk -- gets its own bijection without a second flag to
+    keep in step: one path in, everything derived from it.
     """
-    return os.path.join(os.path.dirname(agb.config_path()), "rows")
+    return os.path.join(os.path.dirname(config or agb.config_path()), "rows")
 
 
 def valid_row_id(row):
@@ -1212,8 +1229,15 @@ class RowMap(object):
 # structure on the Mac that must not be got wrong.
 
 
-def placements_path():
-    return os.path.join(os.path.dirname(agb.config_path()), "placements")
+def placements_path(config=None):
+    """Beside the config, and beside the *instance's* config -- see `rows_path`.
+
+    Rows and placements have to move together: a placements file that stayed
+    behind would hand one instance's workspace names to the other instance's
+    rows.
+    """
+    return os.path.join(os.path.dirname(config or agb.config_path()),
+                        "placements")
 
 
 def tree_workspaces(run=None):
@@ -2171,11 +2195,33 @@ def render_settings(opts, config=None):
     Deliberately separate from `bridge_settings`: that one *refuses to start*
     without a feed host and a mac-id, and rightly so, but none of those apply on
     the `--from-stdin` path and none of them are needed to paint a row.
+
+    `--config` is what makes two bridges on one Mac independent, and it is
+    spent here three times over:
+
+    * `rows` and `placements` are derived from its **directory**, so an
+      instance's bijection and its remembered workspaces move together. An
+      explicit `--rows` still wins -- it predates this and is a debugging seam
+      -- but there is no `--placements` on this parser, so deriving that one is
+      a fix rather than plumbing: nothing populated `settings["placements"]`
+      before, which meant `RowRenderer` read the *default* placements file no
+      matter which config the bridge was started with.
+    * the path itself is published as `config`, because the row command a
+      renderer mints has to carry it. Deliberately taken from `opts` and **not**
+      from `dirname(settings["rows"])`: with an explicit `--rows /tmp/rows` the
+      derived form would name `/tmp/config`, a file that does not exist, and
+      `agb pane` would silently fall back to the bare hostname.
+
+    `None` when no `--config` was passed, which is what keeps a default
+    install's row commands byte-identical -- see `pane_argv`.
     """
+    path = opts.get("config")
     if config is None:
-        config = agb.read_config()
+        config = agb.read_config(path)
     return {
-        "rows": opts.get("rows") or rows_path(),
+        "rows": opts.get("rows") or rows_path(path),
+        "placements": placements_path(path),
+        "config": path,
         "workspace": opts.get("workspace") or config.get("workspace"),
         "agb_path": local_agb_path(),
         "python": sys.executable,
@@ -2319,7 +2365,15 @@ def run_bridge(argv):
     def warn(text):
         _bridge_warn(reported, text)
 
-    sink, renderer = bridge_sink(model, opts, warn)
+    # Read ONCE, here, and handed to both halves. `bridge_settings` and
+    # `render_settings` each used to read it themselves, which was harmless
+    # while there was one config and is not now: two reads are two chances to
+    # read two different files, and the failure -- an instance whose renderer
+    # paints rows from one config while its ssh goes to the farm named in
+    # another -- would look like a transport bug.
+    config = agb.read_config(opts["config"])
+
+    sink, renderer = bridge_sink(model, opts, warn, config=config)
     if renderer is not None:
         model.adopt(renderer.rows.bound_keys())
 
@@ -2333,7 +2387,7 @@ def run_bridge(argv):
         _bridge_emit(sink, model.mark_stale(reason))
         return 0
 
-    settings = bridge_settings(opts)
+    settings = bridge_settings(opts, config)
     ssh_argv = bridge_ssh_argv(settings["feed_host"], settings["statedir"],
                                settings["mac_id"], settings["remote_path"],
                                settings["remote_python"])
