@@ -1535,7 +1535,7 @@ class RowRenderer(object):
 
     __slots__ = ("model", "rows", "settings", "run", "warn",
                  "seen", "applied", "titles", "stale", "clock", "notified",
-                 "placements", "reasserted")
+                 "placements", "reasserted", "blocked")
 
     def __init__(self, model, rows, run=None, warn=None, settings=None,
                  clock=None):
@@ -1559,6 +1559,9 @@ class RowRenderer(object):
         # of construction, so a re-assert before the interval has elapsed would
         # be pure duplicate traffic. The clock starts now.
         self.reasserted = self.clock()
+        # Keys announced as blocked. Deliberately NOT derived from `applied`:
+        # see `_notify_blocked`.
+        self.blocked = set()
 
     # -- the sink ---------------------------------------------------------
 
@@ -1596,6 +1599,9 @@ class RowRenderer(object):
         for memory in (self.seen, self.applied, self.titles):
             for key in [k for k in memory if not self.rows.known(k)]:
                 del memory[key]
+        # A set, so it cannot go through the loop above.
+        for key in [k for k in self.blocked if not self.rows.known(k)]:
+            self.blocked.discard(key)
 
     def _render_op(self, op, payload):
         """Named `_render_*` rather than `_upsert`/`_remove` on purpose:
@@ -1747,6 +1753,46 @@ class RowRenderer(object):
         previous = self.applied.get(key)
         self._status(key, row, state,
                      blink=(state == "active" and previous not in (None, "active")))
+        self._notify_blocked(key, row, session, state)
+
+    def _notify_blocked(self, key, row, session, state):
+        """One desktop banner when an agent starts waiting for a human.
+
+        `blocked` is the only state that means *you* are the blocker: a
+        permission prompt, sitting there until somebody answers it. A glyph is
+        enough for `active`; it is not enough for this, because the whole point
+        of the row is that you are not looking at it.
+
+        The banner is `agtermctl notify`, addressed to the row with `--target`,
+        so agterm attributes it to the right session: clicking it jumps to the
+        pane, and it raises that row's unseen badge. Whether the Dock icon also
+        bounces is **agterm's** setting, not ours (Settings ▸ Notifications:
+        off, once, or until you focus agterm) -- which is the right split, since
+        how loudly a machine interrupts you is a property of the machine.
+
+        ⚠️ **The gate is a memory of its own, not `applied`.** `applied` is the
+        obvious thing to compare against -- it is what `--blink` uses -- and it
+        is wrong here: `_render_stale` paints every row `idle` on any
+        disconnect, including a 10 s quiet spell. Gated on `applied`, an agent
+        that stayed blocked across a brief hiccup would be announced again on
+        reconnect, and again on the next one. This set only changes when the
+        *agent's* state changes, so a banner is fired once per actual block, no
+        matter what the network does in between.
+        """
+        if state != "blocked":
+            # Cleared as soon as it moves on, so the next block announces again.
+            self.blocked.discard(key)
+            return
+        if key in self.blocked:
+            return
+        self.blocked.add(key)
+        if not (self.settings or {}).get("notify_blocked", True):
+            return
+        label = (session or {}).get("label") or key
+        host = (session or {}).get("host") or "?"
+        self._agtermctl(["notify", "%s is waiting for a response" % (label,),
+                         "--title", "agbridge: %s" % (host,),
+                         "--target", row])
 
     def _render_remove(self, key):
         """A removed row keeps its pane and gets `[done]` in its title.
@@ -1995,7 +2041,31 @@ def render_settings(opts, config=None):
         "python": sys.executable,
         "jump_host": config.get("jump_host"),
         "feed_host": opts.get("feed_host") or config.get("feed_host"),
+        # `blocked` is the one state that means a human is required, so this is
+        # on unless it is turned off -- a feature nobody discovers is a feature
+        # nobody has. `agb.config_flag` reads absent as the default, so an
+        # existing config gets the banners without being edited.
+        "notify_blocked": config_flag(config, "notify_on_blocked", True),
     }
+
+
+# What counts as off. Spelled out rather than `bool(value)`, because the string
+# "0" is true in Python and `notify_on_blocked = 0` is exactly how somebody will
+# write it -- a config key that silently means its opposite is worse than one
+# that does not exist. Lives here rather than in `agb`: the hot path never reads
+# a flag, and `agb` has 71 bytes of headroom against its parse budget.
+CONFIG_FALSE = ("0", "no", "off", "false")
+
+
+def config_flag(config, key, default):
+    """A boolean config value, with `default` when absent or empty."""
+    value = (config or {}).get(key)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if not value:
+        return default
+    return value not in CONFIG_FALSE
 
 
 def bridge_sink(model, opts, warn=None, config=None, run=None):

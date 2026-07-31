@@ -135,6 +135,7 @@ Full flag reference: [`docs/commands.md`](docs/commands.md).
 | `remote_python` | `bridge`, `prune --via-ssh` | absolute cluster-side interpreter |
 | `jump_host` | `pane`, `prune --via-ssh` | ssh jump host for hosts you cannot reach directly |
 | `workspace` | `bridge` | agterm workspace for new rows, by **name**; created if absent. Without it they land in whichever workspace is current when the row is made. A row you have moved keeps its own place — see below |
+| `notify_on_blocked` | `bridge` | desktop banner when an agent starts waiting for you. **On by default**; `0`, `no`, `off` or `false` disables it. Whether the Dock icon bounces is agterm's own setting |
 | `host_<name> = <ssh-target>` | `pane`, `prune` | a record's `host` is a hostname, not an ssh alias |
 
 **Environment overrides:**

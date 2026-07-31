@@ -6,6 +6,29 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
+## Unreleased
+
+### Added
+
+- **A desktop banner when an agent starts waiting for you.** On a transition into `blocked` the
+  bridge sends `agtermctl notify … --target <row>`: a macOS banner attributed to that row, which
+  raises the row's unseen badge and jumps to the pane when clicked.
+
+  `blocked` is the only state where *you* are the blocker — a permission prompt sitting unanswered
+  — and the premise of a sidebar row is that you are not watching it. A glyph is enough for
+  `active`; it is not enough for this.
+
+  **On by default**, disabled with `notify_on_blocked = 0` in the Mac's config. Whether the Dock
+  icon also *bounces* is agterm's own setting (Settings ▸ Notifications: off, once, or until you
+  focus agterm, off by default). That split is deliberate: which events are worth announcing is
+  agbridge's business, how loudly the machine interrupts you is the machine's.
+
+  ⚠️ **The transition is tracked separately from the painted status.** Gating on `applied` — what
+  `--blink` uses — is the obvious implementation and is wrong: `_render_stale` paints every row
+  `idle` on *any* disconnect, including a routine 10-second quiet spell, so an agent that merely
+  stayed blocked would be re-announced after every hiccup. The banner's memory changes only when the
+  **agent's** state does. Substituting the wrong gate fails five named tests.
+
 ## 0.3.0 — 2026-07-30
 
 One feature, one fix.
