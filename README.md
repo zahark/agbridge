@@ -244,7 +244,7 @@ Verified in real use, not just in tests:
 | `session split` / `session type` | ✅ `--help`-verified, then run |
 | `session scratch` | ⬜ `--help`-verified, **not yet run** |
 | `notify --target <row>` → banner on the right row | ✅ run by hand |
-| the bridge sending it on a real `blocked` transition | ⬜ not yet seen |
+| the bridge sending it on a `blocked` transition → banner + Dock bounce | ✅ |
 | click-to-attach → right host, session **and pane** | ✅ |
 | detach returns to the prompt, row survives | ✅ |
 | `[s] split` → split pane with a shell on the agent's host | ✅ |

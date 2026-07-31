@@ -23,6 +23,9 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   focus agterm, off by default). That split is deliberate: which events are worth announcing is
   agbridge's business, how loudly the machine interrupts you is the machine's.
 
+  Verified live end to end (2026-07-31): an agent driven into `blocked` with agterm in the
+  background produced the banner and a bouncing Dock icon.
+
   ⚠️ **The transition is tracked separately from the painted status.** Gating on `applied` — what
   `--blink` uses — is the obvious implementation and is wrong: `_render_stale` paints every row
   `idle` on *any* disconnect, including a routine 10-second quiet spell, so an agent that merely
