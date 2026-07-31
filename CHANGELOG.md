@@ -6,6 +6,31 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
+## Unreleased
+
+### Fixed
+
+- **A row agterm has forgotten is written to once, not for ever.** Closing a row — by hand, or by
+  typing `exit` at the `agb pane` prompt, which ends the pane's command and makes agterm destroy the
+  session — left a bound entry naming a row that no longer exists. The bridge then renamed and
+  statused that dead id on **every poll for the life of the process**, filling
+  `~/Library/Logs/agbridge/bridge.err.log` with thousands of identical `no such session` lines. That
+  noise hid the line that mattered on two separate days of debugging.
+
+  Now agterm's own answer is believed: `no such session` marks the row dead, one line explains it
+  and names `agb-refresh`, and nothing is sent to that row again.
+
+  ⚠️ **The binding is deliberately KEPT, so the row stays gone.** Forgetting it would have the
+  bridge mint a replacement within seconds — and closing a row is how you dismiss it. `agb-refresh`
+  remains the deliberate way to bring every row back. The alternative (forget and re-mint, which
+  would also make an agterm restart self-repair) was considered and rejected for exactly that
+  reason: it trades away dismissal.
+
+  ⚠️ **The match is narrow on purpose.** `agtermctl` exits 1 for *every* failure, so this keys on
+  agterm's own words. A missing binary, a hung call or a permissions problem keeps being retried —
+  otherwise one broken `agtermctl` would silently stop the bridge painting anything at all, which is
+  far worse than the noise it replaces.
+
 ## 0.4.0 — 2026-07-31
 
 Notifications. agbridge could show you a row's state; it could not get your attention when that

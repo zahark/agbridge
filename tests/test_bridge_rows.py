@@ -62,9 +62,13 @@ class Runner(object):
     bridge" a property of the renderer rather than of luck.
     """
 
-    def __init__(self, ids=None, fail=()):
+    def __init__(self, ids=None, fail=(), err="induced failure"):
         self.calls = []
         self.fail = set(fail)
+        # What a failing call writes to stderr. Defaults to something obviously
+        # synthetic: a test that wants agterm's real "no such session" answer
+        # has to ask for it, so the narrow match cannot be satisfied by accident.
+        self.err = err
         self.ids = None if ids is None else list(ids)
         self.n = 0
 
@@ -74,7 +78,7 @@ class Runner(object):
             return (0, "", "")                       # osascript, etc.
         verb = argv[2] if len(argv) > 2 else ""
         if "all" in self.fail or verb in self.fail:
-            return (1, "", "induced failure")
+            return (1, "", self.err)
         if verb == "new":
             if self.ids is not None:
                 out = self.ids.pop(0) if self.ids else ""
@@ -2210,22 +2214,75 @@ def test_reclamation_never_drops_a_key_the_map_still_holds(mac, bridge):
         False, False, False, True]
 
 
-def test_a_row_id_agterm_rejects_names_the_file_that_recovers_it(mac, bridge,
-                                                                 rows_file):
-    """The one recovery path this tool has no command for. A BOUND entry whose
-    row agterm no longer knows -- an app reinstall, a state reset -- is
-    reachable by nothing: `RowMap.bind` refuses to rebind, and `close-done`
-    only ever touches `[done]` entries. So the failure at least has to be
-    legible, and "legible" means naming the file, not just the row id."""
+def _gone(*verbs):
+    """A `Runner` that answers the way agterm does for a row it has forgotten."""
+    return Runner(fail=verbs, err="error: no such session: ROW-1")
+
+
+def test_a_row_agterm_has_forgotten_is_named_once_with_the_way_back(mac, bridge,
+                                                                    rows_file):
+    """A bound entry whose row agterm no longer knows -- closed by hand, or lost
+    with an agterm restart. The failure has to be legible, and "legible" means
+    naming the row, the map and the command that recovers it."""
     persisted(mac, rows_file, ("a3f9c1e0", "ROW-1"))
-    b = bridge(Runner(fail=("rename", "status")))
+    b = bridge(_gone("rename", "status"))
     b.upsert(wire("a3f9c1e0"))
 
     hints = [text for text in b.warned if str(rows_file) in text]
     assert hints, b.warned
     assert "ROW-1" in hints[0]
-    assert "no agb command clears a bound entry" in hints[0]
-    assert "delete" in hints[0]
+    assert "agb-refresh" in hints[0]
+
+
+def test_a_dead_row_is_never_written_to_again(mac, bridge, rows_file):
+    """The whole point. Before this, every poll re-sent a rename and a status to
+    a row agterm had already refused, filling the launchd log with thousands of
+    identical lines and hiding the one that mattered -- twice in one week."""
+    persisted(mac, rows_file, ("a3f9c1e0", "ROW-1"))
+    b = bridge(_gone("rename", "status"))
+    b.upsert(wire("a3f9c1e0"))
+    after_first = len(b.run.agterm())
+    assert after_first, "nothing was even attempted"
+
+    warned_first = len(b.warned)
+
+    for seq in range(2, 8):
+        b.upsert(wire("a3f9c1e0", state="active", seq=seq))
+    assert len(b.run.agterm()) == after_first, b.run.verbs()
+    # The first failure says two things -- what failed, and the way back. Six
+    # more polls must add neither.
+    assert len(b.warned) == warned_first, b.warned[warned_first:]
+    assert len([t for t in b.warned if "agb-refresh" in t]) == 1
+
+
+def test_a_dead_row_keeps_its_binding_so_the_row_stays_gone(mac, bridge,
+                                                            rows_file):
+    """Closing a row is how a human dismisses it. Forgetting the binding would
+    have the bridge mint a replacement within seconds, which is the opposite of
+    what closing it meant. `agb-refresh` is the deliberate way back."""
+    persisted(mac, rows_file, ("a3f9c1e0", "ROW-1"))
+    b = bridge(_gone("rename", "status"))
+    b.upsert(wire("a3f9c1e0"))
+    b.upsert(wire("a3f9c1e0", state="active", seq=2))
+
+    assert b.rows.row_for("a3f9c1e0") == "ROW-1"
+    assert "new" not in b.run.verbs(), "a replacement row was minted"
+
+
+def test_an_ordinary_failure_never_marks_a_row_dead(mac, bridge, rows_file):
+    """⚠️ The guard. `agtermctl` exits 1 for *every* failure, so the match is on
+    agterm's own words. A missing binary, a hung call or a permissions problem
+    must keep being retried -- otherwise one broken `agtermctl` would silently
+    stop the bridge painting anything at all, which is far worse than the noise
+    this replaces."""
+    persisted(mac, rows_file, ("a3f9c1e0", "ROW-1"))
+    b = bridge(Runner(fail=("rename", "status")))       # generic stderr
+    b.upsert(wire("a3f9c1e0"))
+    after_first = len(b.run.agterm())
+    b.upsert(wire("a3f9c1e0", state="active", seq=2))
+
+    assert len(b.run.agterm()) > after_first, "it gave up on a transient failure"
+    assert b.renderer.dead == set()
 
 
 def test_a_failure_with_no_target_does_not_produce_the_hint(mac, bridge):

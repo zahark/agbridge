@@ -1328,10 +1328,21 @@ TITLE_DONE = "[done] "
 # the row it already had -- so the recovery is a file, and a recovery nobody
 # can find is not one.
 ROW_STALE_HINT = (
-    "row %s is in the map but agterm will not accept it. If agterm has lost "
-    "its rows (a reinstall, a state reset), no agb command clears a bound "
-    "entry: stop the bridge, delete %s, and let the next snapshot re-create "
-    "the rows.")
+    "row %s is gone from agterm -- closed by hand, or lost with an agterm "
+    "restart. Nothing more will be sent to it. The binding is KEPT, so the row "
+    "stays gone: closing a row is how you dismiss it. Run agb-refresh to bring "
+    "every row back (map: %s).")
+
+# What counts as agterm saying "that row does not exist". Matched on the text
+# because `agtermctl` exits 1 for every failure -- there is no distinct code --
+# and the string is CONFIRMED live (docs/agtermctl.md): a `rename`/`status`
+# naming a forgotten id prints `error: no such session: <id>`.
+#
+# ⚠️ It is matched NARROWLY on purpose. A generic non-zero exit -- agtermctl
+# missing, a hung call, a permissions problem -- must never mark a row dead, or
+# one broken `agtermctl` would silently stop the bridge from painting anything
+# at all, which is far worse than the noise this replaces.
+ROW_GONE_TEXT = "no such session"
 
 # The title carries the beat age only once the beat is **late**. A beat is
 # refreshed every `agb.BEAT_INTERVAL` by whoever can prove the agent is alive,
@@ -1548,7 +1559,7 @@ class RowRenderer(object):
 
     __slots__ = ("model", "rows", "settings", "run", "warn",
                  "seen", "applied", "titles", "stale", "clock", "notified",
-                 "placements", "reasserted", "blocked", "quiet_until")
+                 "placements", "reasserted", "blocked", "quiet_until", "dead")
 
     def __init__(self, model, rows, run=None, warn=None, settings=None,
                  clock=None):
@@ -1575,6 +1586,8 @@ class RowRenderer(object):
         # Keys announced as blocked. Deliberately NOT derived from `applied`:
         # see `_notify_blocked`.
         self.blocked = set()
+        # Row ids agterm has told us do not exist. See `_agtermctl`.
+        self.dead = set()
         # Armed by the FIRST batch, not here: the catch-up burst arrives with
         # the snapshot, which is however long ssh takes to connect after this
         # point. `None` means "not yet armed".
@@ -1655,7 +1668,15 @@ class RowRenderer(object):
         consuming the feed and the next snapshot repaint re-applies the intended
         state -- because the bridge holds the level state, not agterm.
         """
-        argv = [AGTERMCTL] + list(args)
+        args = list(args)
+        row = args[args.index("--target") + 1] if "--target" in args[:-1] else None
+        if row is not None and row in self.dead:
+            # Agterm has already said this row does not exist. Saying it again
+            # every poll is what filled a log with thousands of identical lines
+            # and hid the one line that mattered -- twice in one week. Nothing
+            # is sent and nothing is warned: the first time said it all.
+            return None
+        argv = [AGTERMCTL] + args
         rc, out, err = self.run(argv)
         if rc == 0:
             return out
@@ -1671,10 +1692,14 @@ class RowRenderer(object):
         # name the file and the one thing that fixes it. Only for calls that
         # carried a `--target`: `session new` has no row to blame, and telling
         # somebody to delete their row map over it would lose data for nothing.
-        args = list(args)
-        if "--target" in args[:-1]:
-            self._warn(ROW_STALE_HINT % (args[args.index("--target") + 1],
-                                         self.rows.path or rows_path()))
+        if row is not None and ROW_GONE_TEXT in (err or ""):
+            # Agterm's own answer, not an inference: the row is gone. Remember
+            # it and stop sending, but LEAVE THE BINDING ALONE -- forgetting it
+            # would have the bridge mint a replacement within seconds, and
+            # closing a row is how a human dismisses it. `agb-refresh` is the
+            # deliberate way to bring them all back.
+            self.dead.add(row)
+            self._warn(ROW_STALE_HINT % (row, self.rows.path or rows_path()))
         return None
 
     def _create_row(self, session):
