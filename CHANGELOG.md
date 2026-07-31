@@ -6,7 +6,11 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
-## Unreleased
+## 0.4.0 — 2026-07-31
+
+Notifications. agbridge could show you a row's state; it could not get your attention when that
+state changed. Three additions, all verified end to end against a live agterm — and two of the three
+needed a fix *after* that testing, in ways the 1400-test suite could not have caught.
 
 ### Added
 
@@ -20,12 +24,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   ⚠️ **Rows are minted in bursts and a burst is silent.** `agb-refresh` forgets every binding and
   the bridge re-mints all of them; so does a first install or a lost rows file. Without this a
   nine-row refresh would be nine banners and nine Dock bounces for agents running since breakfast —
-  how a feature gets switched off on its first day. Rows created within `NEW_ROW_QUIET` (3 s) of the first op
-  batch of a connection are silent — armed by that batch rather than at construction, because the
-  burst arrives with the snapshot and a slow ssh would otherwise let the window expire before the
-  thing it exists to cover. It is a heuristic: an agent that genuinely starts inside
-  that window is missed, which is the safe direction to fail. A `[done]` row being reported again is
-  a return, not an arrival, and never banners.
+  how a feature gets switched off on its first day. Rows created within `NEW_ROW_QUIET` (3 s) of the
+  **first op batch of a connection** are silent, armed by that batch rather than at construction:
+  the burst arrives with the snapshot, so a slow ssh would otherwise let the window expire before
+  the very thing it exists to cover. It is a heuristic — an agent that genuinely starts inside that
+  window is missed, which is the safe direction to fail. A `[done]` row reported again is a return,
+  not an arrival, and never banners.
+
+  Both halves of that were wrong on the first cut, and only running it showed
+  it: a 10 s window armed at construction swallowed a real agent started 9 s
+  after a reinstall.
 
 - **A desktop banner when an agent starts waiting for you.** On a transition into `blocked` the
   bridge sends `agtermctl notify … --target <row>`: a macOS banner attributed to that row, which
