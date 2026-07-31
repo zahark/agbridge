@@ -263,11 +263,15 @@ almost certainly the source of the `no such session` spam in the bridge log. Ful
 [`docs/agtermctl.md`](docs/agtermctl.md) → "agterm closes a session when its command exits". Read it
 before reasoning about row lifetime; it is not in agterm's own reference and nothing here assumed it.
 
-⚠️ **Never plan against `agterm.com/commands` without running the command on the Mac first.** That
-site documents a **newer** agterm than the installed one: `events` and `pick` do not exist here, and
-`restore` is top-level rather than under `session` (verified 2026-07-31). A full design for an
-`events`-based feedback loop was written and is shelved in `docs/plans/blocked/` for exactly this
-reason — caught by a "capture the real output first" task, which is why that task exists.
+⚠️ **Never design against `agterm.com/commands` without running the command on the Mac first.**
+It cost two reversed decisions in one day. First it documented `events` and `pick`, which the
+installed build did not have (they arrive in agterm **v0.16.0**, along with `session restore`).
+After upgrading they existed — and the page was *still* wrong about behaviour: it says `events`
+returns a batch and exits, and it **follows**. A full design had been built on that sentence, and an
+earlier, correct objection to it had been marked ✅ wrong on the page's authority. Findings in
+[`docs/agtermctl.md`](docs/agtermctl.md) → "What `agtermctl events` actually does"; the shelved
+design is in `docs/plans/blocked/`. The "capture the real output first" task is what caught both,
+and is why such a task belongs in any plan that touches agterm.
 
 **agbridge uses 8 of agterm's ~70 documented subcommands.** The unused surface was surveyed on 2026-07-31 and
 the useful part is recorded in [`docs/agtermctl.md`](docs/agtermctl.md) → "What agbridge does not use

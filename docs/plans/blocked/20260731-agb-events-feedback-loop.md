@@ -1,21 +1,30 @@
 # Close the feedback loop: read agterm's event ring
 
-> ⛔ **BLOCKED — `agtermctl events` does not exist on the installed agterm.**
+> ⛔ **BLOCKED — not by availability, by shape.**
 >
-> Verified 2026-07-31 on the Mac, which is what Task 0 exists for: `agtermctl help events` falls
-> through to the top-level help, and `agtermctl events --json` fails with `Unknown option '--json'`.
-> The command is documented at `agterm.com/commands`, which describes a **newer build**. The same
-> check showed `pick` missing and `restore` living at top level rather than under `session`.
+> `agtermctl events` **exists** from agterm v0.16.0 (the Mac was on an older build when this plan
+> was written; upgrading to v0.19.1 made it appear). Task 0 was then run for real, and the command
+> does not behave the way this plan assumes. Findings in full: `docs/agtermctl.md` → "What
+> `agtermctl events` actually does".
 >
-> **Nothing here is wrong, and nothing here is implementable yet.** The design survives an agterm
-> upgrade unchanged; when `events` appears, resume at Task 0 to capture the real JSON shape — which
-> is still unknown and still must not be guessed. Add a capability probe and a stated minimum
-> version at that point, since a build without `events` must degrade to today's behaviour rather
-> than warn on every poll.
+> | this plan assumes | the binary does |
+> |---|---|
+> | returns a batch and exits | **follows**, cursorless — one long-lived stream |
+> | a `run`+`next` cursor to resume | **no run id is obtainable** anywhere: not in events, not in `tree --json`, no header line |
+> | catch-up after a bridge restart | impossible without a cursor |
+> | run-change → automatic `agb-refresh` | impossible — no run id to compare |
 >
-> **The row-loss problem this was written to solve has a better answer available today**: top-level
-> `restore` pins the command a pane re-runs, which stops the row dying when `agb pane` exits —
-> attacking the cause instead of reacting to the symptom.
+> So the poll-on-the-tick design (decision 1) cannot be built, and the two reactions that survive —
+> live `session.closed` and `tree.changed` — cost a second long-lived input with its own liveness
+> story, plus an unresolved question about whether `agtermctl` block-buffers to a pipe.
+>
+> **The problem this was written to solve has a cheaper answer**: on its quit path, `agb pane`
+> forgets its own binding, so leaving the prompt stops leaving a stale entry. No agterm feature, no
+> stream, no version floor. That is what was built instead.
+>
+> **Do not delete this.** The reasoning about idempotence, the four guards on the destructive path
+> and the test-seam findings all hold, and would apply to any future feedback-loop design. What
+> changed is only the transport.
 
 *Revised after a review pass that found four critical defects, including one that made the
 headline feature unreachable. Where a fix is non-obvious, the defect it closes is named.*
