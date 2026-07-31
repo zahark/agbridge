@@ -301,7 +301,13 @@ Releasing, in order:
 4. `git commit -m "release: <version>"`, then an **annotated** tag `v<version>` whose message is a
    short prose summary (not a commit list — that is what the changelog is for).
 5. `git push origin HEAD && git push origin v<version>`.
-6. GitHub Release from the tag, title `agbridge <version>`, body from the changelog section.
+6. GitHub Release from the tag, title `agbridge <version>`. The body is a **short summary plus a
+   link to `CHANGELOG.md`** — never a copy of it. Two places saying the same thing is two places to
+   keep in step, and the one nobody can `git log` is the one that goes stale. Link the **tag**, not
+   `main`, so it keeps showing the changelog as of that release:
+   `https://github.com/zahark/agbridge/blob/v<version>/CHANGELOG.md#<anchor>` — the anchor is the
+   heading lowercased with dots and the em dash dropped, e.g. `## 0.4.0 — 2026-07-31` →
+   `#040--2026-07-31`.
 
 ⚠️ **A tag is only as good as what it points at.** Fixes landing after the tag are not in the
 release; move the tag with `git tag -f -a` and `git push --force origin v<version>` *before* cutting
