@@ -464,18 +464,78 @@ this simply omit the flag and fall back to the default config, which is correct 
 
 ### Task 6: verify acceptance criteria
 
-- [ ] two instances run side by side; rows from both appear, each updating from its own machine
-- [ ] clicking a row on instance B reaches **B's** host, resolved from B's `host_<name>`
-- [ ] `agb-refresh --instance hostb` leaves instance A's rows untouched
-- [ ] a default-only install behaves exactly as before — same plist but for the two new lines, same
+*Every criterion below is a **named test**, not an assertion in prose. Four were only covered as a
+**chain of individually-green links**, which is exactly what the silent version of each failure
+looks like, so four tests were added that drive the whole path in one go. Each new test was
+mutation-checked: break the link, confirm **that** test fails, restore.*
+
+- [x] two instances run side by side; rows from both appear, each updating from its own machine
+      — **new**: `tests/test_bridge_rows.py::test_two_instances_side_by_side_paint_only_their_own_rows`,
+      two models, two sinks, two recording `agtermctl`s: each row is born in **its own config's**
+      workspace (`farm-a` / `farm-b`), B's `blocked` repaints only B's row, and the two bijections
+      are two files each holding one key. Supported by `test_the_config_flag_moves_everything_the_instance_owns`,
+      `test_the_sink_binds_the_instances_own_row_map`,
+      `test_an_instance_install_agrees_about_its_label_config_and_logs` (the default instance is not
+      written at all). Mutations killed by it: `rows_path(path)` → `rows_path()`, and
+      `render_settings` reading `agb.read_config()`
+- [x] clicking a row on instance B reaches **B's** host, resolved from B's `host_<name>`
+      — **new**: `tests/test_bridge_rows.py::test_a_click_on_an_instances_row_reaches_that_instances_host`.
+      ⚠️ This is the one that was only a chain: `bridge --config B` → `render_settings["config"]`
+      (`test_the_config_flag_moves_everything_the_instance_owns`) → minted `--command`
+      (`test_the_minted_row_command_carries_the_instances_config`, which hand-builds the settings
+      dict) → `parse_pane_args` (`test_the_row_command_round_trips_the_config_too`) →
+      `pane_settings` (`test_the_instances_own_host_table_is_the_one_that_resolves`,
+      `test_pane_resolves_through_the_instance_config_end_to_end`). The new test starts at the
+      **bridge argv**, takes the command `agtermctl` was actually handed, `shlex`-splits it and runs
+      it back through `parse_pane_args` → `pane_settings`, asserting `user@instance-b.example`; the
+      default instance is the control in the same test (same host name, `user@instance-a.example`,
+      and no `--config` in its command). Kills two mutations that no *other* single test kills
+      together: dropping `settings.get("config")` at the renderer call site, and `pane_settings`
+      reading `agb.read_config()`
+- [x] `agb-refresh --instance hostb` leaves instance A's rows untouched
+      — **new**: `tests/test_agb_refresh.py::test_an_instance_refresh_leaves_the_other_instances_map_alone`,
+      which swaps the recording `agb` stub for the **real `agb`** (`--agb conftest.AGB_PATH
+      --python sys.executable`). Everywhere else in that file `agb` is a stub, so the existing
+      `test_an_instance_moves_the_label_and_the_config_together` can only prove the right *flag* was
+      passed; the other half is `test_forget_rows_follows_its_config_to_the_map_and_the_placements`.
+      This runs both halves at once: B's binding is gone, A's rows file **and** placements file are
+      **byte-identical**. Mutation: `instance_paths` deriving `rows_path()` instead of
+      `rows_path(config)` fails exactly this test
+- [x] a default-only install behaves exactly as before — same plist but for the two new lines, same
       config path, same rows file, and **the same row commands** (no `--config` emitted)
-- [ ] `agb-refresh --instance hostb` does not print the "still running" warning while instance A is
+      — plist, key by key: `test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag`;
+      paths: `test_without_the_flag_every_path_is_exactly_what_it_was`; row commands, all three
+      spellings of "default": `test_a_default_install_mints_the_command_it_always_did`.
+      ⚠️ Those three all rebuild the path themselves, and since the plist's `--config` is
+      **unconditional** a default install's bridge is now started with `install.sh`'s spelling of it
+      — a **cross-file** agreement nothing checked. **New**:
+      `tests/test_install_pkg.py::test_what_a_default_install_renders_leaves_the_bridge_where_it_was`
+      does a real throwaway-`$HOME` install, reads `--config` **out of the rendered plist**, and
+      feeds *that* to `render_settings` and `pane_argv`: same map, same placements, byte-identical
+      row command, with a named instance as the non-vacuity control. Mutation pair: with
+      `install.sh` spelling the same path differently (`.config/agbridge/./config`) it still passes
+      — and fails the moment `pane_argv`'s `normpath` is dropped, together with
+      `test_a_default_install_mints_the_command_it_always_did`
+      — 📌 found while mutating: `rows_path`/`placements_path` derive **textually**, so a `$HOME`
+      whose two spellings differ (a trailing slash) yields a differently-spelled path to the *same*
+      file. Harmless — it opens the same map — so the new test compares those two as files
+      (`normpath`) and keeps the byte-exact comparison for the row command, which is where a
+      spelling difference would actually re-mint every row
+- [x] `agb-refresh --instance hostb` does not print the "still running" warning while instance A is
       up, **and plain `agb-refresh` does not print it while instance B is up** — the pattern has to
       be right in both directions, and only the first was checked
-- [ ] `--instance` without `--statedir` is **refused**, not defaulted
-- [ ] run the full suite: `python3 -m pytest tests/ -q`
-- [ ] `sh -n install.sh`
-- [ ] `wc -c agb` — **must still be 102,429**; this plan touches `agb_mac`/`agb_ops` only
+      — both directions, already covered by Task 5 and re-run here:
+      `test_the_wait_ignores_another_instances_bridge` and
+      `test_a_plain_refresh_ignores_a_named_instances_bridge`, each asserting the poll **ran** and
+      ran with the narrow pattern (an unmatched broad pattern looks identical from the output
+      alone), plus the positive control `test_the_wait_still_sees_the_bridge_it_is_actually_replacing`
+      and the stale-plist fallback `test_a_plist_without_the_config_flag_falls_back_to_a_broad_wait`
+- [x] `--instance` without `--statedir` is **refused**, not defaulted
+      — `tests/test_install_pkg.py::test_an_instance_without_a_statedir_is_refused_and_installs_nothing`:
+      non-zero exit, `--statedir` named in stderr, and **no** config, no `dest/`, no `agents/`
+- [x] run the full suite: `python3 -m pytest tests/ -q` — **1498 passed** (1494 + the 4 above)
+- [x] `sh -n install.sh` — clean; `sh -n agb-refresh` clean too
+- [x] `wc -c agb` — **102429**, unchanged; the diff for this task is `tests/` only
 
 ### Task 7: [Final] Documentation and release
 

@@ -586,6 +586,116 @@ def test_the_minted_row_command_carries_the_instances_config(mac, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# the two acceptance criteria, each as ONE test rather than a chain of links
+# ---------------------------------------------------------------------------
+#
+# Everything above tests a single hop. Both failures this feature exists to
+# prevent live *between* hops, and a chain of individually-green links is
+# exactly what the silent version of each looks like: every unit test passes
+# while the row on screen reaches the wrong machine. So these two drive the
+# whole path -- `bridge` argv in, `agtermctl` calls and an ssh target out --
+# and each carries the other instance as its control, because an isolated
+# instance and a shared one are indistinguishable unless the two answers differ.
+
+
+def test_two_instances_side_by_side_paint_only_their_own_rows(mac, tmp_path,
+                                                              config_file):
+    """Acceptance: two bridges run side by side, rows from both appear, and
+    each updates from its own machine.
+
+    Driven as two independent bridges because that is what they are: two
+    models, two sinks, two recording `agtermctl`s, one per ssh. What must not
+    exist between them is any shared mutable state -- one bijection would put
+    both farms' agents in one map, where the first `close-done` closes the
+    other's rows.
+    """
+    config_file("workspace = farm-a\n")                  # the default instance
+    hostb = _instance(tmp_path, "hostb")
+    with open(hostb, "w") as handle:
+        handle.write("workspace = farm-b\n")
+
+    run_a, run_b = Runner(ids=["ROW-A1"]), Runner(ids=["ROW-B1"])
+    model_a, model_b = mac.BridgeModel(), mac.BridgeModel()
+    sink_a, _ren_a = mac.bridge_sink(model_a, mac.parse_bridge_args([]),
+                                     run=run_a)
+    sink_b, _ren_b = mac.bridge_sink(
+        model_b, mac.parse_bridge_args(["--config", hostb]), run=run_b)
+
+    sink_a(model_a.apply({"t": "upsert", "now": NOW,
+                          "session": wire("aaaa1111", host="box-a")}))
+    sink_b(model_b.apply({"t": "upsert", "now": NOW,
+                          "session": wire("bbbb2222", host="box-b")}))
+
+    # Rows from both appeared, one each, and each was born in its own config's
+    # workspace -- which is the assertion that the two sinks read two files.
+    assert run_a.verbs().count("new") == 1
+    assert run_b.verbs().count("new") == 1
+    assert run_a.news()[0]["--workspace-name"] == "farm-a"
+    assert run_b.news()[0]["--workspace-name"] == "farm-b"
+
+    # Each updates from its own machine: B's agent blocks, B's row is repainted
+    # and A's is not touched at all.
+    sink_b(model_b.apply({"t": "upsert", "now": NOW,
+                          "session": wire("bbbb2222", host="box-b",
+                                          state="blocked", seq=2)}))
+    assert ("blocked", "ROW-B1") in [(state, target)
+                                     for state, target, _blink
+                                     in run_b.statuses()]
+    assert "ROW-B1" not in [target for _s, target, _b in run_a.statuses()]
+    assert "blocked" not in [state for state, _t, _b in run_a.statuses()]
+
+    # ...and the bijections are two files on disk, each holding one key.
+    assert mac.load_rows(mac.rows_path()).bound_keys() == ["aaaa1111"]
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == ["bbbb2222"]
+    assert mac.rows_path() != mac.rows_path(hostb)
+
+
+def test_a_click_on_an_instances_row_reaches_that_instances_host(
+        mac, ops, tmp_path, config_file):
+    """⚠️ Acceptance, and the failure three review passes were aimed at:
+    clicking a row on instance B must reach **B's** host, resolved from B's
+    own `host_<name>` table.
+
+    Every hop of this is tested on its own elsewhere, and that is precisely the
+    problem: the bug is that the hops do not meet. So this one starts at the
+    `bridge` argv, takes the command agterm was *actually handed*, and runs it
+    back through the parser and the resolver `agb pane` uses on the far side of
+    a click. The same host name maps to a different target in each config, so a
+    shared read cannot look like an isolated one.
+    """
+    import shlex
+
+    config_file("host_box2 = user@instance-a.example\n")
+    hostb = _instance(tmp_path, "hostb")
+    with open(hostb, "w") as handle:
+        handle.write("host_box2 = user@instance-b.example\n")
+
+    def minted(argv):
+        runner = Runner()
+        model = mac.BridgeModel()
+        sink, renderer = mac.bridge_sink(model, mac.parse_bridge_args(argv),
+                                         run=runner)
+        assert renderer is not None
+        sink(model.apply({"t": "upsert", "now": NOW,
+                          "session": wire("aaaa1111")}))
+        return shlex.split(runner.news()[0]["--command"])
+
+    command = minted(["--config", hostb])
+    assert command[4] == "pane"                  # the shape the parser expects
+    target, _jump = ops.pane_settings(ops.parse_pane_args(command[5:]))
+    assert target == "user@instance-b.example"
+
+    # The control, and the non-vacuity check for the line above: the default
+    # instance's identical row resolves to the OTHER machine, and its command
+    # carries no `--config` at all -- so neither answer can be the one the
+    # resolver would give by ignoring the flag.
+    plain = minted([])
+    assert "--config" not in plain
+    plain_target, _jump = ops.pane_settings(ops.parse_pane_args(plain[5:]))
+    assert plain_target == "user@instance-a.example"
+
+
+# ---------------------------------------------------------------------------
 # titles: identity, and the beat age that must never become a state
 # ---------------------------------------------------------------------------
 

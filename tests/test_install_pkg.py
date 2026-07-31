@@ -1363,6 +1363,56 @@ def test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag(
     assert "instance:" not in out
 
 
+def test_what_a_default_install_renders_leaves_the_bridge_where_it_was(
+        run_sh, mac_args, tmp_path, fake_home, mac):
+    """⚠️ The other half of "a default install behaves exactly as before", and
+    the half no assertion about the plist can reach: what the BRIDGE then does
+    with the path the installer wrote.
+
+    Two files spell that path independently -- `install.sh`'s `DEFAULT_CONFIG`
+    and `agb.config_path()` -- and since the flag is unconditional, every
+    default install now starts its bridge with it. If the two spellings ever
+    disagree the result is not an error anyone would see: `render_settings`
+    quietly moves the rows map somewhere new, and `pane_argv` starts emitting
+    `--config` on every row of every default install, re-minting commands that
+    were fine beside rows agterm is still showing. So the value is taken from
+    the RENDERED plist rather than rebuilt here, and run through both.
+    """
+    code, _out, err = run_sh(mac_args(**{"--config": None}))
+    assert code == 0, err
+    rendered = plistlib.loads(
+        read_bytes(tmp_path / "agents" / "com.agbridge.plist")
+    )["ProgramArguments"][-1]
+
+    settings = mac.render_settings(mac.parse_bridge_args(["--config",
+                                                          rendered]))
+    # The same FILE, compared as a file: `rows_path` derives from the config's
+    # directory verbatim, so a `$HOME` the two spellings disagree about -- a
+    # trailing slash is the realistic one -- gives a path that differs by a
+    # separator and opens the same map. That is harmless here and is exactly
+    # what `pane_argv`'s `normpath` exists to absorb where it is NOT harmless.
+    assert os.path.normpath(settings["rows"]) == mac.rows_path()
+    assert os.path.normpath(settings["placements"]) == mac.placements_path()
+
+    session = {"key": "aaaa1111", "host": "box2", "tmux": "build",
+               "pane": "%24"}
+    before = mac.pane_argv(session, agb_path="/a/agb", python="/py")
+    assert mac.pane_argv(session, agb_path="/a/agb", python="/py",
+                         config=settings["config"]) == before
+    assert "--config" not in before
+
+    # Non-vacuity: the comparison inside `pane_argv` can come out the other
+    # way. A named instance's config -- the same installer, the same `$HOME` --
+    # moves all three, so none of the three assertions above is true of any
+    # path at all.
+    other = str(fake_home / ".config" / "agbridge" / "hostb" / "config")
+    moved = mac.render_settings(mac.parse_bridge_args(["--config", other]))
+    assert moved["rows"] != settings["rows"]
+    assert moved["placements"] != settings["placements"]
+    assert "--config" in mac.pane_argv(session, agb_path="/a/agb",
+                                       python="/py", config=other)
+
+
 # ---------------------------------------------------------------------------
 # the refusals: every `die` on the way in
 # ---------------------------------------------------------------------------
