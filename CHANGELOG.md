@@ -20,8 +20,10 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   ⚠️ **Rows are minted in bursts and a burst is silent.** `agb-refresh` forgets every binding and
   the bridge re-mints all of them; so does a first install or a lost rows file. Without this a
   nine-row refresh would be nine banners and nine Dock bounces for agents running since breakfast —
-  how a feature gets switched off on its first day. Rows created within `NEW_ROW_QUIET` (10 s) of a
-  bridge start or a reconnect are silent. It is a heuristic: an agent that genuinely starts inside
+  how a feature gets switched off on its first day. Rows created within `NEW_ROW_QUIET` (3 s) of the first op
+  batch of a connection are silent — armed by that batch rather than at construction, because the
+  burst arrives with the snapshot and a slow ssh would otherwise let the window expire before the
+  thing it exists to cover. It is a heuristic: an agent that genuinely starts inside
   that window is missed, which is the safe direction to fail. A `[done]` row being reported again is
   a return, not an arrival, and never banners.
 

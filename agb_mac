@@ -1357,7 +1357,15 @@ NOTIFY_INTERVAL = 300.0
 # How long after a catch-up moment new rows stay silent. See
 # `RowRenderer._notify_new_row`: a refresh re-mints every row at once, and a
 # banner each would be the feature's own undoing.
-NEW_ROW_QUIET = 10.0
+#
+# Short on purpose. The burst arrives in the FIRST BATCH -- one snapshot,
+# delivered whole -- so the window only has to outlive that batch, not the
+# connection. It was 10 s, armed at construction, and both halves were wrong:
+# an agent started 9 s after a reinstall was swallowed (reported live), and a
+# slow ssh could let the window expire BEFORE the snapshot it exists to cover,
+# so the burst would banner anyway. Arming on the first batch fixes the second;
+# 3 s fixes the first while still spanning one 2 s poll.
+NEW_ROW_QUIET = 3.0
 
 # How often every row's status is re-sent regardless of whether it changed.
 # See `RowRenderer._reassert`: agterm resets a row's status when the row's
@@ -1567,15 +1575,21 @@ class RowRenderer(object):
         # Keys announced as blocked. Deliberately NOT derived from `applied`:
         # see `_notify_blocked`.
         self.blocked = set()
-        # Armed here and re-armed by `_render_live`: both are catch-up moments,
-        # where every row is minted at once and none of them is news.
-        self.quiet_until = self.clock() + NEW_ROW_QUIET
+        # Armed by the FIRST batch, not here: the catch-up burst arrives with
+        # the snapshot, which is however long ssh takes to connect after this
+        # point. `None` means "not yet armed".
+        self.quiet_until = None
 
     # -- the sink ---------------------------------------------------------
 
     def __call__(self, ops):
         """One op batch. `OpTee` calls every sink as `sink(ops)`, so this IS the
         production entry point -- there is no second, named spelling of it."""
+        if self.quiet_until is None:
+            # The first batch a connection delivers is its snapshot, and that
+            # is the burst. Arming here rather than at construction makes the
+            # window independent of how long ssh took to connect.
+            self.quiet_until = self.clock() + NEW_ROW_QUIET
         for op, payload in ops:
             try:
                 self._render_op(op, payload)
@@ -1842,7 +1856,7 @@ class RowRenderer(object):
         """
         if not (self.settings or {}).get("notify_new_row", True):
             return
-        if self.clock() < self.quiet_until:
+        if self.quiet_until is not None and self.clock() < self.quiet_until:
             return
         label = (session or {}).get("label") or "an agent"
         host = (session or {}).get("host") or "?"

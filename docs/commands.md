@@ -132,7 +132,7 @@ which piece of work turned up. Config `notify_on_new_row`, **on by default**, se
 
 ⚠️ **Rows are minted in bursts, and a burst is silent.** `agb-refresh` forgets every binding and the
 bridge re-mints all of them; so does a first install or a lost rows file. Rows created within
-`NEW_ROW_QUIET` (10 s) of a bridge start or a reconnect send nothing — otherwise a nine-row refresh
+`NEW_ROW_QUIET` (3 s) of the first op batch of a connection send nothing — otherwise a nine-row refresh
 is nine banners for agents that have been running all day. A heuristic, deliberately: an agent that
 genuinely starts inside that window is missed, which is the safe direction to fail. A `[done]` row
 reported again is a **return, not an arrival**, and never banners.
