@@ -249,6 +249,39 @@ never-shown session, and `--select` cannot realize its split pane. So the split 
 `agb pane`'s prompt — which runs *inside* the row's own session, making it the active one, so
 `--target active` needs no row-id lookup at all.
 
+## What agbridge does not use yet
+
+*Surveyed 2026-07-31 against `agterm.com/commands`. agterm exposes roughly **70** subcommands;
+agbridge calls **eight**: `session new`/`rename`/`status`/`close`/`split`/`scratch`/`type`, `notify`,
+and `tree --json`. This is the menu for later, not a backlog — nothing here is committed, and each
+entry says what it would buy so the next reader does not have to re-derive it.*
+
+### Would fix something we have actually hit
+
+| Command | What it would buy |
+|---|---|
+| **`events`** — *read the app's control-event ring for status changes and lifecycle events* | The big one. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row closed by hand, an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. With an event stream the bridge could unbind a dead row **by itself**. ⚠️ It is also a second long-lived input, so it is a second thing that can wedge — and "a live connection delivering nothing" is precisely the failure this project was built to remove. It would need its own liveness story. |
+| **`session restore`** — *pin the command a pane re-runs on restart* | Rows could re-run `agb pane <key>` when agterm comes back, instead of returning as dead panes. The other half of the reboot story (see `docs/cookbook.md`), and it would shrink what `agb-refresh` is needed for. |
+| **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
+| **`session seen`** — *clear the unseen-notification badge* | Housekeeping for the `blocked` banner: when an agent stops being blocked, the badge it raised is still sitting on the row. |
+
+### New capability, no existing pain
+
+| Command | What it would buy |
+|---|---|
+| `session flag` | Flag on `blocked`, unflag when it clears — agterm's flagged view becomes "agents that need you". Overlaps with the status glyph, so it may be redundant. |
+| `session text` / `session search` | Read a row's terminal buffer from outside. Could answer *why* an agent is blocked without attaching to it. |
+| `session background text` | A per-row watermark — the host name behind the pane, so a full-screen agent still shows which box it is on. |
+| `window select`, `session go next-attention` | The bring-to-front family. Scoped and deliberately deferred: a bouncing Dock says "come here when you are ready", a window jumping in front says "stop what you are doing". See `window select`'s entry above for the id trap. |
+
+### Deliberately not applicable
+
+`quick`, `dashboard`, `pick`, `theme`, `font`, `keymap`, `config`, `surface zoom`, `session
+copy`/`paste`/`select-all`/`reveal`/`duplicate`/`focus`/`resize`, and most of `workspace` — these are
+the human's UI, not a bridge's business. `pick` is the near miss: an agterm-native row picker sounds
+appealing, but `agb list` already does that on the farm side, which is where you are when you need
+a key.
+
 ## Decisions this file settles
 
 ### `--blink`: adopted for `active`, **transitions only**
