@@ -545,22 +545,58 @@ mutation-checked: break the link, confirm **that** test fails, restore.*
 - Modify: `.claude/skills/agbridge/SKILL.md`
 - Modify: `agb` (the `VERSION` line only)
 
-- [ ] `docs/cookbook.md`: a **"a machine with no shared disk"** recipe, end to end
-- [ ] `docs/commands.md`: `--config` on bridge/close-done/forget-rows/pane, `--instance` on
+- [x] `docs/cookbook.md`: a **"a machine with no shared disk"** recipe, end to end
+      — six steps (code on the new machine → `install.sh mac --instance` → the printed farm
+      command → check *this instance's* log and label → `host_<name>` in *that* config → a
+      per-instance `workspace`), plus a *Living with more than one* table and two new
+      troubleshooting entries (a row attaching to the wrong machine; the duplicate-row upgrade).
+      The "Before you start" shared-directory check now points here instead of dead-ending
+- [x] `docs/commands.md`: `--config` on bridge/close-done/forget-rows/pane, `--instance` on
       `install.sh` and `agb-refresh`
-- [ ] `docs/design.md`: CLAUDE.md calls it "the authority… reconciled against the implementation",
+      — four flag tables updated (`--rows`/`--placements` defaults now read "derived from
+      `--config`"), the two banners quoted verbatim, plus a new `install.sh mac --instance`
+      section carrying the three refusals. `agb-refresh` gained a flag table it never had
+- [x] `docs/design.md`: CLAUDE.md calls it "the authority… reconciled against the implementation",
       and this changes where rows, placements and `host_<name>` live on the Mac
-- [ ] `README.md`: the requirement currently reads "a shared directory that every agent host and the
+      — §5 gains *One Mac, several instances*: what derives from the config path, the two
+      different rules for the plist and the row command (with both halves of the `pane_argv`
+      predicate), the three installer guards, `agb-refresh`'s plist-derived liveness pattern,
+      the seven limitations and the rejected shape. §3 now says "beside the config" is the
+      literal rule, not one path
+- [x] `README.md`: the requirement currently reads "a shared directory that every agent host and the
       feed resolve to the same files" — it now needs the *per instance* qualifier
-- [ ] `.claude/skills/agbridge/SKILL.md`: a recipe. **The skill has no answer for this today**, which
+      — done, and it now names the way out (a machine with no shared disk gets its own instance)
+      rather than reading as a refusal. Install section gained a third role case; the config
+      table says the Mac's path is a default; *Where rows live* carries the
+      `workspace = <cluster>` idiom (limitation 4). Stale test counts corrected to 1498
+- [x] `.claude/skills/agbridge/SKILL.md`: a recipe. **The skill has no answer for this today**, which
       is how the question arose
-- [ ] all **seven limitations** written down, with limitation 1 marked as the one that bites
-- [ ] record the rejected one-bridge-many-feeds shape and why, so it is not re-proposed
-- [ ] `CHANGELOG.md` under `## Unreleased`, house style — say *why*, name the symptom, **and carry
+      — *Add a machine that shares no disk (a second instance)*, with the default-vs-instance
+      path table, the trap, the banner to read, and five "also worth knowing" bullets. The
+      **frontmatter description** names it too, or the skill would never be reached for the
+      question it was written for; the symptom table gained the duplicate-row upgrade row
+- [x] all **seven limitations** written down, with limitation 1 marked as the one that bites
+      — in full in `design.md` §5 (numbered, none summarised away), #1 headed "the one that
+      bites". Deliberately **one** authoritative copy: the cookbook, the skill and the CHANGELOG
+      carry the operational ones and point there, rather than four lists to keep in step
+- [x] record the rejected one-bridge-many-feeds shape and why, so it is not re-proposed
+      — `design.md` §5, *The rejected shape*: it is a data-model change (`_upsert` keys on `key`
+      alone), `_render_stale` would blank every row on one machine's outage, and the watchdog,
+      quiet deadline, reconnect and backoff all become per-source
+- [x] `CHANGELOG.md` under `## Unreleased`, house style — say *why*, name the symptom, **and carry
       the one non-transparent upgrade** (limitation 7: an existing `--config <nondefault>` install
       gets duplicate rows unless its map is moved)
-- [ ] bump `VERSION` (`agb:24`) — new capability, **minor**. Confirm length-neutral
-- [ ] move this plan to `docs/plans/completed/`
+      — one `### Added` entry: the symptom before (two bridges sharing one placements file and
+      one `host_<name>` table), the row-command trap, the `--statedir` refusal, the banner, and
+      limitation 7 with both the pre-emptive `mv` and the after-the-fact
+      `agb forget-rows --rows <old map>`
+- [x] bump `VERSION` (`agb:24`) — new capability, **minor**. Confirm length-neutral
+      — `0.4.0` → `0.5.0`; `wc -c agb` still **102429** and `agb version` answers `agb 0.5.0`.
+      ⚠️ The release itself is **not cut**: `CHANGELOG.md` still says `## Unreleased`, and the
+      rename, the annotated tag and the GitHub Release are the owner's call (no `gh` here)
+- [x] move this plan to `docs/plans/completed/`
+      — `python3 -m pytest tests/ -q`: **1498 passed**; `sh -n install.sh` and `sh -n agb-refresh`
+      clean; the only non-doc line changed in the whole task is `VERSION`
 
 ## Post-Completion
 

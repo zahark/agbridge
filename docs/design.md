@@ -465,6 +465,11 @@ enforces one invariant:
 
 > The map is a **bijection**. A row is bound to at most one key, ever.
 
+"Beside the config" is the literal rule rather than a description of one path: the map lives in the
+directory of **whichever config the bridge was started with**, which is what makes a second instance
+a second bijection with no second concept — see §5, *One Mac, several instances*. The same is true of
+the `placements` file below.
+
 `agr` kept this mapping on the *remote*, where nothing could invalidate it — so a row reused for a
 new project left a dangling file pointing at it. Here, binding a key to an already-bound row is not
 a conflict to be resolved; it is not expressible: `bind()` **refuses** rather than moves, and both a
@@ -1282,7 +1287,9 @@ a hook that recorded its state successfully must not then fail because of a main
 
 ### Configuration
 
-`~/.config/agbridge/config`, `key = value`, read lazily and **never on the hot path**:
+`~/.config/agbridge/config`, `key = value`, read lazily and **never on the hot path**. On the Mac
+that path is a *default*, not a constant — `agb bridge --config <path>` reads another file, and
+everything else the Mac side owns moves with it (see *One Mac, several instances* below):
 
 | Key | Used by | Meaning | Default if unset |
 |---|---|---|---|
@@ -1328,6 +1335,137 @@ copying, it **runs the installed tree** through all three files and refuses to c
 against a tree that cannot answer. `dist/com.agbridge.plist` is the launchd job for `agb bridge`,
 with `KeepAlive` unconditionally true — a cleanly exited bridge is exactly the condition the `[?]`
 rendering exists for, and the useful response is to reconnect.
+
+### One Mac, several instances
+
+Everything above assumes **one** statedir, one feed, one bridge. That holds for a cluster whose
+hosts share a network home and fails the moment a second machine shares no disk with the first: no
+shared directory means a second statedir, and §1's whole model is *inside* a statedir. A second
+machine is therefore a second **instance** — its own bridge, its own feed, its own row bijection —
+rendering into the same sidebar.
+
+**One flag does it, because everything the Mac side owns derives from one path:**
+
+| | derived from |
+|---|---|
+| the row bijection | `dirname(<config>)/rows` (`agb_mac.rows_path`) |
+| remembered workspaces | `dirname(<config>)/placements` (`agb_mac.placements_path`) |
+| `host_<name>` → ssh target | keys *inside* that config |
+| `statedir`, `feed_host`, `mac_id`, the notification switches | the same |
+
+So `agb bridge --config <path>` is the whole of the isolation, and there is no second thing to get
+right. `install.sh mac --instance <name>` is sugar over three flags that already existed:
+
+| | default | `--instance hostb` |
+|---|---|---|
+| config | `~/.config/agbridge/config` | `~/.config/agbridge/hostb/config` |
+| launchd label | `com.agbridge` | `com.agbridge.hostb` |
+| log dir | `~/Library/Logs/agbridge` | `~/Library/Logs/agbridge/hostb` |
+
+**`--dest` and `--bin-dir` stay shared.** The three files are identical per instance, so there is one
+code install and N configurations, and an upgrade is one `install.sh mac` rather than one per
+machine. **`mac_id` is adopted, not minted**: it identifies *this Mac*, not this connection, and each
+cluster's `bridge/<mac-id>.beat` lives in its own statedir — the same id in both places is the truth,
+not a collision. The adoption reads it back through `agb install-config --print-mac-id` rather than
+parsing `key = value` in shell, for the reason `install.sh` gives at its own parse site: a second
+reader of this format is a second reader that drifts.
+
+⚠️ **The row's command has to carry the config, and this is the part that fails invisibly.** A row
+runs `agb pane <key> --host <hostname> …`, and `agb pane` resolves that hostname through **its own**
+config read (`pane_settings` → `ssh_target_for`). With two instances that read hits the *default*
+config, so instance B's rows would resolve their ssh target from instance A's `host_<name>` table:
+click-to-attach lands on the wrong machine, or nowhere, while every unit test passes. `pane_argv`
+therefore emits `--config <path>`, and `pane` accepts it.
+
+**Two different rules for two audiences, deliberately.** The plist's `--config` is
+**unconditional** — rendered for every install including the default one, so the installer has a
+single path to get right instead of a conditional exercised only on the second machine. The row
+command's flag is **conditional**, emitted only when the path differs from `agb.config_path()`, so a
+default install's rows are minted with byte-identical commands and rows created before this change
+keep working (they omit the flag and fall back to the default config, which is correct for them).
+The predicate is `config and normpath(config) != normpath(agb.config_path())`: without the `config
+and` half, `None` — the parameter's default — compares unequal and emits a literal `--config None`;
+without `normpath` on both sides, a `$HOME` spelled with a trailing slash makes **every default
+install** start re-minting every row.
+
+Three guards exist because their absence is silent rather than loud:
+
+- **`--instance` requires `--statedir`.** Falling back to `agb.statedir()` reads the *default*
+  config, so a new instance would inherit the first machine's farm path: ssh to the right machine,
+  read the wrong directory, and `agb feed` would then *create* it and report an empty farm for ever.
+  That is what `agb bridge`'s refusal to *have* a statedir default exists to prevent — there is no
+  value the Mac side can invent for a path on another machine — arriving by a route that rule cannot
+  see.
+- **`--instance` is refused outside the `mac` role.** `install.sh`'s option loop is role-agnostic, so
+  `install.sh farm --instance x` would write the farm's config to `~/.config/agbridge/x/config` —
+  which nothing on the farm reads, since `agb hook` and `agb status-line` resolve
+  `agb.config_path()` and nothing else — and report success.
+- **The name is validated as alphanumerics, `-` and `_`.** It becomes a launchd label component, a
+  plist *filename*, a log directory and a config *directory*; `install.sh`'s general `shell_safe`
+  permits `.` and `/`, so `--instance ../../evil` would pass it. Validated in the option loop rather
+  than after it, so `--instance ""` is refused instead of reading as "not given".
+
+**`agb-refresh` moves the label and the config together**, which is the entire reason `--instance` is
+sugar there too: a label without its config stops instance B and forgets instance A's bindings. Its
+liveness poll — the one that waits for the old bridge to actually exit — matches
+`<agb> bridge --config <config>`, because `--dest` is shared and a bare `<agb> bridge` matches every
+instance's process. ⚠️ **But it greps the plist for `--config` first and widens the pattern when it
+is absent.** A narrow pattern is *vacuously false* against a plist rendered before this change, and
+that is the normal state right after adding an instance: `install.sh mac --instance hostb` renders
+hostb's plist, does not restart the default job, and *does* install the new `agb-refresh`. Assuming
+the narrow pattern would make the poll return immediately with no warning and let the forget land
+while that bridge is still alive — re-minting rows against ids it just closed, which is the
+`no such session` spam `agb-refresh` exists to cure, restored by a fix aimed at a cosmetic warning.
+
+#### Limitations — documented, not solved
+
+1. ⚠️ **The one that bites: a helper run without `--instance` acts on the default instance and
+   reports success in the same words.** `agb-refresh` stops `com.agbridge`, forgets that instance's
+   bindings and restarts it, while you were trying to repair the other one. Nothing can detect the
+   intent, so the mitigation is in the **output, not the docs**: `agb-refresh`, `agb close-done` and
+   `agb forget-rows` print the instance and the config path they are acting on, every run,
+   unconditionally, before the dry-run exit.
+2. **An upgrade needs each job restarted.** The code is shared, so `install.sh mac` updates every
+   instance at once — but a running bridge holds the `agb_mac` it started with until its own job is
+   booted out and back in.
+3. **No aggregate view, and it cuts both ways.** `agb doctor` on a cluster host sees only that
+   cluster's statedir, by construction. ⚠️ And on the **Mac**, `agb doctor` and `agb status-line`
+   read the default config unconditionally and have **no `--config`** — so `doctor`, the first thing
+   anyone runs when an instance misbehaves, always describes the default instance. `prune --via-ssh`
+   likewise resolves `host_<name>` from the default config, so a named instance's hosts may not
+   resolve there.
+4. **Nothing marks which cluster a row belongs to.** `workspace = <cluster>` in each instance's
+   config is the recommended idiom — a convention, not a mechanism.
+5. **N launchd jobs, N ssh connections, N logs.** Fine at around four. Past that is where the
+   rejected shape below starts earning its complexity.
+6. **Rows are per-instance**, so `agb-refresh` on one leaves the other's rows alone. Correct, and
+   surprising the first time.
+7. ⚠️ **An existing `install.sh mac --config <nondefault>` install changes behaviour.** That flag
+   predates this change, and the plist used to **ignore** it: the bridge read
+   `~/.config/agbridge/config` regardless. Now that the plist carries `--config`, such an install's
+   rows map moves to `dirname(<nondefault>)/rows`, the old map is orphaned, and every row is minted
+   again beside the ones agterm is still showing — **duplicate rows**. Moving `rows` and `placements`
+   next to that config before reinstalling avoids it; `agb forget-rows --rows <old map>` clears the
+   duplicates afterwards, since it closes each session as it forgets it. `CHANGELOG.md` carries this
+   as the one upgrade that is not transparent.
+
+#### The rejected shape: one bridge, several feeds
+
+Designed and rejected, and the reason is recorded so it is not re-proposed: **it is a data-model
+change, not a transport change.** `BridgeModel._upsert` keys purely on `key`, and nothing in the
+wire, the model or the row map records which feed a session arrived from. Adding several feeds means
+giving every session a *source*, and then:
+
+- `_render_stale` must stale only the dead source's rows — today it marks **every** bound row `[?]`,
+  so one machine's outage would blank the whole sidebar;
+- the watchdog, the quiet deadline, the reconnect and the backoff all become per-source;
+- `RowMap` and `agb pane` need the source anyway, to resolve `host_<name>` correctly — which is the
+  same problem `--config` solves outright.
+
+That is a few hundred lines and a large share of the hardest existing tests, all of which assume one
+stream, and its worst failure is the shape of three bugs this project has already fixed. This shape's
+worst failure is operating on the wrong instance, which is recoverable and now announced. Revisit
+past roughly four machines.
 
 ## Resolved design questions
 

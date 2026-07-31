@@ -21,7 +21,10 @@ Throughout: **`buildbox01`** is a Linux host where your agents run, and
 | `tmux` on the Linux host | `tmux -V` |
 
 If the shared-directory check fails, pick a path that *is* shared and pass it as `--statedir`
-everywhere below.
+everywhere below. If **no** path is shared — the machine has no disk in common with the others at
+all — it does not have to be left out: it becomes its own instance, with its own statedir and its own
+bridge, rendering into the same sidebar. See
+[A machine with no shared disk](#a-machine-with-no-shared-disk).
 
 ---
 
@@ -176,6 +179,128 @@ agb close-done
 
 ---
 
+## A machine with no shared disk
+
+The check at the top of this page — `touch ~/.agb-probe` here, `ls ~/.agb-probe` there — has one
+failure that is not a misconfiguration: a machine that genuinely shares no filesystem with the
+others. A box on another network, a cloud instance, a laptop under a desk. It cannot write into the
+first statedir, so it gets **its own** — and with it its own feed and its own bridge.
+
+That pair is an **instance**. Rows from every instance land in the same sidebar; nothing about the
+machines you already have changes, and no cluster-side change is needed on any of them.
+
+### Step 1 — Get the code onto the new machine
+
+Exactly as Step 1 above, on the new machine:
+
+```sh
+cd ~ && git clone https://github.com/zahark/agbridge.git
+cd agbridge && pwd            # note this path
+```
+
+### Step 2 — Add the instance on the Mac
+
+```sh
+cd ~/agbridge
+sh install.sh mac --instance hostb \
+    --statedir /home/you/.agbridge \
+    --feed-host hostb-alias \
+    --agb-remote-path /home/you/agbridge/agb      # the path from Step 1
+```
+
+`hostb` is a name you choose — letters, digits, `-` and `_`. It becomes a launchd label, a plist
+filename, a log directory and a config directory, which is why nothing else is allowed in it.
+
+⚠️ **`--statedir` is required here.** It is the whole point — the new machine's own directory — and
+without it the instance would inherit the *first* cluster's path: ssh to the right machine, read the
+wrong directory, then create it and report an empty farm for ever. Spell it as it exists **on that
+machine**, absolutely: a `~` is expanded by the Mac's shell, and the Mac's home is not the path the
+feed will be given.
+
+What it writes, all of it new:
+
+| | |
+|---|---|
+| config | `~/.config/agbridge/hostb/config` |
+| rows map | `~/.config/agbridge/hostb/rows` |
+| remembered workspaces | `~/.config/agbridge/hostb/placements` |
+| launchd job | `com.agbridge.hostb` |
+| logs | `~/Library/Logs/agbridge/hostb/bridge.err.log` |
+
+Your existing instance is untouched, and the **code** is shared: one `~/.local/lib/agbridge`, N
+configurations. It also **adopts the `mac_id` you already have** rather than minting a second — that
+id names your Mac, and each cluster's beat file lives in its own statedir, so the same id in both
+places is correct.
+
+**Copy the `next:` command it prints.** It already carries the mac-id *and* this instance's statedir.
+
+### Step 3 — Install the farm side on the new machine
+
+Paste that command there. It is the ordinary farm install — config plus the four hooks — pointed at
+the new machine's own statedir:
+
+```sh
+cd ~/agbridge
+sh install.sh farm --mac-id <the id> --statedir /home/you/.agbridge
+```
+
+### Step 4 — Check both halves
+
+On the **new machine**:
+
+```sh
+agb doctor          # `bridge beat` a few seconds old means this instance's bridge is connected
+```
+
+On the **Mac**, if it is not:
+
+```sh
+tail -30 ~/Library/Logs/agbridge/hostb/bridge.err.log
+launchctl print gui/$(id -u)/com.agbridge.hostb | head
+```
+
+Note the paths: **this instance's** log and **this instance's** label. The plain
+`~/Library/Logs/agbridge/bridge.err.log` belongs to the first machine and will look perfectly
+healthy while this one is broken.
+
+### Step 5 — Make its rows clickable
+
+The `host_<hostname>` mapping goes in **that instance's** config, not the default one:
+
+```sh
+echo 'host_hostb01 = hostb-alias' >> ~/.config/agbridge/hostb/config
+```
+
+That is the whole reason a row's command carries `--config`: clicking a row runs `agb pane`, which
+resolves the hostname through a config of its own, and without the flag it would read the *first*
+instance's table and take you to the wrong machine — or nowhere.
+
+⚠️ Rows minted before the Mac was upgraded to 0.5.0 carry no such flag. `agb-refresh --instance hostb`
+re-mints them; nothing updates a live row in place.
+
+### Step 6 — Tell them apart in the sidebar
+
+Nothing in a row says which machine it came from. Give each instance a workspace:
+
+```sh
+echo 'workspace = hostb' >> ~/.config/agbridge/hostb/config
+```
+
+New rows land there, and one you drag elsewhere stays where you put it.
+
+### Living with more than one
+
+| | |
+|---|---|
+| **pass `--instance` to every helper** | `agb-refresh --instance hostb`, `agb close-done --config ~/.config/agbridge/hostb/config`. Without it they act on the **default** instance — successfully, which is the trap |
+| **read their first line** | `agb-refresh` prints `instance: hostb -- label com.agbridge.hostb, config …/hostb/config`; `close-done` and `forget-rows` print the config, map and placements file they opened. Always, before doing anything, because acting on the wrong instance otherwise looks exactly like acting on the right one |
+| **upgrades: install once, refresh each** | `sh install.sh mac …` updates the shared code, but a running bridge keeps the copy it started with. Run `agb-refresh` for the default instance **and** `agb-refresh --instance hostb` for each named one |
+| **`agb doctor` on the Mac reads the default config only** | it has no `--config`. Diagnose an instance from *its* machine (`agb doctor` there) and from its own log |
+| **rows are per instance** | refreshing one never moves the other's rows. Correct, and surprising the first time |
+| **around four machines this stops being pleasant** | four launchd jobs, four ssh connections, four logs. It is a deliberate ceiling — see [`design.md`](design.md) §5 for the alternative that was rejected and why |
+
+---
+
 ## Troubleshooting
 
 **No rows at all, and `doctor` says `no beat file at all`** — the bridge is not running. On the Mac:
@@ -239,6 +364,25 @@ For a host reachable only through another, add `jump_host = myfarm` as well.
 **A row is stuck and nothing clears it** — `agb doctor` lists *unadjudicable* entries, and
 `agb prune` removes them under per-entry confirmation. It is the only destructive command, and it
 never removes an entry whose process it can prove is alive.
+
+**Clicking a second instance's row lands on the wrong machine** — that row was minted before the
+Mac's files were upgraded, so its command carries no `--config` and `agb pane` fell back to the
+default instance's `host_<name>` table. `agb-refresh --instance <name>` re-mints it — a row's command
+is fixed when the row is created, and nothing updates a live one in place. If it still goes to the
+wrong machine afterwards, the `host_<hostname>` line is in the wrong file: it belongs in
+`~/.config/agbridge/<name>/config`, not the default config.
+
+**Every row appeared twice after an upgrade, and you install with `--config <path>`** — a non-default
+config, no `--instance`. That flag used to be ignored by the launchd job; now the plist carries it,
+so the bridge looks for its rows map beside *that* config, finds nothing, and mints a second row for
+every agent. Clear the orphans, which closes them in agterm as it forgets them:
+
+```sh
+agb forget-rows --rows ~/.config/agbridge/rows
+```
+
+Moving `rows` and `placements` next to the config *before* reinstalling avoids it entirely.
+`agb-refresh --config <path>` works on such an install — it needs no instance name.
 
 ---
 

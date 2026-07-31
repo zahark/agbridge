@@ -8,6 +8,72 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ## Unreleased
 
+### Added
+
+- **A machine that shares no disk with the first is now an install, not a workaround.** agbridge
+  assumed **one** statedir, one feed, one bridge. That is right for a cluster whose hosts share a
+  network home and wrong the moment you add a standalone Linux box: no shared disk means a second
+  statedir, which means a second feed, which meant hand-editing the launchd plist with six explicit
+  flags and a separate `--rows` file — and even then the two bridges shared **one** `placements`
+  file and **one** `host_<name>` table, so the second machine's rows took their workspaces and their
+  ssh targets from the first machine's config. Clicking one reached the wrong machine, or nowhere.
+
+  ```sh
+  sh install.sh mac --instance hostb \
+      --feed-host hostb-alias --agb-remote-path /opt/agbridge/agb --statedir /home/you/.agbridge
+  ```
+
+  One independent bridge per machine, rows from all of them in the same agterm sidebar.
+  `agb-refresh --instance hostb` repairs that one and leaves the others alone.
+
+  **It is one flag underneath, `--config`,** and that is the whole design rather than an
+  implementation note: the rows map, the placements file and the `host_<name>` table all derive from
+  the config's *directory*, so an instance is a directory and there is nothing else to keep in sync.
+  `--instance <name>` is sugar over the three flags that already existed — `--config`, `--label`,
+  `--log-dir`. `--dest` and `--bin-dir` stay **shared**: one code install, N configurations, so an
+  upgrade is one `install.sh mac` and not one per machine.
+
+  ⚠️ **The row's own command carries the config too**, which is the part that would have been
+  invisible. Clicking a row runs `agb pane <key> --host <hostname> …`, and `agb pane` resolves that
+  hostname through **its own** config read — with two instances that read hit the default config, so
+  instance B's rows would have resolved their ssh target from instance A's `host_<name>` table:
+  click-to-attach reaching the wrong machine, or nowhere, with every test passing. The flag is
+  emitted only when the path differs from the default, so a default install's row commands are
+  byte-identical to before and existing rows keep the command they were minted with.
+
+  ⚠️ **`--instance` refuses to run without `--statedir`.** Without one it would fall back to reading
+  the *default* config's `statedir` — ssh to the right machine and read the wrong directory, then
+  create it and report an empty farm for ever. Refusing is the whole mitigation; there is no value
+  the installer can invent for a machine it has never seen.
+
+  ⚠️ **A helper run without `--instance` acts on the default instance and reports success in the
+  same words** — `agb-refresh` would stop `com.agbridge`, forget the *other* instance's bindings and
+  restart it while you were trying to fix this one. Nothing can detect that you meant something
+  else, so both `agb-refresh` and the row-map commands now print the instance and config path they
+  are acting on **on every run**, not only on failure. That banner is the mitigation. The other six
+  limitations are written out in [`docs/design.md`](docs/design.md) §5, *One Mac, several
+  instances*, along with the one-bridge-many-feeds shape that was designed and **rejected** — it is
+  a data-model change rather than a transport one, and its worst failure is one machine's outage
+  blanking every row.
+
+  ⚠️ **The one upgrade that is not transparent: an existing `install.sh mac --config <nondefault>`
+  install gets DUPLICATE ROWS.** That flag existed before this change and the plist **ignored** it —
+  the bridge read `~/.config/agbridge/config` whatever the config file said. Now the plist carries
+  `--config`, so such an install's rows map moves from `~/.config/agbridge/rows` to
+  `dirname(<nondefault>)/rows`, the old map is orphaned, and every row is minted again beside the
+  ones agterm is still showing. The fix is one line, run **before** reinstalling — carry the map to
+  where the bridge will now look for it:
+
+  ```sh
+  mv ~/.config/agbridge/rows ~/.config/agbridge/placements /path/to/nondefault-dir/
+  ```
+
+  If the duplicates are already there, `agb forget-rows --rows ~/.config/agbridge/rows` clears them:
+  it closes each agterm session as it forgets it, so the orphaned copies go and the live ones — held
+  in the new map — stay. `agb-refresh --config <path>` takes a bare config path for exactly this
+  install, which has no instance *name* to pass. Default installs, which is everyone else, are
+  unaffected: same plist but for the two new lines, same map, same placements, same row commands.
+
 ### Fixed
 
 - **A row agterm has forgotten is written to once, not for ever.** Closing a row — by hand, or by

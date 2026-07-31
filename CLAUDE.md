@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1420 tests, ~21 s)
+python3 -m pytest tests/ -q                                    # full suite (1498 tests, ~31 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -139,7 +139,15 @@ These are not style preferences. Each one has a test, and most were re-learned t
 11. **`agb bridge` has no statedir default.** `agb`'s own `~/.agbridge` is right for a process on
     the farm and wrong for the Mac, which would resolve `~` locally and ship a path meaning
     something else. There is no value that side can invent, so it asks. This shipped broken once.
-12. **`agtermctl session split` and `session scratch` are used as `on`, never `toggle`** — either
+12. **Everything the Mac side owns derives from ONE path: the config.** `rows`, `placements` and the
+    `host_<name>` table are `dirname(<config>)/…` or keys inside it, which is what makes a second
+    instance (`agb bridge --config <path>`, `install.sh mac --instance <name>`) a directory rather
+    than a concept. Anything new that a bridge persists on the Mac belongs there too. ⚠️ The row's
+    own command must carry `--config` for a non-default instance, or `agb pane` resolves `--host`
+    through the **default** config and click-to-attach reaches the wrong machine with every test
+    green; `pane_argv` emits it only when `normpath` says it differs, so default installs are
+    byte-identical. `docs/design.md` §5, *One Mac, several instances*, is the authority.
+13. **`agtermctl session split` and `session scratch` are used as `on`, never `toggle`** — either
     key can be pressed twice, and a toggle would close the pane the second time — and the pane must
     exist before anything is typed into it (`--pane right` errors otherwise, and `--select` is
     main-pane only; the same claim for `--pane scratch` is **ASSUMED** and unobservable, since
@@ -228,10 +236,20 @@ environment — several are version- or mount-specific.
 
 ## Where the project is (2026-07-31)
 
+`VERSION` is **0.5.0**, unreleased: `CHANGELOG.md`'s `Unreleased` section holds it and the tag has
+not been cut. The feature is **instances** — a machine that shares no disk with the first is now an
+install (`install.sh mac --instance <name> --statedir …`), one independent bridge per machine, all
+rendering into the same sidebar. One flag, `--config`, carries it everywhere: bridge, `close-done`,
+`forget-rows`, the row's own `agb pane` command, the launchd plist and `agb-refresh`. Invariant 12
+and `docs/design.md` §5 hold the reasoning; the seven limitations are written out there, the first of
+which — a helper without `--instance` succeeding on the wrong instance — is mitigated only by the
+banner those commands now print on every run.
+
 Released **0.4.0** — notifications: a banner when an agent blocks, one when a new agent appears, and
-the unseen badge cleared when a block is answered. `CHANGELOG.md` has no `Unreleased` section.
-`agb` is at 102,429 of its 102,500-byte parse budget — **71 bytes of headroom**, which is the single
-hardest constraint on any change to the hot path. 1436 tests.
+the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
+budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
+path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
+`agb_mac`/`agb_ops`). 1498 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
@@ -253,6 +271,12 @@ agterm, and think about which row you test it on.**
   nobody has watched a drawer open, be hidden, and come back with **the same shell still alive**.
   That claim is the entire reason `scratch` was chosen over `overlay`, so it is the one worth
   checking first. `README.md`'s verification table carries unchecked rows for it.
+- **A second instance, live.** The whole of 0.5.0 is covered by tests only — nobody has yet run two
+  bridges on one Mac. The check that matters is **clicking a row from each instance and landing on
+  the right machine**, because that path (`pane_argv` → the row's command → `agb pane`'s own config
+  read) is exactly the one whose failure every unit test passes through. Worth trying the wrong
+  command on purpose too: a plain `agb-refresh` while both are up, to see whether the banner actually
+  tells you which one it acted on.
 - **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
   host. This is why the version is 0.x.
 
