@@ -1009,6 +1009,57 @@ def test_the_banner_can_be_turned_off(bridge):
     assert "aaaa1111" in b.renderer.blocked
 
 
+def _seens(bridge_obj):
+    """The `agtermctl session seen` calls, as targets."""
+    return [_options(call).get("--target") for call in bridge_obj.run.agterm()
+            if call[1:3] == ["session", "seen"]]
+
+
+def test_leaving_blocked_clears_the_badge_it_raised(bridge):
+    """The badge must not outlive the thing it announced. Answering the prompt
+    in a terminal you already had open never touches the agterm row, so agterm
+    never clears it on its own."""
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="blocked"))
+    row = b.rows.row_for("aaaa1111")
+    b.upsert(wire("aaaa1111", state="active", seq=2))     # somebody answered it
+    assert _seens(b) == [row]
+
+
+def test_a_row_that_was_never_blocked_is_never_cleared(bridge):
+    """The membership test is what makes this a transition. A bare `discard`
+    would fire on every non-blocked upsert -- every poll of every healthy agent
+    -- and `session seen` being idempotent means nothing would ever look wrong.
+    It would just be one wasted subprocess per row per poll, for ever."""
+    b = bridge()
+    for seq in range(1, 6):
+        b.upsert(wire("aaaa1111", state="active", seq=seq))
+    b.upsert(wire("aaaa1111", state="completed", seq=6))
+    assert _seens(b) == []
+
+
+def test_a_disconnect_does_not_clear_the_badge(bridge):
+    """`_render_stale` paints `idle`, which is not an answer. Same immunity the
+    banner has, and for free: both read the set, which only changes when the
+    AGENT's state does."""
+    b = bridge()
+    b.upsert(wire("aaaa1111", state="blocked"))
+    b.stale("eof")
+    assert _seens(b) == []
+    b.upsert(wire("aaaa1111", state="blocked", seq=2))    # still the same block
+    assert _seens(b) == []
+
+
+def test_with_banners_off_the_badge_is_left_alone(bridge):
+    """Unwind what you did, and nothing else: with `notify_on_blocked = 0` the
+    bridge neither raises the badge nor clears it. One switch, whole feature."""
+    b = bridge(settings={"notify_blocked": False})
+    b.upsert(wire("aaaa1111", state="blocked"))
+    b.upsert(wire("aaaa1111", state="active", seq=2))
+    assert _notifies(b) == []
+    assert _seens(b) == []
+
+
 def test_a_row_status_is_re_asserted_periodically(mac, rows_file):
     """Reported live: attach to a row for the first time and its glyph
     disappears. agterm resets a session's status when the session's command

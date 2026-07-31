@@ -1781,7 +1781,14 @@ class RowRenderer(object):
         """
         if state != "blocked":
             # Cleared as soon as it moves on, so the next block announces again.
-            self.blocked.discard(key)
+            # Tested rather than blindly discarded: membership is what makes
+            # this a *transition*. A bare `discard` would run `_seen` on every
+            # non-blocked upsert -- every poll of every healthy agent -- and
+            # because `session seen` is idempotent nothing would ever look
+            # wrong. It would just be one wasted subprocess per row per poll.
+            if key in self.blocked:
+                self.blocked.discard(key)
+                self._seen(row)
             return
         if key in self.blocked:
             return
@@ -1793,6 +1800,42 @@ class RowRenderer(object):
         self._agtermctl(["notify", "%s is waiting for a response" % (label,),
                          "--title", "agbridge: %s" % (host,),
                          "--target", row])
+
+    def _seen(self, row):
+        """Clear the unseen badge the `blocked` banner raised.
+
+        The agent left `blocked`, which means somebody answered it -- so the
+        badge is advertising something already dealt with. Reached only for a
+        key we announced, and only while `notify_blocked` is on: the rule is
+        **unwind what you did**, so with banners off the bridge neither raises
+        the badge nor clears it, and one switch governs the whole feature
+        rather than half of it.
+
+        Five limitations, none of them escapable, and the middle two look
+        enough like bugs to be worth the warning:
+
+        * `session seen` clears the whole **count** -- agterm has no partial
+          decrement. An agent that raised its own notification (OSC 9) while
+          blocked has that badge wiped too when the prompt is answered. The
+          alternative is not clearing at all.
+        * ⚠️ **An agent killed while blocked keeps its badge.** It reaches
+          `[done]` through `_render_remove`, which is a removal and not a state
+          transition, so it never passes through here. Deliberate: nobody
+          answered it, and the row is about to be reclaimed anyway.
+        * ⚠️ **A bridge restart orphans one badge.** `self.blocked` is
+          per-process, so an agent blocked *before* a restart and answered
+          *after* one is not in the set at clear time. It is the same reason a
+          restart re-announces a still-blocked agent. Persisting the set would
+          fix both and is far more machinery than a stale badge is worth.
+        * With `notify_on_blocked = 0` nothing is cleared, including badges an
+          earlier run raised while it was on.
+        * Clicking the banner or the row clears the badge first, which is what
+          agterm does on its own. The call here is then a no-op -- which is
+          only harmless because `session seen` is idempotent.
+        """
+        if not (self.settings or {}).get("notify_blocked", True):
+            return
+        self._agtermctl(["session", "seen", "--target", row])
 
     def _render_remove(self, key):
         """A removed row keeps its pane and gets `[done]` in its title.

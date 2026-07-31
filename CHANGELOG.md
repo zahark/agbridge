@@ -26,6 +26,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Verified live end to end (2026-07-31): an agent driven into `blocked` with agterm in the
   background produced the banner and a bouncing Dock icon.
 
+- **The badge is cleared when the agent stops being blocked.** Somebody answered it, so the badge
+  is advertising something already dealt with — and answering in a terminal you already had open
+  never touches the agterm row, so agterm does not clear it on its own.
+
+  Only for a badge agbridge itself raised, and only while `notify_on_blocked` is on: *unwind what
+  you did*, so one switch governs the whole feature rather than half of it. Five limitations are
+  written out in `docs/agtermctl.md` under `session seen`; the two that look like bugs are that an
+  agent **killed** while blocked keeps its badge (it leaves through a removal, not a transition) and
+  that a **bridge restart** orphans one (the memory is per-process).
+
   ⚠️ **The transition is tracked separately from the painted status.** Gating on `applied` — what
   `--blink` uses — is the obvious implementation and is wrong: `_render_stale` paints every row
   `idle` on *any* disconnect, including a routine 10-second quiet spell, so an agent that merely

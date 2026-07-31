@@ -203,6 +203,26 @@ interrupts you is the machine's.
   `blocked` while agterm was in the background; the banner arrived and the Dock icon bounced. So
   the trigger is proven as well as the command.
 
+### `agtermctl session seen [--target T] [--window W]` — **CONFIRMED**
+
+*"Clears the session's unseen-notification badge without changing the selection, focus, or agent
+status."* Idempotent, and the badge is a **count**, not a boolean.
+
+agbridge sends one when an agent **leaves** `blocked` — somebody answered it, so the badge is
+advertising something already dealt with. It is reached only for a key agbridge itself announced,
+and only while `notify_on_blocked` is on: *unwind what you did*, so one switch governs the whole
+feature rather than half of it.
+
+Five limitations, none escapable. The middle two look enough like bugs to be worth stating:
+
+| | |
+|---|---|
+| the whole **count** is cleared | agterm has no partial decrement. An agent that raised its own notification (OSC 9) while blocked loses that badge too when the prompt is answered. The alternative is not clearing at all |
+| ⚠️ an agent **killed** while blocked keeps its badge | it reaches `[done]` through a *removal*, not a state transition, so it never passes the clearing point. Deliberate — nobody answered it, and the row is about to be reclaimed |
+| ⚠️ a **bridge restart** orphans one badge | the "we announced this" memory is per-process, so an agent blocked before a restart and answered after one is not in the set at clear time. Same reason a restart re-announces a still-blocked agent. Persisting the set fixes both and is far more machinery than a stale badge is worth |
+| `notify_on_blocked = 0` clears nothing | including badges an earlier run raised while it was on |
+| clicking the banner or the row clears it first | agterm's own behaviour; the call is then a no-op, which is only harmless because `seen` is idempotent |
+
 ### `agtermctl window select [<id>]` — **CONFIRMED, not yet used**
 
 Verbatim from `agtermctl help window select` (2026-07-31):
@@ -263,7 +283,6 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 | **`events`** — *read the app's control-event ring for status changes and lifecycle events* | The big one. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row closed by hand, an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. With an event stream the bridge could unbind a dead row **by itself**. ⚠️ It is also a second long-lived input, so it is a second thing that can wedge — and "a live connection delivering nothing" is precisely the failure this project was built to remove. It would need its own liveness story. |
 | **`session restore`** — *pin the command a pane re-runs on restart* | Rows could re-run `agb pane <key>` when agterm comes back, instead of returning as dead panes. The other half of the reboot story (see `docs/cookbook.md`), and it would shrink what `agb-refresh` is needed for. |
 | **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
-| **`session seen`** — *clear the unseen-notification badge* | Housekeeping for the `blocked` banner: when an agent stops being blocked, the badge it raised is still sitting on the row. |
 
 ### New capability, no existing pain
 
