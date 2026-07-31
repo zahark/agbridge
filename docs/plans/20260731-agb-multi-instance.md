@@ -141,9 +141,16 @@ look plausible and two are wrong:
 So `render_settings` gains a `"config"` key sourced from `opts["config"]` **independently of
 `--rows`**, and `pane_command`/`pane_argv` gain a `config` parameter fed from it.
 
-**The predicate is `path != agb.config_path()`.** The flag is emitted only for a non-default
-instance, which keeps a default install's row commands byte-identical — a stated goal, and what
-keeps `tests/test_bridge_rows.py:466-471` (an exact `pane_argv` list) passing.
+**The predicate is `config and config != agb.config_path()`.** The flag is emitted only for a
+non-default instance, which keeps a default install's row commands byte-identical — a stated goal,
+and what keeps `tests/test_bridge_rows.py:466-471` (an exact `pane_argv` list) passing.
+
+⚠️ **The `config and` half is not decoration.** `None` is the parameter's default and what
+`settings.get("config")` returns for every hand-built settings dict in the tests, and
+`None != agb.config_path()` is True — so the bare predicate emits a literal `--config None`.
+Compare with `os.path.normpath` on both sides too: `install.sh`'s `DEFAULT_CONFIG` and
+`agb.config_path()` agree for a normal `$HOME` and not for one with a trailing slash, and a
+mismatch there makes **every default install** start re-minting row commands.
 
 Three consequences: existing rows keep the command they were minted with, so no current install
 changes; the path goes through the same value-safety checks as every other; and rows created before
@@ -205,11 +212,16 @@ this simply omit the flag and fall back to the default config, which is correct 
       passes that dict to both `bridge_settings` and `bridge_sink`/`render_settings`, which already
       accept `config=` and today each read it themselves (`:673`, `:2176`)
 - [ ] `render_settings` derives `rows` and `placements` from `dirname(<config path>)` when the
-      caller passed no explicit `--rows`/`--placements`. **This derivation *is* the isolation** —
-      assert the paths
+      caller passed no explicit `--rows`. **This derivation *is* the isolation** — assert the paths.
+      ⚠️ Note `BRIDGE_VALUE_ARGS` has **no** `--placements`, so there is no override to honour on
+      this path — and `RowRenderer` reads `settings.get("placements")` (`agb_mac:1571`), which
+      **nothing populates today**, so an instance's bridge currently picks row workspaces from the
+      *default* placements file. Deriving it is a fix, not just plumbing
 - [ ] `render_settings` also publishes a **`"config"`** key, taken from `opts["config"]` and
       **independent of `--rows`** — Task 2 needs it, and deriving it from the rows path is wrong
       (see Technical Details)
+- [ ] write the one-line assertion for it here rather than leaving it to Task 2:
+      `mac.render_settings({"config": X})["config"] == X`, and unchanged when `--rows` is passed
 - [ ] ⚠️ `bridge_settings`' missing-value message (`agb_mac:692`) interpolates `agb.config_path()`
       and would name the **wrong file** for an instance: *"set it in ~/.config/agbridge/config"*
       while reading `hostb/config`. Pass the resolved path in and use it
@@ -234,17 +246,27 @@ this simply omit the flag and fall back to the default config, which is correct 
 - [ ] `pane_command`/`pane_argv` (`agb_mac:1465`) gain a `config` parameter, fed from
       `settings.get("config")` at the call site (`agb_mac:1714`), and emit `--config <path>` only
       when it differs from `agb.config_path()`
-- [ ] add `--config` to `PANE_VALUE_ARGS` (`agb_ops:1758`) and thread it to the config read behind
-      `ssh_target_for` (`pane_settings`, `agb_ops:1889`; and `agb_ops:1489`)
+- [ ] add `--config` to `PANE_VALUE_ARGS` (`agb_ops:1769`) and thread it to the config read behind
+      `ssh_target_for` — **`pane_settings` (`agb_ops:1902`) only**. ⚠️ Not `agb_ops:1489`: that is
+      inside `prune_via_ssh` and out of scope (see Technical Details)
+- [ ] ⚠️ **do not add `"config"` to `parse_pane_args`' initializer** (`agb_ops:1836`);
+      `tests/test_pane.py:242` asserts the opts dict **exactly**. Read `opts.get("config")`, which
+      is how `cwd` is already handled — the alternative is a `KeyError` at attach time on every row
+      minted before this change
 - [ ] a row minted **without** the flag keeps working against the default config
 - [ ] comment the reasoning at both ends: without this, instance B's rows resolve their ssh target
       from instance A's `host_<name>` table and click-to-attach reaches the wrong machine — with
       every unit test passing
 - [ ] write tests: `pane_argv` carries the flag; `agb pane --config` resolves `host_<name>` from
       **that** file and not the default; omitting it falls back
-- [ ] write a test at the **renderer** level: a bridge run with `--config X` mints a row whose
-      `--command` contains `--config X`. ⚠️ *Review finding 9* — `tests/test_bridge_rows.py:519`
-      asserts the command with `.startswith(...)`, so it catches neither an addition nor an omission
+- [ ] write a test at the **renderer** level, and drive it through **`mac.bridge_sink(model,
+      {"config": X, …}, …)`** — ⚠️ *not* the `bridge` fixture, which constructs `RowRenderer` with a
+      settings dict directly (`tests/test_bridge_rows.py:132-145`) and so never calls
+      `render_settings`. Going through the fixture proves only `RowRenderer → pane_command`, which
+      the mutation already covers, and leaves Task 1's `"config"` key **completely untested** —
+      which is the very link this task exists to protect. Assert the minted row's `--command`
+      contains `--config X`; note `tests/test_bridge_rows.py:520` uses `.startswith(...)`, so it
+      catches neither an addition nor an omission
 - [ ] ⚠️ **mutation-test the renderer call site, not the pure function**: drop
       `settings.get("config")` from the `pane_command(...)` call at `agb_mac:1714`. Mutating
       `pane_argv` alone only proves a pure function emits what it was handed — the silent bug lives
@@ -279,7 +301,11 @@ this simply omit the flag and fall back to the default config, which is correct 
 - Modify: `tests/test_install_pkg.py`
 
 - [ ] template: two **fixed** lines, `<string>--config</string>` and `<string>@CONFIG@</string>`,
-      rendered for every instance including the default — one path, no branch
+      **after** `<string>bridge</string>` — before it renders `agb --config X bridge`, which the
+      dispatch rejects as an unknown command and launchd then restarts for ever
+- [ ] `install.sh:412-416` needs a sixth `-e "s|@CONFIG@|$(rep "$config")|g"`; `rep()` already
+      handles the XML and sed escaping, and the post-render placeholder guard at `:425` makes an
+      omission loud
 - [ ] ⚠️ three template-adjacent things break or go vacuous (*review finding 5*):
       `dist/com.agbridge.plist:7` says "the **five** at-sign placeholders" — now six;
       `tests/test_install_pkg.py:885` and `:909` each assert `ProgramArguments ==` an **exact
@@ -292,6 +318,12 @@ this simply omit the flag and fall back to the default config, which is correct 
       earlier draft cited them by mistake*
 - [ ] ⚠️ **`--instance` refuses to run without `--statedir`** (decision 6). Silently inheriting the
       default instance's farm path is the worst failure in this plan
+- [ ] ⚠️ **`--instance` is refused outside the `mac` role.** `install.sh`'s option loop (`:262-292`)
+      is role-agnostic and `$config` is used by the farm role too, so
+      `install.sh farm --instance x` would write the farm's config to `~/.config/agbridge/x/config`
+      — which nothing on the farm reads (`agb hook` uses `agb.config_path()` only) — and report
+      success. `--label` and `--log-dir` are mac-only already, so this is mac-only sugar by
+      construction
 - [ ] ⚠️ **validate `<name>`**: it becomes a launchd label component, a plist *filename*, a log
       directory and a config *directory*, and `shell_safe` (`install.sh:119`) permits `.` and `/`
       — so `--instance ../../evil` passes it today. Alphanumerics, `-` and `_`; no `/`, no leading
@@ -309,6 +341,13 @@ this simply omit the flag and fall back to the default config, which is correct 
 - [ ] write tests: a real install into a throwaway `$HOME` renders a plist whose label, config and
       log paths agree; `plutil` validates it; the default instance's plist is unchanged apart from
       the two new lines
+- [ ] write tests for **both new guards**, which the first draft asserted only as acceptance
+      criteria: `--instance` without `--statedir` exits non-zero and installs **nothing**;
+      `--instance ../../evil` is refused; `install.sh farm --instance x` is refused. The `mac_args`
+      fixture takes `None` to drop a pinned flag, so
+      `mac_args(**{"--config": None, "--log-dir": None, "--instance": "hostb"})` is the shape
+- [ ] mutation-test each guard — Tasks 1, 3 and 4 introduce guards and only 2 and 5 had a mutation
+      checkbox
 - [ ] run tests
 
 ### Task 5: `agb-refresh --instance`, and saying which instance
@@ -319,6 +358,9 @@ this simply omit the flag and fall back to the default config, which is correct 
 
 - [ ] `--instance <name>` sets `--label com.agbridge.<name>` **and** the config path — those two
       must always move together, which is the whole reason for the sugar
+- [ ] also accept a plain `--config <path>`: limitation 7's install (`install.sh --config
+      <nondefault>`, no instance name) has no instance name to pass, so `--instance` alone leaves it
+      unable to refresh against its own map
 - [ ] ⚠️ **print the instance and config path on every run**, not only on failure. Limitation 1 is
       silent otherwise: refreshing the wrong instance succeeds and says so
 - [ ] pass `--config` through to `agb forget-rows` (which now derives placements from it too)
@@ -328,6 +370,18 @@ this simply omit the flag and fall back to the default config, which is correct 
       `WARNING: … still running after 10s; forgetting anyway` on **every** run — a warning that
       tells the operator the forget may be undone, in a recovery command they reached while already
       annoyed. The plist now carries `--config`, so match on `"$agb bridge --config $config"`
+- [ ] ⚠️ **but derive the pattern from the plist, never assume it.** A narrow pattern is silently
+      *vacuous* against a plist rendered before this change — and that is the normal state right
+      after adding an instance: `install.sh mac --instance hostb` renders only hostb's plist and
+      does not restart the default job, yet it **does** install the new `agb-refresh` (shared
+      `--dest`, decision 3). So the default bridge is running with no `--config` in its cmdline,
+      `bridge_alive()` returns false on the first call, the poll exits with **zero waits and no
+      warning**, and the forget lands while that bridge is still alive — re-minting rows against ids
+      it just closed. That is the `no such session` spam this script exists to cure, restored by a
+      fix aimed at a cosmetic warning. Grep `$plist` for `<string>--config</string>`: narrow when
+      present, broad plus a printed note when not
+- [ ] write a test for the **stale-plist** case — reachable from the existing fixture, which
+      pre-creates `com.agbridge.plist` as literal `<plist/>`
 - [ ] ⚠️ the `pgrep` stub (`tests/test_agb_refresh.py:45-50`) **ignores its argv entirely**, so no
       test can currently observe this or a regression. Teach it to honour the pattern. The fixture
       also pre-creates only `com.agbridge.plist` (`:57`), so `--instance` tests need a second plist
@@ -354,13 +408,16 @@ this simply omit the flag and fall back to the default config, which is correct 
 ### Task 7: [Final] Documentation and release
 
 **Files:**
-- Modify: `README.md`, `docs/commands.md`, `docs/cookbook.md`, `CLAUDE.md`, `CHANGELOG.md`
+- Modify: `README.md`, `docs/commands.md`, `docs/cookbook.md`, `docs/design.md`, `CLAUDE.md`,
+  `CHANGELOG.md`
 - Modify: `.claude/skills/agbridge/SKILL.md`
 - Modify: `agb` (the `VERSION` line only)
 
 - [ ] `docs/cookbook.md`: a **"a machine with no shared disk"** recipe, end to end
 - [ ] `docs/commands.md`: `--config` on bridge/close-done/forget-rows/pane, `--instance` on
       `install.sh` and `agb-refresh`
+- [ ] `docs/design.md`: CLAUDE.md calls it "the authority… reconciled against the implementation",
+      and this changes where rows, placements and `host_<name>` live on the Mac
 - [ ] `README.md`: the requirement currently reads "a shared directory that every agent host and the
       feed resolve to the same files" — it now needs the *per instance* qualifier
 - [ ] `.claude/skills/agbridge/SKILL.md`: a recipe. **The skill has no answer for this today**, which
