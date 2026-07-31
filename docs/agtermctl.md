@@ -314,21 +314,71 @@ command touches. Two were sitting in a live rows map when this was found. Reacti
 **`session restore` is the structural fix** and is not yet used: it pins the command a pane re-runs,
 which would let a row survive its command exiting at all. See the menu below.
 
+## What `agtermctl events` actually does — **CONFIRMED live, 2026-07-31**
+
+Shipped in agterm **v0.16.0** (2026-07-22, #273). Verbatim from `agtermctl help events` on v0.19.1:
+
+```
+OVERVIEW: Continuously print control events.
+
+USAGE: agtermctl events [--socket <socket>] [--json] [--kind <kind> ...] [--run <run>]
+                        [--after <after>] [--limit <limit>]
+  --kind    Event kind; repeat or comma-separate values.
+  --run     App-run UUID paired with --after.
+  --after   Sequence cursor paired with --run.
+  --limit   Events per read (1...1000).
+```
+
+An observed event, `--json`, one object per line — **flat, not nested** the way `tree --json` is:
+
+```json
+{"workspace":"AE519AEE-…","kind":"status","session":"B2567244-…","window":"D0088CF9-…",
+ "payload":{"blink":false,"status":"completed","name":"agbridge_dev · … · %15"},
+ "ts":1785494078.740017,"seq":24}
+```
+
+**`session` carries the row id**, which is what a `session.closed` reaction would key on.
+
+### Why agbridge does not use it
+
+Four findings, each from a run on the Mac, and together they sink the design that was written for it:
+
+1. **It follows; it does not return.** *"Continuously print"* is literal — cursorless, it printed
+   one current event and then sat there until interrupted. There is no batch-and-exit mode reachable
+   in practice, so consuming it means a **long-lived streaming subprocess** with its own liveness
+   story.
+2. **It starts at the tail.** `--kind session.closed` printed nothing across a 15 s window because
+   nothing closed *during* it. There is no history replay, so anything that happens while the bridge
+   is down is simply missed.
+3. **The run id is not obtainable.** Not in the event records, not in `tree --json` (whose top level
+   is `{"result":{"tree":{…}},"ok":true}` — no app-run anywhere), and there is no header or envelope
+   before the event lines (checked by redirecting to a file, so nothing could scroll past).
+   `--run/--after` must be paired, so **the cursor cannot be bootstrapped** — which removes both
+   catch-up and restart detection.
+4. **Possible buffering when stdout is not a tty.** The same command that printed an event to a
+   terminal produced an empty file when redirected. Either nothing happened in that window or
+   `agtermctl` block-buffers to a pipe — unresolved, and it matters: a consumer reading over a pipe
+   would get events in 4 KB chunks, which for "a row was closed" is close to useless.
+
+One consolation prize, worth recording because it is exactly the signal a restart detector would
+want: passing a stale cursor makes it **exit** with `Error: event run changed`. agterm compares the
+runs itself and says so. It just will not tell you the current one, so there is no way to store a
+cursor for next time.
+
+⚠️ **This is the second time the website reversed a design decision.** The original assessment here
+was "a second long-lived input, so a second thing that can wedge — it would need its own liveness
+story". `agterm.com/commands` said it returns a batch and exits, so that objection was marked
+**wrong** with a ✅. The binary says the original objection was **right**. The rule that follows is
+in `CLAUDE.md`: run it on the Mac before designing against it.
+
 ## What agbridge does not use yet
 
-⚠️ **This survey was made against `agterm.com/commands`, which documents a NEWER agterm than the
-one installed here.** Confirmed 2026-07-31: `agtermctl help events` falls through to the top-level
-help and `agtermctl events --json` fails with `Unknown option '--json'` — there is no `events`
-subcommand, and no `pick` either. **Nothing in the list below may be planned against until it has
-been run on the Mac.** The verbatim top-level list of what this build actually has:
-
-```
-tree  workspace  session  surface  dashboard  window  quick  sidebar
-notify  font  keymap  config  theme  restore
-```
-
-Note `restore` is **top-level** here, not `session restore` as the website has it — so even the
-entries that do exist may be spelled differently.
+⚠️ **Never plan against `agterm.com/commands` without running the command on the Mac.** On
+2026-07-31 that page described `events` and `pick`, and the installed agterm had neither — the
+Mac was on a build older than **v0.16.0**, which is where `agtermctl events` and
+`agtermctl session restore` both shipped (2026-07-22, #273 and #271). Upgrading to v0.19.1 made both
+appear. But the page was *also wrong about behaviour* on the build that has them: see the `events`
+entry below, where it cost two reversed design decisions.
 
 *Surveyed 2026-07-31 against `agterm.com/commands`. agterm exposes roughly **70** subcommands;
 agbridge calls **eight**: `session new`/`rename`/`status`/`close`/`split`/`scratch`/`type`, `notify`,
@@ -339,7 +389,7 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 
 | Command | What it would buy |
 |---|---|
-| ⛔ **`events`** — *read the app's control-event ring* | **DOES NOT EXIST on the installed agterm** (verified 2026-07-31). Design work is done and shelved in `docs/plans/20260731-agb-events-feedback-loop.md`, gated on an upgrade. The big one when it lands. The bridge is **write-only** today: it tells agterm things and learns nothing back. That is the root of a whole class of failures — a row lost by leaving its prompt (see the section above), an agterm restart, an app that forgot its sessions — where the map keeps naming ids that no longer exist, producing `no such session` spam, `[?]` leftovers, and `agb-refresh` as the manual repair. ✅ **The liveness objection recorded here originally was wrong**: `events` returns a batch and exits, with a `run`+`next` cursor to resume. It is an ordinary subprocess call like every other `agtermctl` call — no second stream, no new liveness story. |
+| ⚠️ **`events`** — *control-event stream* | **Exists from agterm v0.16.0; usable only as a long-lived stream.** Full findings in "What `agtermctl events` actually does" above. Would give live `session.closed` and `tree.changed`; would **not** give restart detection or catch-up, because no run id is obtainable. Design work is done and shelved in `docs/plans/blocked/20260731-agb-events-feedback-loop.md`. |
 | **`session restore`** — *pin the command a pane re-runs* | Promoted after 2026-07-31: this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today (see the section above). It would also let rows come back alive after an agterm restart rather than as dead panes — the other half of the reboot story in `docs/cookbook.md` — and shrink what `agb-refresh` is needed for. |
 | **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
 
