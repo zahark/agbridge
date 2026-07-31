@@ -396,12 +396,14 @@ this simply omit the flag and fall back to the default config, which is correct 
 - Modify: `agb-refresh`
 - Modify: `tests/test_agb_refresh.py`
 
-- [ ] `--instance <name>` sets `--label com.agbridge.<name>` **and** the config path — those two
+- [x] `--instance <name>` sets `--label com.agbridge.<name>` **and** the config path — those two
       must always move together, which is the whole reason for the sugar
-- [ ] also accept a plain `--config <path>`: limitation 7's install (`install.sh --config
+      — applied in one block after the option loop, each half `[ -n … ] ||`, so an explicit
+      `--label`/`--config` still wins (the same shape as `install.sh:335-355`)
+- [x] also accept a plain `--config <path>`: limitation 7's install (`install.sh --config
       <nondefault>`, no instance name) has no instance name to pass, so `--instance` alone leaves it
       unable to refresh against its own map
-- [ ] ⚠️ **give `$config` a real default — `DEFAULT_CONFIG="$HOME/.config/agbridge/config"`,
+- [x] ⚠️ **give `$config` a real default — `DEFAULT_CONFIG="$HOME/.config/agbridge/config"`,
       mirroring `install.sh:53`.** `agb-refresh`'s idiom for an unset path is the empty string
       (`rows=""`, `:53`), and empty is the one value that breaks all three uses below. Since the
       plist's `--config` is **unconditional** (decision 5), every instance's cmdline carries it — so
@@ -410,16 +412,19 @@ this simply omit the flag and fall back to the default config, which is correct 
       `WARNING: … still running after 10s` on the *most common* invocation: the mirror image of the
       symptom the previous checkbox removes. It would also print an empty path in the banner and
       make `--config ""` a missing-value error in `forget-rows`
-- [ ] ⚠️ **print the instance and config path on every run**, not only on failure. Limitation 1 is
+      — derived from a `DEFAULT_CONFIG_DIR` constant, the same two spellings `install.sh:53-57` has
+- [x] ⚠️ **print the instance and config path on every run**, not only on failure. Limitation 1 is
       silent otherwise: refreshing the wrong instance succeeds and says so
-- [ ] pass `--config` through to `agb forget-rows` (which now derives placements from it too)
-- [ ] ⚠️ **the liveness poll matches every instance.** `agb-refresh:111` is
+      — `instance: (default) -- label …, config …`, printed before the dry-run exit so it covers
+      that path too
+- [x] pass `--config` through to `agb forget-rows` (which now derives placements from it too)
+- [x] ⚠️ **the liveness poll matches every instance.** `agb-refresh:111` is
       `pgrep -f "$agb bridge"`, and `--dest` is shared, so instance A's bridge satisfies the pattern
       while B is being refreshed: B boots out, the poll never clears, and it prints
       `WARNING: … still running after 10s; forgetting anyway` on **every** run — a warning that
       tells the operator the forget may be undone, in a recovery command they reached while already
       annoyed. The plist now carries `--config`, so match on `"$agb bridge --config $config"`
-- [ ] ⚠️ **but derive the pattern from the plist, never assume it.** A narrow pattern is silently
+- [x] ⚠️ **but derive the pattern from the plist, never assume it.** A narrow pattern is silently
       *vacuous* against a plist rendered before this change — and that is the normal state right
       after adding an instance: `install.sh mac --instance hostb` renders only hostb's plist and
       does not restart the default job, yet it **does** install the new `agb-refresh` (shared
@@ -429,16 +434,33 @@ this simply omit the flag and fall back to the default config, which is correct 
       it just closed. That is the `no such session` spam this script exists to cure, restored by a
       fix aimed at a cosmetic warning. Grep `$plist` for `<string>--config</string>`: narrow when
       present, broad plus a printed note when not
-- [ ] write a test for the **stale-plist** case — reachable from the existing fixture, which
+- [x] write a test for the **stale-plist** case — reachable from the existing fixture, which
       pre-creates `com.agbridge.plist` as literal `<plist/>`
-- [ ] ⚠️ the `pgrep` stub (`tests/test_agb_refresh.py:45-50`) **ignores its argv entirely**, so no
+      — `test_a_plist_without_the_config_flag_falls_back_to_a_broad_wait`, which asserts both that
+      the wait still happened *and* that `--config` is absent from the pattern
+- [x] ⚠️ the `pgrep` stub (`tests/test_agb_refresh.py:45-50`) **ignores its argv entirely**, so no
       test can currently observe this or a regression. Teach it to honour the pattern. The fixture
       also pre-creates only `com.agbridge.plist` (`:57`), so `--instance` tests need a second plist
       or they take the "no plist" branch
-- [ ] write tests: `--instance` produces the right label and config; the banner names them; the
+      — the stub now substring-matches `$2` against an `AGBR_ALIVE_CMDLINE` the test sets (what
+      `pgrep -f` does against a real cmdline), and the fixture grew `write_plist(label, …)`
+- [x] write tests: `--instance` produces the right label and config; the banner names them; the
       default run is unchanged
-- [ ] mutation-test: drop the banner → the naming test fails
-- [ ] run tests
+      — 16 new tests, including the two *directions* of the pattern bug
+      (`test_the_wait_ignores_another_instances_bridge`,
+      `test_a_plain_refresh_ignores_a_named_instances_bridge`) and a positive control
+      (`test_the_wait_still_sees_the_bridge_it_is_actually_replacing`), because both negatives pass
+      if the poll simply never matches anything — the dangerous failure, not the safe one
+- [x] mutation-test: drop the banner → the naming test fails
+      — 8 mutations, each killed by a *named* test: dropping the banner fails
+      `test_the_banner_names_the_instance_and_the_config_it_acted_on`; an empty `$config` default
+      fails `test_a_plain_refresh_ignores_a_named_instances_bridge` (the mirror-image bug); a
+      narrow pattern *assumed* rather than grepped from the plist fails
+      `test_a_plist_without_the_config_flag_falls_back_to_a_broad_wait`; never narrowing fails both
+      direction tests; dropping either half of the `--instance` sugar, the `--config` passthrough,
+      or `instance_ok` fails only its own tests
+- [x] run tests — `python3 -m pytest tests/ -q`: **1494 passed**; `sh -n install.sh` and
+      `sh -n agb-refresh` clean; `wc -c agb` still 102,429
 
 ### Task 6: verify acceptance criteria
 
