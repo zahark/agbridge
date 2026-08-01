@@ -23,11 +23,21 @@ die() { printf 'agb-ralphex: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat >&2 <<'EOF'
-usage: agb-ralphex [--name <label>] [-- <ralphex args>...]
+usage: agb-ralphex [--name <label>] [--] <ralphex args>...
+
+  agb-ralphex plan.md                    # the common case
+  agb-ralphex plan.md --dry-run          # flags after the plan need nothing
+  agb-ralphex -- --dry-run plan.md       # a LEADING flag needs the --
+  agb-ralphex --name auth -- plan.md
 
   --name <label>  what the row is called (default: the plan file's basename)
-  --              everything after this is passed to `ralphex`
+  --              stop reading options here; everything after goes to ralphex
   -h, --help      this message
+
+Parsing stops at the first argument that is not one of the options above, so
+`--` is only needed when ralphex's own first argument starts with a dash. A
+leading flag without it is refused rather than guessed at: whose `--name` is
+it, this wrapper's or ralphex's?
 
 The row appears when ralphex starts and closes when it exits; the Mac banners
 on the close, via notify_on_completed_after. Per-task rows still appear for the
