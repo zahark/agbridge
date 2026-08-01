@@ -376,19 +376,24 @@ environment — several are version- or mount-specific.
   behind the `blocked` banner) is the worked example; substituting `applied` there fails five named
   tests. This distinction has now caused two separate bugs — assume it will cause a third.
 
-## Where the project is (2026-07-31)
+## Where the project is (2026-08-01)
 
-`VERSION` is **0.5.0**, unreleased: `CHANGELOG.md`'s `Unreleased` section holds it and the tag has
-not been cut. The feature is **instances** — a machine that shares no disk with the first is now an
-install (`install.sh mac --instance <name> --statedir …`), one independent bridge per machine, all
-rendering into the same sidebar. One flag, `--config`, carries it everywhere: bridge, `close-done`,
+Released **0.5.0** — **instances**: a machine that shares no disk with the first is now an install
+(`install.sh mac --instance <name> --statedir …`), one independent bridge per machine, all rendering
+into the same sidebar. One flag, `--config`, carries it everywhere: bridge, `close-done`,
 `forget-rows`, the row's own `agb pane` command, the launchd plist and `agb-refresh`. Invariant 12
 and `docs/design.md` §5 hold the reasoning; the seven limitations are written out there, the first of
 which — a helper without `--instance` succeeding on the wrong instance — is mitigated only by the
 banner those commands now print on every run.
 
-Released **0.4.0** — notifications: a banner when an agent blocks, one when a new agent appears, and
-the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
+⚠️ **It shipped without ever having been run live**, which is unusual here and is said out loud in
+`CHANGELOG.md`'s `### Not verified`: nobody has had two bridges up on one Mac. The check that
+matters is clicking a row from *each* instance and landing on the right machine. Until that is done,
+treat the feature as tests-only — and this project's own history is that two of the last four
+features passed every test and still needed a fix after live use.
+
+Before it, **0.4.0** — notifications: a banner when an agent blocks, one when a new agent appears,
+and the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
 budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
 path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
 `agb_mac`/`agb_ops`). 1769 tests.

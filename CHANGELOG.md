@@ -6,7 +6,7 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
-## Unreleased
+## 0.5.0 — 2026-08-01
 
 ### Added
 
