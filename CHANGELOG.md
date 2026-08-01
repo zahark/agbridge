@@ -74,6 +74,138 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   install, which has no instance *name* to pass. Default installs, which is everyone else, are
   unaffected: same plist but for the two new lines, same map, same placements, same row commands.
 
+  ⚠️ **`install.sh --config` must now be an absolute path**, and is refused otherwise. It is the one
+  path that reaches launchd, and the job runs with `WorkingDirectory /tmp`: `--config relcfg/config`
+  wrote a real config to `$PWD/relcfg/config`, reported success, and handed the bridge
+  `/tmp/relcfg/config` — read as `{}`, dying in a `KeepAlive` restart loop whose error named a file
+  that existed where you were standing. The quoted `~/…` form was worse still, because
+  `install-config` expands it and the plist does not, so the two halves of one install disagreed
+  about which file they meant. Every other path flag already went through the same check.
+
+  **Re-installing an existing instance keeps the `mac_id` it already has.** Adoption fires on every
+  `--instance` run without `--mac-id` — i.e. on a routine upgrade — and a given id beats a recorded
+  one, so probing only the default config *replaced* the instance's own. Every farm host of that
+  cluster kept watching `bridge/<old-id>.beat`, so `agb status-line` read `bridge:DOWN` for ever out
+  of an install asked to change nothing. Its own config is probed first now, the default's second.
+
+  **`agb-refresh --instance <name>` reads the config out of that instance's plist** instead of
+  rebuilding `~/.config/agbridge/<name>/config` by convention. `install.sh mac --instance hostb
+  --config <elsewhere>` is supported, and against such an install the convention named a file that
+  does not exist: `forget-rows` answered `the map is already empty` and exited 0 — the recovery
+  command reporting success for a map it never opened, while the real one kept its stale bindings.
+  The same plist value now feeds the liveness pattern, which also gained a trailing path boundary:
+  `pgrep -f` is an unanchored regex, so `…/agbridge/config` matched an instance named `configb`.
+
+  **A config path read out of a plist is XML-decoded, and regex-quoted before it becomes a
+  pattern.** `install.sh` escapes what it writes, so `--config '/tmp/a&b/config'` reaches the plist
+  as `&amp;` and `plutil -lint` is happy with it; and `pgrep -f` reads an *extended regular
+  expression*, so a config at `/tmp/a+b/config` interpolated raw matches `ab` and not the path it
+  came from. Both failed the same silent way: the liveness poll matched no bridge, exited with zero
+  waits and no warning, and the forget landed under a live bridge — which merges-then-writes and
+  re-mints rows against the ids `forget-rows` had just closed. Undecoded, `--config` was also wrong
+  for `forget-rows` itself, which then answered `the map is already empty` for a map it never opened.
+
+  **`agb pane` says which config it resolved through, and says so when it cannot read it.** A row
+  command hard-codes the absolute config path it was minted with, so moving, renaming or
+  reinstalling an instance made every existing row fall back to the bare hostname — silently, with
+  no error and no exit code, which for two clusters with overlapping short hostnames is the wrong
+  machine again. **Unreadable counts as "cannot read", not just missing:** `read_config` re-raises
+  everything except `ENOENT`, and agterm closes a session when its command exits — so a config with
+  the wrong mode printed a traceback and *destroyed a live agent's row* instead of warning inside
+  it. It now reads as `{}` with the errno named on the row, which is also what makes that branch of
+  the warning reachable at all.
+
+  ⚠️ **And the warning fires on whether the READ failed, not on whether `--config` was typed.** The
+  flag is emitted only for a non-default instance, so gating the diagnostic on it left the majority
+  of rows — every default install's — swallowing an unreadable **default** config in complete
+  silence: no `host_<name>` table, no `jump_host`, and a row that looks healthy while it resolves
+  the bare hostname. On a two-instance Mac the default instance *is* instance A, so that is exactly
+  the wrong-machine failure the warning exists for, arriving with the warning taken away. A merely
+  *absent* config still says nothing, which is the normal state of a plain install.
+
+  And the `no such session` hint the bridge logs now carries **this** instance's `--config`: a fixed
+  `Run agb-refresh` is instance A's recipe printed in instance B's log, and followed literally it
+  succeeds — on the wrong instance.
+
+  ⚠️ **That hint is only correct because `agb-refresh` binds the label to the config it is given.**
+  `--config` does not move the launchd label by itself, and while it did not, the new hint was
+  *worse* than the fixed one it replaced: it booted out `com.agbridge`, waited for the **default**
+  bridge to exit, then ran `forget-rows` against this instance's map while **this** instance's
+  bridge was still running — the one condition the wait exists to prevent. The rows came back closed
+  in agterm with the map still full of dead bindings. A config path is the only identity a bridge
+  has (nothing tells it its instance name or its label), so the two halves are one change:
+  `agb-refresh --config <path>` now looks that path up in the plists and adopts the label of the job
+  that names it, saying so when nothing does.
+
+  ⚠️ **That lookup compares the path *canonically*, because the two halves of the command normalise
+  differently.** The label is matched against the plist's text; the map is derived by
+  `forget-rows` with `os.path.dirname`, which normalises. So a spelling that still names the right
+  map — `//`, a `.` segment, a relative path typed from the instance's own directory, a symlinked
+  `$HOME` — named the right map under the *default* label, which is the bounce this matching exists
+  to prevent: stop instance A, wait for A's bridge, then forget B's bindings while B's bridge is
+  live and merging them back. Reachable by hand, too: this is the path `agb pane`'s warning tells
+  you to type. A path whose directory does not exist has **no** canonical form and matches nothing
+  rather than matching anything — and when nothing matches, the `note:` now names the job it is
+  about to bounce and the bindings it is about to discard, since it is the one case where the label
+  and the map provably come from different places.
+
+  ⚠️ **…and it compares the resolved DIRECTORY, which is all the map is made of.** `rows` and
+  `placements` are `dirname(config)/rows` and `dirname(config)/placements`, so the basename plays no
+  part; keeping it in the comparison made the match *narrower* than the thing it guards. Every
+  spelling with a different final component — `<dir>/`, `<dir>//`, `<dir>/anything` — named the
+  right map under the **default** label, and `--config ~/.config/agbridge/hostb/` is what
+  tab-completing the instance's directory leaves on the command line. Two instances deliberately
+  installed into one directory now both match, which is right: they share the map too, and the
+  "more than one launchd job claims this config's map" warning is the report that deserves.
+
+  ⚠️ **Matching the map and choosing between the matches are different questions**, and running them
+  together let a job that merely *shares* the directory beat the one whose config was named exactly:
+  `*.plist` expands in collating order, so `com.agbridge.aaa` naming `<dir>/config.bak` won a
+  `--config <dir>/config` run. Every directory-equal job is still a match and every one is reported;
+  the one naming this exact file is the one used, compared canonically so `<dir>//config` still
+  counts. **And a plist carrying no `--config` is an answer, not a silence** — the bridge it starts
+  resolves the default config itself, so that is the map it holds. Skipping it made the wrong-job
+  bounce *silent*: with a second job's config installed into the default directory (one map, two
+  jobs), `agb-refresh --config <default config>` saw only the instance's plist, adopted its label,
+  bounced it, and had nothing to warn about because it was then the only match — while the default
+  bridge kept running over the map that was rewritten under it. The implication is confined to
+  **readable** plists in the **`com.agbridge`** label space: `plist_config` answers `""` equally for
+  "no `--config`" and "could not read it", and `~/Library/LaunchAgents` is shared with every other
+  program on the Mac.
+
+  ⚠️ **A narrow liveness miss now means "not proven gone", not "gone".** The pattern comes from the
+  **plist**; the question is about the **running process**, and nothing keeps those in step —
+  `install.sh mac --no-load` writes the plist and deliberately leaves the old bridge running, a
+  hand-started bridge carries whatever was typed, a re-rendered plist describes a process that has
+  not restarted. In each, the plist carries `--config` and the live bridge does not: the pattern
+  missed on the *first* poll, the wait was skipped with no output at all, and `stopped:` was printed
+  as a claim nobody checked — the forget landing under a live bridge, which merges-then-writes and
+  re-mints rows against the ids just closed. Before the pattern was narrowed that bridge **was**
+  waited for, so this was a regression rather than a gap. A miss now asks one further question — is
+  a bridge up carrying no `--config` at all? — by subtracting `pgrep -f "<agb> bridge --config"` from
+  `pgrep -f "<agb> bridge"`, since "does not contain" is not a regular expression. The wait is
+  announced with its reason. A bridge carrying some *other* `--config` is still not waited for: it
+  belongs to whichever instance that path names.
+
+  ⚠️ **That probe asks its question only on a run repairing the *default* map.** Its first
+  justification — no 0.5.0 plist can start an untagged bridge, so it cannot be another instance's —
+  is true only of a bridge some 0.5.0 plist *started*, and the commonest untagged bridge on a Mac
+  with instances is the **default job's**, still running from a plist rendered before the flag
+  existed because `install.sh mac --instance <name>` renders only the new instance's plist and does
+  not restart it. Against that bridge the probe waited the full 10 s on **every**
+  `agb-refresh --instance <name>` and then printed `com.agbridge.<name> is still running after 10s` —
+  a warning that the forget may have been undone, provably false, on every run of a recovery command:
+  the exact every-run warning narrowing the pattern was meant to remove. An untagged bridge *is*
+  attributable, just not by its command line: with no `--config` it resolves the default config
+  itself, so the default map is the only one it can hold, and that is when the wait is kept. The 10 s
+  warning also names **what was still running** — a probe-driven wait used to name `$label`, the job
+  that had just been booted out and is precisely what the poll is no longer matching.
+
+  **`agb pane`'s unreadable-config warning names the file even when the exception does not.** A
+  config that is a *directory* opens fine and fails in `os.read`, and errors from `os.read` carry no
+  filename: the warning read `[Errno 21] Is a directory`, naming nothing — on a default row, where
+  no other line of the identity block names a config either.
+
 ### Fixed
 
 - **A row agterm has forgotten is written to once, not for ever.** Closing a row — by hand, or by
@@ -96,6 +228,19 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   agterm's own words. A missing binary, a hung call or a permissions problem keeps being retried —
   otherwise one broken `agtermctl` would silently stop the bridge painting anything at all, which is
   far worse than the noise it replaces.
+
+### Not verified
+
+- **Instances have never been run live.** All of the above is covered by tests only — nobody has yet
+  had two bridges up on one Mac. The check that matters is **clicking a row from each instance and
+  landing on the right machine**: that path (`pane_argv` → the row's command → `agb pane`'s own
+  config read) is exactly the one every unit test passes through without performing. Two of the last
+  four features passed every test and still needed a fix after live use, and a feature about *which
+  machine you reach* is squarely in that class. `README.md`'s verification table carries ⬜ rows for
+  both checks.
+- **The banner has not been read in anger.** Limitation 1's entire mitigation is that these commands
+  name the instance they acted on. Worth running a bare `agb-refresh` on purpose while both bridges
+  are up, to see whether the line actually tells you which one moved.
 
 ## 0.4.0 — 2026-07-31
 

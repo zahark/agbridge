@@ -3034,3 +3034,78 @@ def test_forget_rows_names_the_placements_file_it_will_write(mac, tmp_path):
     out = _RowOut()
     mac.run_forget_rows(["--config", hostb], out=out, run=_tree_run)
     assert mac.placements_path(hostb) in out.text
+
+
+@pytest.mark.parametrize("name", ["close-done", "forget-rows"])
+def test_a_dry_run_says_which_instance_it_would_have_acted_on(mac, tmp_path,
+                                                              name):
+    """⚠️ The dry run is the run that most needs the banner, and the easiest
+    one to lose it on.
+
+    `--dry-run` is what an operator who is unsure which instance they are on
+    actually types, and both commands answer it from the map they resolved --
+    so a banner printed after the dry-run branch, or skipped for it, would
+    withhold the answer from precisely the question being asked. It is emitted
+    before anything is read for exactly that reason.
+    """
+    hostb = _instance(tmp_path, "hostb")
+    _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    out = _RowOut()
+    _run_row_command(mac, name, ["--config", hostb, "--dry-run"], out)
+    assert hostb in out.text
+    assert mac.rows_path(hostb) in out.text
+    # Non-vacuity: it really was a dry run -- the entry is still there.
+    assert mac.load_rows(mac.rows_path(hostb)).done_entries() == [
+        ("bbbb2222", "ROW-3")]
+
+
+# ---------------------------------------------------------------------------
+# the stale-row hint names the instance whose log it is written into
+# ---------------------------------------------------------------------------
+
+def test_the_stale_row_hint_names_this_instances_own_refresh(mac, tmp_path):
+    """⚠️ A fixed `Run agb-refresh` is instance A's recipe in instance B's log.
+
+    Followed literally from B's log it *succeeds*: it stops `com.agbridge`,
+    forgets A's bindings and restarts it, while B's stale row is as stale as it
+    was. Limitation 1's declared mitigation is that the output names the
+    instance, and the bridge is the one process that certainly knows its own
+    config path.
+
+    ⚠️ This asserts the string's SHAPE, and that is not enough on its own: the
+    recipe is a command a human types, and `--config` does not move the launchd
+    label by itself. What the string *does* -- run through `agb-refresh`'s own
+    resolution -- is asserted in
+    `tests/test_agb_refresh.py::test_the_bridges_own_stale_row_recipe_acts_on_the_bridge_that_printed_it`,
+    which is the guard that matters. An earlier version of this recipe passed
+    the assertion below while bouncing the default job and forgetting THIS
+    instance's map underneath its own live bridge.
+    """
+    hostb = _instance(tmp_path, "hostb")
+    warnings = []
+    renderer = mac.RowRenderer(
+        mac.BridgeModel(), mac.RowMap(mac.rows_path(hostb)),
+        run=Runner(fail=["rename"], err="error: no such session: ROW-3"),
+        warn=warnings.append, settings={"config": hostb})
+    renderer._agtermctl(["session", "rename", "t", "--target", "ROW-3"])
+    hint = [line for line in warnings if "is gone from agterm" in line]
+    assert hint, warnings
+    assert "agb-refresh --config %s" % (hostb,) in hint[0]
+
+
+def test_the_stale_row_hint_stays_short_for_the_default_instance(mac, agb,
+                                                                 tmp_path):
+    """The other half, and the reason the flag is conditional: a default
+    install's advice must not grow a flag it does not need -- the same rule
+    `pane_argv` follows, so that nothing about a one-instance Mac changes."""
+    _instance(tmp_path)
+    warnings = []
+    renderer = mac.RowRenderer(
+        mac.BridgeModel(), mac.RowMap(mac.rows_path(agb.config_path())),
+        run=Runner(fail=["rename"], err="error: no such session: ROW-1"),
+        warn=warnings.append, settings={"config": agb.config_path()})
+    renderer._agtermctl(["session", "rename", "t", "--target", "ROW-1"])
+    hint = [line for line in warnings if "is gone from agterm" in line]
+    assert hint, warnings
+    assert "Run agb-refresh to" in hint[0]
+    assert "--config" not in hint[0]

@@ -217,20 +217,28 @@ wrong directory, then create it and report an empty farm for ever. Spell it as i
 machine**, absolutely: a `~` is expanded by the Mac's shell, and the Mac's home is not the path the
 feed will be given.
 
-What it writes, all of it new:
+What the installer writes, all of it new:
 
 | | |
 |---|---|
 | config | `~/.config/agbridge/hostb/config` |
-| rows map | `~/.config/agbridge/hostb/rows` |
-| remembered workspaces | `~/.config/agbridge/hostb/placements` |
-| launchd job | `com.agbridge.hostb` |
-| logs | `~/Library/Logs/agbridge/hostb/bridge.err.log` |
+| launchd job | `com.agbridge.hostb` (plist in `~/Library/LaunchAgents`) |
+| logs | `~/Library/Logs/agbridge/hostb/` |
+
+And what appears **later**, created by the bridge itself the first time it has something to record —
+so an empty `~/.config/agbridge/hostb/` straight after the install is normal, not a failed install:
+
+| | |
+|---|---|
+| rows map | `~/.config/agbridge/hostb/rows` — written when the first row is minted |
+| remembered workspaces | `~/.config/agbridge/hostb/placements` — written by `agb-refresh` |
 
 Your existing instance is untouched, and the **code** is shared: one `~/.local/lib/agbridge`, N
-configurations. It also **adopts the `mac_id` you already have** rather than minting a second — that
-id names your Mac, and each cluster's beat file lives in its own statedir, so the same id in both
-places is correct.
+configurations. It also **adopts a `mac_id` rather than minting one** when you do not pass
+`--mac-id`: this instance's own config first (so re-running the install on an existing instance
+never changes its id), then the default instance's. That id names your Mac, and each cluster's beat
+file lives in its own statedir, so the same id in both places is correct. If neither config has one —
+a Mac whose *first* install is a named instance — it mints one, and the `next:` hint carries it.
 
 **Copy the `next:` command it prints.** It already carries the mac-id *and* this instance's statedir.
 

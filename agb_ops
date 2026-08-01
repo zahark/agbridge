@@ -1892,7 +1892,7 @@ def parse_pane_args(argv):
     return opts
 
 
-def pane_settings(opts, config=None):
+def pane_settings(opts, config=None, unreadable=None):
     """(ssh target, jump host) -- the two things the config decides.
 
     `--jump` is the bridge's *hint*: `agb_mac.jump_for` already withholds it for
@@ -1912,9 +1912,36 @@ def pane_settings(opts, config=None):
     hostname that resolves nowhere. `opts.get`, not `opts[...]`: a row minted
     before the flag existed carries no `--config` and must keep working against
     the default config, which `read_config(None)` is exactly.
+
+    ⚠️ An UNREADABLE config is `{}` here, not an exception, because **agterm
+    closes a session when its command exits** (docs/agtermctl.md). `read_config`
+    re-raises everything except `ENOENT`/`ENOTDIR` and `agb.__main__` catches
+    only `AgbError`, so an `EACCES`/`EISDIR`/`ESTALE` config printed a traceback
+    and *destroyed the row* -- a permissions problem taking a live agent's row
+    off the sidebar, which is the opposite of a diagnostic. A missing config was
+    already `{}` (`read_config` swallows `ENOENT`), so this only makes the
+    unreadable one behave like the absent one.
+
+    ⚠️ ...but silence here is the wrong-machine bug with the diagnostic taken
+    away, so the failure is HANDED BACK rather than dropped. `unreadable`, when
+    given, is the caller's list and the exception is appended to it -- the same
+    out-parameter shape as `agb.read_config(warnings=...)`, and for the same
+    reason: only the printing caller wants it, and a module global would be one
+    more thing every reader had to remember to clear. It exists because the
+    warning used to be gated on the row carrying a `--config`, and the row minted
+    by a DEFAULT install carries none (`agb_mac.pane_argv` withholds the flag for
+    the default path), so the majority of rows swallowed an `EACCES` default
+    config in complete silence: bare hostname, no `jump_host`, a row that looks
+    healthy. Whether the read FAILED is the question; whether a flag was typed is
+    not.
     """
     if config is None:
-        config = agb.read_config(opts.get("config"))
+        try:
+            config = agb.read_config(opts.get("config"))
+        except (OSError, IOError) as exc:
+            config = {}
+            if unreadable is not None:
+                unreadable.append(exc)
     target = ssh_target_for(opts["host"], config)
     jump = opts["jump"] or config.get("jump_host")
     if jump and jump in (target, opts["host"]):
@@ -2010,6 +2037,12 @@ def pane_identity_lines(opts, target, jump=None):
     be attached to must still answer "which agent is this, and where does it
     live" -- which is the whole difference between a dashboard and a dashboard
     that lies.
+
+    The config is part of "which agent is this" once a Mac runs more than one
+    bridge: it is the file the ssh target on the line above was resolved
+    through, so an operator looking at two rows that claim the same host can see
+    which instance each of them belongs to. Printed only when the row carries
+    one, so a default install's output is exactly what it always was.
     """
     lines = [
         "agb pane %s -- key %s" % (agb.VERSION, opts["key"]),
@@ -2018,7 +2051,76 @@ def pane_identity_lines(opts, target, jump=None):
     ]
     if jump:
         lines.append("    via jump host %s" % (jump,))
+    if opts.get("config"):
+        lines.append("    config %s" % (opts["config"],))
     return lines
+
+
+def pane_config_warning(path, exc=None):
+    """A line, or None, for a config this Mac cannot read.
+
+    ⚠️ `read_config` answers `{}` for a missing file and `ssh_target_for` then
+    returns the raw `host`, so the failure is a **bare hostname** and nothing
+    else: no error, no exit code, a row that looks like it worked. The row
+    command hard-codes the absolute config path it was minted with, so moving,
+    renaming or reinstalling an instance turns every existing row into that
+    silent fallback -- and for two clusters with overlapping short hostnames
+    "the wrong machine" is back, by the one path no bridge-side test can see.
+
+    **Two sources, because there are two failures and only one of them raises.**
+    `exc` is the read `pane_settings` already attempted and lost (`EACCES`,
+    `EISDIR`, `ESTALE` -- everything `read_config` re-raises); `path` is probed
+    with an `open()` here only when there is no such exception, because the
+    missing-file case is the one `read_config` FORGIVES, and a `--config` naming
+    a file that is not there is exactly the moved-instance failure below. Given
+    an `exc` the probe is skipped rather than repeated: re-opening would ask the
+    filesystem a question already answered, and would print nothing at all if
+    the answer changed between the two calls.
+
+    An `open()` rather than `os.path.exists`, because `exists` swallows every
+    stat errno: a permissions problem or a broken mount would otherwise be
+    reported as "does not exist", which is a different repair.
+
+    ⚠️ That distinction is only worth drawing because `pane_settings` treats an
+    unreadable config as `{}`. While it re-raised, this line was written only in
+    the `ENOENT` case -- every other errno crashed the row before the warning
+    was reached, so the branch that names them read as live code and was dead.
+    The two belong together; neither is complete alone.
+
+    ⚠️ The path is spelled SEPARATELY when the exception does not carry it, and
+    "an `OSError` always carries the filename" -- which is what this said -- is
+    false for exactly the case that matters. `os.open`/`open` do set `filename`,
+    so `EACCES` renders as `[Errno 13] Permission denied: '/…/config'`; but a
+    config that is a DIRECTORY opens fine and fails in `os.read`, and errors
+    raised by `os.read` carry no filename at all: `[Errno 21] Is a directory`,
+    naming nothing. On a default row -- which carries no `--config`, so no other
+    line of the identity block names a config either -- that warning told the
+    operator a file somewhere could not be read and left them to guess which.
+    Tested with `getattr`, not by errno: whether a filename was attached is the
+    question, and the set of errnos that arrive without one is not fixed.
+
+    The `agb-refresh --config <path>` it recommends acts on the right launchd
+    job because `agb-refresh` binds the label to the config it is given
+    (`bind_label_to_config`). Passing the path alone is deliberate: it is the
+    one identity a row carries, and the instance NAME is not on the command
+    line at all.
+    """
+    if exc is None:
+        try:
+            handle = open(path)
+        except (OSError, IOError) as err:
+            exc = err
+        else:
+            handle.close()
+            return None
+    detail = "%s" % (exc,)
+    if getattr(exc, "filename", None) is None:
+        detail = "%s: %s" % (path, detail)
+    return ("    WARNING: this row's config could not be read (%s), so no "
+            "host_<name>\n             table and no jump_host were found and "
+            "the ssh target above is\n             the bare hostname. Fix the "
+            "file's permissions, or re-run\n             agb-refresh --config "
+            "<the instance's config> to re-mint the rows." % (detail,))
 
 
 def pane_wait(prompt):
@@ -2200,9 +2302,35 @@ def run_pane(argv, out=None, ask=None, run=None, config=None):
     if out is None:
         out = sys.stdout
     opts = parse_pane_args(argv)
-    target, jump = pane_settings(opts, config)
+    unreadable = []
+    target, jump = pane_settings(opts, config, unreadable)
     for line in pane_identity_lines(opts, target, jump):
         out.write(line + "\n")
+    # Only when the read actually happened here: an injected `config` dict is a
+    # test seam that never opens a file, and warning about one it did not read
+    # would be a diagnostic about nothing.
+    #
+    # ⚠️ Two gates, not one, and the first is THE READ FAILED rather than "a
+    # `--config` was typed". A row minted by a default install carries no
+    # `--config` (`agb_mac.pane_argv` withholds it for the default path), so
+    # gating on the flag alone left an `EACCES`/`EISDIR`/`ESTALE` DEFAULT config
+    # silent on the majority of rows -- and the default instance is instance A,
+    # whose table is exactly the one whose absence puts the wrong machine back.
+    # `agb.config_path()` is the file `read_config(None)` just failed on, named
+    # here because `opts` cannot name it.
+    #
+    # The second gate stays `opts.get("config")`, and is why a merely-ABSENT
+    # default config still prints nothing: `read_config` forgives `ENOENT` (and
+    # `ENOTDIR`) without raising, so having no config file at all -- the normal
+    # state of a plain install -- reaches neither gate. A row that NAMES one is
+    # different: it named a file that has to exist, so the probe runs.
+    if config is None:
+        exc = unreadable[0] if unreadable else None
+        path = opts.get("config")
+        if exc is not None or path:
+            warning = pane_config_warning(path or agb.config_path(), exc)
+            if warning:
+                out.write(warning + "\n")
     if not (opts["tmux"] or opts["pane"]):
         # Only the non-tmux identity tiers land here now: plain ssh on machine
         # #3 and the session-leader fallback record neither field. A pane with

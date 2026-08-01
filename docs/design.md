@@ -29,7 +29,7 @@ Three roles, referred to throughout by these names:
 
 | Name | What it is |
 |---|---|
-| **the Mac** | your workstation, running agterm and the `agb bridge` launchd job. It never reads the shared directory — it only ever sees the feed's stdout. |
+| **the Mac** | your workstation, running agterm and the `agb bridge` launchd job. It never reads the shared directory — it only ever sees the feed's stdout. One job **per instance**: a machine that shares no disk with the first is a second bridge into the same sidebar (§5, *One Mac, several instances*). |
 | **box #2** | a cluster host you can `ssh` to directly. The Mac's single long-lived `ssh` runs `agb feed` here, so this host's agents get sub-poll-interval liveness. |
 | **machine #3** | any *other* cluster host that shares the same statedir but has **no** `feed` running — typically reachable only by hopping through box #2. Its agents are visible because they write to the same shared directory, but nothing there proves their liveness between hook invocations. |
 
@@ -43,7 +43,7 @@ A fourth machine costs nothing — it needs the shared mount and the hooks, and 
 |---|---|---|---|
 | `agb hook <state>` | farm | `agb` | **hundreds per session** — the hot path |
 | `agb feed <mac-id>` | farm (box #2) | `agb` | one long-lived process per bridge connection |
-| `agb bridge` | Mac | `agb` → `agb_mac` | one long-lived launchd job |
+| `agb bridge` | Mac | `agb` → `agb_mac` | one long-lived launchd job **per instance** (§5) |
 | `agb close-done` | Mac | `agb` → `agb_mac` | operator, on demand |
 | `agb pane <key> …` | Mac | `agb` → `agb_ops` | one per row click |
 | `agb doctor` | farm | `agb` → `agb_ops` | operator, on demand |
@@ -584,7 +584,7 @@ Rows are therefore never *auto*-closed, which means the sidebar would grow monot
 agent ever run. Reclamation is **`agb close-done`**:
 
 ```sh
-agb close-done [--rows PATH] [--dry-run]
+agb close-done [--rows PATH] [--config PATH] [--dry-run]
 ```
 
 a **separate short-lived command**, not `agb bridge --close-done`. Both the row map and `agtermctl`
@@ -1145,7 +1145,7 @@ Chosen per file by which property matters more:
 | `sweep/*.marker` | **in place** | same — its mtime is the throttle |
 | `gen/*.marker` | **temp + `rename()`** | its **content** is the sole key list; content atomicity dominates |
 | `sessions/*.json` | **temp + `rename()`** | torn reads matter |
-| `~/.config/agbridge/rows` (Mac) | **temp + `rename()`** | its **content** is the whole key ↔ row bijection; content atomicity dominates |
+| `dirname(<config>)/rows` (Mac) — `~/.config/agbridge/rows` for the default instance | **temp + `rename()`** | its **content** is the whole key ↔ row bijection; content atomicity dominates |
 
 Temp names are `<name>.tmp.<host>.<pid>.<rand>`, opened `O_EXCL` so a name collision fails loudly
 rather than letting two writers share a temp.
@@ -1408,23 +1408,147 @@ Three guards exist because their absence is silent rather than loud:
 **`agb-refresh` moves the label and the config together**, which is the entire reason `--instance` is
 sugar there too: a label without its config stops instance B and forgets instance A's bindings. Its
 liveness poll — the one that waits for the old bridge to actually exit — matches
-`<agb> bridge --config <config>`, because `--dest` is shared and a bare `<agb> bridge` matches every
-instance's process. ⚠️ **But it greps the plist for `--config` first and widens the pattern when it
-is absent.** A narrow pattern is *vacuously false* against a plist rendered before this change, and
-that is the normal state right after adding an instance: `install.sh mac --instance hostb` renders
-hostb's plist, does not restart the default job, and *does* install the new `agb-refresh`. Assuming
-the narrow pattern would make the poll return immediately with no warning and let the forget land
-while that bridge is still alive — re-minting rows against ids it just closed, which is the
-`no such session` spam `agb-refresh` exists to cure, restored by a fix aimed at a cosmetic warning.
+`<agb> bridge --config <config>([[:space:]]|$)`, because `--dest` is shared and a bare
+`<agb> bridge` matches every instance's process.
+
+⚠️ **A bare `--config` therefore moves the label too**, by scanning `~/Library/LaunchAgents/*.plist`
+for the job that holds **the map this path names**. It is not a convenience: it is what the bridge's
+stale-row hint depends on. That hint is written into one instance's log and can only name what a
+bridge knows about itself, which is a config path — nothing tells a bridge its instance name or its
+launchd label. Unbound, `agb-refresh --config <B>` booted out `com.agbridge`, waited for **A's**
+bridge to exit, and then ran `forget-rows` against B's map while **B's** bridge was still running:
+the exact condition the wait exists to prevent, since a live bridge merges-then-writes and re-mints
+against the ids just closed. The rows end up closed in agterm *and* still bound — strictly worse
+than the fixed `Run agb-refresh` it replaced.
+
+**"Holds the map" is not "was spelled the same way", and that distinction has now been got wrong in
+four separate ways.** The map is `dirname(config)/rows` and `dirname(config)/placements`, so the scan
+compares the **resolved directory and nothing else** (invariant 12) — `<dir>/config`, `<dir>/`,
+`<dir>//` and `<dir>/anything` all name one map and all find one label. Three things follow, each of
+which shipped as its opposite first:
+
+- **Matching and choosing are different questions.** `*.plist` expands in collating order, so
+  `com.agbridge.aaa` naming `<dir>/config.bak` beat `com.agbridge.hostb` naming `<dir>/config` on a
+  `--config <dir>/config` run. Every directory-equal plist is a match and every one is reported; the
+  one that names **this file** is the one used, compared canonically so `<dir>//config` still counts
+  as naming it. A directory-only match still wins when it is the only one, so this narrows nothing.
+- **A plist carrying no `--config` is an answer, not a silence: it is the *default* config.** The
+  bridge it starts resolves `agb.config_path()` itself. Skipping it made the wrong-job bounce
+  **silent** — install a second job's config into the default *directory*
+  (`--instance hostb --config ~/.config/agbridge/hostb-config`; one map, two jobs) and
+  `agb-refresh --config <default config>` saw only hostb's plist, adopted its label, and had nothing
+  to warn about because it was then the only match. Two guards on the implication, because both
+  directions of it are wrong: the plist must be **readable** (`plist_config` answers `""` equally for
+  "no `--config`" and "could not read it", and the second says nothing about any map), and its name
+  must be in the **`com.agbridge` label space** (`~/Library/LaunchAgents` is shared with every other
+  program on the Mac, and none of *their* plists carries a `--config` either). An agbridge install
+  under a `--label` of its own is therefore not implied — the pre-existing answer, below.
+- **The ambiguity warning counts claimants, not runners-up of one kind.** One exact match plus one
+  directory-only match is two jobs over one rows file; accounting that keeps two lists finds one
+  entry in each and says nothing. It stays a warning rather than a refusal because there is nothing
+  to choose — whichever job is bounced, the other keeps running over the map `forget-rows` is about
+  to rewrite — and this is a recovery command.
+
+When no plist claims the path — an `install.sh mac --config <nondefault>` install made before the
+plist carried the flag, which really is a `com.agbridge` job — the default label is kept and a
+`note:` says which reading was taken, which job it is about to bounce and whose bindings it is about
+to discard.
+
+⚠️ **The config path out of a plist is XML-decoded, and regex-quoted before it becomes a pattern.**
+`install.sh` XML-escapes every value it substitutes, so `--config '/tmp/a&b/config'` is written
+`&amp;` and lints clean; and `pgrep -f` reads an ERE, so `/tmp/a+b/config` interpolated raw matches
+`ab` rather than the path it came from. Both land in the same silent failure as the two below: the
+poll matches nothing, exits with zero waits and no warning, and the forget runs under a live bridge.
+
+⚠️ **Everything in that pattern is read out of the plist, and each half of it closes a failure that
+is silent rather than loud.**
+
+- **Whether to narrow at all.** A narrow pattern is *vacuously false* against a plist rendered before
+  this change, and that is the normal state right after adding an instance: `install.sh mac
+  --instance hostb` renders hostb's plist, does not restart the default job, and *does* install the
+  new `agb-refresh`. Assuming the narrow pattern would make the poll return immediately with no
+  warning and let the forget land while that bridge is still alive — re-minting rows against ids it
+  just closed, which is the `no such session` spam `agb-refresh` exists to cure, restored by a fix
+  aimed at a cosmetic warning. So the plist is grepped for the flag, and the pattern widens (out
+  loud) when it is absent.
+- **Which path to narrow on.** The **value** comes from the plist too, not from the config this run
+  resolved. They are different questions: the plist says what launchd started the process with,
+  `--config` on the command line says which map to repair, and `install.sh mac --instance hostb
+  --config <elsewhere>` makes them different strings. Building the pattern from the command line's
+  answer is the same vacuous-false failure reached from the other end.
+- **Where the path ends.** `pgrep -f` matches an unanchored regex against the whole command line, so
+  the default instance's `…/agbridge/config` is a *prefix* of an instance named `configb`'s
+  `…/agbridge/configb/config`. The trailing boundary is what keeps a plain `agb-refresh` from
+  polling that live process for its full 10 s and warning — on the most common invocation there is.
+
+⚠️ **And a narrow MISS is "not proven gone", never "gone".** The pattern is derived from the
+**plist**; what it is asked about is the **running process**, and nothing keeps those in step:
+`install.sh mac --no-load` writes the plist and deliberately leaves the old bridge running, a bridge
+started by hand carries whatever was typed, and a re-rendered plist describes a process that has not
+restarted. In each of those the plist carries `--config` and the live bridge does not, so the narrow
+pattern misses on the *first* poll, the loop ends with zero waits and no output, and `stopped:` is
+printed as a claim nobody checked — the forget then lands under a live bridge, which is the whole
+failure the wait exists to prevent. Before the pattern was narrowed at all, that bridge **was**
+waited for, so treating a miss as proof is a regression rather than a gap.
+
+So a miss asks one further question: **is a bridge up that carries no `--config` at all?** It is
+asked by **subtraction** (`pgrep -f "<agb> bridge"` minus `pgrep -f "<agb> bridge --config"`) because
+"does not contain" is not an extended regular expression. A wait for such a bridge is announced,
+once, with the reason.
+
+⚠️ **And that question is only this run's to ask when this run repairs the *default* map.** The
+justification first written here — the flag is rendered unconditionally, so no 0.5.0 plist can start
+an untagged bridge, so it cannot be another instance's — is true only of a bridge some 0.5.0 plist
+**started**, and contradicted twenty lines above by the case that motivated the whole narrowing:
+`install.sh mac --instance hostb` renders hostb's plist, installs the newer `agb-refresh`, and does
+**not** restart the default job, whose bridge therefore keeps running untagged from a plist rendered
+before the flag existed. Ungated, the probe waited the full 10 s on **every**
+`agb-refresh --instance hostb` and then printed `com.agbridge.hostb is still running after 10s` — a
+warning that the forget may have been undone, provably false (hostb's bridge exited before the first
+poll), on every run of a recovery command. That is exactly the every-run false warning the narrow
+pattern existed to remove, reinstated by the fix for the narrowing.
+
+An untagged bridge **is** attributable, just not by its command line: with no `--config` it resolves
+`agb.config_path()` itself, so the only map it can hold is the default instance's. When that is the
+map being repaired the wait is real and is kept — which is also the pre-0.5.0 behaviour, since the
+broad pattern is all `main` ever had. And the 10 s warning names **what was actually still running**:
+`$label` is the job that was booted out, so a probe-driven wait that named it named the one process
+provably *not* still matching.
+
+What the probe deliberately does **nothing** for: an untagged bridge when this run repairs a
+non-default map — it cannot hold that map unless it was hand-started with an explicit `--rows`, which
+no plist produces; a bridge whose command line carries some *other* `--config` — it is attributable
+to whichever instance that path names, and waiting for another instance's bridge is exactly the
+warning the narrowing removed; a Mac with no `pgrep`, where there is no poll at all; and a plist with
+no `--config`, where the pattern is already the broad one, matches any bridge, and the note above
+already says so.
+
+⚠️ **`--instance <name>` therefore does not *mean* `~/.config/agbridge/<name>/config`** anywhere in
+`agb-refresh`: it means the config that instance's plist names, with the conventional path as the
+fall-back for a Mac whose plist was never rendered. Rebuilding the convention unconditionally names
+a file that may not exist, and `forget-rows` answers `the map is already empty` and exits 0 — the
+recovery command reporting success for a map it never opened.
 
 #### Limitations — documented, not solved
 
 1. ⚠️ **The one that bites: a helper run without `--instance` acts on the default instance and
    reports success in the same words.** `agb-refresh` stops `com.agbridge`, forgets that instance's
    bindings and restarts it, while you were trying to repair the other one. Nothing can detect the
-   intent, so the mitigation is in the **output, not the docs**: `agb-refresh`, `agb close-done` and
-   `agb forget-rows` print the instance and the config path they are acting on, every run,
-   unconditionally, before the dry-run exit.
+   intent, so the mitigation is in the **output, not the docs** — every run, unconditionally, before
+   the dry-run exit:
+
+   | | prints |
+   |---|---|
+   | `agb-refresh` | `instance: hostb -- label com.agbridge.hostb, config …/hostb/config` |
+   | `agb forget-rows` | `forget-rows: config …; rows …; placements …` |
+   | `agb close-done` | `close-done: config …; rows …` |
+
+   Only `agb-refresh` has an instance *name* to print — it is the only one of the three that takes
+   `--instance`. The other two know a config path and the files derived from it, which is the same
+   answer in the spelling they have. When the name was never typed but the label was resolved from a
+   config (above), `agb-refresh` reads the name back out of the label rather than printing
+   `(default)` — the one line whose whole job is to say which instance moved must not be the line
+   that is wrong.
 2. **An upgrade needs each job restarted.** The code is shared, so `install.sh mac` updates every
    instance at once — but a running bridge holds the `agb_mac` it started with until its own job is
    booted out and back in.
@@ -1482,6 +1606,12 @@ The three questions this document left open are now answered by the implementati
   directories. Set `$AGB_STATEDIR` or the `statedir` config key when that is the case, and use
   `agb doctor` to confirm — it prints the resolved path, its ownership and mode, and the mount
   options behind it.
+
+  ⚠️ **That requirement is per *instance*, not per Mac.** A machine that shares no disk with the
+  first is not a broken statedir — it is a **second instance**, with its own statedir, feed and
+  bridge, rendering into the same sidebar (`install.sh mac --instance <name> --statedir …`). See §5,
+  *One Mac, several instances*. Read absolutely, the paragraph above says a standalone box cannot be
+  covered at all, which stopped being true in 0.5.0.
 
   ⚠️ **Do not point it at a scratch volume without checking the purge policy.** Scratch and
   `/tmp`-like volumes commonly reap files by age, which would silently delete the `.state` of a
