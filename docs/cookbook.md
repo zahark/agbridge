@@ -430,6 +430,59 @@ echo 'host_buildbox01 = myfarm' >> ~/.config/agbridge/config
 
 For a host reachable only through another, add `jump_host = myfarm` as well.
 
+**`[enter]` says `open terminal failed: missing or unsuitable terminal: <name>`**, then
+`ssh exited 1 -- nothing was attached`. The ssh worked; **tmux** refused, because that host's
+terminfo database has no entry for the terminal you are attaching from.
+
+agbridge never sets `TERM` — it runs `ssh -t`, which carries yours across, and tmux will not start
+against a name it cannot look up. Modern terminals ship their own terminfo (Ghostty, Kitty, WezTerm
+all do), and an ordinary cluster box has none of them. Copy yours over, **from a local shell inside
+agterm**:
+
+```sh
+infocmp -x "$TERM" | ssh <ssh-target> -- tic -x -
+```
+
+⚠️ **From inside agterm, and `"$TERM"` rather than a name you type.** agterm is the terminal that
+runs the row, so it is the only place `$TERM` holds the value that will actually reach the far side
+— on the Mac that produced this recipe, agterm reports `xterm-ghostty` while the same user's login
+shell reports `xterm-kitty`, and copying the second would have installed the wrong entry and
+reported success. A row's own `[s]` and `[d]` shells are no good for this: both ssh to the *agent's*
+host. Use a session you opened in agterm yourself.
+
+It writes `~/.terminfo/` on the remote — no root, nothing system-wide. `tic` printing
+`older tic versions may treat the description field as an alias` is a **warning**; the entry is
+written. Confirm and go:
+
+```sh
+ssh <ssh-target> "infocmp -1 $TERM" >/dev/null 2>&1 && echo INSTALLED || echo MISSING
+```
+
+⚠️ **The redirects are outside the quotes on purpose, and so is `$TERM`.** A farm login shell is
+often **tcsh**, which has no `2>&1` and answers `Ambiguous output redirect.` — so anything of the
+form `ssh host 'cmd >/dev/null 2>&1'` fails on the shell rather than on the command. Keeping the
+redirect local sidesteps the remote shell entirely, and expanding `$TERM` locally is the same rule as
+above: it is *your* terminal's name that has to travel, not whatever a non-interactive remote shell
+happens to set. (The copy itself is safe either way — `tic -x -` has no redirects to misparse.)
+
+Two caveats. It fixes **the host you copied to** — machine #3 behind a jump host, and every other
+agent host on a shared-disk cluster, each need their own copy. And if `infocmp` on the Mac cannot
+find the entry either (`couldn't open terminfo file …`), take it from somewhere that has it: the
+terminal's own bundle (`TERMINFO=/Applications/Ghostty.app/Contents/Resources/terminfo infocmp -x
+xterm-ghostty | …`), or a cluster host where attaching already works —
+`ssh <good-host> 'infocmp -x xterm-ghostty' | ssh <new-host> 'tic -x -'`.
+
+The blunt alternative, if `tic` is not available over there, is to stop sending the name — in
+`~/.ssh/config`:
+
+```
+Host <ssh-target>
+    SetEnv TERM=xterm-256color
+```
+
+That works everywhere and costs you the terminal's extras (truecolor, styled underlines) inside
+those sessions. The terminfo copy is better wherever it is possible.
+
 **A row is stuck and nothing clears it** — `agb doctor` lists *unadjudicable* entries, and
 `agb prune` removes them under per-entry confirmation. It is the only destructive command, and it
 never removes an entry whose process it can prove is alive.

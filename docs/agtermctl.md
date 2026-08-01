@@ -274,6 +274,39 @@ never-shown session, and `--select` cannot realize its split pane. So the split 
 `agb pane`'s prompt — which runs *inside* the row's own session, making it the active one, so
 `--target active` needs no row-id lookup at all.
 
+## agterm's `TERM`, and what it costs a remote attach — **CONFIRMED live, 2026-08-01**
+
+agterm sets **`TERM=xterm-ghostty`** in the sessions it runs. Observed twice on one Mac, in the same
+hour, which is what makes it evidence rather than a guess:
+
+- a row's `[enter]` attach failed with `open terminal failed: missing or unsuitable terminal:
+  xterm-ghostty` — so that is the value `ssh -t` carried from the row;
+- a local shell in agterm reported the same name, while the *same user's* login shell in Kitty
+  reported `xterm-kitty`.
+
+agbridge does not set `TERM` and should not: `pane_remote_command` builds tmux commands only, and
+`ssh -t` propagates the client's value by design. But the consequence belongs here, because it looks
+exactly like a broken row and is not one:
+
+⚠️ **A farm host with no terminfo entry for agterm's `TERM` cannot be attached to.** tmux refuses to
+start against a name it cannot look up, so `[enter]` prints the message above and `agb pane` reports
+`ssh exited 1 -- nothing was attached`. Everything else about the row is correct — the identity, the
+ssh target, the config it resolved through — which is why the diagnosis reads as an agbridge failure
+at first. `docs/cookbook.md` carries the recipe (`infocmp -x "$TERM" | ssh <target> -- tic -x -`,
+run **from inside agterm**, since that is the only place `$TERM` holds the value that will travel).
+
+⚠️ **`"$TERM"`, never a hardcoded name — including in anything agbridge might one day automate.**
+The obvious implementation is for `install.sh` to ship its own `$TERM` to the farm host, and it is
+**wrong**: the installer runs in your login terminal, the row runs in agterm, and on the Mac that
+produced this note those were `xterm-kitty` and `xterm-ghostty`. That version would install the
+wrong entry on every machine and report success. If this is ever automated it belongs in `agb pane`,
+which knows the real value at the moment the attach fails — not in the installer, which is guessing
+about a terminal that does not exist yet.
+
+Two limits worth stating with it: the copy fixes **one host**, so machine #3 behind a jump host and
+every other agent host on a shared-disk cluster each need their own; and the value above is agterm's
+*today* — the recipe is written in terms of `$TERM` precisely so it survives agterm changing it.
+
 ## ⚠️ agterm closes a session when its command exits
 
 **CONFIRMED live, 2026-07-31**, in isolation: an agent (`closetest2`) was started detached, its row
