@@ -211,6 +211,21 @@ sh install.sh mac --instance hostb \
 `hostb` is a name you choose — letters, digits, `-` and `_`. It becomes a launchd label, a plist
 filename, a log directory and a config directory, which is why nothing else is allowed in it.
 
+Or let the machine name itself, using the hostname the installer already ssh's for anyway:
+
+```sh
+sh install.sh mac --instance auto \
+    --statedir /home/you/.agbridge \
+    --feed-host hostb-alias \
+    --agb-remote-path /home/you/agbridge/agb
+```
+
+It prints what it decided — `instance: auto -> hostb01 (read back from hostb-alias)` — and that name
+is what you pass to `agb-refresh --instance …` from then on, so it is worth reading. If the machine
+will not answer, or its hostname is not a usable name, the install **refuses** rather than falling
+back to the default instance; the reasons are in
+[`commands.md`](commands.md#--instance-auto--let-the-machine-say).
+
 ⚠️ **`--statedir` is required here.** It is the whole point — the new machine's own directory — and
 without it the instance would inherit the *first* cluster's path: ssh to the right machine, read the
 wrong directory, then create it and report an empty farm for ever. Spell it as it exists **on that

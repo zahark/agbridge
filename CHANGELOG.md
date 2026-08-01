@@ -6,6 +6,43 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
+## Unreleased
+
+### Added
+
+- **`install.sh mac --instance auto`** — name the instance after the machine, instead of thinking of
+  one. The installer was already ssh'ing `--feed-host` to read its hostname back, because a record's
+  `host` is a *hostname* while `--feed-host` is an ssh *alias* and `host_<name>` is what makes a row
+  clickable. `auto` spends that same answer on the name, so the config, the launchd label and the log
+  directory all follow what the machine calls itself:
+
+  ```
+  instance: auto -> hostb01 (read back from hostb-alias)
+  ```
+
+  **One ssh, two readers.** The probe is asked once and the mapping finds it already answered — no
+  second round trip, and no way for a box that renamed itself between two calls to end up with a
+  config whose `host_<name>` does not match its own directory.
+
+  ⚠️ **It is a word you type, and it can never become the default.** Re-running `install.sh mac` with
+  the original flags is how you pick up new code, so an **absent** `--instance` has to keep meaning
+  the default instance. Auto-naming by default would mint a *new* instance on every upgrade — new
+  config, new launchd job, new rows map, every row duplicated in the sidebar. That is the whole
+  reason this is not simply inferred, and it is why the literal name `auto` is now unavailable.
+
+  ⚠️ **Every failure is a refusal that writes nothing** — never a fall-back to the default instance.
+  That fall-back is the accident the flag exists to avoid: it would rewrite the first machine's
+  `feed_host` and `statedir`, boot out its launchd job and point its bridge at the new box, in the
+  same words a correct run uses. So the probe being best-effort for the *mapping* (a note, and you
+  pass `--host` yourself) deliberately does not carry over to the *name*: an unreachable machine, a
+  missing `--feed-host`, a contradicting `--no-probe`, the farm role, and a hostname that is not a
+  usable label name are each refused up front.
+
+  The hostname rule is looser than the instance rule on purpose — a `.` is fine in a `host_<name>`
+  key and not in a launchd label component — so `auto` re-asks with the narrow one and names the
+  **host** when it fails. You typed `auto`; a complaint about `weird.name` would otherwise read as
+  being about something you wrote.
+
 ## 0.5.0 — 2026-08-01
 
 ### Added

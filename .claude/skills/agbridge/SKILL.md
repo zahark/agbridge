@@ -142,6 +142,14 @@ instance: hostb -- label com.agbridge.hostb, config /Users/you/.config/agbridge/
 
 Also worth knowing:
 
+- **`--instance auto` names it after the machine**, reusing the hostname the installer already ssh's
+  for the `host_<name>` mapping — one ssh, two readers. It prints `instance: auto -> hostb01 (read
+  back from <alias>)`, and *that* is the name `agb-refresh --instance …` wants afterwards. It is a
+  word you type on purpose: an **absent** `--instance` still means the default instance, because
+  re-running `install.sh mac` is the upgrade path and auto-naming by default would mint a new
+  instance on every upgrade. Any failure — unreachable machine, no `--feed-host`, `--no-probe`, a
+  hostname that is not a usable label name — is a **refusal with nothing written**, never a
+  fall-back to the default instance, which would repoint the machine you already have.
 - **`--instance` without `--statedir` is refused**, and `install.sh farm --instance …` too — the
   first would silently inherit the other cluster's directory, the second writes a config nothing on
   the farm reads. Names are letters, digits, `-`, `_`; it is a label, a filename and two directories.
