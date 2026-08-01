@@ -85,6 +85,17 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
   Nothing here assumes anything about Claude Code: `agb hook` is a command that writes a state file.
 
+  **Every argument goes to ralphex untouched**, leading dashes included — `agb-ralphex --review
+  <plan>` just works, and so does bare `agb-ralphex` for ralphex's own fzf picker. What makes blind
+  passthrough safe is that the wrapper's single option is namespaced `--agb-name`, which ralphex has
+  no equivalent of, so nothing is ambiguous between the two programs. Requiring `--` before any dash
+  would have been a tax on the normal case: ralphex has ~25 flags and its own documentation leads
+  with `ralphex --review <plan>`.
+
+  ⚠️ The row's name is taken from the first `*.md` argument, **not** the first argument without a
+  dash. ralphex takes values after flags, so `-m 20 --worktree plan.md` would otherwise have named
+  the row `20`, and `-b main plan.md` would have named it `main`.
+
 - **`install.sh mac --instance auto`** — name the instance after the machine, instead of thinking of
   one. The installer was already ssh'ing `--feed-host` to read its hostname back, because a record's
   `host` is a *hostname* while `--feed-host` is an ssh *alias* and `host_<name>` is what makes a row
