@@ -518,16 +518,16 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] a turn longer than the threshold produces exactly one banner naming the label and the row
-- [ ] a turn shorter than the threshold produces none, and one under 30 s names no duration
-- [ ] a disconnect mid-turn changes nothing — not the timer, not the count
-- [ ] a removal mid-turn ends it: a later rebind announces nothing
-- [ ] a bridge restart or reconnect announces nothing for agents that were already finished
-- [ ] `notify_on_completed_after = off` is silent, and re-enabling produces no backlog
-- [ ] the existing `blocked` and new-row banners are unchanged in count, wording and gating
-- [ ] `agb doctor` no longer warns about any `notify_on_*` key
-- [ ] run the full suite: `python3 -m pytest tests/ -q`
-- [ ] confirm `agb` is untouched: `python3 -c 'print(len(open("agb").read()))'` must still print
+- [x] a turn longer than the threshold produces exactly one banner naming the label and the row
+- [x] a turn shorter than the threshold produces none, and one under 30 s names no duration
+- [x] a disconnect mid-turn changes nothing — not the timer, not the count
+- [x] a removal mid-turn ends it: a later rebind announces nothing
+- [x] a bridge restart or reconnect announces nothing for agents that were already finished
+- [x] `notify_on_completed_after = off` is silent, and re-enabling produces no backlog
+- [x] the existing `blocked` and new-row banners are unchanged in count, wording and gating
+- [x] `agb doctor` no longer warns about any `notify_on_*` key
+- [x] run the full suite: `python3 -m pytest tests/ -q`
+- [x] confirm `agb` is untouched: `python3 -c 'print(len(open("agb").read()))'` must still print
       **102419** against the 102 500 ceiling (`tests/conftest.py:63`). ⚠️ The guard counts
       **characters**; `wc -c` reads 102 429 and is the wrong number to compare
 
@@ -537,24 +537,24 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
 - Modify: `CLAUDE.md`
 - Modify: `docs/plans/completed/` (move this file)
 
-- [ ] `CLAUDE.md` — add the new call to the "Everything the bridge tells agterm" table, and extend
+- [x] `CLAUDE.md` — add the new call to the "Everything the bridge tells agterm" table, and extend
       the notifications paragraph to cover three switches rather than one
-- [ ] `CLAUDE.md` — record the property worth keeping: this banner's transition memory is a `pop`,
+- [x] `CLAUDE.md` — record the property worth keeping: this banner's transition memory is a `pop`,
       which makes it disconnect- and burst-immune *structurally*. The file already warns that the
       `applied`-as-a-gate confusion *"has now caused two separate bugs — assume it will cause a
       third"*; naming a case immune by construction is how the third is avoided
-- [ ] ➕ `CLAUDE.md` — record the three test-harness traps this plan hit, because all are general
+- [x] ➕ `CLAUDE.md` — record the three test-harness traps this plan hit, because all are general
       and none is written down: `BridgeModel._upsert` drops an identical record before the renderer
       sees it (a repeat-upsert test must vary `seq`); `_notifies` returns every banner (a count
       assertion silently depends on `quiet_until`); and `model.now` never returns to `None` once
       set, so a "no clock" test must target the first event, not a later one
-- [ ] `CLAUDE.md` — re-measure and write the test count the suite actually reports. ⚠️ Do not copy
+- [x] `CLAUDE.md` — re-measure and write the test count the suite actually reports. ⚠️ Do not copy
       the 1777 from this plan; these tasks add roughly twenty more
-- [ ] ➕ `CLAUDE.md`'s "Where the project is" is **already stale before this change** — it says
+- [x] ➕ `CLAUDE.md`'s "Where the project is" is **already stale before this change** — it says
       *"Released 0.4.0"* and *"1436 tests"* while `agb:24` reads `0.5.0` and the suite reports 1777.
       Fix it in the same edit rather than adding a third wrong number to it
-- [ ] leave `agb:24` `VERSION` alone — the release is not part of this change
-- [ ] move this plan to `docs/plans/completed/`
+- [x] leave `agb:24` `VERSION` alone — the release is not part of this change
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
