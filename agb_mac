@@ -1418,10 +1418,20 @@ def refresh_recipe(config=None):
     which is what makes a bare `--config` stop the right launchd job. See the
     second warning above `ROW_STALE_HINT`: without it this recipe bounces the
     default bridge and forgets THIS instance's map underneath a live one.
+
+    ⚠️ `shlex.quote`, because this string is printed to be RETYPED, and a config
+    path may contain a blank or a `$` -- `install.sh --config` asks only that it
+    be absolute. Unquoted, `agb-refresh --config /Users/z/My Configs/config` is
+    two words plus an unknown option, which `agb-refresh` refuses; with a
+    backtick or a `$(…)` in the path it is worse than useless. `pane_command`
+    quotes for the same reason forty lines away, so this is the file agreeing
+    with itself. An ordinary path comes back byte-identical, which is why every
+    default and every conventional instance path prints exactly what it did.
     """
     named = _non_default_config(config)
     if named:
-        return "agb-refresh --config %s" % (named,)
+        import shlex
+        return "agb-refresh --config %s" % (shlex.quote(named),)
     return "agb-refresh"
 
 # What counts as agterm saying "that row does not exist". Matched on the text

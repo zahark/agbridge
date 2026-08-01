@@ -1321,19 +1321,65 @@ def test_an_instance_name_that_would_escape_its_own_directories_is_refused(
 
 def test_an_empty_instance_name_is_refused_rather_than_ignored(
         run_sh, mac_args, tmp_path, fake_home):
-    """`need` only counts arguments, so `--instance ""` would read as "not
-    given" and install the DEFAULT instance while echoing the name back -- the
-    silent-wrong-instance failure the whole flag exists to prevent, arriving
-    from the one input that looks like an accident rather than an attack.
+    """`--instance ""` must not read as "not given" and install the DEFAULT
+    instance while echoing the name back -- the silent-wrong-instance failure
+    the whole flag exists to prevent, arriving from the one input that looks
+    like an accident rather than an attack.
 
-    `agb-refresh` has had this test since the flag existed; the installer, which
-    is the half that actually writes files, did not.
+    `need` is what refuses it now (see
+    `test_an_empty_value_is_a_missing_value_for_every_installer_flag`);
+    `instance_ok` keeps its own empty case behind that, because the two
+    validators are compared arm for arm against `agb-refresh`'s.
     """
     code, out, err = run_sh(_instance_args(mac_args, name=""))
     assert code != 0
     assert "--instance" in err
     # Nothing was installed AT ALL -- not the named instance, and not the
     # default one it would have fallen through to.
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+    assert list(fake_home.rglob("config")) == []
+
+
+def _installer_value_flags():
+    """Every installer option that consumes `$2`, derived from the script.
+
+    Derived rather than listed, because the trap this guards is per-flag: a
+    list written by hand covers the flags somebody remembered.
+    """
+    flags = []
+    with open(INSTALL_SH) as handle:
+        for line in handle.read().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("--") and ") need $#" in stripped:
+                flags.append(stripped.split(")")[0])
+    return flags
+
+
+@pytest.mark.parametrize("flag", _installer_value_flags())
+def test_an_empty_value_is_a_missing_value_for_every_installer_flag(
+        flag, run_sh, tmp_path, fake_home):
+    """⚠️ `--config "$cfg"` with `$cfg` unset is ONE EMPTY ARGUMENT.
+
+    A `need` that only counted arguments therefore saw a value where there was
+    none -- and every one of these flags has a default waiting a few lines
+    later (`[ -n "$config" ] || config="$DEFAULT_CONFIG"`, the `--instance`
+    conventions, `find_python`). So the empty value is silently replaced and
+    the install SUCCEEDS against something other than what was named, which on
+    `--config` means a second instance installed straight over the first.
+    `--statedir ""` is worse still: it reads as "not given", so the instance
+    inherits the default config's farm path -- ssh to the right machine and
+    read the wrong directory, the one failure `--instance` refuses to install
+    without.
+
+    Every flag, not just the two: the rule belongs to `need`, and a fix applied
+    to one flag leaves the same trap on the other seventeen.
+    """
+    code, _out, err = run_sh(["mac", flag, ""])
+    assert code != 0
+    assert "%s needs a value" % (flag,) in err
+    # Nothing was written -- not the named thing, and not the default it would
+    # have fallen through to.
     assert not (tmp_path / "dest").exists()
     assert not (tmp_path / "agents").exists()
     assert list(fake_home.rglob("config")) == []
@@ -2021,3 +2067,62 @@ def test_the_two_instance_name_validators_accept_exactly_the_same_names():
     refresh = patterns(REFRESH_SH)
     assert install, "no case arms found -- the extraction stopped working"
     assert install == refresh, (install, refresh)
+
+
+def test_the_two_missing_value_checks_are_the_same_check():
+    """⚠️ `need` is the third thing spelled twice, and the failure is silent.
+
+    An empty value is a MISSING value -- `--config "$cfg"` with `$cfg` unset is
+    one empty argument, so a check that counts arguments passes it, the flag's
+    default takes over, and the install or the refresh succeeds against
+    something other than what was named. `agb`'s nine Python parsers have always
+    refused it (`if not inline: raise ... needs a value`); the two shell scripts
+    each spell their own, because neither can import the other.
+
+    Compared as text, unlike `instance_ok` above: this one IS one line and there
+    is nothing in it that may legitimately differ between the two scripts.
+    """
+    def one_liner(script):
+        with open(script) as handle:
+            found = [line.strip() for line in handle.read().splitlines()
+                     if line.startswith("need() {")]
+        assert len(found) == 1, "need() not found in %s: %s" % (script, found)
+        return found[0]
+
+    bodies = [one_liner(script) for script in (INSTALL_SH, REFRESH_SH)]
+    assert "-n " in bodies[0], (
+        "the emptiness half is gone: %s" % (bodies[0],))
+    assert bodies[0] == bodies[1], bodies
+
+
+@pytest.mark.parametrize("script", [INSTALL_SH, REFRESH_SH])
+def test_every_option_that_consumes_a_value_asks_need_for_it(script):
+    """The completeness half, which the two tests above cannot give.
+
+    `need` being right is worth nothing on a flag that does not call it, and
+    the next flag added to either loop is exactly where that would happen. So
+    the rule is asserted against the SHAPE of the option loop: any arm that
+    reads `$2` must have called `need` first. Arms that take no value never
+    mention `$2` and are not the subject.
+
+    ⚠️ Arms are split on their INDENTATION, not on `;;`. `--host` contains a
+    nested `case "$2" in … esac` whose own `;;` would cut that arm in half and
+    leave the tail looking like an arm that reads `$2` without asking `need` --
+    a guard that fails on the one flag with the most validation in it.
+    """
+    import re
+    with open(script) as handle:
+        text = handle.read()
+    start = text.index("while [ $# -gt 0 ]")
+    loop = text[start:text.index("\ndone\n", start)]
+    arms = []
+    for line in loop.splitlines():
+        if re.match(r"^ {8}[-*][^)]*\)", line):
+            arms.append([line])
+        elif arms:
+            arms[-1].append(line)
+    assert len(arms) > 5, "the option loop was not found: %r" % (loop[:200],)
+    consuming = ["\n".join(arm) for arm in arms if "$2" in "\n".join(arm)]
+    assert len(consuming) > 5, "no value-taking arm was found: %s" % (arms,)
+    for arm in consuming:
+        assert "need $#" in arm, arm

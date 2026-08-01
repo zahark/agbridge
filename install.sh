@@ -281,38 +281,57 @@ remotepath=""; remotepython=""; jumphost=""; hosts=""; agentsdir=""
 logdir=""; launchpath=""; label=""; farm=""; settings=""; agbpath=""
 load=yes; hooks=yes; dry=no; probe=yes; bindir=""; wrapper=yes; instance=""
 
-need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
+# A value must be PRESENT and NON-EMPTY. ⚠️ The second half is not pedantry:
+# `--config "$cfg"` with `$cfg` unset expands to one empty argument, so the
+# COUNT is right and the value is not -- and every one of these flags has a
+# default waiting below (`[ -n "$config" ] || config="$DEFAULT_CONFIG"`, the
+# `--instance` conventions, `find_python`), so the empty value is silently
+# replaced and the install SUCCEEDS against something other than what was
+# named. `--statedir ""` is the worst of them: it reads as "not given", so the
+# instance inherits the default config's farm path -- ssh to the right machine
+# and read the wrong directory, which is the one failure `--instance` refuses
+# to install without.
+#
+# ⚠️ It is also the rule `agb`'s own nine parsers already enforce -- `if not
+# inline: raise ... needs a value`, for the `--opt=` and the `--opt ""` spelling
+# alike -- so this is the shell agreeing with the Python rather than a new idea.
+# `agb-refresh` spells the same function, because neither script can import the
+# other (invariant 14); `tests/test_install_pkg.py` compares the two bodies.
+need() { [ "$1" -gt 1 ] && [ -n "$3" ] || die "$2 needs a value"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dest) need $# "$1"; dest=$2; shift 2 ;;
-        --python) need $# "$1"; python=$2; shift 2 ;;
-        --config) need $# "$1"; config=$2; shift 2 ;;
-        --statedir) need $# "$1"; statedir=$2; shift 2 ;;
-        # Validated here rather than after the loop, like --host: `need` only
-        # counts arguments, so `--instance ""` would otherwise read as "not
-        # given" and install the DEFAULT instance while reporting the name back.
-        --instance) need $# "$1"; instance_ok "$2"; instance=$2; shift 2 ;;
-        --mac-id) need $# "$1"; macid=$2; shift 2 ;;
-        --feed-host) need $# "$1"; feedhost=$2; shift 2 ;;
-        --agb-remote-path) need $# "$1"; remotepath=$2; shift 2 ;;
-        --remote-python) need $# "$1"; remotepython=$2; shift 2 ;;
-        --jump-host) need $# "$1"; jumphost=$2; shift 2 ;;
-        --host) need $# "$1"
+        --dest) need $# "$1" "${2:-}"; dest=$2; shift 2 ;;
+        --python) need $# "$1" "${2:-}"; python=$2; shift 2 ;;
+        --config) need $# "$1" "${2:-}"; config=$2; shift 2 ;;
+        --statedir) need $# "$1" "${2:-}"; statedir=$2; shift 2 ;;
+        # Validated here rather than after the loop, like --host: the name is a
+        # launchd label component, a plist filename and a config directory.
+        # `need` above already refuses the EMPTY name (it used to only count
+        # arguments, so `--instance ""` read as "not given" and installed the
+        # DEFAULT instance while reporting the name back); `instance_ok` keeps
+        # its own empty case anyway, since agb-refresh spells the same rule.
+        --instance) need $# "$1" "${2:-}"; instance_ok "$2"; instance=$2; shift 2 ;;
+        --mac-id) need $# "$1" "${2:-}"; macid=$2; shift 2 ;;
+        --feed-host) need $# "$1" "${2:-}"; feedhost=$2; shift 2 ;;
+        --agb-remote-path) need $# "$1" "${2:-}"; remotepath=$2; shift 2 ;;
+        --remote-python) need $# "$1" "${2:-}"; remotepython=$2; shift 2 ;;
+        --jump-host) need $# "$1" "${2:-}"; jumphost=$2; shift 2 ;;
+        --host) need $# "$1" "${2:-}"
                 shell_safe "--host" "$2"
                 case "$2" in *=*) ;; *) die "--host wants <name>=<ssh-target>" ;; esac
                 hosts="$hosts $2"; shift 2 ;;
-        --launch-agents) need $# "$1"; agentsdir=$2; shift 2 ;;
-        --log-dir) need $# "$1"; logdir=$2; shift 2 ;;
-        --launch-path) need $# "$1"; launchpath=$2; shift 2 ;;
-        --label) need $# "$1"; label=$2; shift 2 ;;
-        --farm) need $# "$1"; farm=$2; shift 2 ;;
-        --settings) need $# "$1"; settings=$2; shift 2 ;;
-        --agb) need $# "$1"; agbpath=$2; shift 2 ;;
+        --launch-agents) need $# "$1" "${2:-}"; agentsdir=$2; shift 2 ;;
+        --log-dir) need $# "$1" "${2:-}"; logdir=$2; shift 2 ;;
+        --launch-path) need $# "$1" "${2:-}"; launchpath=$2; shift 2 ;;
+        --label) need $# "$1" "${2:-}"; label=$2; shift 2 ;;
+        --farm) need $# "$1" "${2:-}"; farm=$2; shift 2 ;;
+        --settings) need $# "$1" "${2:-}"; settings=$2; shift 2 ;;
+        --agb) need $# "$1" "${2:-}"; agbpath=$2; shift 2 ;;
         --no-load) load=no; shift ;;
         --no-hooks) hooks=no; shift ;;
         --no-probe) probe=no; shift ;;
-        --bin-dir) need $# "$1"; bindir=$2; shift 2 ;;
+        --bin-dir) need $# "$1" "${2:-}"; bindir=$2; shift 2 ;;
         --no-wrapper) wrapper=no; shift ;;
         --dry-run) dry=yes; shift ;;
         -h|--help) usage; exit 2 ;;

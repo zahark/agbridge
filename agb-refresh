@@ -99,68 +99,467 @@ noclose=no
 label=""; config=""; instance=""
 python=""; rows=""; dry=no; keys=""
 # All set only once launchctl is known to exist; `set -u` needs them anyway.
-# `broad` is the un-narrowed liveness pattern and stays EMPTY when `$pattern`
-# already is the broad one, or when this run repairs a map an untagged bridge
-# cannot be holding -- that emptiness is how `bridge_alive` knows there is no
-# second question left to ask. `notedloose` makes its note print once;
-# `looseheld` says which of the two questions answered on the last poll, which
-# is what the 10s warning has to name.
+# `broad` is the un-narrowed liveness pattern and stays EMPTY only when
+# `$pattern` already IS the broad one -- that emptiness is how `bridge_alive`
+# knows there is no second question left to ask. `notedloose` makes the note
+# print once; `looseheld` says which answer held the wait on the last poll
+# (empty, or one of `cmdline_is_ours`' reasons -- `spelling`, `rows`,
+# `ambiguous`, `untagged` -- or `unknown` when `ps` would not say), which is what
+# the 10s warning has to name.
 pgrep=""; pattern=""; broad=""; notedloose=""; looseheld=""
 
-need() { [ "$1" -gt 1 ] || die "$2 needs a value"; }
+# A value must be PRESENT and NON-EMPTY. ⚠️ The second half is not pedantry:
+# `--config "$cfg"` with `$cfg` unset expands to one empty argument, so the
+# COUNT is right and the value is not -- `$config` stays "", the resolution
+# below falls through to the plist's config or to `$DEFAULT_CONFIG`, and the run
+# repairs a different instance's map while every line of output looks exactly
+# like the run that was meant. That is the silent wrong-instance hazard this
+# whole command is built to make loud, arriving before the banner that makes it
+# loud is composed. Same shape for `--label ""`, `--rows ""` and `--key ""`, so
+# the rule is `need`'s and not any one flag's.
+#
+# ⚠️ It is also the rule `agb`'s own nine parsers already enforce -- `if not
+# inline: raise ... needs a value`, for the `--opt=` and the `--opt ""` spelling
+# alike -- so this is the shell agreeing with the Python rather than a new idea.
+# `install.sh` spells the same function, because neither script can import the
+# other (invariant 14); `tests/test_install_pkg.py` compares the two bodies.
+need() { [ "$1" -gt 1 ] && [ -n "$3" ] || die "$2 needs a value"; }
 
 while [ $# -gt 0 ]; do
     case $1 in
-        --key) need $# "$1"; keys="$keys $2"; shift 2 ;;
+        --key) need $# "$1" "${2:-}"; keys="$keys $2"; shift 2 ;;
         --dry-run) dry=yes; shift ;;
         --no-close) noclose=yes; shift ;;
         # Validated here rather than after the loop, exactly as install.sh does
-        # it: `need` only counts arguments, so `--instance ""` would otherwise
-        # read as "not given" and refresh the DEFAULT instance while echoing the
-        # name back.
-        --instance) need $# "$1"; instance_ok "$2"; instance=$2; shift 2 ;;
-        --config) need $# "$1"; config=$2; shift 2 ;;
-        --label) need $# "$1"; label=$2; shift 2 ;;
-        --launch-agents) need $# "$1"; agentsdir=$2; shift 2 ;;
-        --agb) need $# "$1"; agb=$2; shift 2 ;;
-        --python) need $# "$1"; python=$2; shift 2 ;;
-        --rows) need $# "$1"; rows=$2; shift 2 ;;
+        # it: the name is a launchd label component and a config directory, and
+        # a `..` in it would look for both somewhere else. `need` above already
+        # refuses the EMPTY name (it used to only count arguments, so
+        # `--instance ""` read as "not given" and refreshed the DEFAULT instance
+        # while echoing the name back); `instance_ok` keeps its own empty case
+        # anyway, since it is also install.sh's and the two must agree.
+        --instance) need $# "$1" "${2:-}"; instance_ok "$2"; instance=$2; shift 2 ;;
+        --config) need $# "$1" "${2:-}"; config=$2; shift 2 ;;
+        --label) need $# "$1" "${2:-}"; label=$2; shift 2 ;;
+        --launch-agents) need $# "$1" "${2:-}"; agentsdir=$2; shift 2 ;;
+        --agb) need $# "$1" "${2:-}"; agb=$2; shift 2 ;;
+        --python) need $# "$1" "${2:-}"; python=$2; shift 2 ;;
+        --rows) need $# "$1" "${2:-}"; rows=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) usage; die "unknown option: $1" ;;
     esac
 done
 
-# The `<string>` that FOLLOWS `<string>--config</string>` in a rendered plist,
-# or nothing. awk rather than sed or grep -A: `getline` is POSIX and behaves
-# the same in BSD awk, where `sed -n '/x/{n;s/../p;}'` and GNU `grep -A1` are
-# both a portability bet.
+# Every `agb bridge` flag that CONSUMES the argument after it -- this script's
+# copy of `agb_mac.BRIDGE_VALUE_ARGS`, and a cross-file agreement with no single
+# source of truth (invariant 14: neither file can import the other, so
+# `tests/test_agb_refresh.py` compares the two lists instead).
 #
-# ⚠️ The three entities `install.sh` writes ARE decoded here, and the comment
-# this replaces claimed they could not occur ("a path with an `&` or a `<` in
-# it never got written in the first place"). It gets written: `install.sh`'s
-# `rep()` runs every substituted value through `xml_escape` first, so
-# `install.sh mac --config '/tmp/a&b/config'` renders
-# `<string>/tmp/a&amp;b/config</string>` and `plutil -lint` is perfectly happy
-# with it -- the XML is valid, it was the *decoding* that was missing. Left
-# undecoded both halves fail quietly: `$config` names a file that does not
-# exist, so `forget-rows` reports "the map is already empty" and exits 0
-# against a map it never opened, and the liveness pattern matches no bridge at
-# all -- zero waits, no warning, forget under a live bridge.
+# ⚠️ ONE reader needs it now, and it is the one that CANNOT ask the parser.
+# `ci_config_certain` is looking at a `ps` line, where argv has already been
+# flattened with blanks -- there is no argv left to hand anybody, so it asks
+# instead whether a `--config` could be sitting inside an earlier flag's value.
+# `plist_arg` used to need the same list for a walk that SIMULATED
+# `parse_bridge_args`; it calls that function directly now and takes the table
+# out of it, so this copy no longer decides anything on the plist side. The rule
+# both sides live by is unchanged: AN ARGUMENT CONSUMED AS A VALUE IS NOT A
+# FLAG, however much it looks like one.
+BRIDGE_VALUE_FLAGS="--config --feed-host --mac-id --statedir --remote-path --remote-python --watchdog --connections --rows --workspace"
+
+# WHAT DOES THIS PLIST START THE BRIDGE WITH? `plist_arg <plist> <flag>` prints
+# the value `agb bridge` would resolve for `<flag>`, and nothing at all when the
+# plist carries no such flag.
 #
-# `"\\&"` in the replacement, never `"&"`: an unescaped `&` there means the
-# matched text, so `gsub(/&amp;/, "&")` is a no-op that reads like a fix.
-# `&amp;` is decoded LAST, because a path containing the literal text `&lt;` is
-# written `&amp;lt;` and decoding `&amp;` first would turn it into a `<`.
-plist_config() {
-    awk '/<string>--config<\/string>/ {
-             if ((getline) <= 0) exit
-             gsub(/^[^<]*<string>|<\/string>.*$/, "")
-             gsub(/&lt;/, "<")
-             gsub(/&gt;/, ">")
-             gsub(/&amp;/, "\\&")
-             print
-             exit
-         }' "$1" 2>/dev/null
+# ⚠️ It EXITS 2 when the file cannot be read or is not a plist at all, and that
+# is a DIFFERENT answer from "it carries no such flag" -- both print nothing, so
+# the caller has to look at the status. `bind_label_to_config` does, and treats
+# exit 2 as "this file says nothing", not as "this file implies the default
+# config"; see the two guards there.
+#
+# ⚠️ THE PLIST IS PARSED WITH `plistlib`, AND THAT IS THE WHOLE DESIGN. This was
+# an awk token scan for four review rounds, and every round found the same class
+# of defect, because a hand-rolled XML tokenizer is not an XML parser. The last
+# two, both valid plists that `plistlib` and `plutil` read without complaint:
+#
+#   * WHITESPACE INSIDE A TAG. XML allows `<string >` and `</array >` (a start
+#     tag is `<` Name S? `>`, an end tag `</` Name S? `>`). The scan matched
+#     neither, so `<string >/real/config</string>` VANISHED and the dangling
+#     `--config` spent itself on the next element -- `--workspace` -- while
+#     `</array >` never closed argv at all, letting a later `WatchPaths` array
+#     overwrite the real config with its own `<string>`s. Both land on a path no
+#     bridge is running on, which is the unsafe direction: the liveness pattern
+#     is built from it, so the poll matches nothing and `forget-rows` lands under
+#     a live bridge.
+#   * A COMMENT SPLITTING A VALUE ACROSS RECORDS. `<string>/tmp/a<!--` newline
+#     `-->b/config</string>` is the string `/tmp/ab/config` -- XML says character
+#     data either side of a comment is one value -- and the scan, which carried
+#     its "inside a comment" state across records but not the text before the
+#     opener, lost the element and spent the dangling `--config` on the next one.
+#     The comment above it claimed comments were one-directional and could only
+#     ever HIDE argv; that was true only of a comment sitting between elements.
+#
+# Each round added a rule and the next round found the rule it did not have:
+# whitespace in tags, comments spanning a value, CDATA, processing instructions,
+# DOCTYPE internal subsets, character references, minification, nesting. That is
+# not a converging sequence, and the fix for it is not a fifth rule.
+#
+# `plistlib` costs NO NEW DEPENDENCY: it is stdlib on macOS and on the Linux the
+# suite runs on, it imports clean under `-S -E`, and this script already REQUIRES
+# a python3 -- it dies without one and runs `agb` through it. Which is also why
+# `$python` is resolved BEFORE the label is bound, further down: this reader is
+# the first thing that needs it.
+#
+# `plutil` was rejected for the opposite reason: macOS-only, so the suite could
+# not test what it shipped. `plistlib` is testable on both.
+#
+# It also reads what the token scan could not: BINARY plists (`plutil -convert
+# binary1`), a config delivered as CDATA, entities and character references
+# anywhere including in a flag NAME, a DOCTYPE with an internal subset, and a
+# `<string>` whose tag spans lines. The old comment listed all of those as
+# permanent limitations; they are gone, not narrowed.
+#
+# Measured, because this is now a PROCESS per question rather than an awk per
+# question: a pathological directory of 20 plists, read twice each, costs 0.75 s
+# against the scan's 0.20 s. A real `~/Library/LaunchAgents` holds one or two
+# agbridge plists (~36 ms), and this is a recovery command that already sleeps in
+# a poll loop waiting for a bridge to exit and starts a second python for
+# `forget-rows`. The correctness is worth the 0.55 s worst case.
+#
+# ⚠️ NO `2>/dev/null`. The awk had one -- so that an unreadable plist stayed
+# quiet -- and it swallowed the interpreter`s own diagnostics too, so a parse
+# error in the program itself read as "this plist names no config" at every call
+# site. The reader below is silent by construction instead: it catches its own
+# errors and answers with a status, which leaves stderr free to carry a real bug.
+#
+# WHAT `plistlib` DOES NOT ANSWER is "what would `agb bridge` DO with this
+# argv", and that half is no longer simulated here: the elements after the
+# command word are handed to `agb_mac.parse_bridge_args` -- the function
+# `agb bridge` itself parses with -- loaded out of the directory `$agb` lives in.
+#
+# ⚠️ THAT HALF WAS A HAND-WRITTEN WALK FOR FIVE REVIEW ROUNDS, and the sequence
+# reads exactly like the awk one above it: each round added a rule and the next
+# round found the rule it did not have. THE LAST occurrence and not the first
+# (the parser reads value flags into a dict with no duplicate check, so a
+# repeated flag overwrites and the last is what the bridge runs on); BOTH
+# SPELLINGS, since `parse_bridge_args` partitions every argument on `=` before
+# looking the name up, and last-wins holds ACROSS the two rather than within
+# each; AN ELEMENT IS ONLY A FLAG IN FLAG POSITION, so `--workspace` followed by
+# `--config=/other/config` is a WORKSPACE NAME that reads like a flag and the
+# bridge never sees a config there. Every one of those is a property of
+# `parse_bridge_args` restated in a second language, and each was a wrong-job
+# bounce before it was a rule.
+#
+# ⚠️ AND THE FIFTH ROUND FOUND THE CLASS A RESTATEMENT CANNOT REACH: AN ARGV THE
+# PARSER REJECTS. `bridge --config=/real/config --config=` is a missing-value
+# error; `bridge --config /real bridge --config /decoy` a stray positional;
+# `bridge --config /real --bogus` an unknown option; `bridge --config /real
+# --watchdog soon` a number that is not one. `agb bridge` EXITS on every one of
+# them, so the job runs no bridge and holds no map -- and the walk answered a
+# real-looking config for all four, which made a dead KeepAlive job an exact,
+# DECLARING claimant (rank 1) that outranked the live one. Simulating the
+# rejection rules as well would have needed the BOOLEAN flag list as a second
+# cross-file agreement, plus the two numeric validations, plus the positional
+# rule: a WIDER agreement and a sixth round. Calling the parser retires the whole
+# class, including the ones nobody has thought of yet.
+#
+# ⚠️ THE PARSER IS LOADED FROM BESIDE `$agb`, WHICH IS NOT A NEW DEPENDENCY.
+# `agb` reaches `agb_mac` by path from its own directory (`agb.sibling_path`),
+# `install.sh` copies the three files together and refuses to write an install
+# where they are not, and step 2 of this very script -- `agb forget-rows` -- goes
+# through `agb._load_mac()`. A tree where this load fails is a tree where the
+# forget cannot run either, so the failure is worth having EARLY and LOUD rather
+# than after the bootout: it is exit 3, which is fatal, and the message names
+# `--agb` rather than `--python` because the interpreter is fine.
+# `os.path.realpath` first, so an `agb` symlinked into a `bin/` directory finds
+# the siblings next to the REAL file, exactly as `sibling_path` does.
+#
+# ⚠️ IT COSTS ONE MORE `import` PER QUESTION, MEASURED: 19.0 ms for the reader
+# with `plistlib` alone against 21.6 ms with `agb` and `agb_mac` loaded too, on
+# the 3.6.8 the floor is set by. Two plists read twice each is ~10 ms of it.
+# `agb_mac` is deliberately NOT on the hook`s hot path, and this is not that
+# path: it is a recovery command that already sleeps in a poll loop.
+#
+# ⚠️ AND ONLY `ProgramArguments`, because a plist is not an argv -- only one of
+# its keys is. Every other key carries strings too (`ProcessType`,
+# `StandardOutPath`, an `EnvironmentVariables` value, a `WatchPaths` array), and
+# reading them made a plist that says nothing about a config name one. That is
+# now structural rather than a boundary the reader has to hold: `plistlib` hands
+# back a dict and this asks it for one key.
+#
+# ⚠️ AND ONLY THE PART OF IT AFTER THE `bridge` COMMAND WORD, because
+# `ProgramArguments` is not the BRIDGE`s argv -- it is the whole command line,
+# and `agb bridge` is handed only what follows the command name. The array
+# `install.sh` renders is
+#
+#     <python> -S -E <agb> bridge --config <path>
+#
+# so four elements go by before the walk has anything to do with `agb bridge` at
+# all, and `agb` itself reads its command from argv[1] and nothing else
+# (`agb.main`; the wrong order is *run* in
+# `tests/test_install_pkg.py::test_the_templates_config_flag_comes_after_the_command_name`,
+# which is the authority for this paragraph rather than the shape of the
+# template).
+#
+# Walking the whole array made a plist that starts NO BRIDGE claim a map:
+# `<python> -S -E <agb> --config /real/config bridge` is the command `--config`,
+# refused as unknown, restarted once every `ThrottleInterval` for ever under
+# `KeepAlive`. Reading `/real/config` off it made that dead job an EXACT,
+# DECLARING claimant -- rank 1 -- so a `--config /real/config` run bounced it,
+# waited for nothing, and forgot the map while the real instance`s bridge was
+# still live and merging. (Measured: two plists, the broken one sorting first;
+# the run reported `stopped: com.agbridge.aaa` and never touched the job that
+# was actually holding the map.)
+#
+# ⚠️ NO `bridge` IN THE ARRAY AT ALL IS `no such flag`, not `this file says
+# nothing`. That is the same answer a plist predating the flag gives, and it has
+# to be: an argv with no bridge in it starts no bridge, so it holds no map that
+# is not the default one, and the caller`s "a plist carrying no `--config`
+# implies `$DEFAULT_CONFIG`" reading already ranks such a job BELOW every job
+# that names a config (rank 2/4 against 1/3). Answering exit 2 instead would
+# make it invisible, which is the direction that strands a claimant -- and it
+# would also swallow `<plist/>` and every plist with no `ProgramArguments`,
+# which is the shape a Mac installed before instances existed still has.
+#
+# ⚠️ AND AN ARGV THE PARSER REFUSES IS `no such flag` TOO, for exactly that
+# reason -- it is the same fact wearing different clothes. `agb bridge` prints
+# the error and exits, launchd restarts it once every `ThrottleInterval` under
+# `KeepAlive`, and no bridge is ever running: the job holds no map, so "this
+# plist carries no `--config`" is the CORRECT answer for it and not a safety
+# trade. Note what that costs at the one call site where the question is not
+# "which job holds this map" but "where is this instance`s config" -- an
+# `agb-refresh --instance hostb` whose plist has been hand-edited into something
+# the parser refuses falls back to the conventional path instead of the config
+# the broken argv names. That is the same answer that shape already got when the
+# `--config` sat in front of the command word, it is the direction that is merely
+# useless rather than destructive (`forget-rows` reports an empty map and exits
+# 0, against bouncing a live instance`s job), and `--config` settles it.
+#
+# ⚠️ Unlike the `ps` side (`cmdline_is_ours`), there is NO AMBIGUITY to resolve
+# here and none is invented: `ProgramArguments` is a real argv array, so a blank
+# inside a value is inside one element and the walk is exact. That is also why
+# this side may answer "no config" confidently where the flattened `ps` line may
+# not.
+#
+# ⚠️ WHAT `plist_arg` STILL DOES NOTHING FOR, so that the next reader is not told
+# a class is closed when it is only smaller:
+#
+#   * a file that is not a plist -- unreadable, truncated mid-element, or not
+#     XML and not binary. `plistlib` raises and this answers exit 2, where the
+#     token scan used to keep the last COMPLETE value it had seen. That looks
+#     like a loss and is not: a truncated file is one launchd cannot load, so no
+#     bridge was ever started from it, and the scan`s partial answer was not
+#     safe either -- truncating a plist mid-array left it answering `--workspace`
+#     as the config, which is a path no process carries. Exit 2 says "this file
+#     says nothing" and `bind_label_to_config` skips it, which is where the
+#     unreadable-plist guard already sends it and for the same reason.
+#   * a `ProgramArguments` element that is not a string. launchd refuses such a
+#     job outright, so nothing is running from it, and the whole array is
+#     answered "no such flag" without asking the parser -- which would raise on
+#     it (`arg.partition` on an int) rather than answer.
+#   * a path containing a NEWLINE. The value comes back through a command
+#     substitution, which strips trailing newlines, and `ps` could not put one
+#     back together on the other side either.
+#   * AN ARGV THAT REACHES `agb bridge` INDIRECTLY -- `/bin/sh -c "exec python3
+#     <agb> bridge --config /x"` is one element, not seven, so no element equals
+#     `bridge` and the answer is "no `--config`". That job IS running a bridge,
+#     on `/x`, and this reads it as the default instance`s. Unchanged from the
+#     whole-array walk, which found no `--config` element either; not narrowed
+#     and not widened, and it is why the sentence above says the boundary is
+#     `install.sh`-shaped argv rather than any command line that ends up running
+#     a bridge.
+#   * `bridge` APPEARING BEFORE THE COMMAND WORD as some other argument`s value
+#     -- `<agb> hook bridge`, or an interpreter option that takes `bridge` as
+#     its argument. The parse starts one element too early and reads the rest as
+#     bridge flags. Both fail towards "no `--config`" for every argv shape a
+#     human writes (there are no flags after the command word in either), and
+#     neither is a command line that starts a bridge.
+#   * AN `agb_mac` THAT IS NOT THE ONE THIS PLIST`S BRIDGE RUNS. The parser comes
+#     from beside `$agb`, and a plist names an `agb` of its own in element 4; a
+#     tree where those two disagree is answered by THIS one. Deliberate -- the
+#     alternative is executing code from a path a hand-edited plist chose -- and
+#     harmless in the shape `install.sh` writes, where they are the same file. An
+#     `agb_mac` old enough not to know `--config` answers "no such flag" for every
+#     plist, which is right in that world too: no bridge there accepts the flag.
+#
+# All of those fail towards "no config found". That is the LOUD direction for the
+# default instance (the default label, and the note that says so) and the quiet
+# one for a named instance, which is why the reader asks the real parser rather
+# than drawing a boundary at what `install.sh` happens to write.
+#
+# ⚠️ TWO RULES ON THE PROGRAM TEXT BELOW, both of which fail at a distance:
+#
+#   * NO APOSTROPHE. It would close the shell quoting around it. That is why the
+#     comments above spell possessives with a backquote, and why the program
+#     uses double-quoted strings throughout.
+#   * PURE ASCII, so no `⚠️` inside it however much the rest of this file uses
+#     one. Python decodes a `-c` program using the LOCALE`s filesystem encoding,
+#     so under `LC_ALL=C` a non-ASCII byte in the SOURCE is
+#     `Unable to decode the command from the command line` -- the reader never
+#     runs at all, and every caller reads "this plist names no config". Measured
+#     on 3.6.8 with a single emoji in a comment.
+plist_arg() {
+    "$python" -S -E -c '
+import os, plistlib, sys
+
+# THE PARSER `agb bridge` ITSELF USES, loaded the way `agb` loads it: by PATH,
+# from the directory the installed `agb` lives in, with `agb` registered in
+# `sys.modules` first so that `agb_mac`s own `import agb` binds this one. Neither
+# file has a `.py` extension, so the ordinary import machinery cannot find them
+# (agb constraint #17) - which is also what stops a stray `agb_mac` on the path
+# from being picked up here.
+#
+# FIRST, before the plist is even opened, so that a tree missing `agb_mac`
+# answers the same way whatever the plist looks like. Exit 3 - not 2 - because
+# this is not a statement about the file at all; `plist_read_ok` turns it into a
+# `die` naming `--agb`.
+def load(name, path):
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    loader = SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_file_location(name, path, loader=loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    loader.exec_module(mod)
+    return mod
+
+try:
+    lib = os.path.dirname(os.path.realpath(sys.argv[3]))
+    load("agb", os.path.join(lib, "agb"))
+    mac = load("agb_mac", os.path.join(lib, "agb_mac"))
+    parse = mac.parse_bridge_args
+    # WHICH KEY the answer lands under, taken from the parsers own table rather
+    # than derived from the flag name: `--feed-host` is `feed_host` there, and a
+    # rule spelled here would be one more thing to keep in step. A flag that
+    # takes no value at all is not in the table, and `opts.get(None)` is `None`,
+    # which is the same answer as "this argv does not carry it".
+    key = mac.BRIDGE_VALUE_ARGS.get(sys.argv[2])
+except Exception:
+    sys.exit(3)
+
+# Read and parse are one answer, not two: both mean "this file says nothing",
+# and separating them would only give the caller a distinction it has no use
+# for. `EnvironmentError` rather than `OSError` for the 3.6 floor - they are the
+# same class there, and this spelling reads on every version the farm has.
+try:
+    fh = open(sys.argv[1], "rb")
+except EnvironmentError:
+    sys.exit(2)
+try:
+    try:
+        doc = plistlib.load(fh)
+    except Exception:
+        # WARNING: `plistlib` SNIFFS the format off the first 32 bytes and only
+        # recognises `<?xml`, `<plist` and the binary magic. A plist that opens
+        # with its DOCTYPE - valid XML, and launchd loads it - is refused
+        # before the parser ever sees it. Naming the format skips the sniff.
+        # This is a widening, not a loosening: a file that is genuinely not XML
+        # still fails, one line lower, in the parser.
+        fh.seek(0)
+        doc = plistlib.load(fh, fmt=plistlib.FMT_XML)
+except Exception:
+    sys.exit(2)
+finally:
+    fh.close()
+
+# `<plist/>` parses to None and a plist whose root is an array parses to a list;
+# neither is a launchd job, and neither is an ERROR. They carry no argv, which
+# is exit 0 with no output - the same answer as a job plist with no such flag.
+argv = doc.get("ProgramArguments") if isinstance(doc, dict) else None
+if not isinstance(argv, list):
+    sys.exit(0)
+
+# A NON-STRING ELEMENT IS ANSWERED HERE, not by the parser, which would raise on
+# it (`arg.partition` on an int) rather than answer. launchd refuses such a job
+# outright, so nothing is running from it and it carries no map: "no such flag".
+if not all(isinstance(el, str) for el in argv):
+    sys.exit(0)
+
+# WHERE THE BRIDGE`S ARGV STARTS. `ProgramArguments` is the whole command line -
+# interpreter, its options, the `agb` path, THEN the command word - and `agb`
+# hands `cmd_bridge` only what follows that word. A flag in front of it is the
+# COMMAND, refused as unknown, so a job spelled that way runs no bridge and
+# holds no map; reading a config off it made a dead job outrank a live one.
+#
+# No `bridge` in the array is "no such flag" (exit 0, no value), not an error:
+# see the block above the function for why that direction and not exit 2.
+try:
+    start = argv.index("bridge") + 1
+except ValueError:
+    sys.exit(0)
+
+# AND THE REST IS THE PARSERS ANSWER, not a walk that imitates it. An argv it
+# REFUSES starts no bridge - `agb bridge` prints the error and exits, launchd
+# restarts it for ever under `KeepAlive` - so the job holds no map and "carries
+# no such flag" is the correct answer, not a fallback. Every rejection rule comes
+# with it: a missing value either spelling, an unknown option, a stray
+# positional, a `--watchdog` that is not a number.
+try:
+    value = parse(argv[start:]).get(key)
+except Exception:
+    sys.exit(0)
+
+# WARNING: BYTES, not `print`. `print` encodes with whatever the LOCALE says, and
+# `-E` does not touch `LC_ALL`: under `LC_ALL=C` a non-ASCII config path is a
+# `UnicodeEncodeError` (the reader dies and the caller reads "no config"), and
+# under an ISO-8859-1 locale it comes out MANGLED - a path that exists nowhere,
+# which is the unsafe direction, silently. The awk this replaced passed bytes
+# through untouched and this has to as well. UTF-8 because that is what the
+# filesystem takes on both sides: macOS enforces it, and it is the convention
+# everywhere the farm runs.
+#
+# `%s` because two of the parsers values are NUMBERS (`--watchdog` is a float,
+# `--connections` an int). Nothing asks this for either - `bind_label_to_config`
+# asks `--config` and `--rows`, both paths - but answering "the value the bridge
+# resolved" for a flag it was handed beats raising on it.
+if value is not None:
+    sys.stdout.buffer.write(("%s" % (value,)).encode("utf-8") + b"\n")
+' "$1" "$2" "$agb"
+}
+
+# WHAT EACH `plist_arg` STATUS MEANS, spelled ONCE and asked at every call site.
+# Three answers, not two, and the third is the one that kept being lost:
+#
+#   0  answered. An empty value means "this argv carries no such flag", which
+#      the callers read as a real answer (the default config is implied). An
+#      argv `agb bridge` REFUSES is one of those: it starts no bridge, so it
+#      holds no map -- see the block above `plist_arg`.
+#   2  THIS FILE SAYS NOTHING -- it could not be read, or it is not a plist.
+#      The callers skip it, or say so; see the guards at each.
+#   3  THE PARSER COULD NOT BE LOADED from beside `$agb`. Also not a statement
+#      about the plist, and a different one from the interpreter failing: the
+#      tree cannot run `agb bridge` OR `agb forget-rows` either, so this run
+#      cannot do its job at all. Fatal, and the message names `--agb`.
+#   *  THE READER ITSELF FAILED, which is not a statement about the plist at
+#      all. It is a statement about `$python`.
+#
+# ⚠️ The third was folded into the second at all three call sites, and that is
+# an ordinary operator mistake away: `--python /bin/false`, `--python` naming a
+# shell script, an interpreter with no `plistlib`, a traceback in the reader.
+# Every one of those exits 1/126/127, every plist then "said nothing", and the
+# run fell through to the DEFAULT label and the CONVENTIONAL config -- bouncing
+# `com.agbridge` and forgetting a named instance`s bindings with that instance`s
+# bridge live, reporting success in the words it uses when it is right.
+# (Measured with `--python /bin/false`: `instance: (default)`, `stopped:
+# com.agbridge`, exit 0.) So it is FATAL, and the message names the interpreter
+# rather than the plist -- the plist is fine.
+#
+# ⚠️ `die` from the PARENT shell, which is why this is a separate function
+# called with `$?` rather than a wrapper around `plist_arg` that returns the
+# value. A wrapper would be run inside `value=$(...)`, i.e. in a subshell, where
+# `exit 1` ends the substitution and the script carries on with an empty value:
+# the exact silent fallback this exists to stop, reintroduced by the tidier
+# spelling.
+plist_read_ok() {
+    [ "$1" = 2 ] && return 0
+    [ "$1" = 3 ] && die "cannot load agb_mac from beside $agb.
+       agb-refresh asks agb_mac.parse_bridge_args what each launchd job was
+       started with, and step 2 below runs agb forget-rows, which loads the same
+       file -- so this tree cannot do either. Pass --agb <path to the installed
+       agb>, or re-run install.sh mac to put agb, agb_mac and agb_ops back
+       together."
+    die "cannot read a plist: $python exited $1 reading $2.
+       That is the reader failing, not the plist -- pass --python <path to a
+       real python3>. Continuing would bounce whichever job the unread plists
+       left unclaimed and forget the wrong instance's bindings."
 }
 
 # WHERE A CONFIG'S MAP LIVES, canonically -- so two config paths can be compared
@@ -258,7 +657,7 @@ same_map() {
 # The label cannot be reconstructed from the config path either
 # (`install.sh mac --instance hostb --config <elsewhere>` is supported), so it
 # is looked up where it is recorded: the plists themselves, through the same
-# `plist_config` the wait below uses.
+# `plist_arg` the wait below uses.
 #
 # ⚠️ The comparison is on the MAP, never on the spelling, and the two halves of
 # this script are what make that necessary: the label is chosen here by matching
@@ -302,11 +701,15 @@ same_map() {
 #
 # Two guards on that implication, because both directions of it are wrong:
 #
-#   * the plist must be READABLE. `plist_config` answers "" both for "no
-#     `--config` in it" and for "could not read it at all" (mode 000, root
-#     owned), and reading the second as the default config would let an
-#     unreadable plist claim a map it says nothing about -- the wrong-job bounce
-#     manufactured by the fix for it.
+#   * the plist must be READABLE AND PARSEABLE. `plist_arg` prints nothing both
+#     for "no `--config` in it" and for "could not read it at all" (mode 000,
+#     root owned) or "not a plist" (truncated, or some other file that ended up
+#     under this name), and reading the second as the default config would let a
+#     file that says nothing claim a map -- the wrong-job bounce manufactured by
+#     the fix for it. The two are told apart by the STATUS, not by a separate
+#     `-r` test: `plist_arg` exits 2 for both failures and 0 for a plist it read,
+#     which also covers the cases `-r` cannot see (a directory of that name, a
+#     binary blob that is not a plist, an I/O error mid-read).
 #   * the name must be in the `com.agbridge` label space. `~/Library/LaunchAgents`
 #     is shared with every other program on the Mac, and none of their plists
 #     carries a `--config`; without this, `agb-refresh --config <default config>`
@@ -325,20 +728,31 @@ bind_label_to_config() {
     for candidate in "$agentsdir"/*.plist; do
         # An unmatched glob comes back as the pattern itself.
         [ -f "$candidate" ] || continue
-        # ⚠️ `|| value=""`, exactly as the `$plistconfig` read below does it, and
-        # for a reason `set -e` makes invisible: an ASSIGNMENT from a command
-        # substitution takes that command's status, so one unreadable plist in
-        # the directory (mode 000, or root-owned) makes `awk` exit 2 and kills
-        # the whole script -- silently, since its stderr is discarded, in a
-        # recovery command. The inline `[ "$(plist_config …)" = … ]` this
-        # replaced was immune by accident: the status was the test's, not awk's.
-        value=$(plist_config "$candidate") || value=""
+        # ⚠️ An `if`, not `value=$(...) || value=""`, and the difference is the
+        # whole first guard above: the STATUS is the answer to "did this file say
+        # anything at all", and an assignment that discards it cannot tell "no
+        # `--config`" from "not a plist". Either spelling survives `set -e` --
+        # which is the OTHER reason this is not a bare assignment, since an
+        # ASSIGNMENT from a command substitution takes that command's status, so
+        # one unreadable plist in the directory would kill the whole script,
+        # silently, in a recovery command.
+        if value=$(plist_arg "$candidate" --config); then
+            said=yes
+        else
+            # ⚠️ `$?` FIRST, before anything else can overwrite it. The three
+            # statuses are three different answers and only ONE of them is
+            # "this file says nothing"; see `plist_read_ok`, which dies on the
+            # rest from here -- the parent shell -- rather than from inside the
+            # substitution above, where an exit would be swallowed.
+            plist_read_ok "$?" "$candidate"
+            value=""; said=no
+        fi
         name=${candidate##*/}
         name=${name%.plist}
         declared=yes
         if [ -z "$value" ]; then
             # No `--config` -- or no answer at all. See the two guards above.
-            [ -r "$candidate" ] || continue
+            [ "$said" = yes ] || continue
             case $name in
                 "$DEFAULT_LABEL"|"$DEFAULT_LABEL".*) ;;
                 *) continue ;;
@@ -347,16 +761,48 @@ bind_label_to_config() {
             declared=no
         fi
         exact=no
+        via=config
         if [ "$value" = "$config" ]; then
             exact=yes
-        else
-            # Not the same text. The same MAP?
-            same_map "$value" "$config" || continue
-            # Same directory, so the same map either way; whether it is also
-            # the same FILE is what breaks the tie below. Read off the paths,
-            # not off `same_map` -- the basename is a RANKING input and must
-            # never reach the match (see `same_map`).
+        elif same_map "$value" "$config"; then
+            # Not the same text, but the same MAP. Whether it is also the same
+            # FILE is what breaks the tie below -- read off the paths, not off
+            # `same_map`, because the basename is a RANKING input and must never
+            # reach the match (see `same_map`).
             if [ "${value##*/}" = "$configbase" ]; then exact=yes; fi
+        else
+            # ⚠️ Its config names another map -- which is not the end of the
+            # question, because `--config` is not the only flag that decides
+            # which map a bridge holds. `agb bridge --rows` overrides the rows
+            # half of one (`render_settings`: `opts.get("rows") or
+            # rows_path(config)`), so a job started `--config <elsewhere>
+            # --rows <this map's rows>` is writing the very file this run is
+            # about to rewrite, and it is the job that has to be stopped.
+            #
+            # Read only here, and ranked last (see the table below): it is a
+            # hand-edited plist -- `install.sh` renders no `--rows` -- so it may
+            # only ever replace the "nothing claims this config" fallback, never
+            # outbid a job that names the config itself.
+            # The same three-way status as above, and asked the same way: this
+            # file parsed a moment ago, so exit 2 here is a file that changed
+            # under the run -- but a reader that has broken since is still the
+            # reader, and reading it as "no --rows" is the same silent fallback.
+            #
+            # ⚠️ `if ...; then :; else` and NOT `if ! ...; then`. `!` sets `$?`
+            # to the NEGATION of the command`s status, so the reader`s 2 comes
+            # back as 0 inside the branch and `plist_read_ok` would die on every
+            # unreadable plist. Verified, not assumed.
+            if rowsvalue=$(plist_arg "$candidate" --rows); then :; else
+                plist_read_ok "$?" "$candidate"
+                rowsvalue=""
+            fi
+            [ -n "$rowsvalue" ] || continue
+            # `${rows:-$config}` is the rows file this run rewrites: an explicit
+            # `--rows` wins over the config's derivation on this side too
+            # (`agb_mac.instance_paths`), and `same_map` compares directories,
+            # which `<dir>/config` and `<dir>/rows` share.
+            same_map "$rowsvalue" "${rows:-$config}" || continue
+            via=rows
         fi
         claimants="$claimants $name"
         nclaim=$((nclaim + 1))
@@ -372,9 +818,11 @@ bind_label_to_config() {
         #        2  names this exact file + only implies one
         #        3  shares the directory  + declares a --config
         #        4  shares the directory  + only implies one
+        #        5  its --config is elsewhere; its --rows is in this map
         #       (9  the sentinel above: no claimant seen yet)
         if [ "$exact" = yes ]; then rank=1; else rank=3; fi
         if [ "$declared" = no ]; then rank=$((rank + 1)); fi
+        if [ "$via" = rows ]; then rank=5; fi
         if [ "$rank" -lt "$bestrank" ]; then matched=$name; bestrank=$rank; fi
     done
     if [ -z "$matched" ]; then
@@ -438,6 +886,51 @@ bind_label_to_config() {
 # It is also what the bridge's stale-row hint prints, which is why it binds the
 # label too (`bind_label_to_config`, above).
 #
+# ⚠️ BOTH RESOLVED HERE, ABOVE `bind_label_to_config`, and the `$agb` check with
+# them: `plist_arg` reads a plist with `plistlib` AND asks
+# `agb_mac.parse_bridge_args` what the argv means, so it needs the interpreter
+# and the installed tree before the label can be bound. `$python` was left below
+# once, and every `plist_arg` call in `bind_label_to_config` then ran
+# `"" -S -E -c ...` -- a "command not found" per plist, so every plist answered
+# nothing and the run fell through to the DEFAULT label with a named instance`s
+# bridge live. `$agb` sat below for the same reason and would fail the same way,
+# except louder: `plist_read_ok` turns the missing parser into a `die`, so the
+# order below is what makes the message name the flag that is actually wrong.
+if [ -z "$python" ]; then
+    python=$(command -v python3 2>/dev/null || :)
+    [ -n "$python" ] || die "no python3 found; pass --python <absolute path>"
+fi
+
+[ -f "$agb" ] || die "no agb at $agb (pass --agb <path>)"
+
+# ⚠️ AND PROVED TO BE ONE, ONCE, before any plist is read. `-n` says a path was
+# given; it does not say the path runs Python, and `--python` is typed by hand.
+#
+# `plist_read_ok` catches an interpreter that FAILS -- `/bin/false`, a missing
+# file, a python with no `plistlib` -- because those come back non-zero. It
+# cannot catch one that SUCCEEDS while meaning nothing: `--python /bin/echo`
+# prints its own arguments and exits 0, so every plist "answers" a config path
+# made of the reader`s source code. That is the unsafe polarity and no status
+# can see it, which is why this asks a question with a known answer instead.
+#
+# One extra process per run, in a command that already starts several and sleeps
+# in a poll loop.
+#
+# ⚠️ STDOUT ONLY, and stderr deliberately neither captured nor discarded.
+# Capturing it (`2>&1`) folds any startup noise into the answer, so an
+# interpreter that works but says something would be refused -- the too-tight
+# direction, on the flag an operator types by hand. Discarding it (`2>/dev/null`)
+# is what the awk this reader replaced did, and it swallowed the traceback that
+# explains WHY. Letting it through prints the real diagnosis immediately above
+# the message below, and leaves the decision to the one string that answers it.
+if [ "$("$python" -S -E -c 'import plistlib, sys
+sys.stdout.write("plistlib-ok")')" != plistlib-ok ]; then
+    die "$python is not a usable python3 (it cannot import plistlib).
+       agb-refresh reads the launchd plists with it to find out which config
+       each job runs; without one it cannot tell which map to repair.
+       Pass --python <absolute path to python3>."
+fi
+
 # The LABEL half is resolved first, on its own, because the plist it names is
 # what the config half is read out of below.
 if [ -n "$instance" ]; then
@@ -445,13 +938,6 @@ if [ -n "$instance" ]; then
 fi
 if [ -z "$label" ] && [ -n "$config" ]; then bind_label_to_config; fi
 [ -n "$label" ] || label="$DEFAULT_LABEL"
-
-[ -f "$agb" ] || die "no agb at $agb (pass --agb <path>)"
-
-if [ -z "$python" ]; then
-    python=$(command -v python3 2>/dev/null || :)
-    [ -n "$python" ] || die "no python3 found; pass --python <absolute path>"
-fi
 
 plist="$agentsdir/$label.plist"
 uid=$(id -u)
@@ -472,10 +958,42 @@ uid=$(id -u)
 # The convention is still the fall-back, for the case the plist cannot answer:
 # a Mac where the plist was never rendered (or was hand-deleted) can still be
 # refreshed by name.
-plistconfig=$(plist_config "$plist") || plistconfig=""
+#
+# ⚠️ BUT "THE PLIST IS NOT THERE" AND "THE PLIST IS THERE AND UNREADABLE" ARE
+# NOT THE SAME QUESTION, and this site collapsed them. `plist_arg` answers exit
+# 2 to both -- a missing file and a truncated, mode-000 or not-a-plist one -- and
+# the convention is the right fall-back for only the first of them. For the
+# second it is a guess about a file that is sitting right there saying otherwise:
+# `agb-refresh --instance hostb` against an install made with `--config
+# <elsewhere>` and a corrupted `com.agbridge.hostb.plist` repaired
+# `~/.config/agbridge/hostb/config` -- a map that never existed, so `forget-rows`
+# reported "already empty" and exited 0 -- while the liveness pattern, built from
+# the same empty `$plistconfig`, waited for a bridge whose command line names the
+# real config. Success, twice, on the wrong instance.
+#
+# So the unreadable case REFUSES, and names the flag that settles it. This is a
+# recovery command: it is allowed to ask which map, and is not allowed to guess
+# between two answers when the file that knows is unreadable.
+#
+# `[ -e ]` is what tells the two apart, and it is deliberately the weaker test.
+# It answers false for a dangling symlink and for a plist under a directory this
+# user cannot search -- both of which take the convention, exactly as they did
+# before -- so this can only ever turn the noisier direction ON, never a working
+# `agb-refresh --instance` OFF.
+plistsaid=yes
+if plistconfig=$(plist_arg "$plist" --config); then :; else
+    # `$?` before anything else runs, and `plist_read_ok` dies unless it is 2.
+    plist_read_ok "$?" "$plist"
+    plistconfig=""; plistsaid=no
+fi
 if [ -z "$config" ]; then
     if [ -n "$plistconfig" ]; then
         config=$plistconfig
+    elif [ "$plistsaid" = no ] && [ -e "$plist" ]; then
+        die "$plist exists but could not be read as a plist.
+       It is the only record of which config ${instance:+instance $instance }uses, so this run
+       cannot tell which map to repair -- pass --config <path> to say, or
+       re-run install.sh mac to render the plist again."
     elif [ -n "$instance" ]; then
         config="$DEFAULT_CONFIG_DIR/$instance/config"
     else
@@ -595,12 +1113,228 @@ ere_quote() {
     printf '%s' "$1" | sed -e 's/[][(){}.*+?^$|\\]/\\&/g'
 }
 
-# How many live processes a pattern matches. `pgrep -f` prints one pid per line
-# and exits 1 with no output when there are none, so `wc -l` is the count either
-# way -- and `tr -dc '0-9'` because BSD `wc` pads its output with blanks, which
-# `[ ... -gt ... ]` is not obliged to accept.
-bridge_count() {
-    "$pgrep" -f "$1" 2>/dev/null | wc -l | tr -dc '0-9'
+# DOES THIS PATH NAME A FILE THIS RUN REWRITES? The map is two files and they
+# can come from two flags: `forget-rows` rewrites `dirname(<config>)/placements`
+# always, and either `dirname(<config>)/rows` or the `--rows` this run was given
+# (`agb_mac.instance_paths`). `same_map` compares DIRECTORIES, so one call per
+# path covers both files under it.
+ci_hits() {
+    if same_map "$1" "$config"; then return 0; fi
+    [ -n "$rows" ] || return 1
+    same_map "$1" "$rows"
+}
+
+# EVERY VALUE OF `$2` ON THE LINE, OFFERED TO `ci_hits` IN POSITION ORDER.
+# Returns 0 as soon as one of them names a file this run rewrites.
+#
+# ⚠️ EVERY occurrence, not the first, because the first is not the one the
+# bridge is running on. `parse_bridge_args` (agb_mac) reads its value flags into
+# a dict -- `opts[…] = inline`, no duplicate check -- so a repeated flag
+# OVERWRITES and the LAST occurrence wins. A bridge started `… bridge --config
+# /old --config <this instance's>` is holding THIS map, while reading only the
+# first gave `/old` and its blank-prefix walk (`/old --config <this>`, `/old
+# --config`, `/old`) never reached the winning value: not ours, no wait,
+# `forget-rows` under a live bridge.
+#
+# ⚠️ And "the last one" cannot simply REPLACE "the first one" here, because on a
+# flattened `ps` line the two readings are not exclusive -- see the blank walk
+# below. `--config "/a --config /b"` is ONE path containing the literal text,
+# indistinguishable from two flags, and the first reading is the right one for
+# it while the last is right for a genuinely repeated flag. Nothing on the line
+# says which. So both are offered: every occurrence, each with its own walk.
+# That is a strict SUPERSET of what either reading alone proposes, and the extra
+# candidates can only ever produce an over-match, which is a bounded 10 s wait.
+#
+# ⚠️ AND "EVERY OCCURRENCE" MEANS IN POSITION ORDER, over ONE marker that covers
+# both spellings. Two `case` arms -- `*" --config "*` then `*" --config="*` --
+# do not scan in position order at all: `case` picks by ARM order, so a line
+# carrying an INLINE occurrence before a space-form one took the space arm and
+# cut there, discarding the inline value and every prefix of it. That value is
+# precisely what `parse_bridge_args` keeps under the one-flag-with-blanks
+# reading this walk exists for (`--config=/tmp/a --config b/config` is ONE
+# argument whose value is `/tmp/a --config b/config`), so the winning candidate
+# was never offered: not ours, no wait, `forget-rows` under a live bridge. The
+# earlier round's permutation check missed it by only ever building lines from
+# SEPARATE flags, which is the reading in which the loss is a harmless
+# over-match -- a harness narrower than the property it was guarding.
+ci_scan() {
+    cs_line=$1
+    cs_flag=$2
+    while :; do
+        # One marker, cut at its FIRST occurrence (`#` is the shortest prefix),
+        # which is what makes the scan positional. What follows it says which
+        # spelling this is.
+        case $cs_line in
+            *" $cs_flag"*) cs_rest=${cs_line#*" $cs_flag"} ;;
+            *) return 1 ;;
+        esac
+        # Past this occurrence, so the next turn finds the next one and the loop
+        # always shortens. The last occurrence -- the one the parser keeps when
+        # the line is read as separate flags -- is always reached: cutting at an
+        # earlier one retains everything after it.
+        cs_line=$cs_rest
+        case $cs_rest in
+            # `--config <value>`, and `--config=<value>`: `parse_bridge_args`
+            # partitions on `=` before looking the name up, so both spellings
+            # start a value right here.
+            " "*) cs_rest=${cs_rest#" "} ;;
+            "="*) cs_rest=${cs_rest#"="} ;;
+            # `--configuration/x` inside somebody's path, or a line ending in a
+            # bare `--config` (which is a missing-value error, so no bridge is
+            # running on it). Not the flag: no candidate here, and no evidence
+            # either way for `ci_config_certain` below.
+            *) continue ;;
+        esac
+        # ⚠️ `ps` flattens the arguments with blanks, so a path CONTAINING a
+        # blank cannot be told apart from the flag that follows it -- and blanks
+        # are allowed (`install.sh --config` asks only that the path be
+        # absolute). Every blank-terminated prefix is offered instead, longest
+        # first. An over-match costs a bounded 10 s wait; an under-match is
+        # `forget-rows` landing under a live bridge, so it errs in the direction
+        # it can afford.
+        while :; do
+            if ci_hits "$cs_rest"; then return 0; fi
+            case $cs_rest in
+                *" "*) cs_rest=${cs_rest% *} ;;
+                *) break ;;
+            esac
+        done
+    done
+}
+
+# DOES THIS LINE PROVE THE BRIDGE WAS STARTED WITH A REAL `--config`?
+#
+# ⚠️ ` --config ` BYTES ARE NOT A `--config` FLAG. `ps` flattens argv, so
+# `bridge --workspace "farm --config /other/config"` -- a bridge with NO config
+# flag, running on `agb.config_path()`, holding the DEFAULT map -- prints a line
+# byte-for-byte identical to one carrying the flag. Reading those bytes as proof
+# is what let the answer skip the default-map question below and come back "not
+# ours" on a default refresh: zero waits, `forget-rows` under a live bridge over
+# the map being repaired. That is the unsafe polarity, and it is the same shape
+# as every earlier round -- a test narrower than the thing it guards.
+#
+# It is UNDECIDABLE from the line alone (both readings are real argvs), so it is
+# resolved towards the wait: a `--config` is proof only when NO OTHER
+# value-taking flag appears before it, because there is then no value it could
+# be part of. Everything else falls through to "could this be holding the
+# default map?", which costs a bounded 10 s and only on a run that repairs that
+# map.
+#
+# ⚠️ Not a narrowing of the ordinary case: `ProgramArguments` puts `--config`
+# immediately after `bridge` (dist/com.agbridge.plist), so every launchd-started
+# bridge is proof and another instance's is still not waited for. What changes
+# is a hand-started `agb bridge --feed-host X --config Y`, which is now waited
+# for on a default-map run -- which the "does nothing for" list below already
+# claimed, from the other direction.
+#
+# The scan starts AFTER `<agb> bridge`, because argv does: a `--config` inside
+# the agb path itself is not an argument at all, and taking it as one made the
+# line "proof" with nothing before it. `${1#*"$agb bridge"}` leaves the line
+# untouched when that text is absent, which is the cautious direction (more text
+# to find a value-taking flag in).
+ci_config_certain() {
+    ci_marked=""
+    cc_rest=${1#*"$agb bridge"}
+    case $cc_rest in
+        *" --config "*|*" --config="*) ci_marked=yes ;;
+        *) return 1 ;;
+    esac
+    cc_pre=${cc_rest%%" --config"*}
+    for cc_flag in $BRIDGE_VALUE_FLAGS; do
+        # `--config` itself excepted: an earlier one could swallow this one, but
+        # then the line carries a config flag either way, which is all this asks.
+        case $cc_flag in --config) continue ;; esac
+        case $cc_pre in *" $cc_flag"*) return 1 ;; esac
+    done
+    return 0
+}
+
+# IS THIS COMMAND LINE A BRIDGE OVER THE MAP THIS RUN REPAIRS?
+#
+# ⚠️ Attribution, not text matching. Two spellings of one path are one map
+# (invariant 12) and `same_map` is the one place that comparison lives -- the
+# same call `bind_label_to_config` makes about the plists. Comparing the strings
+# here would reinstate, one door along, the bug `same_map` was extracted to fix.
+#
+# ⚠️ TWO FLAGS DECIDE WHICH MAP A BRIDGE HOLDS, not one. `render_settings`
+# (agb_mac) spends `--rows` before the config -- `opts.get("rows") or
+# rows_path(config)` -- so `bridge --config <elsewhere> --rows <this map's rows>`
+# is writing the very file this run is about to rewrite while its `--config`
+# names somewhere else entirely. Asking only about `--config` answered "not
+# ours": zero waits, `forget-rows` under a live bridge that merges-then-writes
+# and re-mints rows against the ids it has just closed. So both flags are
+# scanned, and a `--rows` hit is enough on its own.
+#
+# ⚠️ But only `--config` decides the UNTAGGED question below. A bridge with a
+# `--rows` and no `--config` still resolves `agb.config_path()` for its
+# placements file, so it holds part of the default instance's map; letting
+# `--rows` count as "this line carries a flag" would skip that question and
+# under-match -- the unsafe direction again.
+#
+# `$ci_why` is the answer's REASON, computed here and read by `bridge_alive` for
+# the note and the 10 s warning. Derived a second time from the line, it drifted
+# from the first: it called a bridge whose only `--config` was the text
+# `--configs/b` one that is "spelled differently". The two questions are the
+# same question, so they are asked once.
+cmdline_is_ours() {
+    ci_why=""
+    if ci_scan "$1" --config; then ci_why=spelling; return 0; fi
+    if ci_scan "$1" --rows; then ci_why=rows; return 0; fi
+    # Nothing on the line named a file this run rewrites. It is somebody else's
+    # only if it is PROVABLY on a config of its own; otherwise it may be running
+    # on `agb.config_path()`, and the DEFAULT instance's map is then the only one
+    # it can hold.
+    if ci_config_certain "$1"; then return 1; fi
+    if [ -n "$ci_marked" ]; then ci_why=ambiguous; else ci_why=untagged; fi
+    ci_hits "$DEFAULT_CONFIG"
+}
+
+# Say ONCE why a wait nobody asked for is happening -- a silent wait in a
+# recovery command is indistinguishable from the hang it looks like -- and
+# remember WHICH answer is holding it, because the 10 s warning has to name that
+# and not `$label`.
+loose_hold() {
+    looseheld=$1
+    [ -z "$notedloose" ] || return 0
+    notedloose=yes
+    case $1 in
+        untagged)
+            say "note:     a bridge is running whose command line carries no"
+            say "          --config, so it cannot be told apart from this"
+            say "          instance's -- waiting for it too rather than assuming"
+            say "          it is gone. install.sh mac --no-load, a hand-started"
+            say "          bridge, or a plist re-rendered without a restart all"
+            say "          leave one."
+            ;;
+        spelling)
+            say "note:     a bridge is running whose --config is spelled"
+            say "          differently but resolves to this same map, so it IS"
+            say "          this instance's and is being waited for. A re-rendered"
+            say "          plist, a symlinked \$HOME, a relative path, or the flag"
+            say "          given more than once (agb bridge keeps the LAST) all"
+            say "          leave one."
+            ;;
+        rows)
+            say "note:     a bridge is running whose --rows names this same map,"
+            say "          so it is writing the file this run rewrites and is"
+            say "          being waited for -- whatever its --config says."
+            say "          agb bridge --rows overrides the rows file the config"
+            say "          would have chosen."
+            ;;
+        ambiguous)
+            say "note:     a bridge is running whose --config cannot be told"
+            say "          apart from part of another flag's value (ps prints the"
+            say "          arguments flattened), so it may be running on the"
+            say "          default config and holding this map -- waiting for it"
+            say "          rather than assuming it is gone."
+            ;;
+        *)
+            say "note:     ps would not say what the running bridges were"
+            say "          started with, so none of them can be told apart from"
+            say "          this instance's -- waiting rather than assuming they"
+            say "          are gone."
+            ;;
+    esac
 }
 
 # ⚠️ A NARROW MISS IS "NOT PROVEN GONE", NOT "GONE", and that distinction is the
@@ -620,78 +1354,142 @@ bridge_count() {
 # silently. On main the pattern was the broad one and that bridge WAS waited
 # for, so a narrow miss taken as proof is a REGRESSION, not merely a gap.
 #
-# So a miss is followed by one more question: is a bridge running that carries
-# no `--config` AT ALL? It is asked by SUBTRACTION (every bridge, minus the ones
-# that carry the flag) because "does not contain" is not an ERE, and `pgrep`
-# speaks ERE.
+# So a miss is not the end of the question. What is actually running is asked
+# DIRECTLY instead: `pgrep -f` hands back the pids of every `<agb> bridge`,
+# `ps -ww -o args=` turns those pids back into the command lines they were
+# started with, and each one is attributed to a map by `same_map`.
 #
-# ⚠️ AND THAT QUESTION IS ONLY THIS RUN'S TO ASK WHEN IT IS REPAIRING THE
-# DEFAULT MAP -- `$broad` is emptied above otherwise, which switches this whole
-# probe off. The comment that used to stand here said an untagged bridge "cannot
-# be another instance's, because `install.sh` renders the flag unconditionally",
-# and that is only true of a bridge some 0.5.0 plist STARTED. The commonest
-# untagged bridge on a Mac with instances is the DEFAULT job's, still running
-# from a plist rendered before the flag existed: `install.sh mac --instance
-# hostb` renders hostb's plist, installs this newer `agb-refresh`, and does not
-# restart the default job. Against that bridge an ungated probe waited the full
-# 10 s on EVERY `agb-refresh --instance hostb` and then printed
-# "com.agbridge.hostb is still running after 10s" -- a warning that the forget
-# may have been undone, provably false (hostb's bridge exited before the first
-# poll), on every run of a recovery command. That is the every-run false warning
-# narrowing the pattern was for, reinstated by the fix for the narrowing.
+# ⚠️ READING THE COMMAND LINES IS THE POINT, AND NO PATTERN CAN REPLACE IT.
+# `pgrep -f` matches a regex against whatever spelling the process was started
+# with, and there is no way to canonicalise the far side of a regex match. A
+# bridge over THIS map started with a merely different spelling of the same path
+# -- `<dir>/./config`, a relative path, a symlinked `$HOME`, or the plist
+# re-rendered by `install.sh mac --instance` after the running bridge was
+# started from an older one -- matches no narrow pattern; and under the
+# SUBTRACTION this replaces (every bridge, minus the ones carrying `--config`)
+# it was counted on both sides, read as "tagged, therefore somebody else's", and
+# not waited for. `forget-rows` then ran under a live bridge, silently. That is
+# the label-side bug `same_map` was extracted to fix, arriving on the process
+# side, and it is why the answer here is a canonical comparison and not a regex.
 #
-# An untagged bridge IS attributable, just not by its command line: with no
-# `--config` it resolves `agb.config_path()` itself, so the only map it can hold
-# is the default instance's. When that is the map being repaired the wait is
-# real and is kept -- which is also the pre-0.5.0 behaviour, since the broad
-# pattern is all `main` ever had.
+# The rules, one per running bridge:
 #
-# ⚠️ WHAT THIS PROBE DOES NOTHING FOR, deliberately, so the next reader does not
-# have to rediscover it:
+#   * it carries `--config X`  ->  ours iff `X` names a file this run rewrites.
+#   * it carries `--rows R`  ->  ours iff `R` does, whatever its `--config` says:
+#     `render_settings` spends `--rows` FIRST (`opts.get("rows") or
+#     rows_path(config)`), so that is the map it holds.
+#   * it carries no PROVABLE `--config`  ->  it may be resolving
+#     `agb.config_path()` itself, so the DEFAULT instance's is the only map it
+#     can hold: ours iff this run repairs that map. That gate is why
+#     `install.sh mac --instance hostb` -- which renders hostb's plist and does
+#     NOT restart the default job, leaving a pre-0.5.0 untagged bridge up for
+#     ever -- does not buy every later `agb-refresh --instance hostb` a
+#     ten-second wait ending in "com.agbridge.hostb is still running after 10s",
+#     a warning that is provably false since hostb's own bridge exited before the
+#     first poll.
+#   * `ps` will not say  ->  unattributable is NOT gone, so it is waited for.
 #
-#   * an untagged bridge, when this run repairs a NON-default map. It cannot
-#     hold that map unless it was started by hand with an explicit `--rows`, and
-#     no plist can produce that.
-#   * a bridge whose command line carries `--config <some other path>`. It is
-#     counted on both sides, the difference is zero, and it is not waited for --
-#     which is the POINT: an attributable bridge belongs to whichever instance
-#     its config names, and waiting for another instance's bridge is the every-
-#     run 10-second warning the narrow pattern exists to remove. If that path is
-#     this instance's under a different spelling, the wait is skipped; the map is
-#     still the right one, and the 10s branch is what reports the consequence.
+# ⚠️ WHAT THIS DOES NOTHING FOR, deliberately, so the next reader does not have
+# to rediscover it:
+#
+#   * a bridge started from a DIFFERENT `agb` path. `$broad` names this one and
+#     always has; nothing here widens that.
 #   * a Mac with no `pgrep` -- there is no poll at all there, and never was.
-#   * a plist that carries no `--config`: `$pattern` is already the broad one, so
-#     `$broad` is empty and this never runs. The note printed there covers it --
-#     and that pattern matches ANY bridge, so nothing is missed, only attributed
+#   * a plist that carries no `--config`: `$pattern` is already the broad one,
+#     `$broad` is empty and none of this runs. The note printed there covers it
+#     -- that pattern matches ANY bridge, so nothing is missed, only attributed
 #     loosely.
+#   * a config path containing a NEWLINE. `ps` prints one process per line and
+#     nothing can put that back together.
+#   * a bridge whose `--config` names a directory that no longer exists.
+#     `same_map` fails closed, so it reads as another map's -- which it is, in
+#     the only sense that matters here: there is no map there to protect.
+#   * a bridge holding this map that repeats `--config` where the value the
+#     PARSER keeps is another instance's and an earlier one is this map's
+#     (`--config <this> --config <other>`). Every occurrence is offered, so that
+#     is attributed as ours and waited for although the bridge is somebody
+#     else's -- an over-match, which costs a bounded 10 s wait. It is the price
+#     of not having to decide which of the two readings of a flattened line is
+#     the right one, and it is the direction this probe is allowed to be wrong
+#     in.
+#   * a bridge whose `--config` value is a path that itself begins with the
+#     text `--config` (`--config --config=/x` puts the bridge on a file
+#     literally named `--config=/x`, since the parser takes the next argument
+#     verbatim). The scan reads that value as a second occurrence and offers
+#     candidates from inside it: over-matches only, on a path nobody has.
+#   * a bridge whose `--config` genuinely is its own but sits after another
+#     value-taking flag (`--feed-host X --config Y`). `ci_config_certain` cannot
+#     tell that from the same bytes inside `X`, so it is waited for on a
+#     default-map run: an over-match, and the same bounded 10 s.
+#   * a bridge whose `--rows` names a DIFFERENT file in this map's directory
+#     (`--rows <dir>/rows.bak`). `same_map` compares directories, so it reads as
+#     ours -- an over-match, and the direction that costs a wait rather than a
+#     forget under a live bridge.
 #
-# It errs the other way for a bridge started by hand as
-# `agb bridge --feed-host X --config Y`, whose `--config` is not adjacent to
-# `bridge`: on a default-map run it counts as untagged and IS waited for. That
-# is the safe direction (a bounded 10s wait for a hand-started process) and the
-# case is one this probe is meant to catch anyway.
+# A config path containing a BLANK *is* handled, by `ci_scan` offering every
+# blank-terminated prefix; a REPEATED `--config` is handled by offering every
+# occurrence, because `agb bridge` keeps the last (see the note on `ci_scan`);
+# either SPELLING of it is handled, by scanning one marker in position order
+# rather than one `case` arm per spelling; a `--rows` that moves the map out from
+# under the config is handled by scanning it too; a `--config` that might be
+# inside another flag's value is handled by not treating it as proof; so is `ps`
+# saying nothing, and so is a bridge started by hand as
+# `agb bridge --feed-host X --config Y` (not proof, so waited for on a
+# default-map run). All of them err towards a bounded wait.
 #
-# `$looseheld` records WHICH question answered, for the 10s warning: `$label` is
-# the job that was booted out, so naming it for a wait the probe is driving
-# names the one process that is provably not what the poll keeps matching.
+# `$looseheld` records WHICH answer held the wait, for the 10s warning: `$label`
+# is the job that was booted out, so naming it for a wait something else is
+# driving names the one process that is provably not what the poll keeps
+# matching.
 bridge_alive() {
     [ -n "$pgrep" ] || return 1
     if "$pgrep" -f "$pattern" >/dev/null 2>&1; then looseheld=""; return 0; fi
     [ -n "$broad" ] || return 1
-    [ "$(bridge_count "$broad")" -gt "$(bridge_count "$broad --config")" ] \
-        || return 1
-    looseheld=yes
-    # Once, not on all forty polls -- and said at all, because a wait nobody
-    # asked for is otherwise indistinguishable from the hang it looks like.
-    if [ -z "$notedloose" ]; then
-        notedloose=yes
-        say "note:     a bridge is running whose command line carries no"
-        say "          --config, so it cannot be told apart from this"
-        say "          instance's -- waiting for it too rather than assuming"
-        say "          it is gone. install.sh mac --no-load, a hand-started"
-        say "          bridge, or a plist re-rendered without a restart all"
-        say "          leave one."
+    ba_pids=$("$pgrep" -f "$broad" 2>/dev/null | tr '\n' ',') || :
+    ba_pids=${ba_pids%,}
+    # The one positive answer in this function: no bridge of any spelling is up.
+    [ -n "$ba_pids" ] || return 1
+    # `-o args=` is POSIX and prints no header; `-ww` because BSD `ps` truncates
+    # to the terminal width (80 columns when stdout is not a tty) and would cut
+    # the `--config` off the end of exactly the lines this reads. The plain form
+    # is tried second in case some `ps` refuses the pair.
+    #
+    # ⚠️ Retried on EMPTINESS, not on the exit status. A `ps` that refuses
+    # `-ww` prints nothing, but one asked about a mix of live and exited pids
+    # may print the live ones AND exit non-zero -- and it is the lines that are
+    # wanted. Retrying on the status throws those away and falls into the
+    # "could not attribute" branch, which is safe but talks.
+    ba_lines=$(ps -ww -o args= -p "$ba_pids" 2>/dev/null || :)
+    [ -n "$ba_lines" ] || ba_lines=$(ps -o args= -p "$ba_pids" 2>/dev/null || :)
+    if [ -z "$ba_lines" ]; then
+        # Either those pids exited between the two commands -- ask again, since
+        # "gone" is then a positive answer and not worth a note -- or `ps` will
+        # not answer at all, and unattributable is not gone.
+        "$pgrep" -f "$broad" >/dev/null 2>&1 || return 1
+        loose_hold unknown
+        return 0
     fi
+    ba_held=""
+    # A here-document, not a pipe: a `while` on the right of a `|` runs in a
+    # subshell in POSIX sh and `$ba_held` would not survive it.
+    while IFS= read -r ba_line; do
+        [ -n "$ba_line" ] || continue
+        if cmdline_is_ours "$ba_line"; then
+            # ⚠️ WHICH note is read off `$ci_why`, the reason the attribution
+            # itself just computed, and NOT off a second `case` on the line. A
+            # second one drifts from the first: it said "spelled differently"
+            # for a line whose only `--config` was the text `--configs/b`
+            # inside some other flag's value -- a bridge that carries no
+            # `--config` at all, described to the operator as one that does.
+            # The two questions are the same question, so they are asked once.
+            ba_held=$ci_why
+            break
+        fi
+    done <<EOF
+$ba_lines
+EOF
+    [ -n "$ba_held" ] || return 1
+    loose_hold "$ba_held"
     return 0
 }
 
@@ -706,19 +1504,24 @@ if command -v launchctl >/dev/null 2>&1; then
         # would be a second place for the quoting to be got right.
         broad=$pattern
         pattern="$pattern --config $(ere_quote "$plistconfig")"'([[:space:]]|$)'
-        # ⚠️ The fallback probe is only this run's to ask when this run repairs
-        # the DEFAULT map: a bridge with no `--config` resolves
-        # `agb.config_path()` itself, so that is the only map it can hold.
-        # Emptying `$broad` is what switches it off -- see `bridge_alive` for
-        # the every-run false warning an ungated probe printed on every
-        # `agb-refresh --instance <name>`.
-        #
-        # `same_map` is the whole test, and deliberately the SAME call
-        # `bind_label_to_config` makes: "is this the default instance's map"
-        # is not a second, looser question. Its fail-closed rule is what is
-        # wanted here too -- a config whose directory does not exist has no
-        # map to protect anyway.
-        same_map "$config" "$DEFAULT_CONFIG" || broad=""
+        # ⚠️ `$broad` is NOT gated on "does this run repair the default map"
+        # any more, and that used to be a line here. The gate did not move, it
+        # got narrower: it is now asked per BRIDGE, inside `cmdline_is_ours`,
+        # where an untagged one is the only kind it can be about. Emptying
+        # `$broad` here switched off the attribution of every OTHER bridge too
+        # -- including one over this very map under a different spelling, which
+        # is the case that made this a review finding.
+    elif [ "$plistsaid" = no ]; then
+        # ⚠️ A DIFFERENT NOTE, because it is a different fact. This branch used
+        # to say "no --config in <plist>" for a file that had not been read at
+        # all, and the advice that follows -- re-render it -- is the advice for
+        # a plist predating the flag, not for one that is unreadable. The WAIT
+        # is the same and is the safe direction either way (broad matches any
+        # bridge); only the explanation was wrong, and it is the explanation
+        # somebody acts on.
+        say "note:     $plist could not be read, so the wait below matches ANY"
+        say "          bridge on this Mac. That file is also the record of which"
+        say "          config this job uses -- check it, or re-run install.sh mac."
     else
         say "note:     no --config in $plist, so the wait below matches ANY"
         say "          bridge on this Mac. Re-run install.sh mac to render a"
@@ -733,16 +1536,39 @@ if command -v launchctl >/dev/null 2>&1; then
         # named out loud rather than hanging for ever in a recovery command.
         if [ "$waited" -ge 40 ]; then
             # ⚠️ Which process, honestly. `$label` is the job that was booted
-            # out; when the wait is the fallback probe's, that job is exactly
-            # the one provably not still matching, and naming it makes the
-            # warning false in the case it fires most.
-            if [ -n "$looseheld" ]; then
-                say "WARNING:  a bridge with no --config is still running after"
-                say "          10s; forgetting anyway. It holds the default"
-                say "          instance's map, which is the one being repaired."
-            else
-                say "WARNING:  $label is still running after 10s; forgetting anyway."
-            fi
+            # out; when the wait is held by something the narrow pattern never
+            # matched, that job is exactly the one provably not still matching,
+            # and naming it makes the warning false in the case it fires most.
+            case $looseheld in
+                untagged)
+                    say "WARNING:  a bridge with no --config is still running after"
+                    say "          10s; forgetting anyway. It holds the default"
+                    say "          instance's map, which is the one being repaired."
+                    ;;
+                spelling)
+                    say "WARNING:  a bridge whose --config is spelled differently (or"
+                    say "          repeated) but names this same map is still running"
+                    say "          after 10s; forgetting anyway."
+                    ;;
+                rows)
+                    say "WARNING:  a bridge whose --rows names this same map is still"
+                    say "          running after 10s; forgetting anyway. It writes the"
+                    say "          file this run rewrites."
+                    ;;
+                ambiguous)
+                    say "WARNING:  a bridge whose --config may be part of another"
+                    say "          flag's value is still running after 10s; forgetting"
+                    say "          anyway. It may be holding this map."
+                    ;;
+                unknown)
+                    say "WARNING:  a bridge ps would not name is still running after"
+                    say "          10s; forgetting anyway. It could not be told"
+                    say "          apart from this instance's."
+                    ;;
+                *)
+                    say "WARNING:  $label is still running after 10s; forgetting anyway."
+                    ;;
+            esac
             say "          If rows come back wrong, run agb-refresh again."
             break
         fi
