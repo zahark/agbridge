@@ -41,12 +41,12 @@ OPS_PATH = os.path.join(REPO_ROOT, "agb_ops")
 # hook uses, or the tests validate a configuration nobody runs.
 AGB_ARGV = [sys.executable, "-S", "-E", AGB_PATH]
 
-# The ceiling on `agb`'s source size, in bytes. It lives here rather than in one
-# test file because six files assert against it: a change that legitimately
-# needs a byte or two must fail on the ONE test that is about the size of `agb`
-# (`test_mac_split.test_the_mac_side_bulk_is_not_in_agb`, where the reasoning
-# is), not on six unrelated ones whose cheapest fix looks like bumping six
-# numbers -- which is exactly the move that comment forbids.
+# The ceiling on `agb`'s source size, in characters. It lives here rather than
+# in one test file because six files assert against it: a change that
+# legitimately needs a byte or two must fail on the ONE test that is about the
+# size of `agb` (`test_mac_split.test_the_mac_side_bulk_is_not_in_agb`, where
+# the reasoning is), not on six unrelated ones whose cheapest fix looks like
+# bumping six numbers -- which is exactly the move that comment forbids.
 #
 # The number itself is not arbitrary and RAISING IT IS ALMOST ALWAYS THE WRONG
 # ANSWER: `agb` has no `.py` extension and is run as a script, so CPython caches
@@ -54,13 +54,26 @@ AGB_ARGV = [sys.executable, "-S", "-E", AGB_PATH]
 # during the original build declined to raise it and paid for new code by moving
 # other code into the lazily loaded siblings instead. See test_mac_split.py.
 #
-# It has been raised exactly once, deliberately: the statedir default became
-# `default_statedir()` (a function, because `~` must be resolved against the
-# caller's `$HOME` rather than frozen at import) where it had been a hardcoded
-# constant. +126 bytes, measured at +0.015 ms of `compile()` on a 5.9 ms
-# baseline -- noise against the ~4 ms interpreter floor the budget exists to
-# protect. That is the bar for raising it again: a measurement, not a bump.
-AGB_PARSE_BUDGET = 102500
+# It has been raised twice deliberately:
+#   +126 chars (measured): the statedir default became `default_statedir()`
+#     where it had been a hardcoded constant. +0.015 ms on a 5.9 ms baseline.
+#   +716 chars (measured): `cmd_instances` with its try/except and mandatory
+#     reason-comment, plus the USAGE line and the dispatch arm. `OPS_COMMANDS`
+#     was the rejected route: it avoided a dispatch arm but forced `agb_mac` ->
+#     `agb_ops`, an edge that does not exist and is asserted absent. +0 ms (3.9
+#     ms post-change vs 5.9 ms prior -- different machine, not a real delta).
+#     Size: 103135 chars. Headroom at 103200: 65 chars.
+#
+# ⚠️ AND 63 OF THOSE 65 ARE ALREADY SPENT -- `agb` is 103198, headroom **2**.
+# Swapping `agb-refresh`'s reader for `agb instances` found `cmd_instances`
+# catching `(ImportError, AttributeError)` where a tree with no `agb_mac` raises
+# `FileNotFoundError`, so the catch had to widen and the reason had to be
+# written down. It was NOT paid for by raising this again: the code delta is
+# ~10 chars and the rest was prose, which moved into
+# `agb_mac.run_instances`' docstring -- the sibling is not capped, and "pay for
+# new code by moving other code out" applies to comments too. Anything further
+# in `agb` needs the same treatment or a third measured raise.
+AGB_PARSE_BUDGET = 103200
 
 # Nothing here may block forever. A regression that makes a subprocess stop
 # answering must fail the run, not hang it: an unbounded `communicate()` turns

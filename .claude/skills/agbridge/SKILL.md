@@ -135,17 +135,34 @@ the config path**, because it is all derived from that file's directory:
 | the three code files, `~/.local/bin` | **shared** | **shared** — one install, N configurations |
 | `mac_id` | minted | **adopted** — this instance's own config first, then the default's, minted only if neither has one; it names the Mac, not the connection |
 
-Everyday operation, and the trap:
+Everyday operation:
 
 ```sh
-agb-refresh --instance hostb          # repair THAT instance; the others are untouched
+agb instances                         # what this Mac carries: name, label, config
+agb-refresh                           # repair EVERY instance
+agb close-done                        # reclaim [done] rows in EVERY instance
+agb-refresh --instance hostb          # repair THAT one; the others are untouched
 agb close-done --config ~/.config/agbridge/hostb/config
 ```
 
-⚠️ **A helper run without `--instance` acts on the default instance and reports success in the same
-words.** `agb-refresh` would stop `com.agbridge`, forget the default instance's bindings and restart
-it while you were trying to fix `hostb`. Nothing can detect the intent, so every one of these prints
-the instance and config it is acting on as its first line — **read it**:
+⚠️ **A bare run is a sweep, not the default instance.** It used to be: `agb-refresh` stopped
+`com.agbridge`, forgot the default instance's bindings and restarted it while you were trying to fix
+`hostb`, reporting success in the same words. What narrows a run is naming a **map** —
+`--instance`, `--label`, `--config`, `--rows`. **`--key` does not**: a key read out of a bridge log
+does not say which instance minted it, so it is swept for and fails only when no instance had it.
+
+⚠️ **`agb forget-rows` is the one command that refuses a bare run**, naming `--all`. Not because it
+closes rows (`agb-refresh` closes every row it forgets too) but because nothing restarts the bridges
+afterwards, so those rows stay closed until each one is bounced by hand. `--all` opts in; `--key`
+sweeps; `--rows`/`--placements`/`--config` narrow, and `--rows` alone still implies the default
+config.
+
+⚠️ **An instance left without a running bridge fails the sweep** (exit 4, `no bridge was started
+again for: <label>`), and a child failing does not stop the others — everything stopped is started
+again and the summary names what failed.
+
+Every one of these prints the instance and config it is acting on, once per instance — **read it**,
+because on a *narrowed* run it is still the only thing that distinguishes the run you meant:
 
 ```
 instance: hostb -- label com.agbridge.hostb, config /Users/you/.config/agbridge/hostb/config
@@ -246,11 +263,14 @@ Then on the Mac: delete the `host_<name>` line from the config, and `agb close-d
 | all rows `[?]` | the feed is not talking — VPN, ssh, or the cluster | check `agb doctor`'s beat; `ssh <feed host> true` |
 | a row vanished after you typed `exit` | agterm destroys a session when its command exits, and `exit`/`q` ends `agb pane` | expected; `agb-refresh` brings it back |
 | rows gone after closing/reinstalling agterm | agterm lost its sessions; the map still names them | `agb-refresh` |
-| duplicate rows | a previous refresh forgot bindings without closing the old rows | `agb-refresh` (it closes before forgetting). On a Mac with several instances: `agb-refresh --instance <name>`, or `--config <path>` for an install that has no instance name |
-| every row duplicated right after upgrading to 0.5.0, on an install made with `install.sh mac --config <path>` and no `--instance` | the plist used to ignore that flag and now carries it, so the bridge looks for its map beside *that* config and mints everything again | `agb forget-rows --rows ~/.config/agbridge/rows` clears the orphans (it closes each as it forgets it); moving `rows` and `placements` beside the config before reinstalling avoids it |
+| duplicate rows | a previous refresh forgot bindings without closing the old rows | `agb-refresh` (it closes before forgetting), which sweeps every instance. To do one only: `agb-refresh --instance <name>`, or `--config <path>` for an install that has no instance name |
+| not sure which instances this Mac has, or one seems to be missing from a sweep | a plist outside `~/Library/LaunchAgents`, or a job that was never rendered | `agb instances`. A job is swept iff its label is in the `com.agbridge` space **or** its `ProgramArguments` runs `<…>/agb bridge` |
+| a bare `agb-refresh` exits non-zero saying `no bridge was started again for: <label>` | that instance's rows were forgotten and `launchctl` then refused both `bootstrap` and `load -w`, so its sidebar has nothing to re-mint it | re-run `install.sh mac` for that instance. This is exit **4** and is always an error, `--key` or not |
+| `agb forget-rows` refuses to run and names `--all` | a bare run would forget every row of every instance, and nothing restarts the bridges afterwards | `--all` to mean it, `--key <key>` for one row wherever it lives, or `--config <path>` for one instance |
+| every row duplicated right after upgrading to 0.5.0, on an install made with `install.sh mac --config <path>` and no `--instance` | the plist used to ignore that flag and now carries it, so the bridge looks for its map beside *that* config and mints everything again | `agb forget-rows --rows ~/.config/agbridge/rows` clears the orphans (it closes each as it forgets it); moving `rows` and `placements` beside the config before reinstalling avoids it. `--rows` **narrows** the run to that one map, which is why this recipe needs no `--all` |
 | no glyph at all | `idle` renders as nothing — a `[?]` or `[done]` row, or a row not yet painted | check the title prefix |
 | a row never updates | it may be an orphan not in the map | compare `cat ~/.config/agbridge/rows` against the sidebar |
-| a config change seems to be ignored — a new `workspace`, or `notify_on_*` that never fires | the bridge reads its config **once, at startup**; the file changed, the running process did not. No error is printed | `agb-refresh` (or `--instance <name>`). ⚠️ Check `pgrep -f 'agb bridge'` shows a **different** pid afterwards — with several instances, a refresh without `--instance` bounces the wrong one and still reports success |
+| a config change seems to be ignored — a new `workspace`, or `notify_on_*` that never fires | the bridge reads its config **once, at startup**; the file changed, the running process did not. No error is printed | `agb-refresh`, which bounces every instance (or `--instance <name>` for one). ⚠️ Check `pgrep -f 'agb bridge'` shows a **different** pid afterwards — on a *narrowed* run, naming the wrong instance bounces the wrong one and still reports success |
 | `[enter]` prints `open terminal failed: missing or unsuitable terminal: <name>` then `ssh exited 1 -- nothing was attached` | the ssh worked; **tmux** refused. That host has no terminfo entry for agterm's terminal, and `ssh -t` carries `TERM` across (agbridge never sets it). Ghostty, Kitty and WezTerm all ship their own; a cluster box has none | from a local shell **inside agterm** — not a row's `[s]`/`[d]`, which ssh to the agent's host — run `infocmp -x "$TERM" \| ssh <target> -- tic -x -`. `"$TERM"`, never a typed name: agterm's differs from your login shell's. Writes `~/.terminfo` remotely, no root. `older tic versions may treat the description field as an alias` is a warning, not a failure. Verify with `ssh <target> "infocmp -1 $TERM" >/dev/null 2>&1 && echo INSTALLED` — redirects **outside** the quotes, since a farm login shell is often tcsh and answers `Ambiguous output redirect.` to `2>&1`. Fixes that host only — repeat per machine. Details and fallbacks in [`docs/cookbook.md`](../../../docs/cookbook.md) |
 | clicking a row prints `WARNING: this row's config could not be read` | `agb pane` resolves `host_<name>` and `jump_host` through that config; unread, the ssh target is the bare hostname and any jump host is gone. The errno on the line says which failure | fix the file's mode (or the mount); if the instance moved, `agb-refresh --config <path>` re-mints the rows with the new path |
 

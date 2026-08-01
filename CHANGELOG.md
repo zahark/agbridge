@@ -8,7 +8,133 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ## Unreleased
 
+> `agb`'s `VERSION` is already **0.6.0** — a new command plus two breaking CLI changes. The heading
+> above is still `Unreleased`: the tag has not been cut.
+
+### Changed, and it is a breaking change
+
+- **`agb-refresh` with no flags now refreshes EVERY Mac-side instance, not the unnamed one.**
+  The symptom it fixes: with two bridges on one Mac, a plain `agb-refresh` stopped `com.agbridge`,
+  forgot the *default* instance's bindings and started it again — reporting success in exactly the
+  words it would have used for the instance you meant. The other sidebar stayed broken and nothing
+  said so. That default was an artifact of install order rather than of the domain: every instance
+  can be closed by hand, killed, or come back with its rows forgotten, and all of them have the same
+  claim on the command that repairs that. (`docs/design.md` §5, limitation 1.)
+
+  **What still narrows it**: `--instance`, `--label`, `--config` — and `--rows`, because naming one
+  map *is* naming what to act on; such a run keeps today's semantics exactly.
+
+  ⚠️ **`--key` does NOT narrow it, deliberately.** `agb-refresh --key a3f9c1e0` is typed by someone
+  reading a key out of a bridge log, and nothing in that log says which instance minted it — "you
+  should not have to know which instance" is the whole point. A key belongs to exactly one map, so
+  the sweep finds it wherever it lives and fails only when *no* instance had it. Its one blind spot,
+  said out loud: several `--key`s spread across *different* instances make every child report a
+  missing key, so the run reports failure although all of them were forgotten. That errs towards
+  failing for work that succeeded, and each instance's own `forget <key> -> <row>` lines are on the
+  terminal.
+
+  **An instance left without a running bridge fails the sweep.** It is the rule that makes
+  bare-is-all safe: forgetting an instance's rows and then not starting its bridge again leaves that
+  sidebar dark with nothing to re-mint it. It is a *sweep* rule — `agb-refresh --instance <name>` on
+  a Mac whose plist was never rendered still warns and exits 0, which is a documented recipe.
+
+  **A Mac with no instance plists at all is unchanged**: the run still forgets the default map and
+  warns that nothing was restarted, which is the commonest recipe this command has.
+
+  **Ctrl-C is safe again, and was not before.** A signal between the `bootout` and the restart used
+  to leave that bridge down with its rows already forgotten — this command causing the dark sidebar
+  it exists to cure. The trap that repairs it lives in the process that did the `bootout`, which
+  under a sweep is the child; the sweep then stops there rather than bouncing the instances you
+  interrupted it to protect.
+
+  **Implementation note, because it will look odd**: the sweep re-execs `agb-refresh` once per
+  label instead of looping in-process. This is 1,600 lines of `set -eu` with per-run globals and a
+  `die` on most error paths — an in-process loop would carry one instance's state into the next, and
+  any `die` would end the sweep with jobs already booted out and never started again.
+
+- **`agb close-done` with no flags now reclaims `[done]` rows in EVERY instance**, one banner
+  apiece — the same symptom as above, one command along: with two bridges on one Mac it reclaimed
+  the *unnamed* instance's rows and reported success, and the other sidebar kept growing a row per
+  agent with nothing to say so. It is safe to default to all here by construction: a `[done]` row is
+  one whose agent is already gone, so reclaiming it in an instance you did not have in mind costs
+  nothing you can lose.
+
+- **`agb forget-rows` with no flags is now REFUSED, and names `--all`.** ⚠️ This is the one command
+  that does not default to all, and the reason is *not* that it closes rows — `agb-refresh` closes
+  every row it forgets too. The difference is what happens next: `agb-refresh` restarts the bridge,
+  so the rows are re-minted within seconds, and `forget-rows` restarts nothing. A sweep nobody meant
+  would leave every row of every instance closed until each bridge was bounced by hand. So the sweep
+  that ends in a restart may default to all; the one that does not, may not. `--all` is the opt-in.
+
+  **`--key <key>` is the other way in, and it sweeps** — same reading as `agb-refresh --key`: a key
+  is read out of a log that does not say which instance minted it, so the run finds it wherever it
+  lives, names the instance that had it, and fails only when *no* instance did. Running in-process,
+  this side can tell "not in this map" from "in no map at all", which the shell sweep cannot.
+
+  ⚠️ **`--rows`/`--placements`/`--config` still narrow, and `--rows` alone still implies the DEFAULT
+  config** — the one place the old default survives, deliberately. Naming a map *is* naming what to
+  act on, and `agb forget-rows --rows ~/.config/agbridge/rows` is the documented recovery for an
+  install that has no instance name to give. Having just been told the default is gone, expect this
+  to look inconsistent: it is the same rule as `agb-refresh --rows`, and a run that names a map has
+  already answered the question the sweep exists to stop you having to answer.
+  `--all` beside one of them is an error rather than a silent winner — that is invariant 12's shape,
+  the right map under the wrong label, reported as success.
+
+  **A Mac with a config and no launchd job is unchanged**: both commands say "no instances found"
+  and act on the default map, which is `docs/cookbook.md`'s bare `agb close-done` recipe and the
+  commonest shape there is.
+
+  ⚠️ **One instance whose plist cannot be read stops the whole sweep**, rather than being skipped.
+  Skipping it acts on the other maps and returns 0, and nothing tells you an instance was missed —
+  "I could not answer" collapsing into "the answer is nothing" is the failure this whole change
+  exists to remove. A plist that is *not* ours and cannot be read is still ignored, exactly as
+  `agb instances --labels` ignores it, so somebody else's broken file cannot stop your sweep.
+
+  Both commands also take `--launch-agents <dir>`, which says where to look for instances rather
+  than which one to act on.
+
 ### Added
+
+- **`agb instances`** — which instances this Mac has, a question you could not ask before. Four
+  modes: a human listing (`name  label  config`), `--labels` (one per line, what the sweeps
+  iterate), `--plist <path> --arg <flag>` (one plist's `agb bridge` flag — this **is**
+  `agb-refresh`'s plist reader now), and `--probe`. All take `--launch-agents <dir>`.
+
+  **It exists because the two sweeps share no language.** `agb-refresh` is POSIX sh and
+  `close-done`/`forget-rows` run in process on the Mac; two implementations of "which plists are
+  ours" would be a bug class of their own, and a sweep visiting a strictly smaller set than the other
+  leaves an instance nobody repairs.
+
+  ⚠️ **`--probe` prints the literal `instances-ok`, and that is load-bearing rather than decorative.**
+  `agb` answers an **unknown command** with exit 2, empty stdout and `USAGE` on stderr — which is
+  byte-identical to `--arg` answering "this plist names no config". So a checkout `agb-refresh`
+  against an installed 0.5.0 `agb` would read *every* plist as silent, fall through to the default
+  label and the conventional config, and report success in the words it uses when it is right. The
+  probe runs once before any plist is read and is **stdout-compared, not status-compared** — a status
+  alone cannot see `--python /bin/echo`, which exits 0 while printing its own arguments.
+
+  ⚠️ **`--labels` has its own status contract, and the split is the whole point.** A **missing**
+  `~/Library/LaunchAgents` is exit 0 with empty output — "there are no instances", the ordinary Mac.
+  **Every other errno is fatal.** Collapsing the second into the first is "I could not answer"
+  becoming "the answer is nothing": a Mac with a momentarily unreadable directory would sweep
+  nothing and report success. Spelled out rather than left to `os.path.isdir`, which swallows every
+  `stat` errno — a mistake that has shipped in this project before.
+
+  **What counts as an instance is deliberately wider than the `com.agbridge` guard `agb-refresh` uses
+  to pick a label**, and both are right: that one is a *claimant* rule (a third-party LaunchAgent must
+  not stand for agbridge's default config), this one is asking who to sweep. A plist is an instance
+  iff its label is in the `com.agbridge` space **or** its `ProgramArguments` runs `<…>/agb bridge` —
+  **any** tree, not `realpath`-equal to this one, since a plist naming an `agb` elsewhere is
+  supported. Over-listing costs a bounded refresh of something that turns out not to be ours;
+  under-listing is an instance nobody sweeps.
+
+  **`agb-refresh`'s ranking is untouched** — the map comparison, the five ranks, the multi-claimant
+  warning and the `[ -e ]` split are byte-identical, and so is the 0/2/3/other status contract their
+  twelve tests are written against. Only the *reader* moved. Porting the ranks to Python was proposed
+  and rejected: it would have re-implemented `same_map` (fail-closed in shell, and
+  `os.path.realpath` never fails — silent widening, the direction that bounces the wrong job) and
+  killed the claimant warning, which is the count whose absence made the wrong-job bounce invisible
+  in the first place.
 
 - **A banner when a long-running agent finishes** — `notify_on_completed_after`, **on by default at
   300 seconds**. You start a long job on a detached agent, walk away, and until now the only way to
@@ -131,6 +257,46 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-refresh` called a custom-label instance "(default)".** `install.sh mac --label <anything>`
+  puts no shape rule on a label, so `weird.label` is a real install — and the banner reads the
+  instance *name* back out of the label, with everything outside the `com.agbridge` space falling
+  through to `(default)`. A bare run therefore announced two default instances, one of which was
+  somebody's named machine, in the one line whose entire job is to say which instance moved. That
+  banner is the whole mitigation for acting on the wrong instance, so a false one is worse than none.
+
+  It needed the sweep to become reachable by accident: before it, the only way to land on such a
+  label was to type `--label weird.label`, and whoever typed it knew what they had asked for. The
+  sweep types it for you, once per plist in the directory. Such an instance has no name but its
+  label, so the label is now what is shown; only `com.agbridge` itself is `(default)`.
+
+- **`agb instances` printed a blank name for the default instance — and for a custom-label one.**
+  The same bug as the entry above, in the listing rather than the banner, because the fix was
+  applied in one place and the other was written from the same rule. Found by running the command on
+  a real two-instance Mac, where it printed a named instance and then a row whose first column was
+  two spaces:
+
+  ```
+  hostb  com.agbridge.hostb  ~/.config/agbridge/hostb/config
+    com.agbridge  ~/.config/agbridge/config
+  ```
+
+  The name was derived by stripping the `com.agbridge.` prefix and answering `""` when the label did
+  not start with it — and the default label never does, because it *is* the prefix. So the one
+  instance every Mac has read as nameless, in a listing whose whole job is to say which instances
+  exist. `com.agbridge` is `(default)` now and any other label shows the label, which is
+  `agb-refresh`'s rule verbatim rather than a second one invented here.
+
+  The two spellings — the shell `case` block and `agb_mac.instance_display_name` — are now pinned
+  together by a test that **executes the shell block's own text** and compares it, so neither side
+  can be changed alone. A re-spelling of the rule in the test would have been a third copy able to
+  drift from both.
+
+  The columns are padded now as well: a name column holding `(default)`, a hostname or a whole
+  dotted label has no natural width, and this listing is read for the config paths in its last
+  column. Padding stops at the last column that exists, so a job whose argv carries no `--config`
+  does not end its line in blanks. `agb instances --labels` — what the sweeps consume — is
+  deliberately untouched by all of this; only the human listing changed.
+
 - **Nothing said that a config change needs the bridge restarted.** The bridge reads its config
   once, at startup, so editing `workspace`, `feed_host` or any `notify_on_*` leaves the running
   process on the old value — with no error, no warning, and a file that disagrees with the sidebar
@@ -231,6 +397,67 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   every session, so **every agent gets two rows**, one per instance, with nothing erroring. The
   cookbook now says to run the `touch`/`ls` probe rather than compare paths by eye, and what to do
   instead when it turns out the disk *is* shared.
+
+### Upgrading from ≤ 0.5.0
+
+**Nothing has to change.** The new code sweeps a Mac that still has an unnamed default instance
+perfectly well — the default label is just another label — so there is no window in which a bare
+`agb-refresh` silently succeeds on nothing. What changes is that a bare `agb-refresh` and a bare
+`agb close-done` now visit *every* instance, and a bare `agb forget-rows` stops and asks for `--all`.
+
+**As always, a release is not installed by pulling.** The Mac loads `agb_mac`/`agb_ops` from
+`~/.local/lib/agbridge/`, not from the checkout, so `sh install.sh mac …` is required — and existing
+rows keep the `agb pane` code they were *created* with until `agb-refresh` re-mints them.
+
+**Optional: give the default instance a name.** With the privilege gone there is no longer a reason
+for one instance to be unnamed, and a named one is the one `agb instances` can tell you about. The
+order matters, and two steps are easy to get wrong:
+
+1. ⚠️ **Boot out and WAIT before moving anything.** A live bridge holds the rows map in memory and
+   merges-then-writes, so a move underneath it is silently lost.
+   `launchctl bootout gui/$(id -u)/com.agbridge`, then poll until `pgrep -f 'agb bridge'` loses that
+   pid.
+2. `mkdir -p ~/.config/agbridge/<name>/` and move `config`, `rows` and `placements` into it. Move the
+   logs too if you want them separated.
+3. Re-run the installer with **every mandatory flag** — `--instance` requires `--statedir`, and the
+   `mac` role requires `--feed-host` and `--agb-remote-path`:
+   `sh install.sh mac --instance <name> --statedir <p> --feed-host <t> --agb-remote-path <p>`
+
+   ⚠️ **Read the `probed:` line, do not trust the alias you just re-passed.** The obvious way to
+   fill those flags is to copy them out of the config you are moving — which faithfully copies a
+   mistake, and a wrong `feed_host` is *invisible while the bridge is running*, because the bridge
+   reads its config once at startup. On the Mac this migration was first run on, `feed_host` had
+   been a misspelling of the **other** instance's alias for hours; nothing showed it until the
+   restart in this very step reconciled the file with the process, and then every row went `[?]`.
+   The installer ssh's the feed host itself and prints what answered:
+   `probed: <alias> is '<hostname>' -> host_<hostname> = <alias>`. If that hostname is not the
+   machine you meant, stop here — you are two steps from migrating a broken config into a new home.
+4. `rm ~/Library/LaunchAgents/com.agbridge.plist`, and confirm the new label bootstrapped.
+5. ⚠️ **Re-mint the rows**: `agb-refresh --instance <name>`. Rows minted by the default install carry
+   **no `--config`** in their command, so until they are re-minted `agb pane` resolves `--host`
+   through the *default* config — which, after step 2, is a file that no longer exists.
+6. Check both instances' rows are present once each, and that clicking each reaches the right machine.
+
+⚠️ **After that migration, `agb doctor`, `agb status-line` and `prune --via-ssh` describe a file that
+is not there.** All three resolve `~/.config/agbridge/config` unconditionally and have no `--config`
+(`docs/design.md` §5, limitation 3). That limitation gets *worse* on a Mac where every instance is
+named, and giving them a `--config` is deliberately not part of this change.
+
+### Not verified
+
+- **Two bridges, live, through a sweep.** Everything above was driven end to end against a throwaway
+  `$HOME` with stub `launchctl`/`pgrep`/`ps`/`agtermctl` — which is not two real bridges coming back
+  with their identities. This project's own history is that two of the last four features passed
+  every test and still needed a fix after live use. Worth watching in particular: **Ctrl-C
+  mid-sweep**, which the child's trap is the only thing standing between and a bridge left down; and
+  a deliberately broken instance, where the others should still be refreshed and the broken one's job
+  **restarted anyway**.
+- **Symmetry is a convention, not a guarantee.** `install.sh mac` can still create a *nameless*
+  instance. Mandating `--instance` was split into a follow-up plan rather than bundled here: it does
+  not fix the stated problem — the sweeps do — and it reaches 24+ test functions through the
+  installer suite's `mac_args` fixture, changes what `dist/com.agbridge.plist` stands for, and forces
+  a transitive `--statedir` decision on every Mac install *and upgrade*. Until it lands, an unnamed
+  default instance remains creatable; it simply is not privileged any more.
 
 ## 0.5.0 — 2026-08-01
 

@@ -96,7 +96,8 @@ if [ "$guessed" = yes ] && [ "$is_feed_host" = yes ]; then
     say "                                so the Mac's own \`feed_host\` is a target already"
     say "                                PROVEN to reach this box. Use that value instead:"
     say ""
-    say "                                    grep feed_host ~/.config/agbridge/config   # on the Mac"
+    say "                                    grep feed_host ~/.config/agbridge/*/config \\"
+    say "                                         ~/.config/agbridge/config 2>/dev/null   # on the Mac"
     say ""
     say "                                then re-run: agb-host-line --alias <that value>"
 elif [ "$guessed" = yes ]; then

@@ -162,6 +162,10 @@ When an agent finishes its row is marked `[done]`. Reclaim them on the Mac with:
 agb close-done
 ```
 
+With more than one instance installed that reclaims `[done]` rows in **all** of them, one banner
+apiece; `--config <path>` narrows it to one. On a Mac with a single install it says
+`no instances found …; acting on the default map` and behaves exactly as it always has.
+
 ---
 
 ## The three rules
@@ -361,11 +365,13 @@ New rows land there, and one you drag elsewhere stays where you put it.
 
 | | |
 |---|---|
-| **pass `--instance` to every helper** | `agb-refresh --instance hostb`, `agb close-done --config ~/.config/agbridge/hostb/config`. Without it they act on the **default** instance — successfully, which is the trap |
-| **read their first line** | `agb-refresh` prints `instance: hostb -- label com.agbridge.hostb, config …/hostb/config`; `close-done` and `forget-rows` print the config, map and placements file they opened. Always, before doing anything, because acting on the wrong instance otherwise looks exactly like acting on the right one |
-| **upgrades: install once, refresh each** | `sh install.sh mac …` updates the shared code, but a running bridge keeps the copy it started with. Run `agb-refresh` for the default instance **and** `agb-refresh --instance hostb` for each named one |
-| **`agb doctor` on the Mac reads the default config only** | it has no `--config`. Diagnose an instance from *its* machine (`agb doctor` there) and from its own log |
-| **rows are per instance** | refreshing one never moves the other's rows. Correct, and surprising the first time |
+| **the bare helpers act on ALL of them** | `agb-refresh` and `agb close-done` with no flags sweep every instance. `--instance`/`--label`/`--config`/`--rows` narrow a run to one; `--key` does not, because a key read out of a log does not say which instance minted it |
+| **`agb forget-rows` is the exception** | a bare run is **refused** and names `--all`. Not because it closes rows — `agb-refresh` closes every row it forgets too — but because nothing restarts the bridges afterwards, so those rows stay closed until you bounce each one by hand |
+| **`agb instances` says what you have** | one row per instance: name, label, config. Run it first when you are not sure what this Mac is carrying |
+| **read their first line** | `agb-refresh` prints `instance: hostb -- label com.agbridge.hostb, config …/hostb/config`, once per instance under a sweep; `close-done` and `forget-rows` print the config, map and placements file they opened. It matters most on a **narrowed** run — naming the wrong one still looks exactly like naming the right one |
+| **upgrades: install once, refresh each** | `sh install.sh mac …` updates the shared code, but a running bridge keeps the copy it started with. One bare `agb-refresh` now bounces them all |
+| **`agb doctor` on the Mac reads the default config only** | it has no `--config`, so it always describes the unnamed instance — and on a Mac where every instance is named, that config does not exist at all. Diagnose an instance from *its* machine (`agb doctor` there) and from its own log |
+| **rows are per instance** | the maps never merge; refreshing *one* never moves the other's rows. What changed is that the bare commands visit all of them |
 | **around four machines this stops being pleasant** | four launchd jobs, four ssh connections, four logs. It is a deliberate ceiling — see [`design.md`](design.md) §5 for the alternative that was rejected and why |
 
 ---
@@ -502,6 +508,10 @@ every agent. Clear the orphans, which closes them in agterm as it forgets them:
 ```sh
 agb forget-rows --rows ~/.config/agbridge/rows
 ```
+
+Naming a map is what makes that a **one-map** run: `--rows` narrows it, and alone it still implies
+the default config — the one place the old default survives. A bare `agb forget-rows` is refused and
+asks for `--all`.
 
 Moving `rows` and `placements` next to the config *before* reinstalling avoids it entirely.
 `agb-refresh --config <path>` works on such an install — it needs no instance name.

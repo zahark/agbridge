@@ -1468,22 +1468,40 @@ which shipped as its opposite first:
   the intended *unreadable / not-a-plist* one. Exit **3** says `agb_mac` could not be loaded from
   beside `--agb`, so the parser this reader hands the argv to is not there at all (below); and a
   reader that exits **1, 126 or 127** has not answered about the plist either — it has said something
-  about `$python`. An `--python` naming a shell script, a missing file or an interpreter without
+  about the *reader*. An `--python` naming a shell script, a missing file or an interpreter without
   `plistlib` is an ordinary operator mistake, and it made *every* plist say nothing: no job claimed
   the config, the run fell through to the **default label** and the **conventional config**, and
   `stopped: com.agbridge` / exit 0 came out in exactly the words it uses when it is right, while the
   named instance's bridge kept running over the map that had just been forgotten. So the rule is
   spelled once, in `plist_read_ok`, and asked at all three call sites: **2 is an answer, anything
-  else is fatal** — with 3 naming `--agb` and everything else naming the interpreter, because they
-  send you to different files. It must be called from the parent shell — a wrapper returning the
+  else is fatal** — with 3 naming `--agb`, because that is a different file from the interpreter. It
+  must be called from the parent shell — a wrapper returning the
   value would run inside `value=$(…)`, where `exit 1` ends the substitution and the script carries on
   with an empty value, which is the silent fallback it exists to stop.
 
+  ⚠️ **The "anything else" message names TWO files now, and that is a consequence of the reader
+  moving into `agb instances`.** It used to be a statement about `$python` alone, because the reader
+  was an inline `-c` program and nothing else could fail. Exit **1** is now also what `agb` returns
+  for an `AgbError` and for any uncaught exception in `run_instances`, neither of which the
+  interpreter did — so a message naming only `--python` would send an operator to replace a working
+  python3. It names both, and says the probe below has already proved that both can run
+  `agb instances --probe`, so whatever this is, it is later than that.
+
   ⚠️ **And a status cannot see an interpreter that succeeds while meaning nothing.** `--python
   /bin/echo` is executable, exits 0 and prints its own arguments, so every plist would "answer" a
-  config path made of the reader's own source. That one is caught by *asking a question with a known
-  answer* — one `import plistlib` probe, before any plist is read — which is also where the good
-  error message lives.
+  config path made of the reader's own arguments. That one is caught by *asking a question with a
+  known answer*, once, before any plist is read — which is also where the good error message lives.
+  ⚠️ **The question is `agb instances --probe`, whose known answer is the literal `instances-ok`,
+  and it has to be that rather than the `import plistlib` probe it replaces.** Two reasons, and the
+  second is the load-bearing one. There is no longer any other `-c` program in the script to probe —
+  `plistlib` is imported by `agb`, not by the shell. And `agb` answers an **unknown command** with
+  exit **2**, `USAGE` on stderr and *empty stdout*, which is byte-identical to a new `agb` answering
+  "this plist says nothing": an `agb` predating this command (0.5.0 and earlier) would make every
+  plist silent, and the run would fall through to the default label and the conventional config and
+  report success in the words it uses when it is right. The probe is what makes exit 2 unambiguous
+  afterwards, so it must be **stdout-compared and not status-compared** — a status alone cannot see
+  `--python /bin/echo` either. No other mode has a fixed answer to compare against: `--labels`
+  depends on the LaunchAgents directory and the human listing has no spec.
 - **The ambiguity warning counts claimants, not runners-up of one kind.** One exact match plus one
   directory-only match is two jobs over one rows file; accounting that keeps two lists finds one
   entry in each and says nothing. It stays a warning rather than a refusal because there is nothing
@@ -1667,9 +1685,23 @@ the directory `$agb` lives in (`agb` registered in `sys.modules` first, so `agb_
 `agb-refresh` — `agb forget-rows` — already goes through `agb._load_mac()`. A tree where the load
 fails cannot do the forget either, which is why the failure is **exit 3, fatal, naming `--agb`**
 rather than "this plist says nothing": that answer would bounce whichever job the unread plists left
-unclaimed and then fail the forget anyway, after the bootout. It costs one import per question,
-measured at 19.0 ms → 21.6 ms on the 3.6.8 floor; `agb_mac` is kept off the *hook's* hot path, and
-this is a recovery command that already sleeps in a poll loop.
+unclaimed and then fail the forget anyway, after the bootout. `agb_mac` is kept off the *hook's* hot
+path, and this is a recovery command that already sleeps in a poll loop.
+
+⚠️ **And the exit-3 catch lives in `agb`'s dispatch arm, around the LOAD ONLY** — not inside
+`run_instances`, which cannot catch its own module failing to load. Both narrower spellings shipped
+once and were wrong, in opposite directions:
+
+- `except (ImportError, AttributeError)` **misses it**. `agb._load_sibling` loads `agb_mac` **by
+  path** — neither sibling has a `.py` extension, so the import machinery cannot find them — and a
+  tree with no `agb_mac` beside `agb` therefore raises `FileNotFoundError`, an **`OSError`**. It
+  escaped as a traceback and exit 1, which `plist_read_ok` reads as "the reader itself failed": a
+  statement about `--python`, sending an operator to replace a working interpreter instead of to
+  `--agb`. Latent while the reader was an inline `-c` program that answered 3 for itself; load-bearing
+  the moment `plist_arg` started calling `agb`.
+- Wrapping the **call** as well as the load is the opposite mistake. A bug in `run_instances` is not
+  a statement about the tree, and turning it into 3 would say "cannot load `agb_mac`, pass `--agb`"
+  about a file that is sitting right there and loaded fine. It must stay loud.
 
 ⚠️ **An argv the parser refuses is "carries no `--config`", and the fail direction was checked rather
 than assumed.** The job holds no map, so it is not a claimant — that is simply correct. What it costs
@@ -1760,14 +1792,21 @@ direction (the liveness poll matches nothing and `forget-rows` lands under a liv
   The comment that shipped with that code claimed comments were one-directional and could only ever
   *hide* argv; that is true only of a comment sitting **between** elements.
 
-The replacement is not a fifth rule. `plist_arg` parses the file with **`plistlib`**, which costs no
+The replacement is not a fifth rule. The reader parses the file with **`plistlib`**, which costs no
 new dependency: it is stdlib on macOS and on the Linux the suite runs on, it imports clean under
 `-S -E`, and `agb-refresh` already *requires* a python3 — it dies without one and runs `agb` through
 it. (That is also why `$python` is resolved **before** the label is bound: this reader is the first
 thing in the script that needs it. Left where it was, every read inside `bind_label_to_config` ran
-`"" -S -E -c …`, so every plist answered nothing and the run fell through to the default label with a
+`"" -S -E …`, so every plist answered nothing and the run fell through to the default label with a
 named instance's bridge live.) `plutil` was rejected for the opposite reason — macOS-only, so the
 suite could not test what it shipped.
+
+⚠️ **And the reader is no longer in `agb-refresh` at all: `plist_arg` is two lines of shell that
+call `agb instances --plist <path> --arg <flag>`.** The parse, the `plistlib` sniff-retry, the
+command-word boundary and the `parse_bridge_args` call all live in `agb_mac.run_instances`. The
+statuses are unchanged, deliberately — 0/2/3/other is the contract `plist_read_ok` and all three call
+sites were already written against, and it had twelve named tests behind it. What moved is *where*
+the answer is computed, and the reason is the next section.
 
 It also reads what the scan could not, and these were all written down as permanent limitations:
 **binary** plists (`plutil -convert binary1`, which is what Xcode, `PlistBuddy` and `defaults write`
@@ -1782,29 +1821,45 @@ sees it. Naming the format (`fmt=plistlib.FMT_XML`) skips the sniff, so the read
 failure. It is a widening, not a loosening: a file that is genuinely not XML still fails, one line
 lower, in the parser.
 
-The cost is a **process per question** rather than an awk per question. Measured: a pathological
-directory of 20 plists, read twice each, is 0.75 s against the scan's 0.20 s; a real
-`~/Library/LaunchAgents` holds one or two agbridge plists (~36 ms). This is a recovery command that
-already sleeps in a poll loop waiting for a bridge to exit and starts a second python for
-`forget-rows`.
+The cost is a **process per question** rather than an awk per question, and it went up again when the
+reader moved into `agb`. Measured on the 3.6.8 floor: the inline `-c` reader was ~21.5 ms per call;
+`agb` as `__main__` plus one `agb_mac` load is **~24.7–26.1 ms**, because `agb` runs as `__main__`
+and CPython caches no bytecode for it — the same property the hot path is built around, arriving here
+as a cost. `bind_label_to_config` asks up to twice per plist, so a pathological directory of 30
+LaunchAgents goes roughly **1.3 s → 1.6 s**; a real `~/Library/LaunchAgents` holds one or two
+agbridge plists. **Recorded so it is not rediscovered as a regression, and it is not a reason to
+change anything**: this is a recovery command that already sleeps in a poll loop waiting for a bridge
+to exit and starts a second python for `forget-rows`.
 
 There is no `2>/dev/null`. The awk had one — so that an unreadable plist stayed quiet — and it
 swallowed the interpreter's own diagnostics too, so a parse error *in the program itself* read as
 "this plist names no config" at every call site. The reader is silent by construction instead: it
-catches its own errors and answers with a status, which leaves stderr free to carry a real bug.
+catches its own errors and answers with a status, which leaves stderr free to carry a real bug. The
+probe deliberately neither captures stderr nor discards it, for the two halves of the same reason:
+`2>&1` would fold startup noise into the answer and refuse a working interpreter, and `2>/dev/null`
+would swallow the traceback that explains why.
 
-⚠️ **Three rules on the reader's own text and output, all of which fail at a distance, and two of
-them only under a locale nobody tests in.** The program is inline in POSIX sh, so it **may contain no
-apostrophe** — one would close the quoting around it. It must be **pure ASCII**, however much the
-rest of that file uses `⚠️`: Python decodes a `-c` program with the *locale's* filesystem encoding
-(and `-E` does not touch `LC_ALL`), so under `LC_ALL=C` one non-ASCII byte in a comment is
-`Unable to decode the command from the command line` — the reader never runs, and every caller reads
-"this plist names no config". And the value is written as **UTF-8 bytes to `sys.stdout.buffer`**,
-never `print`: `print` encodes with the locale too, so a non-ASCII config path — ordinary on a Mac,
-where the filesystem is UTF-8 by fiat — raises `UnicodeEncodeError` under `LC_ALL=C` and, worse,
-*succeeds* under an ISO-8859-1 locale, handing back a transcoded path that names nothing. The awk
-passed bytes through untouched and this has to as well. A structural test pins the first two and
-three locales pin the third.
+⚠️ **Three rules used to govern the reader's own text and output. One is retired, one is now
+structural, and the dangerous one survives the move unchanged.** The program was inline in POSIX sh,
+so it could **contain no apostrophe** — one would have closed the quoting around it. That rule is
+**gone**: there is no embedded program left, and the guard that pinned it was deleted rather than
+repointed, since its non-vacuity assertions (`"plistlib" in program`, `len(program) > 500`) have no
+subject any more. The **pure ASCII** rule is now structural: Python decoded a `-c` program with the
+*locale's* filesystem encoding (and `-E` does not touch `LC_ALL`), so under `LC_ALL=C` one non-ASCII
+byte in a comment was `Unable to decode the command from the command line` — the reader never ran,
+and every caller read "this plist names no config". A file loaded from **disk** is decoded as UTF-8
+whatever the locale says, so that cannot happen to `agb_mac`.
+
+⚠️ **The output rule is NOT structural and did not move — it is the dangerous one.** The value is
+written as **UTF-8 bytes to `sys.stdout.buffer`**, never `print`: `print` encodes with the locale
+too, so a non-ASCII config path — ordinary on a Mac, where the filesystem is UTF-8 by fiat — raises
+`UnicodeEncodeError` under `LC_ALL=C` (loud, and read as "no config") and, worse, *succeeds* under an
+ISO-8859-1 locale, handing back a transcoded path that names nothing, carried on into the banner, the
+`pgrep` pattern and `forget-rows` with no error anywhere. The awk passed bytes through untouched and
+`run_instances` has to as well. **No other code in `agb`/`agb_mac`/`agb_ops` writes to
+`stdout.buffer`**, so this will not happen by accident — which is exactly why the rule is stated in
+`run_instances`' own docstring, where the next person to touch it will read it. Three locales
+(`C`, `POSIX`, `en_US.ISO-8859-1`) pin it, on both sides of the shell boundary.
 
 ⚠️ **Too TIGHT is not the safe side here, which is why the reader is a real parser and not a boundary
 drawn to what `install.sh` happens to write.** Missing a real `ProgramArguments` demotes that plist
@@ -1926,33 +1981,174 @@ noisier direction on, never a working `agb-refresh --instance` off. With `--conf
 nothing to guess and the run proceeds — with its own note, because the old one said "no `--config`
 in <plist>" and gave the advice for a plist predating the flag, about a file that had not been read.
 
+### `agb instances`, and why the reader moved into it
+
+Everything above describes reading **one** plist an operator already named. The command that removed
+the default instance needs the other question — *which instances exist* — and it needs it from two
+places that share no language: `agb-refresh`, which is POSIX sh, and `close-done`/`forget-rows`,
+which run in-process on the Mac. `agb instances` is the one answer both ask.
+
+| mode | prints | status |
+|---|---|---|
+| `agb instances` | one row per instance, `name  label  config` — the **name** is the same one `agb-refresh`'s banner prints for that label (§5 limitation 1's table below: `(default)` only for `com.agbridge` itself, the label for anything outside that space), because two commands naming one instance differently is the same falsehood in two voices. One rule, spelled in shell and in `agb_mac.instance_display_name`, pinned by a test that runs the shell block's own text | 0 |
+| `agb instances --labels` | one label per line — what the sweep iterates | contract 2 below |
+| `agb instances --plist <path> --arg <flag>` | that flag's value out of that plist's bridge argv | the 0/2/3/other contract above |
+| `agb instances --probe` | the literal `instances-ok` | 0 |
+
+All four take `--launch-agents <dir>`. It lives in **`agb_mac`**, not `agb_ops`, for two reasons that
+point the same way: it belongs beside `close-done` and `forget-rows`, which are the commands that
+consume it, and putting it in `agb_ops` would need an `agb_mac` → `agb_ops` edge that exists nowhere
+today. That cost a **budget raise** rather than the free `OPS_COMMANDS` route — recorded below, and
+the first raise since the constant was introduced.
+
+⚠️ **`--labels` needs its own status contract, and it is invariant 12 in a new place.** `--arg`
+inherits 0/2/3/other; `--labels` had nothing, so "there are no instances" and "I could not list them"
+would be the same answer — and a Mac with a momentarily unreadable LaunchAgents directory would sweep
+nothing, fall back to the default job, and report success. So:
+
+> **Contract 2.** A **missing** LaunchAgents directory is **ENOENT → status 0, empty output, "no
+> instances"** — the ordinary Mac, and a recipe that has worked since 0.2.0 does not get to start
+> failing because a discovery mechanism found nothing to discover. **Every other errno is "could not
+> list", non-zero, and fatal at the caller.**
+
+That split is written out rather than left to `os.path.isdir`, and the reason is one of this
+project's own hard-won facts: `isdir`/`exists` swallow *every* `stat` errno, so using one as the
+error branch reports a broken filesystem as "does not exist yet". That has shipped here before.
+
+⚠️ **Membership is a different question from the label-space guard above, and both are right.**
+`bind_label_to_config`'s `com.agbridge` guard is a **claimant** rule — it decides whether a plist may
+stand for the default config, where a third-party LaunchAgent must not — and is correctly narrower.
+`--labels` is asking who to sweep, and `install.sh --label <name>` puts no shape rule on a label, so
+`weird.label.plist` is a real install:
+
+> **Contract 3.** A plist is an agbridge instance for `--labels` iff **its label is in the
+> `com.agbridge` space**, **or** its `ProgramArguments` contains the command word `bridge`
+> immediately after an element whose **basename is `agb`**.
+
+⚠️ **"basename is `agb`" means ANY tree, not `realpath`-equal to this one.** A plist naming an `agb`
+in a different tree is deliberately supported, so requiring identity with the running `agb` would
+drop such an instance out of every sweep silently. The looser half is the safe direction here:
+over-listing costs a bounded refresh of something that turns out not to be ours, under-listing is an
+instance nobody sweeps.
+
+### The sweep, and the one command that does not do it
+
+A bare `agb-refresh`, and a bare `agb close-done`, now act on **every** instance. That removes
+limitation 1 below by changing the default rather than by warning about it.
+
+⚠️ **`agb forget-rows` is the exception and is REFUSED without `--all`, and the rule is not "it
+closes rows" — `agb-refresh` closes every row it forgets too** (`--no-close` is passed only when
+asked). The difference is what happens next: `agb-refresh` **restarts the bridge**, so the rows it
+forgot are re-minted within seconds, and `forget-rows` restarts nothing — a sweep nobody meant would
+leave every row of every instance closed until each bridge was bounced by hand. **So the sweep that
+ends in a restart may default to all; the one that does not, may not.** The consequence is what makes
+that distinction true rather than stylistic: an instance the sweep leaves **without a running bridge
+is an error**, spelled as a distinct child status (**4**), not folded into the ordinary failure code.
+
+⚠️ **`--key` sweeps; it does not narrow.** A key is read out of a bridge log, and nothing in that log
+says which instance minted it — *you should not have to know which instance* is the whole point. A
+key belongs to exactly one map, so the sweep finds it wherever it lives, names the instance that had
+it, and fails only when **none** did. What narrows a run is naming a **map**: `--instance`,
+`--label`, `--config`, and `--rows`/`--placements` where the command has them. Such a run keeps
+today's semantics exactly, which is what preserves `agb forget-rows --rows ~/.config/agbridge/rows`
+as a documented recovery for an install with no instance name to give — and is the one place the old
+default survives, deliberately.
+
+⚠️ **The shell sweep re-execs `"$0" --label <L>` once per label rather than looping in process.**
+`agb-refresh` is 1,600 lines of `set -eu` with per-run globals and a `die` on most error paths: an
+in-process loop would carry one instance's state into the next, and any `die` would end the sweep
+with jobs already booted out and never started again. A fresh process resets every global for free.
+The child **cannot re-sweep** structurally rather than by a rule it is told to obey — it is handed
+`--label`, which is one of the flags that narrow. Labels and not names, because `--instance`
+*computes* `com.agbridge.<name>`: the default label, a custom `--label` install and a `--config`-only
+install have no name to pass.
+
+Three consequences worth stating, because each was a decision:
+
+- **How the script names itself.** `$0` is whatever the caller typed and is not always a path —
+  `agb-refresh` found on `$PATH`, or `sh agb-refresh` typed in its own directory, both leave a `$0`
+  with no slash, and the suite only ever invokes an absolute path. `sweep_self` resolves it as: a
+  path as given, else the **current directory**, then `$PATH`. ⚠️ **That order is not a preference**
+  — it is the order `sh <name>` itself uses, so matching it is what guarantees the children are the
+  same file as the parent. `$PATH` first would sweep with a *different* copy of the script and
+  nothing would say so.
+- **The `trap` lives in the CHILD**, on `INT`/`TERM`/`HUP`, armed one statement before the `bootout`
+  and cleared after the restart — the sweeping parent reaches neither, so it can never arm it. The
+  child re-raises after `trap -`, which is what gives the parent a 128+signo it can tell from a
+  failure; the parent then **stops** the sweep rather than bouncing the instances the operator
+  interrupted it to protect.
+- **A child's failure is recorded and the sweep continues**, everything stopped is started again, and
+  the run exits non-zero with a summary naming what failed. ⚠️ **One blind spot, stated rather than
+  hidden**: several `--key`s spread across *different* instances make every child answer 1 (each
+  forgets its own and reports the others missing), so the run reports failure although all of them
+  were forgotten. Telling that from a real failure needs the children's **output**, not their status.
+  It errs towards failing for work that succeeded, which is the safe direction. The in-process sweep
+  does not inherit it — it can see which keys each map held.
+
+⚠️ **The in-process sweep owes the same two policies, in the same words, or it is invariant 12
+arriving where it closes `[done]` rows in the wrong instance's map and reports success.** A plist
+whose bridge argv carries **no `--config`** reads as `agb.config_path()` — the
+`bind_label_to_config` reading, *not* the `<dir>/<name>/config` convention, which belongs to a
+*named* run and would repair a map that never existed. And **one unreadable plist mid-sweep is fatal,
+not skipped** — with one clause the shell side did not need: fatal **iff its label says it is ours**.
+A stricter rule would let any third-party junk `.plist` stop every sweep on the machine; a looser one
+would let one of ours fall back to the default config.
+
+**No instances found is a note, then the single default run** — on both sides, deliberately
+identically. A Mac carrying a config and no launchd job is the commonest shape this tool is run on,
+and `docs/cookbook.md`'s bare `agb close-done` recipe has worked since 0.2.0.
+
+**Rejected discovery designs, recorded so they are not re-proposed.** **Config-directory globbing**
+(`~/.config/agbridge/*/config`) misses an `install.sh mac --config /elsewhere` install entirely and
+counts leftover directories from instances that no longer exist — it discovers *directories*, and the
+question is which launchd jobs exist. **A registry file** the installer writes and the helpers read is
+a fourth cross-file agreement with no single source of truth, and invariant 14 documents three that
+each caused a bug; it would also go stale against a plist deleted by hand, which is exactly the state
+these commands are run in. The plists **are** the registry: launchd already keeps them, and a job
+that is not there is not an instance.
+
 #### Limitations — documented, not solved
 
-1. ⚠️ **The one that bites: a helper run without `--instance` acts on the default instance and
-   reports success in the same words.** `agb-refresh` stops `com.agbridge`, forgets that instance's
-   bindings and restarts it, while you were trying to repair the other one. Nothing can detect the
-   intent, so the mitigation is in the **output, not the docs** — every run, unconditionally, before
-   the dry-run exit:
+1. ⚠️ **MITIGATED BY THE DEFAULT, not only by the banner.** This used to read: *a helper run without
+   `--instance` acts on the default instance and reports success in the same words* — `agb-refresh`
+   stopped `com.agbridge`, forgot that instance's bindings and restarted it while you were trying to
+   repair the other one, and nothing could detect the intent, so the whole mitigation was in the
+   **output**. That is no longer the shape of it. A bare `agb-refresh` and a bare `agb close-done`
+   now sweep **every** instance, and a bare `agb forget-rows` is refused and names `--all` (see *The
+   sweep, and the one command that does not do it*, above). There is nothing left to mean by
+   accident: the run that used to be the mistake is now the run that visits the instance you meant.
+
+   **What survives, and it is not decoration.** The banner still prints on every run,
+   unconditionally, before the dry-run exit — once per instance under a sweep, which is also what
+   tells a sweep apart from a fall-through:
 
    | run | prints |
    |---|---|
    | `agb-refresh --instance hostb` | `instance: hostb -- label com.agbridge.hostb, config …/hostb/config` |
-   | `agb-refresh` (the mistake) | `instance: (default) -- label com.agbridge, config …/config` |
+   | `agb-refresh` (the sweep) | `sweep: every agbridge instance in …`, then one `instance:` line per instance, then `swept: N instances` |
    | `agb forget-rows --config …` | `forget-rows: config …; rows …; placements …` |
    | `agb close-done --config …` | `close-done: config …; rows …` |
 
-   ⚠️ The **second** row is the whole point of the table: those two runs differ by one flag, and
-   without the banner the only other difference is which map is now empty. A bare `agb-refresh`
-   resolves the default label and the default config, so it prints `(default)` — the table used to
-   show `hostb` against a bare `agb-refresh`, which is the one thing this line cannot be allowed to
-   be wrong about.
+   ⚠️ The **second** row is the whole point of the table, and it is the row that changed. It used to
+   read `agb-refresh (the mistake)` → `instance: (default) …`, annotated as the one thing this line
+   could not be allowed to be wrong about. That cell is now false: a bare run names no single
+   instance, because it acts on all of them.
+
+   ⚠️ **Narrowing flags still exist and still need the banner**, which is why it did not go away with
+   the default. `agb-refresh --instance hostb` and `agb forget-rows --rows <path>` are one-instance
+   runs, and a mistyped one is exactly as silent as it always was.
 
    Only `agb-refresh` has an instance *name* to print — it is the only one of the three that takes
    `--instance`. The other two know a config path and the files derived from it, which is the same
    answer in the spelling they have. When the name was never typed but the label was resolved from a
    config (above), `agb-refresh` reads the name back out of the label rather than printing
-   `(default)` — so `agb-refresh --config …/hostb/config` prints `hostb` too, and the one line whose
-   whole job is to say which instance moved must not be the line that is wrong.
+   `(default)`, so `agb-refresh --config …/hostb/config` prints `hostb` too. ⚠️ **And a label outside
+   the `com.agbridge` space is not the default one either** — `install.sh mac --label <anything>` puts
+   no shape rule on a label, so `weird.label` is a real install, and it fell through to `(default)`.
+   The sweep is what made that reachable by accident: it types `--label` for each plist it finds,
+   custom labels included, so a bare run announced **two** default instances, one of which was
+   somebody's named machine. Such an instance has no name but its label, so the label is what is
+   shown; only `com.agbridge` itself is `(default)`.
 2. **An upgrade needs each job restarted.** The code is shared, so `install.sh mac` updates every
    instance at once — but a running bridge holds the `agb_mac` it started with until its own job is
    booted out and back in.
@@ -1962,12 +2158,24 @@ in <plist>" and gave the advice for a plist predating the flag, about a file tha
    anyone runs when an instance misbehaves, always describes the default instance. `prune --via-ssh`
    likewise resolves `host_<name>` from the default config, so a named instance's hosts may not
    resolve there.
+
+   ⚠️ **And this gets WORSE, not better, once every instance is named.** The point of naming them all
+   is that there is then no unnamed one — on such a Mac `~/.config/agbridge/config` **does not
+   exist**, so those three commands do not merely describe the wrong instance, they describe a file
+   that is not there. `agb instances` is the aggregate view for *discovery* and answers none of this:
+   it says which instances exist, not whether any of them is healthy. Giving `doctor` and
+   `status-line` a `--config` is the obvious fix and is deliberately **not** in this change, which
+   was about the row-map commands; until it lands, diagnose an instance from *its* machine
+   (`agb doctor` there) and from its own bridge log.
 4. **Nothing marks which cluster a row belongs to.** `workspace = <cluster>` in each instance's
    config is the recommended idiom — a convention, not a mechanism.
 5. **N launchd jobs, N ssh connections, N logs.** Fine at around four. Past that is where the
    rejected shape below starts earning its complexity.
 6. **Rows are per-instance**, so `agb-refresh` on one leaves the other's rows alone. Correct, and
-   surprising the first time.
+   surprising the first time. ⚠️ **MITIGATED, not resolved.** The maps are still per-instance and
+   nothing merges them — what changed is that the *commands* now visit all of them, so a bare
+   `agb-refresh` or `agb close-done` repairs every map without your having to name each. A **narrowed**
+   run is still one map, which is the whole point of narrowing it.
 7. ⚠️ **An existing `install.sh mac --config <nondefault>` install changes behaviour.** That flag
    predates this change, and the plist used to **ignore** it: the bridge read
    `~/.config/agbridge/config` regardless. Now that the plist carries `--config`, such an install's

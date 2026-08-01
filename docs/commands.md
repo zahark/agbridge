@@ -11,12 +11,13 @@ rejects anything it does not know. `agb`, `agb -h`, `agb --help` and `agb help` 
 command *names* on stderr and exit 2; that list carries no flags.
 
 This is **deferred, not an oversight.** `argparse` is a ~10 ms import on a hot path measured in
-milliseconds (constraint #3), so there are nine hand-rolled parsers — `feed`, `bridge`,
-`close-done`, `pane`, `doctor`, `prune`, `status-line`, `install-hooks`, `install-config` (`hook`
-reads one positional and parses nothing) — spread over three files, and a `--help` arm would have to
-be added, and kept correct, in each. `agb` is also within a few hundred bytes of the parse-cost cap
-that three consecutive tasks declined to raise. **This file is the reference instead.** If `--help`
-is ever added, it is added here first.
+milliseconds (constraint #3), so there are **thirteen** hand-rolled parsers — `feed`, `bridge`,
+`close-done`, `forget-rows`, `instances`, `pane`, `doctor`, `prune`, `status-line`, `install-hooks`,
+`install-config`, `list`, `rename` (`hook` reads one positional and parses nothing) — spread over
+three files, and a `--help` arm would have to be added, and kept correct, in each. `agb` is also
+within **2 characters** of the parse-cost cap, which has been raised twice on a measurement and which
+several tasks declined to raise at all. **This file is the reference instead.** If `--help` is ever
+added, it is added here first.
 
 ## `agb` is not directly executable
 
@@ -213,14 +214,28 @@ setting them wrong:
 ## `agb close-done` — Mac
 
 ```
-agb close-done [--config PATH] [--rows PATH] [--dry-run]
+agb close-done [--config PATH] [--rows PATH] [--launch-agents DIR] [--dry-run]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--config <path>` | `~/.config/agbridge/config` | which instance's map to work on; `--rows` is derived from its directory |
-| `--rows <path>` | derived from `--config` | the row map to read and rewrite. An explicit path wins |
+| `--config <path>` | **every instance** — see below | which instance's map to work on; `--rows` is derived from its directory. Given, it **narrows** the run to that one map |
+| `--rows <path>` | derived from `--config` | the row map to read and rewrite. An explicit path wins, and also narrows |
+| `--launch-agents <dir>` | `~/Library/LaunchAgents` | where to look for instances. Says where to **look**, not which one to act on, so it does not narrow |
 | `--dry-run` | off | print what would be closed, close nothing, rewrite nothing |
+
+⚠️ **With no map flag this acts on EVERY instance on this Mac**, one banner apiece. It used to mean
+the unnamed one: with two bridges up it reclaimed the *default* instance's rows and reported success,
+while the other sidebar kept growing a row per agent with nothing to say so. It is safe to default to
+all here **by construction** — a `[done]` row is one whose agent is already gone, so reclaiming it in
+an instance you did not have in mind costs nothing you can lose. (`agb forget-rows` is the command
+where that is not true; see its refusal below.)
+
+Instances are discovered through `agb instances`, so both sweeps agree about which plists are ours.
+⚠️ **A Mac with a config and no launchd job prints a note and acts on the default map** — unchanged,
+and the commonest shape there is. ⚠️ **One instance whose plist cannot be read stops the whole
+sweep**; a plist that is not ours and cannot be read is ignored, exactly as `agb instances --labels`
+ignores it.
 
 Only `[done]` entries are touched; a bound row is never closed. A row is forgotten only if
 `agtermctl` reports it closed — otherwise it stays in the map and is printed as "close by hand".
@@ -232,9 +247,60 @@ exit:
 close-done: config /Users/you/.config/agbridge/hostb/config; rows /Users/you/.config/agbridge/hostb/rows
 ```
 
-Unconditional, because the failure it guards is silent: run without `--config` while meaning a
-second instance and this reclaims the *default* instance's rows and reports success in exactly the
-words you were expecting.
+Unconditional, and one line per instance under a sweep — which is also what tells a sweep apart from
+the no-instances fall-through. It matters most on a **narrowed** run: pass `--config` while meaning a
+different instance and this reclaims that one's rows and reports success in exactly the words you
+were expecting.
+
+## `agb instances` — Mac
+
+```
+agb instances [--labels | --probe | --plist <path> --arg <flag>] [--launch-agents <dir>]
+```
+
+Says which agbridge instances this Mac has, by reading `~/Library/LaunchAgents`. It is the single
+answer both sweeps ask — `agb-refresh` from POSIX sh, `close-done`/`forget-rows` in process — so the
+two cannot disagree about which plists are ours.
+
+| Mode | Prints | Exit |
+|---|---|---|
+| *(none)* | one row per instance: `name  label  config`, padded into columns. The name is `agb-refresh`'s banner name for that label — `hostb` for `com.agbridge.hostb`, `(default)` for `com.agbridge` itself, and the **label** for anything outside that space, since such an install has no other name. The config is empty for a job whose argv carries none, and its line then stops after the label rather than ending in the padding | 0 |
+| `--labels` | one label per line — what the sweep iterates | see below |
+| `--plist <path> --arg <flag>` | that flag's value out of that plist's `agb bridge` argv | 0 answered, **2** this file says nothing, **3** `agb_mac` is not beside `agb`, anything else the reader failed |
+| `--probe` | the literal `instances-ok` | 0 |
+| `--launch-agents <dir>` | — | overrides `~/Library/LaunchAgents` in every mode |
+
+**`--probe` is a known-answer probe, and its answer is load-bearing.** `agb-refresh` runs it once
+before reading any plist. A status alone cannot see `--python /bin/echo` (exits 0, prints its own
+arguments), and `agb` answers an **unknown command** with exit 2 and empty stdout — byte-identical to
+`--arg` saying "this plist names no config". So an `agb` predating this command would make every
+plist silent and the run would succeed on the wrong instance. Comparing stdout to `instances-ok` is
+what makes exit 2 unambiguous afterwards.
+
+⚠️ **`--labels` has its own status contract, and the split is deliberate.** A **missing**
+LaunchAgents directory is **exit 0 with empty output** — "there are no instances", the ordinary Mac.
+**Every other errno is exit 1 with the reason on stderr, and fatal at the caller.** Reading the
+second as the first is "I could not answer" collapsing into "the answer is nothing": a Mac with a
+momentarily unreadable directory would sweep nothing, fall back to the default job and report
+success.
+
+⚠️ **What counts as an instance is a wider question than the `com.agbridge` guard `agb-refresh` uses
+to pick a label**, and both are right. That one is a *claimant* rule and is correctly narrow — a
+third-party LaunchAgent must not be able to stand for agbridge's default config. This one is asking
+who to sweep, and `install.sh --label <name>` puts no shape rule on a label, so a custom-label
+install is a real one:
+
+> A plist is an agbridge instance iff **its label is in the `com.agbridge` space**, **or** its
+> `ProgramArguments` contains the command word `bridge` immediately after an element whose
+> **basename is `agb`** — any tree, not `realpath`-equal to this one, since a plist naming an `agb`
+> elsewhere is deliberately supported.
+
+Over-listing costs a bounded refresh of something that turns out not to be ours; under-listing is an
+instance nobody sweeps. The looser half is the safe direction.
+
+`--plist … --arg` is the plist reader `agb-refresh`'s `plist_arg` calls; the rules it applies to an
+argv — only `ProgramArguments`, only after the `bridge` command word, and `agb bridge`'s own parser
+rather than an imitation of it — are documented under [`agb-refresh`](#agb-refresh--mac-a-convenience).
 
 ## `agb pane <key>` — Mac
 
@@ -647,14 +713,16 @@ A failing farm side is fatal on purpose. Half an install is the state nothing ca
 the plist is loaded and the bridge is up, so the sidebar looks alive while the farm has no hooks and
 never writes a session.
 
-Then repair it with `agb-refresh --instance <name>`, and read
-[`design.md`](design.md) §5, *One Mac, several instances* for the seven limitations — the first of
-which is that a helper run **without** `--instance` acts on the default one and reports success.
+Then repair it with `agb-refresh --instance <name>` — or with a plain `agb-refresh`, which sweeps
+every instance. Read [`design.md`](design.md) §5, *One Mac, several instances* for the seven
+limitations; the first of them, a helper run **without** `--instance` silently acting on the default
+one, is what the sweeps removed.
 
 ## `agb forget-rows` — Mac
 
 ```
-agb forget-rows [--key <key>]... [--config <path>] [--rows <path>] [--dry-run]
+agb forget-rows [--key <key>]... [--all] [--config <path>] [--rows <path>]
+                [--placements <path>] [--launch-agents <dir>] [--no-close] [--dry-run]
 ```
 
 Drops `key → row` bindings so the next snapshot re-creates the rows. The recovery for **agterm
@@ -664,12 +732,39 @@ having forgotten its rows** — closed, reset or reinstalled — while the map s
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--key <key>` | every binding | forget one; repeatable. Use it when only one row was closed — dropping the whole map mints duplicates for rows that are still live |
-| `--config <path>` | `~/.config/agbridge/config` | which instance to repair. **Both** `--rows` and `--placements` are derived from its directory |
-| `--rows <path>` | derived from `--config` | the map. An explicit path wins |
-| `--placements <path>` | derived from `--config` | remembered `key = workspace` file. An explicit path wins |
+| `--key <key>` | — | forget one; repeatable. Use it when only one row was closed — dropping the whole map mints duplicates for rows that are still live. **It sweeps**: see below |
+| `--all` | off | every binding of **every** instance. The opt-in a bare run refuses |
+| `--config <path>` | — | which instance to repair; **narrows** the run to it. **Both** `--rows` and `--placements` are derived from its directory |
+| `--rows <path>` | derived from `--config` | the map. An explicit path wins, and narrows |
+| `--placements <path>` | derived from `--config` | remembered `key = workspace` file. An explicit path wins, and narrows |
+| `--launch-agents <dir>` | `~/Library/LaunchAgents` | where to look for instances. Says where to **look**, not which one to act on, so it does not narrow |
 | `--no-close` | off | leave agterm's sessions open. They become duplicates as soon as the bridge mints fresh rows, so this is for the case where you are about to close them yourself |
 | `--dry-run` | off | name the bindings and change nothing |
+
+⚠️ **A run naming no map is REFUSED, and names `--all`. This is the one command that does not default
+to every instance**, and the reason is *not* that it closes rows — `agb-refresh` closes every row it
+forgets too (`--no-close` is passed only when asked). The difference is what happens next:
+`agb-refresh` **restarts the bridge**, so the rows it forgot are re-minted within seconds, and this
+command restarts nothing. A sweep nobody meant would leave every row of every instance closed until
+each bridge was bounced by hand. So the sweep that ends in a restart may default to all; the one that
+does not, may not.
+
+⚠️ **`--key` is the other way in, and it SWEEPS.** A key is read out of a bridge log, and nothing in
+that log says which instance minted it — an operator naming the key has already said what they mean.
+A key belongs to exactly one map, so the run finds it wherever it lives, prints
+`forget-rows: <key> was in <label>`, and exits non-zero only when **no** instance had it. Running
+in-process, this side can tell "not in this map" from "in no map at all", which
+`agb-refresh --key`'s shell sweep cannot.
+
+⚠️ **`--rows` alone still implies the DEFAULT config** — the one place the old default survives, and
+deliberately. Naming a map *is* naming what to act on, and
+`agb forget-rows --rows ~/.config/agbridge/rows` is the documented recovery for an install that has
+no instance name to give. Having just read that the default is gone, expect this to look
+inconsistent: it is the same rule as `agb-refresh --rows`.
+
+⚠️ **`--all` beside a map flag is an error**, not a silent winner either way. The operator has said
+two contradictory things, and letting one win quietly is the failure this whole change removes: the
+right map under the wrong label, reported as success.
 
 There is **no `--workspace`** here — the parser refuses it. Where a row comes back is decided by the
 *placements* file this command writes, not by a flag on it; `--workspace` is `agb bridge`'s.
@@ -689,8 +784,8 @@ forget-rows: config …/hostb/config; rows …/hostb/rows; placements …/hostb/
 
 The placements file is named explicitly because it is the one nobody passed on the command line.
 
-Exits 1 if a named key was not in the map (and says so), 0 otherwise. **Nothing on the farm is
-touched** — agents, keys and state are untouched, so rows return with the same identities.
+Exits 1 if a named key was in **no** instance's map (and says so), 0 otherwise. **Nothing on the farm
+is touched** — agents, keys and state are untouched, so rows return with the same identities.
 
 ⚠️ Not a file deletion, and not a `sed`. The map ends in an `#end <count>` sentinel; a hand-edited
 line leaves the count wrong, the whole map then reads as corrupt, and the bindings you meant to keep
@@ -721,13 +816,13 @@ agb-refresh [--key <key>]... [--dry-run] [--no-close] [--instance <name>] [--con
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--key <key>` | every binding | forget one; repeatable. Passed straight through to `forget-rows` |
-| `--dry-run` | off | say what would happen; stop and start nothing, change nothing |
+| `--key <key>` | every binding | forget one; repeatable. Passed straight through to `forget-rows`. ⚠️ **Does not narrow** — it sweeps; see below |
+| `--dry-run` | off | say what would happen; stop and start nothing, change nothing. Forwarded to every child of a sweep |
 | `--no-close` | off | passed through to `forget-rows`: leave agterm's sessions open |
-| `--instance <name>` | the default instance | act on the instance `install.sh mac --instance <name>` created: label `com.agbridge.<name>`, and the config **that instance's plist names**. **Sugar for `--label` and `--config`, which must always move together** — a label without its config stops one instance and forgets another's bindings. An explicit `--label`/`--config` still wins. Same name rule as the installer: letters, digits, `-`, `_` |
+| `--instance <name>` | **every instance** — see below | act on the instance `install.sh mac --instance <name>` created: label `com.agbridge.<name>`, and the config **that instance's plist names**. **Sugar for `--label` and `--config`, which must always move together** — a label without its config stops one instance and forgets another's bindings. An explicit `--label`/`--config` still wins. Same name rule as the installer: letters, digits, `-`, `_` |
 | `--config <path>` | the config `<label>.plist` was rendered with; failing that `~/.config/agbridge[/<name>]/config` | the config to repair against; `forget-rows` derives the rows map and the placements file from it. Accepted on its own for an install made with `install.sh mac --config <path>` and no `--instance`, which has no instance *name* to pass. **Given alone it also moves the label**: the plists are scanned for the job that holds **the map this path names**, and its label adopted, so the bridge's own `agb-refresh --config …` hint acts on the bridge that printed it. The match is on the **map**, not on the spelling: the **directory** is resolved (`//`, `.`, `..`, a relative path, a symlinked `$HOME`) and **nothing else is matched on**, because `rows` and `placements` are `dirname(config)/rows` and `dirname(config)/placements` — the basename plays no part in either. So `<dir>/config`, `<dir>/`, `<dir>//` and `<dir>/anything` all name the same map and all find the same label; keeping the basename made the match *narrower* than the map it guards, and `--config ~/.config/agbridge/hostb/` (what tab-completion leaves you holding) bounced the **default** job with hostb's map. Among several matches the basename does break the **tie** — the job naming this exact file wins over one that merely shares the directory, rather than the winner falling out of `*.plist`'s collating order. A plist carrying no `--config` counts as naming the **default** config, since that is what its bridge resolves; only if it is readable and its label is in the `com.agbridge` space, so another program's LaunchAgent cannot claim agbridge's map. A path whose directory does not exist has no canonical form and matches nothing. When more than one job claims the map, all of them are named, the chosen one is said, and the run continues — they share a rows file, so there is nothing to choose. If no plist claims it, the default label is used and a `note:` says so — and names the job it is about to bounce |
-| `--label <name>` | `com.agbridge` | the launchd job to boot out and back in |
-| `--launch-agents <dir>` | `~/Library/LaunchAgents` | where that job's plist lives |
+| `--label <name>` | `com.agbridge` | the launchd job to boot out and back in. Narrows, and is what the sweep hands each child |
+| `--launch-agents <dir>` | `~/Library/LaunchAgents` | where that job's plist lives — **and where the sweep looks for instances**. Says where to look, not which one to act on, so it does not narrow |
 | `--agb <path>` | `~/.local/lib/agbridge/agb` | the installed `agb` to run `forget-rows` through — **and the tree the plist reader asks what each job's arguments mean**: it loads `agb_mac.parse_bridge_args` from this file's directory rather than imitating it, so an argv `agb bridge` would refuse (`--config=` with no value, a stray positional, an unknown option, a `--watchdog` that is not a number) counts as naming no config, which is what a job launchd restarts for ever without ever starting a bridge holds. A tree with no `agb_mac` beside this path is **fatal** and says so: `agb forget-rows` could not run there either |
 | `--python <path>` | the first `python3` on `$PATH` | interpreter to run it with. `agb` has no shebang on purpose |
 | `--rows <path>` | derived from `--config` | passed through to `forget-rows` |
@@ -739,17 +834,57 @@ supported, and rebuilding the conventional path instead would name a file that d
 command reports success for a map it never touched. The convention is the fall-back for a Mac whose
 plist was never rendered.
 
-**It names what it is acting on, first line, every run** — including under `--dry-run`:
+⚠️ **With none of those flags it sweeps EVERY instance on this Mac.** It used to act on the unnamed
+one and report success in exactly the words it would have used for the one you meant, leaving the
+other sidebar broken with nothing to say so. What narrows it is naming a map — `--instance`,
+`--label`, `--config`, `--rows`. **`--key` does not**: it is typed by someone reading a key out of a
+bridge log, which does not say which instance minted it, so the sweep finds it wherever it lives and
+fails only when no instance had it.
+
+```
+sweep:    every agbridge instance in /Users/you/Library/LaunchAgents
+
+instance: (default) -- label com.agbridge, config /Users/you/.config/agbridge/config
+…
+instance: hostb -- label com.agbridge.hostb, config /Users/you/.config/agbridge/hostb/config
+…
+swept:    2 instances
+```
+
+The sweep **re-execs this script once per label** rather than looping in place — this is 1,600 lines
+of `set -eu` with per-run globals and a `die` on most error paths, and an in-process loop would carry
+one instance's state into the next and could end the sweep with jobs booted out and never started
+again. Every flag is forwarded explicitly, `--dry-run` above all. A child's failure is recorded, the
+sweep continues, everything stopped is started again, and the run exits non-zero with a summary
+naming what failed.
+
+⚠️ **An instance left without a running bridge is an error**, and a distinct one — the child exits
+**4** and the parent says `no bridge was started again for: <label>`. It is the rule that makes
+bare-is-all safe: forgetting an instance's rows and then not starting its bridge again leaves that
+sidebar dark with nothing to re-mint it. It is a **sweep** rule; `agb-refresh --instance <name>` on a
+Mac whose plist was never rendered still warns and exits 0, which is a documented recipe.
+
+⚠️ **Ctrl-C is safe.** The `trap` that restarts the bridge lives in the process that did the
+`bootout`, which under a sweep is the child; the sweep then stops there rather than bouncing the
+instances you interrupted it to protect, and says which ones it did not visit.
+
+⚠️ **A Mac with no instance plists is unchanged** — a note, then the single default run, which still
+forgets the default map and warns that nothing was restarted. **"I could not list them" is not "there
+are none"**: an unreadable `~/Library/LaunchAgents` is fatal, because taking it as none would fall
+back to the default instance and report success for a run that swept nothing.
+
+**It names what it is acting on, first line of each instance, every run** — including under
+`--dry-run`:
 
 ```
 instance: hostb -- label com.agbridge.hostb, config /Users/you/.config/agbridge/hostb/config
-instance: (default) -- label com.agbridge, config /Users/you/.config/agbridge/config
 ```
 
-⚠️ This is the whole mitigation for the one real hazard of running several instances: without
-`--instance` this command stops `com.agbridge`, forgets the **default** instance's bindings and
-restarts it — succeeding, and saying so in exactly the words you were expecting for the instance you
-meant. Nothing can detect the intent, so it states the answer instead.
+⚠️ This remains the whole mitigation for a **narrowed** run, which is still exactly as silent as it
+always was: `--instance` naming the wrong one stops that job, forgets its bindings and restarts it,
+succeeding and saying so in the words you were expecting. Nothing can detect the intent, so it states
+the answer instead. An instance whose label is outside the `com.agbridge` space is named by its
+**label** — it has no other name, and calling it `(default)` was a bug the sweep made reachable.
 
 ⚠️ **The liveness poll below is matched per instance**,
 `pgrep -f "<agb> bridge --config <the plist's config>([[:space:]]|$)"`, because `--dest` is shared by
@@ -834,13 +969,19 @@ correct refresh. Three details, each closing a failure:
   ⚠️ **Four exit statuses, and only the first two are about the plist.** 0 is an answer (an empty
   value means "no such flag"); **2** means "this file says nothing" — unreadable, or not a plist;
   **3** means `agb_mac` could not be loaded from beside `--agb`, so the parser the reader asks is not
-  there; anything else means the *reader* failed, which is a statement about `$python`. Folding the
-  last two into the second made `--python /bin/false` — an ordinary mistake — read every plist as
-  silent, fall through to the default label and the conventional config, and report success. Both are
-  fatal now, at all three call sites: `plist_read_ok` spells the rule once — **2 is an answer,
-  anything else is fatal** — and names `--agb` for 3 and the interpreter for the rest. An
-  `import plistlib` probe runs once before any plist is read to catch the case a status cannot see
-  (`--python /bin/echo` exits 0 and prints its own arguments).
+  there; anything else means the *reader* failed, which is not a statement about the plist at all.
+  Folding the last two into the second made `--python /bin/false` — an ordinary mistake — read every
+  plist as silent, fall through to the default label and the conventional config, and report success.
+  Both are fatal now, at all three call sites: `plist_read_ok` spells the rule once — **2 is an
+  answer, anything else is fatal** — and names `--agb` for 3. ⚠️ **For the rest it names two files,
+  not one**, because the reader is two files now: exit 1 is also what `agb` returns for its own
+  errors, so blaming `$python` alone would send you to replace a working interpreter.
+  ⚠️ **A known-answer probe runs once before any plist is read**, to catch what a status cannot see:
+  `agb instances --probe` must answer the literal `instances-ok`. It is **stdout-compared**, because
+  `--python /bin/echo` exits 0 while printing its own arguments — and because `agb` answers an
+  *unknown command* with exit 2, empty stdout and `USAGE` on stderr, which is byte-identical to a
+  plist that names no config. Without the probe, an `agb` predating this command (0.5.0 and earlier)
+  would make every plist silent and the run would succeed on the wrong instance.
   ⚠️ **A missing plist and an unreadable one are different questions.** Both answer exit 2, and the
   conventional path is the right fall-back only for the first. `agb-refresh --instance hostb` with a
   corrupt `com.agbridge.hostb.plist` repaired a map that never existed and reported it empty; it now
@@ -859,6 +1000,12 @@ correct refresh. Three details, each closing a failure:
   lines, minification. What is left is a file that is not a plist at all — unreadable, truncated,
   or not XML and not binary — which answers "this file says nothing", and is then skipped rather
   than standing for the default config.
+  ⚠️ **And the reader itself is no longer in this script**: `plist_arg` is two lines of shell calling
+  [`agb instances --plist <path> --arg <flag>`](#agb-instances--mac), which is where the parse, the
+  sniff-retry and the `parse_bridge_args` call live. The statuses above are unchanged — that contract
+  and its twelve tests predate the move, and only *where* the answer is computed changed. Everything
+  else in `agb-refresh` is untouched: the map comparison, the five ranks, the multi-claimant warning
+  and the `[ -e ]` split all still read the same four statuses from the same three call sites.
   ⚠️ The **subtraction** this replaces (`pgrep -f "<agb> bridge"` minus
   `pgrep -f "<agb> bridge --config"`, because ERE cannot spell "does not contain") could only find
   the untagged case, and counted a bridge over *this* map spelled `<dir>/./config` as somebody

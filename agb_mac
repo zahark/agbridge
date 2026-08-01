@@ -11,9 +11,9 @@
 #
 # What is specific to this file:
 #
-#   * `agb` reaches it through `_load_mac()`, called from `cmd_bridge` and
-#     `cmd_close_done` and nowhere else. `agb_ops` has one shared door for six
-#     commands; here there are two hops for two commands.
+#   * `agb` reaches it through `_load_mac()`, called from `cmd_bridge`,
+#     `cmd_close_done`, `cmd_instances` and nowhere else. `agb_ops` has one
+#     shared door for six commands; here there are three hops for three.
 #   * `import agb` below is not a filesystem import: `_load_mac()` registers the
 #     running `agb` module in `sys.modules` first, so this binds the *same*
 #     module object the hook is running from -- not a second copy with its own
@@ -2698,14 +2698,161 @@ def instance_paths(opts):
             opts.get("placements") or placements_path(config))
 
 
-CLOSE_DONE_VALUE_ARGS = {"--rows": "rows", "--config": "config"}
+# ---- sweeping every instance, and what stops a sweep ---------------------
+#
+# A bare `close-done` and a `forget-rows --all` act on EVERY instance on this
+# Mac. The default instance's privilege was an artifact of install order rather
+# than of the domain -- all remote hosts have the same priority, any of them can
+# die or be closed by hand -- so a helper that silently means "the unnamed one"
+# reports success in exactly the words of the run you meant to make. That is
+# `docs/design.md` §5 limitation 1, and it is what these sweeps remove.
+#
+# `agb-refresh` sweeps the same set from the shell side, through
+# `agb instances --labels`; these two run in-process on the Mac, where a shell
+# reader is unreachable. Both therefore go through `_is_agbridge_instance`
+# itself rather than a second copy of the rule: two commands disagreeing about
+# which plists are ours is its own bug class, and a sweep that visits a strictly
+# smaller set than `agb-refresh` leaves an instance nobody repairs.
+#
+# THE TWO POLICIES BELOW ARE THE SHELL SIDE'S, WORD FOR WORD. Neither may be
+# invented here -- unstated, this is invariant 12 arriving in-process, where it
+# closes `[done]` rows in the wrong instance's map and reports success:
+#
+#   * a plist whose bridge argv carries NO `--config` reads as
+#     `agb.config_path()`, because that is what its own bridge resolves
+#     (`agb-refresh`'s `bind_label_to_config` reading). NOT the
+#     `<dir>/<name>/config` convention -- that reading belongs to
+#     `agb-refresh --instance <name>`, which is a *named* run, and handing it to
+#     a sweep would repair a map that never existed and report it empty.
+#   * "I could not answer" is not "the answer is nothing". An instance whose
+#     plist cannot be read is FATAL for the whole sweep, not skipped.
+
+MAP_FLAGS = ("rows", "placements", "config")
+
+
+def names_a_map(opts):
+    """True when this run named the map it acts on, so it does NOT sweep.
+
+    `--rows`/`--placements`/`--config` keep **today's** semantics exactly: one
+    map, config defaulting to `agb.config_path()`. Naming a map *is* naming what
+    to act on, so nothing about such a run was ever ambiguous -- and
+    `agb forget-rows --rows ~/.config/agbridge/rows` is the documented recovery
+    (`docs/cookbook.md`) for an install that has no instance name to give.
+    `agb-refresh` passes `--config` unconditionally too, so every run it makes
+    is a narrowed one and the shell side keeps its own sweep rather than nesting
+    one inside another.
+
+    ⚠️ `--key` is deliberately NOT in this list: it names WHAT to forget, not
+    WHERE. A key belongs to exactly one instance's map and the whole point of
+    this change is that you should not have to know which -- the same decision
+    `agb-refresh --key` took, and the same reason `agb-refresh:13-16`'s recipe
+    can stay spelled without an instance.
+    """
+    return any(opts.get(name) for name in MAP_FLAGS)
+
+
+def instance_configs(agents_dir):
+    """[(label, config)] for every agbridge instance on this Mac, in label order.
+
+    Raises `AgbError` rather than returning a short list -- see the two policies
+    above. An empty list is a real answer and a different one: there genuinely
+    are no instances (a Mac carrying a config and no launchd job, which is
+    `docs/cookbook.md`'s bare `agb close-done` recipe and by far the commonest
+    shape). The callers say so and fall through to the default map rather than
+    doing nothing, exactly as `agb-refresh`' sweep does.
+
+    ⚠️ An unreadable plist is fatal only when its LABEL says it is ours. That is
+    not a softening of the second policy, it is the first one applied
+    consistently: `_is_agbridge_instance` cannot attribute a plist it could not
+    parse unless the label is in the `com.agbridge` space, so an unreadable
+    third-party `.plist` is not claimed here any more than `--labels` claims it.
+    A Mac whose LaunchAgents directory holds someone else's broken file can
+    still sweep; one of *ours* that cannot be read stops the run, because the
+    fallback would be the default config -- another instance's map.
+
+    ⚠️ Duplicates are dropped on `os.path.normpath`, NOT `os.path.realpath`.
+    Two plists both naming the default config (the default label plus one whose
+    argv carries no `--config`) are one instance and must be swept once.
+    `realpath` never fails, so it would also collapse two configs whose
+    directories do not exist yet -- silent widening, and here widening means
+    dropping an instance from the sweep, which is the unsafe direction.
+    `agb-refresh`'s `same_map` is fail-closed for the same reason.
+    """
+    entries, err = _scan_agents_dir(agents_dir)
+    if err is not None:
+        raise agb.AgbError(
+            "cannot list %s: errno %s -- refusing to sweep, because a "
+            "directory that cannot be listed may hold instances this run "
+            "would silently miss" % (agents_dir, err))
+    found = []
+    seen = set()
+    for label, path, doc in entries:
+        if not _is_agbridge_instance(label, doc):
+            continue
+        if doc is None:
+            raise agb.AgbError(
+                "cannot read %s -- it is an agbridge instance (its label says "
+                "so) whose config this run cannot determine; the fallback "
+                "would be another instance's map, so pass --config to act on "
+                "one map by hand" % (path,))
+        config = _bridge_arg(doc, "config") or agb.config_path()
+        norm = os.path.normpath(config)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        found.append((label, config))
+    return found
+
+
+def sweep_targets(opts, name, out):
+    """[(label, config)] to act on, or [] meaning "the map `opts` resolves".
+
+    The shared half of both sweeps: discovery, the no-instances note, and the
+    fall-through. Split out because the two commands must not drift about which
+    Mac they think they are on -- the same reason `instance_paths` is one door.
+    """
+    agents_dir = opts.get("launch_agents") or default_agents_dir()
+    instances = instance_configs(agents_dir)
+    if not instances:
+        # Not an error, and not a refusal: this is the ordinary Mac of
+        # `docs/cookbook.md`, and a recipe that has worked since 0.2.0 does not
+        # get to start failing because a discovery mechanism found nothing to
+        # discover. `agb-refresh`' sweep answers the same way -- a note, then
+        # the single default run.
+        out.write("%s: no instances found in %s; acting on the default map\n"
+                  % (name, agents_dir))
+    return instances
+
+
+def sweep_status(worst, code):
+    """Aggregate one child's status into a sweep's.
+
+    The FIRST non-zero wins, not the last and not the largest. These statuses
+    carry meanings that differ per command (`agb-refresh`' 4 is "a bridge was
+    left down", its 1 is "a key was not in this map"), so folding them into
+    "whatever the last instance said" is how a failure in the middle of a sweep
+    disappears -- the run ends on a healthy instance and reports 0.
+    """
+    return worst or code
+
+
+CLOSE_DONE_VALUE_ARGS = {"--rows": "rows", "--config": "config",
+                         "--launch-agents": "launch_agents"}
 
 CLOSE_DONE_FLAGS = {"--dry-run": "dry_run"}
 
 
 def parse_close_done_args(argv):
-    """`close-done [--rows PATH] [--config PATH] [--dry-run]`."""
-    opts = {"rows": None, "config": None, "dry_run": False}
+    """`close-done [--rows P] [--config P] [--launch-agents D] [--dry-run]`.
+
+    ⚠️ `--launch-agents` is not a map flag and does not narrow: it says where to
+    LOOK for instances, not which one to act on. It exists because this command
+    is driven in-process by the suite, where the alternative is monkeypatching
+    `$HOME` and hoping the default lands somewhere harmless -- a seam the sweep
+    would then have no test of at all.
+    """
+    opts = {"rows": None, "config": None, "dry_run": False,
+            "launch_agents": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -2746,16 +2893,19 @@ def _rebound_on_disk(path, key):
     return False
 
 
-FORGET_FLAGS = {"--dry-run": "dry_run", "--no-close": "no_close"}
+FORGET_FLAGS = {"--dry-run": "dry_run", "--no-close": "no_close",
+                "--all": "all"}
 FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key",
-                     "--placements": "placements", "--config": "config"}
+                     "--placements": "placements", "--config": "config",
+                     "--launch-agents": "launch_agents"}
 
 
 def parse_forget_args(argv):
-    """`forget-rows [--key K]... [--rows P] [--placements P] [--config P]
-    [--no-close] [--dry-run]`."""
-    opts = {"rows": None, "keys": [], "dry_run": False,
-            "no_close": False, "placements": None, "config": None}
+    """`forget-rows [--all] [--key K]... [--rows P] [--placements P]
+    [--config P] [--launch-agents D] [--no-close] [--dry-run]`."""
+    opts = {"rows": None, "keys": [], "dry_run": False, "all": False,
+            "no_close": False, "placements": None, "config": None,
+            "launch_agents": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -2799,25 +2949,94 @@ def run_forget_rows(argv, out=None, run=None):
     Stop the bridge first. It holds the map in memory and merges-then-writes on
     every save, so an edit underneath a running bridge can simply be rewritten.
     `agb-refresh` does the whole sequence.
+
+    ⚠️ A RUN THAT NAMES NO MAP IS REFUSED, and this is the one command where it
+    is. The rule is not "it closes rows" -- `agb-refresh` closes every row it
+    forgets too (`--no-close` is passed only when asked). The difference is what
+    happens next: `agb-refresh` restarts the bridge, so the rows it forgot are
+    re-minted within seconds, and this command restarts nothing, so a sweep
+    nobody meant leaves every row of every instance closed until each bridge is
+    bounced by hand. So the sweep that ends in a restart may default to all; the
+    one that does not, may not. `--all` is that opt-in, and `--key` is the other
+    way in -- an operator naming the key has already said what they mean.
     """
     if out is None:
         out = sys.stdout
     if run is None:
         run = _run_command
     opts = parse_forget_args(argv)
+    if names_a_map(opts):
+        if opts["all"]:
+            # One line either way, and this is the safe one: `--all` says every
+            # instance, a map flag says this one, and silently letting either
+            # win is the shape invariant 12 keeps producing -- the right map
+            # under the wrong label, reported as success.
+            raise agb.AgbError(
+                "forget-rows: --all means every instance and "
+                "--rows/--placements/--config means one; drop whichever you "
+                "did not mean")
+        return _forget_rows_one(opts, out, run)[0]
+    if not (opts["all"] or opts["keys"]):
+        raise agb.AgbError(
+            "forget-rows: refusing to forget every row of every instance. "
+            "Nothing restarts the bridges afterwards, so those rows stay "
+            "closed until you bounce each one by hand -- pass --all to mean "
+            "it, --key <key> for one row wherever it lives, or --config "
+            "<path> for one instance")
+    worst = 0
+    # `--key` sweeps: a key belongs to exactly one instance's map, so "not in
+    # this map" is the ORDINARY answer from every other instance and only
+    # becomes an error when NO instance had it. That is why `_forget_rows_one`
+    # is asked to report its missing keys rather than to grade them: the
+    # per-instance status cannot tell those two apart, which is exactly the
+    # blind spot `agb-refresh`' shell sweep is stuck with (it can only see its
+    # children's exit codes) and has no reason to inherit here.
+    held = {}
+    swept = sweep_targets(opts, "forget-rows", out) or [(None, None)]
+    for label, config in swept:
+        one = dict(opts)
+        if config is not None:
+            one["config"] = config
+        code, missing = _forget_rows_one(one, out, run, sweeping=True)
+        for key in opts["keys"]:
+            if key not in missing:
+                held[key] = label or "the default map"
+        worst = sweep_status(worst, code)
+    for key in opts["keys"]:
+        if key in held:
+            out.write("forget-rows: %s was in %s\n" % (key, held[key]))
+        else:
+            out.write("forget-rows: no instance has %s\n" % (key,))
+    if len(held) < len(set(opts["keys"])):
+        worst = sweep_status(worst, 1)
+    return worst
+
+
+def _forget_rows_one(opts, out, run, sweeping=False):
+    """`forget-rows` over ONE resolved map; returns (status, missing keys).
+
+    `sweeping` suppresses the per-instance `not in the map` line and keeps the
+    status at 0 for it, because under a sweep that is what every instance which
+    does not hold the key says. The caller owns that verdict; nothing else about
+    this body changed when the sweep arrived.
+    """
     # `instance_paths` resolves all three: `read_rows_file(None)` answers [] --
     # "there is no map" -- so passing the unresolved None here reported every
     # map as empty and forgot nothing, silently. A recovery command that does
     # nothing and says it succeeded is the failure class this tool exists to
     # remove, and it shipped in one.
     config, rows_file, places_file = instance_paths(opts)
-    # Printed by both row-map commands on **every** run, not only on failure.
-    # Without `--instance`/`--config` these act on the default instance and
-    # report success in the usual words, so an operator repairing the wrong
-    # Mac-side map sees nothing at all to say so -- the one failure this shape
-    # has, and it is silent. The banner is the whole mitigation, which is why it
-    # is unconditional and names every path that was resolved rather than the
-    # one flag that was passed.
+    # Printed by both row-map commands on **every** run, not only on failure,
+    # and once PER INSTANCE under a sweep -- which is also what tells a sweep
+    # apart from the no-instances fall-through, and is asserted by count.
+    #
+    # It was written when a bare run meant the DEFAULT instance and reported
+    # success in the usual words, so an operator repairing the wrong Mac-side
+    # map saw nothing at all to say so. That default is gone, and the banner is
+    # not: a NARROWED run (`--config`/`--rows`/`--placements`) is exactly as
+    # silent as a bare one used to be, and naming the wrong map still succeeds.
+    # So it stays unconditional, and names every path that was resolved rather
+    # than the one flag that was passed.
     out.write("forget-rows: config %s; rows %s; placements %s\n"
               % (config, rows_file, places_file))
     rows = load_rows(rows_file)
@@ -2830,7 +3049,10 @@ def run_forget_rows(argv, out=None, run=None):
     if not targets:
         out.write("no rows to forget: the map is already empty\n")
         out.flush()
-        return 0
+        # No keys were named, so nothing is missing -- an empty map under
+        # `--all` is a state, not a failure, and it must not read as one key
+        # nobody had.
+        return 0, []
     remembered = read_placements(places_file)
     # Ask agterm where these rows live BEFORE any of them is closed: once the
     # session is gone its workspace is as unknowable as its id. None means
@@ -2838,8 +3060,9 @@ def run_forget_rows(argv, out=None, run=None):
     # than erase them.
     placed = None if opts["dry_run"] else tree_workspaces(run)
     missing = [k for k in targets if not rows.known(k)]
-    for key in missing:
-        out.write("not in the map: %s\n" % (key,))
+    if not sweeping:
+        for key in missing:
+            out.write("not in the map: %s\n" % (key,))
     dropped = [k for k in targets if rows.known(k)]
     for key in dropped:
         # `row_for` answers only for BOUND rows, so a [done] entry would print
@@ -2889,7 +3112,7 @@ def run_forget_rows(argv, out=None, run=None):
               % ("dry run: " if opts["dry_run"] else "forgot ",
                  len(dropped), len(targets), "" if len(targets) == 1 else "s"))
     out.flush()
-    return 1 if missing else 0
+    return (0 if sweeping else (1 if missing else 0)), missing
 
 
 def run_close_done(argv, run=None, out=None):
@@ -2903,12 +3126,38 @@ def run_close_done(argv, run=None, out=None):
     "Bound rows are never touched" is checked twice -- once against the map this
     process loaded, and once against the map on disk immediately before each
     close (`_rebound_on_disk`), because the bridge is a second writer.
+
+    ⚠️ WITH NO MAP FLAG THIS ACTS ON EVERY INSTANCE, one banner apiece. It is
+    the sweep that may default to all, and `forget-rows` is not, for a reason
+    that is not "one of them closes rows": both do. The difference is what
+    happens next -- `agb-refresh` restarts the bridge, which re-mints the rows
+    within seconds, while a bare `forget-rows` leaves them closed. `close-done`
+    is on the safe side of that line by construction: a `[done]` row is one
+    whose agent is already gone, so reclaiming it in an instance you did not
+    have in mind costs nothing you can lose.
     """
     opts = parse_close_done_args(argv)
     if run is None:
         run = _run_command
     if out is None:
         out = sys.stdout
+    if names_a_map(opts):
+        return _close_done_one(opts, run, out)
+    worst = 0
+    for _label, config in sweep_targets(opts, "close-done", out) or [(None, None)]:
+        # `dict(opts)` per instance, never a mutation of `opts`: the sweep must
+        # not leave the previous instance's config behind on the next lap.
+        # `[(None, None)]` is the no-instances fall-through -- one run with
+        # `opts` exactly as it arrived, which is today's single-map behaviour.
+        one = dict(opts)
+        if config is not None:
+            one["config"] = config
+        worst = sweep_status(worst, _close_done_one(one, run, out))
+    return worst
+
+
+def _close_done_one(opts, run, out):
+    """`close-done` over ONE resolved map. Every path here predates the sweep."""
     reported = set()
 
     def warn(text):
@@ -2918,9 +3167,11 @@ def run_close_done(argv, run=None, out=None):
     # but it is resolved through the same door as `forget-rows` so the two
     # cannot drift about what `--config <B>` means.
     config, path, _places = instance_paths(opts)
-    # Unconditional, for the reason spelled out at `run_forget_rows`' copy of
-    # this line: acting on the wrong instance succeeds and says so in the words
-    # of the run you meant to make.
+    # Unconditional, and once per instance, for the reason spelled out at
+    # `_forget_rows_one`'s copy of this line: acting on the wrong instance
+    # succeeds and says so in the words of the run you meant to make. That is
+    # now a property of a NARROWED run rather than of a bare one -- bare sweeps
+    # every instance -- and narrowing is still one flag away.
     out.write("close-done: config %s; rows %s\n" % (config, path))
     rows = load_rows(path, warn)
     done = rows.done_entries()
@@ -2955,4 +3206,332 @@ def run_close_done(argv, run=None, out=None):
     if not opts["dry_run"]:
         out.write("close-done: closed %d of %d\n" % (closed, len(done)))
     out.flush()
+    return 0
+
+
+# ---- agb instances: instance discovery and plist querying -------------------
+#
+# Cross-file agreement (invariant 14, fourth entry): INSTANCES_LABEL_PREFIX and
+# default_agents_dir() must match install.sh DEFAULT_LABEL / DEFAULT_AGENTS and
+# agb-refresh DEFAULT_LABEL / DEFAULT_AGENTS. Pinned in test_install_pkg.py.
+
+INSTANCES_LABEL_PREFIX = "com.agbridge"
+INSTANCES_FLAGS = {"--probe": "probe", "--labels": "labels"}
+INSTANCES_VALUE_ARGS = {"--plist": "plist", "--arg": "arg",
+                        "--launch-agents": "launch_agents"}
+
+
+def default_agents_dir():
+    """Default LaunchAgents directory: ~/Library/LaunchAgents."""
+    return os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents")
+
+
+def instance_display_name(label):
+    """The name to SHOW for an instance's label. `agb-refresh`'s rule, in Python.
+
+    `com.agbridge.hostb` -> `hostb`; `com.agbridge` itself -> `(default)`; any
+    other label -> the label, because `install.sh mac --label <anything>` puts
+    no shape rule on a label (`install.sh:369`), so `weird.label` is a real
+    install whose only name IS its label.
+
+    ⚠️ THE RULE IS SETTLED AND THE AUTHORITY IS `agb-refresh:1207-1219`, which
+    states it at length. It is here in a second language because neither file
+    can import the other, and both of its wrong answers say something FALSE in
+    the one column whose entire job is to say which instance a line is about:
+
+      * "(default)" for a custom label -- what the banner used to answer, fixed
+        in Task 5 when the bare run started sweeping (before that, the only way
+        to land on such a label was to type it, and the operator who typed it
+        knew what they had asked for);
+      * the EMPTY STRING for anything not under the `com.agbridge.` prefix --
+        what this listing answered, because the Task 5 fix was applied to the
+        banner and not to the listing written from the same rule. The owner's
+        real Mac therefore printed a nameless row for the default instance,
+        under a named one that looked fine.
+
+    Applied in exactly ONE place on each side now -- the shell's `case` block
+    and this function -- and kept in step by a differential test that RUNS that
+    block's own text rather than re-spelling it
+    (`test_the_listing_names_an_instance_the_way_the_banner_does`).
+    """
+    pfx = INSTANCES_LABEL_PREFIX + "."
+    if label.startswith(pfx):
+        name = label[len(pfx):]
+    elif label == INSTANCES_LABEL_PREFIX:
+        name = ""
+    else:
+        name = label
+    # The shell says this as `${shown:-(default)}`, so the fallback covers the
+    # bare prefix AND a `com.agbridge.` with nothing after the dot. Mirrored
+    # rather than special-cased: an empty name is the bug being fixed, and the
+    # one place it may still arise must resolve the same way on both sides.
+    return name or "(default)"
+
+
+def parse_instances_args(argv):
+    """`instances [--probe | --labels | --plist P --arg F] [--launch-agents D]`."""
+    opts = {"probe": False, "labels": False, "plist": None, "arg": None,
+            "launch_agents": None}
+    rest = list(argv)
+    while rest:
+        arg = rest.pop(0)
+        name, sep, inline = arg.partition("=")
+        if name in INSTANCES_FLAGS:
+            if sep:
+                raise agb.AgbError("instances: %s takes no value" % (name,))
+            opts[INSTANCES_FLAGS[name]] = True
+        elif name in INSTANCES_VALUE_ARGS:
+            if not sep and rest:
+                inline = rest.pop(0)
+            if not inline:
+                raise agb.AgbError("instances: %s needs a value" % (name,))
+            opts[INSTANCES_VALUE_ARGS[name]] = inline
+        elif arg.startswith("-"):
+            raise agb.AgbError("instances: unknown option: %s" % (arg,))
+        else:
+            raise agb.AgbError("instances: unexpected argument: %s" % (arg,))
+    return opts
+
+
+def _load_plist(path):
+    """Parse a plist; return (doc, None) or (None, 2).
+
+    (None, 2): file not readable or not a valid plist -- "this file says
+    nothing", the plist_arg contract's exit-2 case.
+
+    Two-step load mirrors plist_arg's sniff-then-retry: plistlib sniffs the
+    first 32 bytes and refuses a plist opening with its DOCTYPE (valid XML,
+    loaded by launchd), so FMT_XML bypasses the sniff.
+    """
+    import plistlib
+    try:
+        fh = open(path, "rb")
+    except EnvironmentError:
+        return None, 2
+    try:
+        try:
+            doc = plistlib.load(fh)
+        except Exception:
+            fh.seek(0)
+            try:
+                doc = plistlib.load(fh, fmt=plistlib.FMT_XML)
+            except Exception:
+                return None, 2
+    finally:
+        fh.close()
+    return doc, None
+
+
+def _bridge_arg(doc, key):
+    """One `agb bridge` flag's value from a plist's argv, or None.
+
+    None is every "this file says nothing" case rolled together -- not a plist
+    dict, no `ProgramArguments`, an element that is not a string, no `bridge`
+    command word, an argv `agb bridge` would REFUSE -- because they are one
+    answer to the caller: this job holds no map we can name.
+
+    ⚠️ Only what follows the `bridge` command word, and `parse_bridge_args`
+    itself rather than a walk. `ProgramArguments` is the whole command line
+    (`<python> -S -E <agb> bridge …`), so four elements go by before `agb`
+    reads its command from `argv[1]`; and a simulation of the parser cannot
+    simulate a REFUSAL, which is how a dead job became the rank-1 claimant
+    that outranked a live one. Invariant 12's tenth and twelfth instances.
+    """
+    if not isinstance(doc, dict):
+        return None
+    pargs = doc.get("ProgramArguments")
+    if (not isinstance(pargs, list)
+            or not all(isinstance(e, str) for e in pargs)):
+        return None
+    if "bridge" not in pargs:
+        return None
+    try:
+        return parse_bridge_args(pargs[pargs.index("bridge") + 1:]).get(key)
+    except Exception:
+        return None
+
+
+def _is_agbridge_instance(label, doc):
+    """Instance membership predicate for --labels and the human listing.
+
+    A plist is an agbridge instance iff its label is in the com.agbridge
+    space, OR its ProgramArguments contains the command word `bridge`
+    immediately after an element whose basename is `agb` -- ANY tree, not
+    realpath-equal to this one (a plist naming an `agb` in a different tree
+    is deliberately supported: agb-refresh:380-386).
+
+    Over-listing costs a bounded refresh attempt; under-listing leaves an
+    instance nobody sweeps -- the unsafe direction.
+    """
+    if (label == INSTANCES_LABEL_PREFIX
+            or label.startswith(INSTANCES_LABEL_PREFIX + ".")):
+        return True
+    if not isinstance(doc, dict):
+        return False
+    argv = doc.get("ProgramArguments")
+    if not isinstance(argv, list):
+        return False
+    for i in range(len(argv) - 1):
+        if (isinstance(argv[i], str)
+                and os.path.basename(argv[i]) == "agb"
+                and argv[i + 1] == "bridge"):
+            return True
+    return False
+
+
+def _scan_agents_dir(agents_dir):
+    """List plists in agents_dir; return (entries, error_or_None).
+
+    entries: list of (label, path, doc_or_None_if_unreadable)
+    error: None on success (including ENOENT); errno int for other IO errors.
+
+    ENOENT is "no LaunchAgents directory yet" -- ordinary on a Mac that has
+    never had an agbridge install -- and returns ([], None). Any other errno
+    means the directory exists but cannot be listed and returns a non-None
+    error; the caller must treat that as fatal (contract 2).
+    """
+    import errno as _errno
+    try:
+        names = sorted(os.listdir(agents_dir))
+    except EnvironmentError as exc:
+        if exc.errno == _errno.ENOENT:
+            return [], None
+        return [], exc.errno
+    entries = []
+    for name in names:
+        if not name.endswith(".plist"):
+            continue
+        label = name[:-len(".plist")]
+        path = os.path.join(agents_dir, name)
+        doc, _ = _load_plist(path)
+        entries.append((label, path, doc))
+    return entries, None
+
+
+def run_instances(argv, out=None):
+    """List or query agbridge instances (Mac-side).
+
+    Four modes:
+      --probe               print instances-ok (known-answer probe)
+      --plist P --arg F     value of F in that plist's bridge argv
+      --labels              one label per line, for sweeping (contract 2/3)
+      (default)             human listing: name  label  config
+
+    All modes accept --launch-agents DIR to override ~/Library/LaunchAgents.
+
+    Status contracts:
+      --plist --arg: 0=answered (possibly empty), 2=plist says nothing.
+        Exit 3 for missing agb_mac is caught by cmd_instances in agb BEFORE
+        this function runs.
+      --labels: 0=answered (ENOENT=no instances=empty output), non-zero=fatal.
+
+    ⚠️ THE SHAPE OF THAT EXIT-3 CATCH LIVES HERE, not beside it: `agb` is under
+    a parse budget and this file is not. `agb.cmd_instances` reads
+
+        try:
+            run = _load_mac().run_instances
+        except Exception:
+            return 3
+        return run(argv)
+
+    and BOTH narrower spellings of that shipped once and were wrong:
+
+      * `except (ImportError, AttributeError)` misses it. `agb._load_sibling`
+        loads this file BY PATH -- neither sibling has a `.py` extension, so the
+        import machinery cannot find them -- and a tree with no `agb_mac` beside
+        `agb` therefore raises `FileNotFoundError`, an `OSError`. It escaped as
+        a traceback and exit 1, which `agb-refresh` reads as "the reader itself
+        failed": a statement about `--python`, sending an operator to replace a
+        working interpreter instead of to `--agb`. Measured, not assumed.
+      * wrapping the CALL as well as the load is the opposite mistake. A bug in
+        `run_instances` is not a statement about the tree, and turning it into 3
+        would produce "cannot load agb_mac, pass --agb" about a file that is
+        sitting right there and loaded fine. It must stay loud.
+
+    ⚠️ THE VALUE LEAVES AS UTF-8 BYTES ON `sys.stdout.buffer`, NEVER `print`.
+    This rule arrived here with the code: it used to be enforced on the text of
+    an embedded `-c` program in `agb-refresh`, which is gone, and its guard was
+    deleted rather than repointed (see the note where it stood in
+    `tests/test_agb_refresh.py`). Two halves, and only one of them retired:
+
+      * the SOURCE half is now structural. Python decoded a `-c` program with
+        the locale's filesystem encoding, so one non-ASCII byte in a comment was
+        `Unable to decode the command from the command line` -- the reader never
+        ran and every caller read "this plist names no config", which is the
+        quiet wrong-job bounce. A file loaded from disk is decoded as UTF-8
+        whatever the locale says, so that cannot happen here.
+      * the OUTPUT half is NOT, and it is the dangerous one. `-E` ignores
+        `PYTHON*` but does not touch `LC_ALL`, so the locale still picks
+        stdout's encoding: `print` on a non-ASCII config path raises
+        `UnicodeEncodeError` under `LC_ALL=C` (loud, and read as "no config"),
+        and under ISO-8859-1 it SUCCEEDS, handing back a transcoded path that
+        exists nowhere -- carried on into the banner, the `pgrep` pattern and
+        `forget-rows`, with no error anywhere. Bytes are the only spelling that
+        is right in both. Guarded behaviourally, three locales, on both sides.
+    """
+    if out is None:
+        out = sys.stdout
+    opts = parse_instances_args(argv)
+    agents_dir = opts["launch_agents"] or default_agents_dir()
+
+    if opts["probe"]:
+        out.write("instances-ok\n")
+        return 0
+
+    if opts["plist"] is not None:
+        if opts["arg"] is None:
+            raise agb.AgbError("instances: --plist requires --arg")
+        key = BRIDGE_VALUE_ARGS.get(opts["arg"])
+        doc, err = _load_plist(opts["plist"])
+        if err is not None:
+            return err  # 2: unreadable or not a valid plist
+        value = _bridge_arg(doc, key)
+        if value is not None:
+            # Bytes, not print: -E does not touch LC_ALL, so under ISO-8859-1
+            # print() transcodes a non-ASCII path into wrong bytes silently.
+            sys.stdout.buffer.write(("%s" % (value,)).encode("utf-8") + b"\n")
+        return 0
+
+    if opts["arg"] is not None:
+        raise agb.AgbError("instances: --arg requires --plist")
+
+    entries, err = _scan_agents_dir(agents_dir)
+    if err is not None:
+        sys.stderr.write("instances: cannot list %s: errno %s\n"
+                         % (agents_dir, err))
+        return 1
+
+    if opts["labels"]:
+        for label, _path, doc in entries:
+            if _is_agbridge_instance(label, doc):
+                out.write(label + "\n")
+        return 0
+
+    # Default: human-readable listing (the only mode the stated problem does
+    # not strictly require -- deferred last so the budget can cut it first).
+    found = []
+    for label, _path, doc in entries:
+        if not _is_agbridge_instance(label, doc):
+            continue
+        config = _bridge_arg(doc, "config") or ""
+        found.append((instance_display_name(label), label, config))
+    if not found:
+        out.write("no agbridge instances found in %s\n" % (agents_dir,))
+    else:
+        # Padded, because the name column has no natural width -- it holds
+        # `(default)`, a hostname or a whole dotted label -- and three ragged
+        # columns of paths are what this listing is read for.
+        #
+        # Padding stops at the last column that EXISTS: a job whose argv
+        # carries no `--config` would otherwise end its line in the blanks
+        # that were meant to separate it from something. Only the human
+        # listing pads; `--labels` is what the sweep consumes and is untouched.
+        wname = max(len(n) for n, _l, _c in found)
+        wlabel = max(len(l) for _n, l, _c in found)
+        for name, label, config in found:
+            if config:
+                out.write("%-*s  %-*s  %s\n"
+                          % (wname, name, wlabel, label, config))
+            else:
+                out.write("%-*s  %s\n" % (wname, name, label))
     return 0

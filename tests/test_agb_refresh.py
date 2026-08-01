@@ -40,7 +40,23 @@ def refresh(tmp_path):
             + body)
         os.chmod(str(path), 0o755)
 
-    stub("launchctl", "exit 0\n")
+    # ⚠️ It can be told to FAIL for one subcommand on one job, because the
+    # sweep's whole contract is about what happens when ONE instance's refresh
+    # goes wrong while the others still have to be swept -- and against a stub
+    # that always succeeds, "instance A failed" is unsayable, so every such test
+    # would pass by never reaching the branch it is about.
+    #
+    # `AGBR_LC_FAIL` is a space-separated list of subcommands; the restart tries
+    # `bootstrap` and then falls back to `load -w`, so making a restart fail
+    # needs BOTH names. `AGBR_LC_FAIL_MATCH` narrows it to the jobs whose argv
+    # contains that text (empty matches every job, which is what a bare
+    # `AGBR_LC_FAIL` means).
+    stub("launchctl",
+         "for c in ${AGBR_LC_FAIL:-}; do\n"
+         "    [ \"$1\" = \"$c\" ] || continue\n"
+         "    case \"$*\" in *\"${AGBR_LC_FAIL_MATCH:-}\"*) exit 1 ;; esac\n"
+         "done\n"
+         "exit 0\n")
     # `pgrep -f "<pattern>"` succeeds (bridge alive) while the marker file
     # exists. The `launchctl` stub cannot remove it, so a test decides how many
     # polls the bridge survives by removing it from a counter file.
@@ -153,21 +169,58 @@ def refresh(tmp_path):
     # guessing through.
     agb = tmp_path / "agb"
     os.symlink(conftest.AGB_PATH, str(agb))
-    # ⚠️ `--python` names ONE interpreter and the script now has TWO jobs for
-    # it: running `agb` (`"$python" -S -E "$agb" ...`), which is what this stub
-    # records, and reading a plist with `plistlib` (`"$python" -S -E -c ...`),
-    # which must be REAL or every plist test would be asserting on a stub`s
-    # idea of a parser rather than on the reader that ships. The two are told
-    # apart by `$3`: `agb` is a path there, the reader is `-c`.
+    # ⚠️ `--python` names ONE interpreter and the script has TWO jobs for it:
+    # running `agb forget-rows` (`"$python" -S -E "$agb" forget-rows ...`),
+    # which is what this stub RECORDS and must never really run, and running
+    # `agb instances` (the probe and every plist read), which must be REAL or
+    # every plist test would be asserting on a stub`s idea of a parser rather
+    # than on the reader that ships.
     #
-    # Passing `-c` through rather than stubbing it is the point -- it is what
-    # makes the whole plist corpus below a test of `plistlib` + the argv walk,
-    # end to end through the real script.
+    # ⚠️ THE DISCRIMINATOR IS `$4`, THE COMMAND WORD, and it used to be
+    # `[ "$3" = -c ]` because the reader was an embedded `-c` program. There is
+    # no `-c` program any more -- `plist_arg` and the probe both call
+    # `agb instances` -- so a stub still routing on `-c` would swallow the probe
+    # (empty stdout, no `instances-ok`) and every single test in this file would
+    # die at it. `$3` is `$agb` for both commands now; only `$4` tells them
+    # apart. The `-c` arm is kept because a `-c` here would be a REGRESSION
+    # worth seeing rather than worth stubbing.
+    #
+    # ⚠️ THE ROUTED CALL IS NOT LOGGED, exactly as the `-c` reader was not.
+    # `refresh.calls()` is asserted as an ORDERED SEQUENCE across programs
+    # (`test_the_three_steps_happen_in_order`) and as EMPTY by every test whose
+    # point is that the script refused before step 1 -- and a plist read is not
+    # a step, it is what decides which instance the three steps act on. Logging
+    # it would put a variable number of lines in front of `launchctl bootout`
+    # and turn `assert refresh.calls() == []` into an assertion about how many
+    # plists happened to be in the directory.
+    #
+    # ⚠️ TWO ARMS FOR THE SWEEP, both keyed on a substring of the recorded argv
+    # (in practice the instance's config path, which is the one thing that tells
+    # one instance's `forget-rows` from another's):
+    #
+    #   `AGBR_FORGET_FAIL` -- exit 1, which is exactly what the real
+    #     `agb forget-rows` returns when a `--key` was not in the map it opened
+    #     (`agb_mac:2892`). It is therefore both "this instance failed" and
+    #     "this instance did not hold that key" -- the sweep cannot tell them
+    #     apart from a status either, which is the point of the two `--key`
+    #     tests below.
+    #   `AGBR_INTERRUPT` -- signal the agb-refresh shell that started this
+    #     process, which lands the signal exactly INSIDE the window between its
+    #     `bootout` and its restart. That window is the only reason the trap
+    #     exists, and it cannot be hit reliably from outside: sending a signal
+    #     from the test would be a race with the child's own progress.
     python = binder / "fakepython"
     python.write_text(
         "#!/bin/sh\n"
         "if [ \"$3\" = -c ]; then exec '" + sys.executable + "' \"$@\"; fi\n"
+        "if [ \"${4:-}\" = instances ]; then exec '"
+        + sys.executable + "' \"$@\"; fi\n"
         "printf 'agb %s\\n' \"$*\" >> \"" + str(log) + "\"\n"
+        "[ -z \"${AGBR_EAT_STDIN:-}\" ] || cat >/dev/null\n"
+        "case \"$*\" in *\"${AGBR_INTERRUPT:-@@nothing@@}\"*)"
+        " kill -INT $PPID ;; esac\n"
+        "case \"$*\" in *\"${AGBR_FORGET_FAIL:-@@nothing@@}\"*)"
+        " exit 1 ;; esac\n"
         "exit 0\n")
     os.chmod(str(python), 0o755)
 
@@ -263,8 +316,14 @@ def refresh(tmp_path):
             return re.sub(r"([][(){}.*+?^$|\\])", r"\\\1", path)
 
         def run(self, args=(), alive_polls=0, alive_cmdline=None,
-                ps_silent=False, no_python=False):
+                ps_silent=False, no_python=False, lc_fail=None,
+                lc_fail_match=None, forget_fail=None, interrupt=None,
+                cwd=None, script=None, eat_stdin=False):
             """`no_python` omits `--python`, so the script RESOLVES one.
+
+            `script` and `cwd` are what the `$0` tests move: everything else in
+            this file invokes an ABSOLUTE path, so the sweep's re-exec would
+            never see the two no-slash spellings a human types.
 
             ⚠️ Every other test passes `--python`, which means the `if [ -z
             "$python" ]` block never runs in them -- so WHERE that block sits
@@ -295,12 +354,26 @@ def refresh(tmp_path):
                 alive_cmdline = "\n".join(alive_cmdline)
             env["AGBR_ALIVE_CMDLINE"] = alive_cmdline
             env["HOME"] = str(tmp_path)
-            argv = ["sh", SCRIPT, "--agb", str(agb)]
+            # Which launchctl calls fail, and which `agb forget-rows` call fails
+            # or interrupts its own shell -- see the two stubs above. Set only
+            # when asked, so every other test keeps the "everything succeeds"
+            # environment it was written against.
+            if lc_fail:
+                env["AGBR_LC_FAIL"] = lc_fail
+            if lc_fail_match:
+                env["AGBR_LC_FAIL_MATCH"] = lc_fail_match
+            if forget_fail:
+                env["AGBR_FORGET_FAIL"] = forget_fail
+            if interrupt:
+                env["AGBR_INTERRUPT"] = interrupt
+            if eat_stdin:
+                env["AGBR_EAT_STDIN"] = "1"
+            argv = ["sh", script or SCRIPT, "--agb", str(agb)]
             if not no_python:
                 argv += ["--python", str(python)]
             proc = subprocess.Popen(
                 argv + list(args),
-                cwd=str(tmp_path), env=env, stdin=subprocess.PIPE,
+                cwd=cwd or str(tmp_path), env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             out, err = conftest.communicate(proc, b"")
             return proc.returncode, out.decode(), err.decode()
@@ -323,7 +396,22 @@ def refresh(tmp_path):
                     return line
             return ""
 
-    return Refresh()
+        def count(self, needle):
+            """How many recorded calls contain `needle`.
+
+            The sweep's questions are counting ones -- "was every instance
+            bounced exactly once", "did a child re-sweep" -- which `index` and
+            `call`, both of which answer about the FIRST match, cannot ask.
+            """
+            return len([line for line in self.calls() if needle in line])
+
+    made = Refresh()
+    # Exposed for the `$0` tests (a copy of this script on `$PATH` needs a
+    # directory that is on it) and for tests that write a plist somewhere other
+    # than the conventional place.
+    made.bindir = binder
+    made.agentsdir = agents
+    return made
 
 
 def test_the_three_steps_happen_in_order(refresh):
@@ -430,6 +518,11 @@ def test_the_default_run_names_the_default_instance(refresh):
 
     A banner that appeared only with `--instance` would say nothing on exactly
     the run that needs it: the one where you forgot the flag.
+
+    ⚠️ A bare run SWEEPS now, so this banner is a child's and "(default)" is
+    what the child says about the one instance this fixture installs -- not a
+    claim that a flagless run means the default one. That reading is gone; see
+    the sweep section at the bottom of this file.
     """
     _rc, out, _err = refresh.run()
     assert "instance: (default)" in out
@@ -518,7 +611,15 @@ def test_the_convention_is_still_the_fallback_when_no_plist_answers(refresh):
     """A Mac whose plist was never rendered -- or was deleted by hand -- can
     still be refreshed by name. The plist is the better answer, not the only
     one, and losing the sugar entirely on a missing file would be a worse
-    failure than the one it fixes."""
+    failure than the one it fixes.
+
+    ⚠️ It is also the guard that keeps "an instance left without a running
+    bridge is an error" a SWEEP rule. This run ends with no bridge started (no
+    plist to bootstrap) and must still exit 0, because it is a documented
+    recipe; making it fail would repeal that promise to buy a rule that earns
+    its keep only where a whole Mac is being swept. See
+    `test_an_instance_left_without_a_bridge_fails_the_sweep`.
+    """
     rc, out, _err = refresh.run(["--instance", "hostb"])   # no hostb plist
     assert rc == 0
     assert "--config %s" % (refresh.config("hostb"),) \
@@ -574,6 +675,15 @@ def test_a_plain_refresh_ignores_a_named_instances_bridge(refresh):
     `<agb> bridge --config `, a prefix of EVERY instance's command line. A plain
     refresh while instance B was up would then poll a live process for the full
     10 s and warn, on the most common invocation this command has.
+
+    ⚠️ Re-reasoned for the sweep, because "a plain refresh ignores a named
+    instance" is no longer a property of the COMMAND: a plain refresh visits
+    every instance that is installed. It is still a property of each CHILD, and
+    that is what is asserted here -- hostb has a running bridge and no plist, so
+    the sweep visits one label and the default instance's child must not wait
+    for a bridge that is not its own. The version where both are installed and
+    exactly one may wait is
+    `test_one_instances_live_bridge_does_not_hold_another_instances_wait`.
     """
     refresh.write_plist()               # the default job, modern shape
     rc, out, _err = refresh.run(alive_polls=10 ** 6,
@@ -2286,6 +2396,11 @@ def test_a_plist_that_is_not_there_at_all_still_falls_back_to_the_convention(
     refreshed by name, which is the documented fall-back and the case exit 2 was
     conflating with the one above. Nothing exists to contradict the convention
     here, so the convention stands.
+
+    ⚠️ The `rc == 0` is load-bearing twice over now: this run also ends with no
+    bridge started at all, and it must stay a warning. "An instance left without
+    a running bridge is an error" is a rule about the SWEEP; see
+    `test_an_instance_left_without_a_bridge_fails_the_sweep`.
     """
     rc, out, _err = refresh.run(["--instance", "hostb"])
     assert rc == 0, out
@@ -2769,15 +2884,21 @@ def plist_arg(tmp_path):
     which is a different answer from status 0 with an empty value, and status 3
     is "the parser could not be loaded from beside `$agb`".
 
-    ⚠️ `agb=` is not decoration. The reader loads `agb_mac` from that path's
-    directory and asks `agb_mac.parse_bridge_args` what the argv means, so the
-    corpus below runs against the SHIPPED parser rather than against a walk that
-    imitates it. It used to pass `$BRIDGE_VALUE_FLAGS` instead; that list is now
-    only the `ps`-side scanner's (`ci_config_certain`), which has no argv to hand
-    anybody.
+    ⚠️ `agb=` is not decoration, and it does more than it used to. `plist_arg`
+    is now two lines -- it RUNS `"$python" -S -E "$agb" instances --plist ...`
+    -- so this path selects the whole reader, not just the parser beside it.
+    The corpus below therefore runs the shipped `agb_mac.run_instances` end to
+    end through the shipped shell function, which is the point of driving it
+    here rather than calling `run_instances` in-process.
+
+    ⚠️ `agentsdir=` exists because `plist_arg` forwards `--launch-agents`, and
+    an EMPTY value is a missing-value error rather than a default -- so a
+    harness that omitted it would fail every case with exit 1 and look like a
+    reader bug. It is inert under `--plist`; see the comment at the call site.
     """
     harness = tmp_path / "plist_arg.sh"
-    harness.write_text("python=%s\nagb=%s\n" % (sys.executable, conftest.AGB_PATH)
+    harness.write_text("python=%s\nagb=%s\nagentsdir=%s\n"
+                       % (sys.executable, conftest.AGB_PATH, tmp_path)
                        + _extract_sh("plist_arg") + "\n"
                        + "plist_arg \"$1\" \"$2\"\n")
     counter = [0]
@@ -2799,6 +2920,14 @@ def plist_arg(tmp_path):
         # that swallowed the interpreter's own diagnostics, so a broken program
         # read as "this plist names no config" at every call site. Anything on
         # stderr here is a bug in the reader, not an answer.
+        #
+        # ⚠️ AND IT IS A MUCH STRONGER CLAIM THAN IT WAS, deliberately kept.
+        # `agb` writes `USAGE` and every `AgbError` to stderr, so this now says
+        # that `run_instances` reaches NONE of those paths for any shape in the
+        # corpus -- not a bad flag, not a bad combination, not a traceback --
+        # for a plist a human could leave behind. The four-status contract is
+        # the whole answer; anything printed alongside it is a second answer
+        # nobody reads.
         assert err == b"", err
         return proc.returncode, out.decode("utf-8").rstrip("\n")
     return call
@@ -2811,8 +2940,29 @@ def _bridge_would_resolve(mac, raw, flag="--config"):
     """What `agb bridge` resolves for `flag`, from authorities that are not ours.
 
     `plistlib` says what the argv IS; `agb_mac.parse_bridge_args` says what
-    `agb bridge` DOES with it. Neither is `agb-refresh`'s code, which is what
-    makes the corpus below differential rather than a restatement of the reader.
+    `agb bridge` DOES with it. Neither was `agb-refresh`'s code, which is what
+    made the corpus below differential rather than a restatement of the reader.
+
+    ⚠️ HALF OF THAT IS NO LONGER TRUE, AND SAYING SO IS THE POINT. The reader
+    moved into `agb_mac.run_instances`, which CALLS `parse_bridge_args` -- so
+    for the argv half this oracle now approaches `f(x) == f(x)` and proves
+    nothing on its own. What survives is worth keeping and is not that half:
+
+      * `plistlib` is still a genuine external authority for "what is this
+        argv", and it is the half four review rounds of hand-rolled tokenizer
+        got wrong. `run_instances` uses it, but this compares against it
+        INDEPENDENTLY, including the sniff-then-`FMT_XML` retry.
+      * the PLUMBING is not shared with the reader at all: where the argv
+        starts (everything up to and including `bridge` is the command line,
+        not the bridge's argv), which key the flag lands under
+        (`BRIDGE_VALUE_ARGS`, not a name derived here), the four-status
+        mapping, and the byte encoding of the answer.
+      * `dist/com.agbridge.plist` is a third authority, unchanged, and it is
+        what the `as-installed` axis is read out of.
+
+    So the corpus stays here, driven through the SHIPPED `plist_arg` rather
+    than calling `run_instances` in-process: the plumbing above is exactly the
+    part an in-process call would skip, and it is the part that changed.
 
     `_UNDECIDED` where those authorities have no opinion: a file `plistlib`
     refuses, or a plist with no argv at all. Those cases still assert their
@@ -3265,6 +3415,14 @@ def test_plist_arg_answers_what_the_bridge_would_resolve(plist_arg, mac, name,
     (see `_bridge_would_resolve`), and the assertion below refuses to let that
     happen silently for a case that could have been checked.
 
+    ⚠️ AND SINCE THE READER MOVED INTO `agb instances`, HALF THE CROSS-CHECK IS
+    SELF-REFERENTIAL -- `run_instances` calls `parse_bridge_args`. The corpus is
+    kept, and kept HERE, because what it still holds up is the part that is not
+    shared: `plistlib` as an independent authority, and the whole hop from a
+    shell function to a status and a byte string. Every case runs the shipped
+    `plist_arg`, which is the thing `bind_label_to_config` actually depends on.
+    See `_bridge_would_resolve` for the itemised list of what survives.
+
     ⚠️ TWICE, once per argv SHAPE, and the second is the one the corpus did not
     have: `["bridge", ...]` is not what a plist holds. See `_as_installed`.
     """
@@ -3286,16 +3444,32 @@ def test_plist_arg_answers_what_the_bridge_would_resolve(plist_arg, mac, name,
                         "empty-plist", "non-string-element"), name
 
 
-def _lib_with(tmp_path, name, edit=None, drop_mac=False):
+def _lib_with(tmp_path, name, edit=None, drop_mac=False, agb_edit=None):
     """A copy of the installed tree, optionally with `agb_mac` edited or absent.
 
     ⚠️ A COPY, never a symlink to the repo: the point is a DIFFERENT parser, and
     a link would hand the reader the real one back.
+
+    ⚠️ `agb_edit=` reaches the OTHER file, and it exists for the probe. Since
+    the reader moved, `agb` is on the path too -- it is what dispatches
+    `instances` at all -- so "an installed tree too old to have this command" is
+    a question only an edit to `agb` can ask. `edit=` cannot: an `agb_mac`
+    without `run_instances` is an `AttributeError` inside `cmd_instances`, which
+    is exit 3, whereas an `agb` without the dispatch arm is `unknown command`,
+    exit 2 with EMPTY STDOUT -- and telling those two apart is the probe's
+    entire job.
     """
     import shutil
     lib = tmp_path / name
     lib.mkdir()
-    shutil.copy(conftest.AGB_PATH, str(lib / "agb"))
+    if agb_edit is None:
+        shutil.copy(conftest.AGB_PATH, str(lib / "agb"))
+    else:
+        text = open(conftest.AGB_PATH, encoding="utf-8").read()
+        before, after = agb_edit
+        assert before in text, before            # non-vacuity: it really edits
+        with open(str(lib / "agb"), "w", encoding="utf-8") as handle:
+            handle.write(text.replace(before, after, 1))
     if not drop_mac:
         text = open(conftest.MAC_PATH, encoding="utf-8").read()
         if edit is not None:
@@ -3308,9 +3482,18 @@ def _lib_with(tmp_path, name, edit=None, drop_mac=False):
 
 
 def _read_with(tmp_path, agb, raw, flag="--config"):
-    """`plist_arg` against one plist, with `$agb` pointed somewhere chosen."""
+    """`plist_arg` against one plist, with `$agb` pointed somewhere chosen.
+
+    ⚠️ `$agb` now selects the ENTIRE reader (`plist_arg` execs
+    `"$python" -S -E "$agb" instances`), not merely the `agb_mac` a separate
+    `-c` program loaded from beside it. That makes `_lib_with(edit=...)` a
+    sharper instrument than it was -- an edit to the copied `agb_mac` is the
+    only `agb_mac` in play -- and it is why the probe's own control below can
+    edit the copied tree and watch the script refuse.
+    """
     harness = tmp_path / ("read_%s.sh" % (abs(hash(agb)),))
-    harness.write_text("python=%s\nagb=%s\n" % (sys.executable, agb)
+    harness.write_text("python=%s\nagb=%s\nagentsdir=%s\n"
+                       % (sys.executable, agb, tmp_path)
                        + _extract_sh("plist_arg") + "\n"
                        + "plist_arg \"$1\" \"$2\"\n")
     target = tmp_path / ("read_%s.plist" % (abs(hash(agb)),))
@@ -3363,12 +3546,207 @@ def test_a_tree_with_no_agb_mac_beside_agb_is_fatal_not_silent(tmp_path,
     assert _read_with(tmp_path, lonely, raw) == (3, "")
     # ...and the script turns that status into a `die` naming the right flag,
     # rather than into a silent "this plist says nothing".
+    #
+    # ⚠️ It is the PROBE that reaches it now, not the first plist read --
+    # `--probe` runs `run_instances` too, so a tree with no `agb_mac` cannot
+    # answer it either. The probe forwards exit 3 to this same `plist_read_ok`
+    # message on purpose: folding it into the probe's own text would send an
+    # operator to replace a `python3` that is working perfectly.
     refresh.write_plist()
     rc, out, err = refresh.run(["--agb", lonely])
     assert rc == 1, (rc, out, err)
     assert "cannot load agb_mac" in err, err
     assert "--agb" in err, err
     assert "launchctl bootout" not in " ".join(refresh.calls()), refresh.calls()
+
+
+def test_the_missing_sibling_is_an_oserror_and_not_an_importerror(tmp_path):
+    """⚠️ THE SHAPE OF THE EXIT-3 CATCH, pinned from the failure that produced it.
+
+    `agb._load_sibling` loads `agb_mac` BY PATH, so a tree without it raises
+    `FileNotFoundError` -- an `OSError`. `cmd_instances` shipped catching
+    `(ImportError, AttributeError)`, which does not include it: the exception
+    escaped, `agb` printed a traceback and exited 1, and `agb-refresh` reads 1 as
+    "the reader itself failed", i.e. blames `--python` for a tree that is missing
+    a file. This asserts both halves of the contract at once -- the status AND
+    the silence -- because either alone passes for the wrong reason.
+
+    The premise is asserted first, from the interpreter rather than from us: the
+    load really does raise something that is not an `ImportError`.
+    """
+    lonely = _lib_with(tmp_path, "lonely-direct", drop_mac=True)
+    with pytest.raises(OSError) as caught:            # non-vacuity: the premise
+        open(os.path.join(os.path.dirname(lonely), "agb_mac")).read()
+    assert not isinstance(caught.value, ImportError), caught.value
+    proc = subprocess.Popen([sys.executable, "-S", "-E", lonely, "instances",
+                             "--plist", str(tmp_path / "nope.plist"),
+                             "--arg", "--config"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 3, (proc.returncode, err)
+    assert out == b"", out
+    assert err == b"", err
+
+
+def test_a_failure_inside_the_reader_is_not_disguised_as_a_missing_tree(
+        tmp_path):
+    """The other half of that catch, and the reason it wraps the LOAD only.
+
+    Catching around `run_instances` as well would turn every bug in the reader
+    into exit 3 -- `agb-refresh`'s "cannot load agb_mac, pass --agb", which is a
+    sentence about a file that is sitting right there and is fine. A tree that
+    loads must be allowed to fail loudly.
+    """
+    broken = _lib_with(tmp_path, "broken-run",
+                       edit=("def run_instances(argv, out=None):",
+                             "def run_instances(argv, out=None):\n"
+                             "    raise ValueError('boom')"))
+    proc = subprocess.Popen([sys.executable, "-S", "-E", broken, "instances",
+                             "--probe"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _out, err = conftest.communicate(proc)
+    assert proc.returncode != 3, err
+    assert b"boom" in err, err
+
+
+def test_the_fake_interpreter_really_runs_the_tree_the_flag_names(refresh,
+                                                                  tmp_path):
+    """⚠️ NON-VACUITY FOR THE FIXTURE RESHAPE, which is otherwise invisible.
+
+    The fake interpreter used to route only `-c` to a real python; every plist
+    read now goes through `agb instances`, so it routes on `$4` instead. If that
+    arm were wrong the whole file would die at the probe -- loudly -- but if it
+    routed `instances` to a REAL python while the reader silently answered from
+    somewhere other than `--agb`'s tree, nothing would fail at all.
+
+    So: the same `_lib_with(edit=...)` instrument the direct reader test uses,
+    driven END TO END through the script this time. An `agb_mac` whose
+    `BRIDGE_VALUE_ARGS` does not know `--config` must make every plist answer
+    "carries no config", which sends the run to the default label -- and the
+    unedited copy of the same tree must find `hostb`. Two runs, one difference.
+    """
+    real = _existing_config(refresh, "hostb")
+    refresh.write_plist(label="com.agbridge.hostb", instance="hostb")
+
+    seeing = _lib_with(tmp_path, "seeing")
+    rc, out, err = refresh.run(["--config", real, "--agb", seeing])
+    assert rc == 0, err
+    assert "stopped:  com.agbridge.hostb" in out, out
+
+    blind = _lib_with(tmp_path, "blind-e2e",
+                      edit=("    \"--config\": \"config\",\n", ""))
+    rc, out, err = refresh.run(["--config", real, "--agb", blind])
+    assert rc == 0, err
+    assert "stopped:  com.agbridge\n" in out, out
+    assert "com.agbridge.hostb" not in out, out
+
+
+def test_an_agb_too_old_to_have_instances_is_refused_at_the_probe(refresh,
+                                                                  tmp_path):
+    """⚠️ THE WHOLE REASON THE PROBE HAS A LITERAL ANSWER, end to end.
+
+    An installed `agb` from 0.5.0 or earlier answers `agb instances` with
+    `unknown command`: exit **2**, `USAGE` on stderr, and EMPTY STDOUT -- which
+    is byte-identical to a current `agb` saying "this plist carries no
+    `--config`". Without a probe every plist would read as silent, no job would
+    claim the config, and the run would bounce `com.agbridge` and forget the
+    default map while the named instance's bridge kept running, reporting
+    success in the words it uses when it is right.
+
+    A status alone cannot decide it either -- exit 2 is a legitimate answer from
+    the new command -- so the probe compares STDOUT against a literal.
+
+    Simulated by removing the dispatch arm from a copy of `agb`, which is
+    exactly what an older one does not have.
+    """
+    old = _lib_with(tmp_path, "old-agb",
+                    agb_edit=("    if cmd == \"instances\":\n"
+                              "        return cmd_instances(rest)\n", ""))
+    # Non-vacuity, from `agb` itself: that tree really does answer exit 2 with
+    # nothing on stdout, i.e. the collision this probe exists to break.
+    proc = subprocess.Popen([sys.executable, "-S", "-E", old, "instances",
+                             "--probe"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert (proc.returncode, out) == (2, b""), (proc.returncode, out)
+    assert b"unknown command" in err, err
+
+    real = _existing_config(refresh, "hostb")
+    refresh.write_plist(label="com.agbridge.hostb", instance="hostb")
+    rc, out, err = refresh.run(["--config", real, "--agb", old])
+    assert rc != 0, out
+    assert "install.sh mac" in err, err
+    # Nothing was bounced, forgotten or started, and it did not fall through to
+    # the default label -- which is the failure it is refusing to perform.
+    assert refresh.calls() == [], refresh.calls()
+    assert "instance:" not in out, out
+
+
+def test_the_probe_is_answer_compared_and_not_status_compared(refresh,
+                                                              tmp_path):
+    """The probe's own negative control, and the half a status cannot see.
+
+    `--python /bin/echo` covers an interpreter that exits 0 meaning nothing; this
+    covers a TREE that exits 0 meaning something else. A probe written as `run it
+    and check the status` passes here, because this `agb instances --probe`
+    succeeds -- it just does not say `instances-ok`.
+
+    Paired with an unedited copy of the same tree so the difference is the one
+    line under test and not the copying.
+    """
+    wrong = _lib_with(tmp_path, "wrong-answer",
+                      edit=("instances-ok\\n", "instances-ok-ish\\n"))
+    proc = subprocess.Popen([sys.executable, "-S", "-E", wrong, "instances",
+                             "--probe"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, _err = conftest.communicate(proc)
+    assert (proc.returncode, out) == (0, b"instances-ok-ish\n"), out
+
+    refresh.write_plist()
+    rc, _out, err = refresh.run(["--agb", wrong])
+    assert rc != 0, err
+    assert "did not answer instances-ok" in err, err
+    assert refresh.calls() == [], refresh.calls()
+    # The control: the same copy, unedited, gets all the way through.
+    rc, out, err = refresh.run(["--agb", _lib_with(tmp_path, "right-answer")])
+    assert rc == 0, err
+    assert "stopped:  com.agbridge" in out, out
+
+
+def test_plist_arg_really_forwards_the_launch_agents_directory(tmp_path):
+    """⚠️ NON-VACUITY FOR A FLAG THAT IS INERT TODAY, which is the only kind
+    that can stop being forwarded without anything failing.
+
+    `plist_arg` passes `--launch-agents "$agentsdir"`, and `--plist` mode never
+    lists a directory -- so no plist read can observe it, and the whole suite
+    stays green if the forwarding is dropped. What CAN observe it is `agb`'s
+    own parser: `--launch-agents` with an empty value is a missing-value error,
+    not a default. So a harness that leaves `$agentsdir` empty must fail, and
+    fail naming the flag.
+
+    Drop the forwarding and this call answers `(0, "/a/config")` instead, which
+    is what the mutation check confirmed.
+    """
+    harness = tmp_path / "no_agentsdir.sh"
+    harness.write_text("python=%s\nagb=%s\nagentsdir=\n"
+                       % (sys.executable, conftest.AGB_PATH)
+                       + _extract_sh("plist_arg") + "\n"
+                       + "plist_arg \"$1\" \"$2\"\n")
+    target = tmp_path / "forwarded.plist"
+    target.write_text(_wrap(_argv("/usr/bin/python3", "-S", "-E",
+                                  "/Users/me/agb", "bridge",
+                                  "--config", "/a/config")))
+    proc = subprocess.Popen(["sh", str(harness), str(target), "--config"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 1, (proc.returncode, out, err)
+    assert b"--launch-agents" in err, err
+    assert out == b"", out
+    # The control: the same plist, the same harness shape, one value supplied.
+    assert _read_with(tmp_path, conftest.AGB_PATH,
+                      _wrap(_argv("/usr/bin/python3", "-S", "-E",
+                                  "/Users/me/agb", "bridge",
+                                  "--config", "/a/config"))) == (0, "/a/config")
 
 
 def test_an_argv_the_bridge_refuses_does_not_claim_the_map(refresh, tmp_path):
@@ -3395,34 +3773,30 @@ def test_an_argv_the_bridge_refuses_does_not_claim_the_map(refresh, tmp_path):
     assert "com.agbridge.aaa" not in out, out
 
 
-def test_the_embedded_reader_is_ascii_and_apostrophe_free():
-    """Two rules on the `-c` program`s TEXT, both of which fail at a distance.
-
-    * **No apostrophe.** The program is inside `'...'` in POSIX sh, so one
-      would close the quoting -- a syntax error in the whole script, not in the
-      program.
-    * **Pure ASCII**, however much the rest of the file uses `⚠️`. Python
-      decodes a `-c` program with the LOCALE`s filesystem encoding, so under
-      `LC_ALL=C` a single non-ASCII byte in a comment is
-      `Unable to decode the command from the command line`: the reader never
-      runs, and every caller reads "this plist names no config" -- the quiet
-      wrong-job bounce. Measured on 3.6.8, with one emoji in one comment.
-
-    Asserted on the extracted program rather than on the file, because the file
-    around it is full of both.
-    """
-    text = open(SCRIPT, encoding="utf-8").read()
-    start = text.index("-c '", text.index("plist_arg() {")) + 4
-    end = text.index("' \"$1\"", start)
-    program = text[start:end]
-    # Non-vacuity: this really is the reader and not an empty slice.
-    assert "plistlib" in program and "parse_bridge_args" in program
-    assert len(program) > 500
-    assert "'" not in program
-    assert all(ord(ch) < 128 for ch in program), \
-        sorted(set(ch for ch in program if ord(ch) > 127))
-    # ...and the file around it really does use both, so neither is accidental.
-    assert "⚠️" in text and "'" in text
+# ⚠️ `test_the_embedded_reader_is_ascii_and_apostrophe_free` STOOD HERE AND IS
+# GONE, deleted rather than repointed, and the reason is worth more than the
+# test was. It guarded two rules on the text of the `-c` program `plist_arg`
+# used to embed: no apostrophe (it sat inside `'...'` in POSIX sh, so one would
+# close the quoting and break the whole script) and pure ASCII (Python decoded a
+# `-c` program with the LOCALE`s filesystem encoding, so a single `⚠️` in a
+# comment was `Unable to decode the command from the command line` -- the reader
+# never ran, and every caller read "this plist names no config", the quiet
+# wrong-job bounce; measured on 3.6.8).
+#
+# There is no embedded program left to assert on: `plist_arg` calls
+# `agb instances`, and the script runs no `-c` program at all. Every non-vacuity
+# assertion the guard carried (`"plistlib" in program`, `"parse_bridge_args" in
+# program`, `len(program) > 500`) is now unsatisfiable by anything that remains,
+# so repointing it at another program would mean inventing a subject for it.
+#
+# ⚠️ ONLY ONE OF THE TWO RULES WAS ABOUT THE PROGRAM`S TEXT, though, and it is
+# the one that survives: the value must still leave the reader as UTF-8 BYTES,
+# because `-E` does not touch `LC_ALL`. That is contract 1, it is stated in
+# `agb_mac.run_instances`` docstring where the code now lives, and it is guarded
+# BEHAVIOURALLY by `test_the_value_comes_back_as_bytes_whatever_the_locale_says`
+# below (three locales, through the shipped shell function) and by its twin in
+# `tests/test_bridge_rows.py`. A behavioural guard is what the source-text one
+# should have been all along.
 
 
 @pytest.mark.parametrize("locale", ["C", "POSIX", "en_US.ISO-8859-1"])
@@ -3749,6 +4123,75 @@ def test_the_value_taking_flags_are_the_ones_agb_bridge_has(refresh):
     assert sorted(spelled) == sorted(agb_mac.BRIDGE_VALUE_ARGS)
 
 
+def _refresh_shown(label):
+    """Run `agb-refresh`'s OWN name-from-label block for one label.
+
+    The block is lifted out of the script by text and executed, rather than
+    re-spelled here: a re-spelling would be a third copy of the rule and could
+    drift from both. Extraction runs from `shown=$instance` through the banner
+    line that consumes it, so the `${shown:-(default)}` fallback is the
+    script's too and not this harness's.
+    """
+    with open(SCRIPT) as handle:
+        lines = handle.read().splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        if line.strip() == "shown=$instance":
+            start = i
+            break
+    assert start is not None, "no `shown=$instance` in agb-refresh"
+    end = None
+    for i in range(start, len(lines)):
+        if lines[i].lstrip().startswith('say "instance: '):
+            end = i
+            break
+    assert end is not None, "no `say \"instance: ` after it"
+    block = "\n".join(lines[start:end + 1])
+    # Non-vacuity: the extracted text is the rule, not an empty slice.
+    assert "case $label in" in block and "DEFAULT_LABEL" in block, block
+    prog = ('say() { printf "%s\\n" "$*"; }\n'
+            'DEFAULT_LABEL=com.agbridge\n'
+            'instance=\n'
+            'config=CONFIG\n'
+            'label=$1\n' + block + "\n")
+    proc = subprocess.Popen(["sh", "-c", prog, "sh", label],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 0, (out, err)
+    text = out.decode()
+    assert "instance: " in text and " -- label" in text, text
+    return text.split("instance: ", 1)[1].split(" -- label")[0]
+
+
+@pytest.mark.parametrize("label", ["com.agbridge", "com.agbridge.hostb",
+                                   "weird.label", "com.agbridge.a.b",
+                                   "com.agbridgeX"])
+def test_the_listing_names_an_instance_the_way_the_banner_does(mac, label):
+    """⚠️ One rule, two languages, and it has already drifted once.
+
+    `agb-refresh`'s banner and `agb instances`' listing both turn a launchd
+    label into the name shown for an instance. Task 5 settled the rule in the
+    shell -- only `com.agbridge` itself is "(default)", a custom label shows
+    the label -- and the listing, written from the same rule, kept a third
+    answer the rule forbids: the empty string, for both the default instance
+    and a custom label. It reached the owner's Mac as a blank name column.
+
+    The shell block is EXECUTED here rather than described, so the two cannot
+    part company silently: a change to either side that the other does not
+    follow fails this test by name.
+    """
+    assert mac.instance_display_name(label) == _refresh_shown(label)
+
+
+def test_the_name_shown_for_a_label_is_not_the_same_for_every_label(mac):
+    """Non-vacuity for the agreement above: it compares two constants only if
+    both sides really do answer differently per label."""
+    answers = [mac.instance_display_name(x)
+               for x in ("com.agbridge", "com.agbridge.hostb", "weird.label")]
+    assert answers == ["(default)", "hostb", "weird.label"], answers
+    assert len(set(answers)) == 3, answers
+
+
 def test_the_ten_second_warning_names_what_was_actually_still_running(refresh):
     """The 10s warning is a claim, and it was false in the case it fires most.
 
@@ -3756,6 +4199,12 @@ def test_the_ten_second_warning_names_what_was_actually_still_running(refresh):
     booted out, which is precisely the process that is NOT what the poll is
     still matching. The probe waits for a bridge it cannot attribute to a label
     at all, so the warning says that instead.
+
+    ⚠️ Re-reasoned for the sweep: this runs bare, so the warning is a child's,
+    and `rc == 0` now carries a second claim it did not before -- that a 10 s
+    warning is NOT a sweep failure. Only a bridge that could not be started
+    again is (the child's exit 4). The warning says the forget may have been
+    undone, which is something to read; it does not leave an instance down.
     """
     refresh.write_plist()               # the default job, modern shape
     rc, out, _err = refresh.run(
@@ -3839,6 +4288,625 @@ def test_an_empty_value_is_a_missing_value_for_every_flag(refresh, flag):
     assert "%s needs a value" % (flag,) in err
     # Nothing ran at all: not the bootout, not the forget.
     assert refresh.calls() == []
+
+
+# ---------------------------------------------------------------------------
+# the sweep: a bare run acts on EVERY instance
+# ---------------------------------------------------------------------------
+#
+# A bare `agb-refresh` used to act on the unnamed instance and report success in
+# exactly the words it would have used for the one you meant. It now re-execs
+# itself once per label, so every test below is about a PARENT that touches
+# nothing and N children that do all the work -- which is also why the failure
+# questions ("A failed, was B still swept?", "was A started again anyway?") are
+# askable at all.
+#
+# ⚠️ WHAT THIS DID TO THE ~19 BARE RUNS ELSEWHERE IN THIS FILE, because "they
+# all still pass" is the answer that would need checking rather than the one
+# that settles it. The fixture installs exactly ONE instance (`com.agbridge`),
+# so a bare run there is a sweep of one: the same child, doing the same three
+# steps, with two lines of parent output around it. Every property those tests
+# assert is a property of the CHILD -- the ordering of the three steps, which
+# bridge the poll waits for, which config reaches `forget-rows` -- and none of
+# them moved.
+#
+# What a sweep of one cannot show is that those properties survive a sweep of
+# several, and that is this section's job rather than theirs. The two that were
+# specifically re-reasoned carry a note of their own:
+# `test_a_plain_refresh_ignores_a_named_instances_bridge` (whose multi-instance
+# twin is `test_one_instances_live_bridge_does_not_hold_another_instances_wait`)
+# and `test_the_ten_second_warning_names_what_was_actually_still_running`.
+
+
+def _two_instances(refresh):
+    """The default job and one named instance, both in the modern shape.
+
+    The fixture ships a `<plist/>` for `com.agbridge` -- an install predating
+    the `--config` flag -- and this replaces it with one that carries the flag,
+    so that both children take the same path through the reader. `*.plist`
+    expands in collating order, so `com.agbridge.hostb` is swept FIRST.
+    """
+    refresh.write_plist()
+    refresh.write_plist("com.agbridge.hostb", instance="hostb")
+
+
+def test_a_bare_run_sweeps_every_instance_in_order(refresh):
+    """The headline: no flag, and every instance is repaired.
+
+    All the Mac-side instances have the same standing -- any of them can be
+    closed by hand, killed, or come back with its rows forgotten -- so the
+    command that repairs that should not have to be told which. The default
+    instance was never more than an artifact of install order.
+    """
+    _two_instances(refresh)
+    rc, out, _err = refresh.run()
+    assert rc == 0, out
+    # Both banners, and in the order the directory lists them.
+    assert "instance: hostb" in out, out
+    assert "instance: (default)" in out, out
+    assert out.index("instance: hostb") < out.index("instance: (default)"), out
+    assert "swept:    2 instances" in out, out
+    # Both were really bounced, over their OWN maps -- the banner is a claim,
+    # and `--config` reaching `forget-rows` is what makes it true.
+    joined = "\n".join(refresh.calls())
+    assert "--config %s" % (refresh.config(),) in joined, refresh.calls()
+    assert "--config %s" % (refresh.config("hostb"),) in joined, refresh.calls()
+    # Exactly once each: a child that swept again would show up here as four
+    # bootouts, which is the runaway the `--label` it is given rules out.
+    assert refresh.count("launchctl bootout") == 2, refresh.calls()
+    assert refresh.count("launchctl bootstrap") == 2, refresh.calls()
+
+
+def test_a_custom_label_instance_is_not_reported_as_the_default_one(refresh):
+    """⚠️ The banner is the whole mitigation for acting on the wrong instance,
+    so it may not call a custom-label instance "(default)".
+
+    `install.sh mac --label <anything>` puts no shape rule on a label
+    (`install.sh:369`), so `weird.label` is a real install and the sweep is
+    required to visit it. The name shown is read back out of the label, and the
+    fall-through used to answer "(default)" for every label outside the
+    `com.agbridge` space -- so a bare run reported TWO default instances, one of
+    which was somebody's named machine, in the one line whose entire job is to
+    say which instance moved.
+
+    It needed the sweep to become reachable without a mistake: before it, the
+    only way to land on such a label was to type `--label weird.label`, and the
+    operator who typed it knew what they had asked for. Now the sweep types it,
+    once per plist in the directory.
+    """
+    other = str(refresh.config("weird"))
+    refresh.write_plist()                       # the real default instance
+    refresh.write_plist("weird.label", config=other)
+    rc, out, _err = refresh.run()
+    assert rc == 0, out
+    assert "swept:    2 instances" in out, out
+    # Named by the only name it has, and NOT called the default one.
+    assert "instance: weird.label -- label weird.label" in out, out
+    assert out.count("instance: (default)") == 1, out
+    # ...and the one "(default)" left is the job whose label really is that.
+    assert "instance: (default) -- label com.agbridge" in out, out
+    # Non-vacuity: both instances were really swept, over their own maps, so
+    # the assertion above is about a banner that was printed for a real child
+    # rather than about a sweep that skipped the custom label entirely.
+    joined = "\n".join(refresh.calls())
+    assert "--config %s" % (other,) in joined, refresh.calls()
+    assert "--config %s" % (refresh.config(),) in joined, refresh.calls()
+    assert refresh.count("launchctl bootout") == 2, refresh.calls()
+
+
+def test_a_failing_instance_is_named_and_the_rest_are_still_swept(refresh):
+    """One instance's failure may not cost the others their refresh.
+
+    A sweep that stopped at the first failure would leave every instance after
+    it un-refreshed -- and, worse, the failing one is exactly the instance whose
+    bridge must still be started again, because a dark sidebar is what this
+    command exists to cure and it must not cause one.
+    """
+    _two_instances(refresh)
+    # hostb's `forget-rows` exits non-zero. That is what a real failure looks
+    # like from here: the child's own output says what went wrong.
+    rc, out, _err = refresh.run(forget_fail=refresh.config("hostb"))
+    assert rc != 0, out
+    assert "WARNING:  failed:" in out, out
+    assert "com.agbridge.hostb(exit 1)" in out, out
+    # The other instance was swept anyway...
+    assert "instance: (default)" in out, out
+    assert "--config %s" % (refresh.config(),) in "\n".join(refresh.calls())
+    # ...and NOTHING was left stopped: the failing instance's job was started
+    # again, which is the half a "stop at the first failure" sweep would lose.
+    assert refresh.count("launchctl bootstrap") == 2, refresh.calls()
+    assert "com.agbridge.hostb.plist" in refresh.call("launchctl bootstrap")
+
+
+def test_an_instance_left_without_a_bridge_fails_the_sweep(refresh):
+    """The rule that justifies bare-is-all: no instance may end down.
+
+    A sweep that reported success while one instance's bridge never came back
+    is the same silent failure as refreshing the wrong instance -- the rows are
+    forgotten and there is nothing running to re-mint them, so that sidebar
+    stays dark until somebody notices. `agb forget-rows` succeeded here, so the
+    exit status is carrying a fact nothing else would have said.
+
+    ⚠️ It is a SWEEP rule. A run that names one instance (`--instance hostb`
+    against a Mac whose plist was never rendered) still warns and exits 0 --
+    that is a documented, working recipe, and the two tests above
+    `test_a_plist_that_is_not_there_at_all_still_falls_back_to_the_convention`
+    are its guards.
+    """
+    _two_instances(refresh)
+    # Both spellings of the restart fail, and only for hostb: the script falls
+    # back to `load -w` when `bootstrap` fails.
+    rc, out, _err = refresh.run(lc_fail="bootstrap load",
+                                lc_fail_match="com.agbridge.hostb")
+    assert rc != 0, out
+    assert "could not start com.agbridge.hostb" in out, out
+    assert "no bridge was started again for: com.agbridge.hostb" in out, out
+    # The other instance was swept and IS up, so this is not "the sweep broke".
+    assert "started:  com.agbridge" in out, out
+    assert "swept:    2 instances" in out, out
+
+
+def test_a_failed_bootout_is_not_a_failure_and_the_sweep_carries_on(refresh):
+    """The stop phase is allowed to fail: "not running" is a fine state.
+
+    `launchctl bootout` on a job that is already down is an error, and this is a
+    recovery command -- refusing to run because the bridge was already stopped
+    would be the opposite of helpful. So the phase that CAN fail harmlessly is
+    the one that does not fail the sweep, while the phase that leaves the Mac
+    worse off (the restart, above) does.
+    """
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(lc_fail="bootout",
+                               lc_fail_match="com.agbridge.hostb")
+    assert rc == 0, out
+    assert "swept:    2 instances" in out, out
+    # Non-vacuity: the bootout that failed really was attempted, and the rest of
+    # that instance's refresh happened anyway.
+    assert "com.agbridge.hostb" in refresh.call("launchctl bootout")
+    assert "--config %s" % (refresh.config("hostb"),) \
+        in "\n".join(refresh.calls())
+    assert refresh.count("launchctl bootstrap") == 2, refresh.calls()
+
+
+def test_no_instances_at_all_still_refreshes_the_default_map(refresh,
+                                                             tmp_path):
+    """⚠️ The regression this task was most able to cause.
+
+    The commonest thing this command is run on is a Mac with no plist at all --
+    agterm forgot its rows, `install.sh mac --no-load` was used, or the plist
+    was never rendered -- and a bare `agb-refresh` there still forgets the
+    default map and warns that nothing was restarted. That is the recipe in
+    `SKILL.md`, and "no instances found" must not turn it into a refusal or into
+    a run that sweeps nothing and reports success.
+    """
+    os.remove(str(refresh.agentsdir / "com.agbridge.plist"))
+    rc, out, _err = refresh.run()
+    assert rc == 0, out
+    assert "no agbridge instance is installed" in out, out
+    # It fell THROUGH to the single default run rather than exiting.
+    assert "instance: (default)" in out, out
+    assert "--config %s" % (refresh.config(),) in refresh.call("agb forget-rows")
+    assert "the bridge was not restarted" in out, out
+    # Non-vacuity: no sweep happened, so this is the fall-through and not a
+    # one-instance sweep that happened to look the same.
+    assert "swept:" not in out, out
+
+
+def test_a_child_that_reads_stdin_does_not_eat_the_remaining_instances(
+        refresh):
+    """⚠️ The loop's own stdin IS the here-document holding the labels.
+
+    A child that read one byte of it would consume the instances that had not
+    been swept yet -- silently, and with the sweep reporting success for the
+    ones it did reach. Nothing agb-refresh runs today reads stdin, which is
+    exactly why this is worth pinning: the day one of them does, the symptom is
+    "the last instance stopped being refreshed" and nothing points here.
+    """
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(eat_stdin=True)
+    assert rc == 0, out
+    assert "swept:    2 instances" in out, out
+    assert refresh.count("launchctl bootout") == 2, refresh.calls()
+
+
+def test_a_launch_agents_directory_that_cannot_be_listed_is_fatal(refresh,
+                                                                  tmp_path):
+    """⚠️ "I could not list them" is not "there are none" (invariant 12).
+
+    Collapsing the two would make a Mac whose LaunchAgents directory is
+    momentarily unreadable sweep NOTHING, fall through to the default job, and
+    report success in the words it uses when it is right -- the wrong-instance
+    hazard this whole command is built to make loud.
+
+    A plain FILE where the directory should be is `ENOTDIR`, which is the
+    "cannot list" side of the errno split (`ENOENT` is the ordinary Mac with no
+    LaunchAgents yet, and is the test above). It is used rather than `chmod 000`
+    because a suite running as root would defeat the permission version and pass
+    vacuously.
+    """
+    notadir = tmp_path / "not-a-directory"
+    notadir.write_text("")
+    rc, _out, err = refresh.run(["--launch-agents", str(notadir)])
+    assert rc != 0
+    assert "cannot list the instances" in err, err
+    # Nothing was touched: this is refused before the first bootout.
+    assert refresh.calls() == []
+
+
+# ---------------------------------------------------------------------------
+# every flag is forwarded to the children, explicitly
+# ---------------------------------------------------------------------------
+#
+# A child is a fresh process with fresh defaults, so a flag that is not passed
+# on does not merely lose its effect -- it silently reverts to a default that
+# looks like a working run. `--dry-run` is the one that matters most and comes
+# first: a sweep that dropped it would perform a REAL refresh of every instance
+# for a command that promised to change nothing.
+
+
+def test_the_sweep_forwards_dry_run(refresh):
+    """A dry run that bounced every bridge would be a dry run with N side
+    effects -- and it is reached by exactly the people who are unsure."""
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(["--dry-run"])
+    assert rc == 0, out
+    assert refresh.index("launchctl bootout") == -1, refresh.calls()
+    assert refresh.index("launchctl bootstrap") == -1, refresh.calls()
+    # Both instances were reported on, and both `forget-rows` calls carried the
+    # flag rather than only the parent knowing about it.
+    assert out.count("nothing was changed") == 2, out
+    assert refresh.count("--dry-run") == 2, refresh.calls()
+
+
+def test_the_sweep_forwards_no_close(refresh):
+    """`--no-close` is the difference between leaving agterm's sessions open and
+    closing them; a child that lost it would close rows the operator asked to
+    keep, in a command whose whole subject is rows."""
+    _two_instances(refresh)
+    rc, _out, _err = refresh.run(["--no-close"])
+    assert rc == 0
+    assert refresh.count("--no-close") == 2, refresh.calls()
+
+
+def test_the_sweep_forwards_the_agb_it_was_given(refresh, tmp_path):
+    """⚠️ The easiest one to lose sight of, and the worst to lose.
+
+    A child with no `--agb` falls back to `~/.local/lib/agbridge/agb`, which on
+    a real Mac EXISTS -- so the sweep would quietly act through a different tree
+    from the one the parent was told to use, with every line of output looking
+    right.
+    """
+    _two_instances(refresh)
+    rc, _out, _err = refresh.run()
+    assert rc == 0
+    # Every `forget-rows` really ran through the agb this run was given.
+    assert refresh.count(str(tmp_path / "agb") + " forget-rows") == 2, \
+        refresh.calls()
+
+
+def test_the_sweep_forwards_the_python_it_was_given(refresh):
+    """A child without `--python` resolves `python3` off `$PATH`.
+
+    In this fixture that is the REAL interpreter, which runs the real `agb`
+    against the fake tree and records nothing -- so the sweep would look like it
+    worked while none of it was observable. On a Mac it is whichever python3 the
+    operator's `$PATH` happens to name, which is the flag's whole reason.
+    """
+    _two_instances(refresh)
+    rc, _out, _err = refresh.run()
+    assert rc == 0
+    assert refresh.count("agb forget-rows") == 2, refresh.calls()
+
+
+def test_the_sweep_forwards_the_launch_agents_directory(refresh, tmp_path):
+    """The parent lists that directory; the child reads a plist OUT of it.
+
+    Dropped, the child looks in `~/Library/LaunchAgents` instead -- and in this
+    fixture `$HOME` is the tmp tree, so the default very nearly works, which is
+    exactly how a flag stops working while the suite stays green. Here the plist
+    lives somewhere else entirely, so a child that ignored the flag would find
+    no plist for the label it was handed.
+    """
+    alt = tmp_path / "Alt Agents"
+    alt.mkdir()
+    refresh.write_plist("com.agbridge.hostb", instance="hostb")
+    (alt / "com.agbridge.hostb.plist").write_text(
+        refresh.plist_text("com.agbridge.hostb"))
+    # ⚠️ And REMOVED from the conventional directory, which is the whole
+    # experiment: with a copy left in both, a child that ignored the flag would
+    # find the plist anyway and this test passed against the forwarding being
+    # dropped -- mutation-caught, exactly the "the default happens to land in
+    # the right place" trap the docstring above is about.
+    os.remove(str(refresh.agentsdir / "com.agbridge.hostb.plist"))
+    rc, out, _err = refresh.run(["--launch-agents", str(alt)])
+    assert rc == 0, out
+    assert "instance: hostb" in out, out
+    assert "started:  com.agbridge.hostb" in out, out
+    assert "the bridge was not restarted" not in out, out
+    # Non-vacuity: only the alternative directory was swept -- the conventional
+    # one still holds `com.agbridge.plist`, which was NOT visited.
+    assert "swept:    1 instance" in out, out
+    assert (refresh.agentsdir / "com.agbridge.plist").exists()
+
+
+# ---------------------------------------------------------------------------
+# --key sweeps; --rows narrows
+# ---------------------------------------------------------------------------
+
+
+def test_a_key_is_looked_for_in_every_instance(refresh):
+    """⚠️ `--key` sweeps, and that is what keeps the documented recipe working.
+
+    `agb-refresh --key a3f9c1e0` is typed by someone reading a key out of a
+    bridge log; nothing in that log says which instance minted it, and "you
+    should not have to know which instance" is the whole thesis. A key belongs
+    to exactly one map, so the run succeeds when any instance had it.
+    """
+    _two_instances(refresh)
+    # hostb answers 1 -- exactly what `agb forget-rows` returns for a key that
+    # was not in the map it opened.
+    rc, out, _err = refresh.run(["--key", "a3f9c1e0"],
+                                forget_fail=refresh.config("hostb"))
+    assert rc == 0, out
+    assert "keys:     forgotten by: com.agbridge" in out, out
+    # It really was asked of both, with the key forwarded to each.
+    assert refresh.count("--key a3f9c1e0") == 2, refresh.calls()
+
+
+def test_a_key_no_instance_has_fails_the_sweep(refresh):
+    """The other half, and it needs its own test: "found it somewhere" and
+    "found it nowhere" must not be the same answer.
+
+    A sweep that always exited 0 because some instance was bound to answer 0
+    would make `--key` useless -- a mistyped key would read as a successful
+    repair.
+    """
+    _two_instances(refresh)
+    # Every `forget-rows` answers 1: no map held that key.
+    rc, out, _err = refresh.run(["--key", "deadbeef"],
+                                forget_fail="forget-rows")
+    assert rc != 0, out
+    assert "no instance had all of these keys: deadbeef" in out, out
+    assert "keys:     forgotten by" not in out, out
+
+
+def test_naming_a_rows_map_narrows_the_run_to_one_instance(refresh, tmp_path):
+    """Naming a map IS naming what to act on, so `--rows` keeps today's
+    semantics exactly: that map, and the config the default would have chosen.
+
+    Sweeping it instead would hand ONE rows file to every instance in turn --
+    each child forgetting another instance's bindings into it -- which is the
+    cross-instance damage this plan exists to remove, arriving through the flag
+    that was supposed to be the narrow one.
+    """
+    _two_instances(refresh)
+    rows = tmp_path / "somewhere" / "rows"
+    rc, out, _err = refresh.run(["--rows", str(rows)])
+    assert rc == 0, out
+    assert "sweep:" not in out, out
+    assert "instance: (default)" in out, out
+    assert refresh.count("launchctl bootout") == 1, refresh.calls()
+    assert "com.agbridge.hostb" not in "\n".join(refresh.calls())
+
+
+# ---------------------------------------------------------------------------
+# how the sweep names this script again
+# ---------------------------------------------------------------------------
+#
+# ⚠️ `$0` is whatever the caller typed. Everywhere else in this file the script
+# is invoked by ABSOLUTE path, so `$0` always has a slash and the re-exec is
+# free -- a harness simpler than reality, which is the shape this file has been
+# bitten by before. The two spellings below both leave `$0` with no slash and
+# need OPPOSITE resolutions.
+
+
+@pytest.fixture
+def sweep_self(tmp_path):
+    """`agb-refresh`'s `sweep_self`, on one name, without forking the script.
+
+    Extracted rather than restated, like the `plist_arg` fixture above: what
+    ships is what is asked. Driven directly because the interesting inputs are
+    the ones the whole script cannot be given -- a `$0` that resolves NOWHERE is
+    a script that would not have started.
+
+    Returns `(status, answer)`; status 1 is "this name cannot be resolved", and
+    the caller turns it into a `die` before anything is stopped.
+    """
+    harness = tmp_path / "sweep_self.sh"
+    harness.write_text(_extract_sh("sweep_self") + "\nsweep_self \"$1\"\n")
+
+    def call(name, cwd=None, path=None):
+        env = dict(os.environ)
+        if path is not None:
+            env["PATH"] = path
+        proc = subprocess.Popen(["sh", str(harness), name],
+                                cwd=str(cwd or tmp_path), env=env,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        out, err = conftest.communicate(proc)
+        assert err == b"", err
+        return proc.returncode, out.decode()
+
+    return call
+
+
+def test_a_path_is_used_as_it_was_given(sweep_self):
+    """Anything with a slash is already an answer -- absolute or relative, the
+    child inherits the cwd, so it resolves to the same file."""
+    assert sweep_self("/opt/agbridge/agb-refresh") == (
+        0, "/opt/agbridge/agb-refresh")
+    assert sweep_self("./tools/agb-refresh") == (0, "./tools/agb-refresh")
+
+
+def test_a_bare_name_is_taken_from_the_current_directory_first(sweep_self,
+                                                               tmp_path):
+    """⚠️ The cwd before `$PATH`, because that is the order `sh <name>` used to
+    find this script in the first place.
+
+    With a copy in both places, resolving through `$PATH` would sweep with a
+    DIFFERENT copy of the script than the one running -- a version skew nothing
+    would report. Both exist here, so the answer says which won.
+    """
+    here = tmp_path / "here"
+    here.mkdir()
+    (here / "agb-refresh-copy").write_text("")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    other = elsewhere / "agb-refresh-copy"
+    other.write_text("")
+    os.chmod(str(other), 0o755)
+    status, answer = sweep_self("agb-refresh-copy", cwd=here,
+                                path=str(elsewhere) + os.pathsep
+                                + os.environ.get("PATH", ""))
+    assert (status, answer) == (0, "./agb-refresh-copy")
+
+
+def test_a_bare_name_that_is_not_here_is_looked_for_on_the_path(sweep_self,
+                                                                tmp_path):
+    """The installed spelling: `agb-refresh` typed at a prompt, resolved by the
+    caller's own shell through `$PATH`, run from wherever they were standing."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = elsewhere / "agb-refresh-copy"
+    target.write_text("")
+    os.chmod(str(target), 0o755)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    status, answer = sweep_self("agb-refresh-copy", cwd=empty,
+                                path=str(elsewhere) + os.pathsep
+                                + os.environ.get("PATH", ""))
+    assert (status, answer) == (0, str(target))
+
+
+def test_a_name_that_resolves_nowhere_is_refused_rather_than_guessed(
+        sweep_self, tmp_path):
+    """⚠️ One loud refusal, before anything is stopped.
+
+    Answering the raw name anyway would push the failure into the loop, where it
+    arrives as `sh: can't open agb-refresh` once per instance -- after the first
+    job has already been booted out and its rows forgotten.
+    """
+    empty = tmp_path / "empty-too"
+    empty.mkdir()
+    # The inherited `$PATH` (which has to stay: `sh` itself is found through
+    # it), and a name nothing on it could answer.
+    status, answer = sweep_self("agb-refresh-copy", cwd=empty)
+    assert status == 1
+    assert answer == ""
+
+
+def _named_copy(refresh, where, name="agb-refresh-copy"):
+    """A copy of the script under a name nothing else could resolve.
+
+    Deliberately not `agb-refresh`: a developer with agbridge installed has one
+    on `$PATH`, and the cwd test would then silently exercise the `$PATH` branch
+    (or, worse, sweep through an older installed script).
+    """
+    target = where / name
+    with open(SCRIPT) as handle:
+        target.write_text(handle.read())
+    os.chmod(str(target), 0o755)
+    return target
+
+
+def test_the_sweep_finds_this_script_again_when_it_was_run_from_the_cwd(
+        refresh, tmp_path):
+    """`sh agb-refresh` typed in the script's own directory.
+
+    `$0` is a bare name that is NOT on `$PATH`, so the re-exec has to fall back
+    to the current directory -- the child inherits the cwd, so it resolves the
+    same file. Without this, a sweep started that way dies at the first child.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _named_copy(refresh, checkout)
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(cwd=str(checkout), script="agb-refresh-copy")
+    assert rc == 0, out
+    assert "swept:    2 instances" in out, out
+    # Non-vacuity: the name really was resolvable only through the cwd.
+    assert not (tmp_path / "agb-refresh-copy").exists()
+
+
+def test_the_sweep_finds_this_script_again_when_it_was_run_from_the_path(
+        refresh, tmp_path):
+    """`agb-refresh` found on `$PATH` -- the installed spelling.
+
+    `$0` is a bare name again, and this time the cwd has no such file: `$PATH`
+    is how the caller's own shell resolved it and is how the sweep must.
+
+    The source tries `$PATH` BEFORE the cwd, because `./` would otherwise run
+    whatever happens to be sitting in the directory the operator is standing in.
+    That order is a decision recorded there rather than a property this test can
+    pin: with a copy in both places, which file the PARENT itself is becomes
+    ambiguous too (`sh <name>` tries the cwd first and `$PATH` second), so the
+    experiment cannot be set up.
+    """
+    _named_copy(refresh, refresh.bindir)
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(script="agb-refresh-copy")
+    assert rc == 0, out
+    assert "swept:    2 instances" in out, out
+    # Non-vacuity: the cwd (which `run` sets to the tmp tree) holds no copy, so
+    # only the `$PATH` lookup can have answered.
+    assert not (tmp_path / "agb-refresh-copy").exists()
+
+
+# ---------------------------------------------------------------------------
+# the interrupt, and whose bridge it leaves down
+# ---------------------------------------------------------------------------
+
+
+def test_an_interrupted_child_starts_its_own_bridge_again(refresh):
+    """⚠️ Ctrl-C between the bootout and the restart is the one way this command
+    causes the dark sidebar it exists to cure.
+
+    The trap has to live in the CHILD, because the child is the process that
+    stopped a job: the sweeping parent boots nothing out, so a trap there could
+    not repair anything, and one in both would bootstrap the same job twice.
+
+    The signal is delivered from inside the fake `agb forget-rows` -- step 2,
+    which runs squarely inside that window -- because sending it from the test
+    would be a race with the child's own progress.
+    """
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(interrupt=refresh.config("hostb"))
+    assert rc != 0, out
+    assert "interrupted (SIGINT)" in out, out
+    # Its own job was started again before it exited: nothing left stopped.
+    assert "com.agbridge.hostb.plist" in refresh.call("launchctl bootstrap")
+    # ...and the sweep stopped there rather than bouncing the instances the
+    # operator interrupted it to protect.
+    assert "was interrupted, so the sweep stopped" in out, out
+    assert "NOT visited: com.agbridge" in out, out
+    assert refresh.count("launchctl bootout") == 1, refresh.calls()
+    assert refresh.count("launchctl bootstrap") == 1, refresh.calls()
+
+
+def test_one_instances_live_bridge_does_not_hold_another_instances_wait(
+        refresh):
+    """⚠️ A 10 s wait PER INSTANCE, on the commonest invocation there is.
+
+    `cmdline_is_ours` treats a bridge it cannot attribute as ours -- rightly, an
+    under-match is `forget-rows` landing under a live bridge -- so a sweep is
+    the run where that generosity could compound: N instances, each waiting out
+    the full bound for a bridge belonging to one of the others, every one of
+    them ending in a warning that the forget may have been undone.
+
+    Only hostb's bridge is up here, and it never dies, so hostb's own wait is
+    the positive control: exactly one instance may wait, and it is that one.
+    """
+    _two_instances(refresh)
+    rc, out, _err = refresh.run(alive_polls=10 ** 6,
+                                alive_cmdline=refresh.cmdline("hostb"))
+    assert rc == 0, out
+    assert out.count("still running") == 1, out
+    assert "com.agbridge.hostb is still running" in out, out
+    assert "com.agbridge is still running" not in out, out
+    # Non-vacuity: the poll ran for both children, so the default instance's run
+    # really did ask and really did decide that bridge was not its own.
+    assert refresh.count("pgrep") > 1, refresh.calls()
+    assert "swept:    2 instances" in out, out
 
 
 # ---------------------------------------------------------------------------
