@@ -2442,6 +2442,13 @@ def render_settings(opts, config=None):
         # existing config gets the banners without being edited.
         "notify_blocked": config_flag(config, "notify_on_blocked", True),
         "notify_new_row": config_flag(config, "notify_on_new_row", True),
+        # A number rather than a flag, because the number IS the switch: one
+        # key to explain, and no way to write a combination that silently does
+        # nothing. Read off the config dict this was HANDED, never a fresh
+        # `agb.read_config()` -- the bridge reads its config exactly once, and
+        # a second read is how one process came to hold two of them.
+        "notify_completed_after": config_seconds(
+            config, "notify_on_completed_after", COMPLETED_AFTER),
     }
 
 

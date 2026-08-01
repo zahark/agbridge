@@ -226,7 +226,15 @@ def _usable_value(text):
 # typo, which is why it lives here with its only reader rather than in `agb`,
 # where every byte is re-parsed on every hook.
 CONFIG_KEYS = ("statedir", "mac_id", "feed_host", "agb_remote_path",
-               "remote_python", "jump_host", "workspace")
+               "remote_python", "jump_host", "workspace",
+               # ⚠️ The notification switches were missing here from 0.4.0 to
+               # 0.6.0, so `agb doctor` reported three keys the tool documents
+               # in four places as typos -- the exact failure `known_config_key`
+               # exists to prevent, arriving from the other direction. Nothing
+               # caught it because both tests that check this list iterate the
+               # list itself, so an omission makes them weaker rather than red.
+               "notify_on_blocked", "notify_on_new_row",
+               "notify_on_completed_after")
 CONFIG_KEY_PREFIXES = ("host_",)
 
 
