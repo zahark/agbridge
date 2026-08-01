@@ -1444,26 +1444,29 @@ which shipped as its opposite first:
   `--label` of its own is therefore not implied — the pre-existing answer, below.
 
   The first guard is the reader's **exit status**, not a `-r` test. `plist_arg` prints nothing for
-  three different things — "no `--config` in it", "could not read it at all", and "this is not a
-  plist" — and only the first is an answer. It exits **2** for the other two, and
+  three different things about the file — "no `--config` in it", "could not read it at all", and
+  "this is not a plist" — and only the first is an answer. It exits **2** for the other two, and
   `bind_label_to_config` spells the read as an `if` so that the status survives. A `-r` test caught
   only the middle case: a plist truncated by a full disk, or some other file that ended up under a
   `com.agbridge.*` name, is perfectly readable and went on to *stand for the default config*, so a
   file saying nothing about any map claimed one under a real job's label. Nothing is lost by skipping
   it — launchd cannot load it either, so no bridge was ever started from it.
 
-  ⚠️ **There are THREE statuses, not two, and the third was being folded into "this file says
-  nothing" at every call site.** Exit 2 is the intended *unreadable / not-a-plist* answer; a reader
-  that exits **1, 126 or 127** has not answered about the plist at all — it has said something about
-  `$python`. An `--python` naming a shell script, a missing file or an interpreter without
+  ⚠️ **There are FOUR statuses, not two, and only the first two are about the plist — the rest were
+  being folded into "this file says nothing" at every call site.** Exit 0 is an answer and exit 2 is
+  the intended *unreadable / not-a-plist* one. Exit **3** says `agb_mac` could not be loaded from
+  beside `--agb`, so the parser this reader hands the argv to is not there at all (below); and a
+  reader that exits **1, 126 or 127** has not answered about the plist either — it has said something
+  about `$python`. An `--python` naming a shell script, a missing file or an interpreter without
   `plistlib` is an ordinary operator mistake, and it made *every* plist say nothing: no job claimed
   the config, the run fell through to the **default label** and the **conventional config**, and
   `stopped: com.agbridge` / exit 0 came out in exactly the words it uses when it is right, while the
   named instance's bridge kept running over the map that had just been forgotten. So the rule is
   spelled once, in `plist_read_ok`, and asked at all three call sites: **2 is an answer, anything
-  else is fatal.** It must be called from the parent shell — a wrapper returning the value would run
-  inside `value=$(…)`, where `exit 1` ends the substitution and the script carries on with an empty
-  value, which is the silent fallback it exists to stop.
+  else is fatal** — with 3 naming `--agb` and everything else naming the interpreter, because they
+  send you to different files. It must be called from the parent shell — a wrapper returning the
+  value would run inside `value=$(…)`, where `exit 1` ends the substitution and the script carries on
+  with an empty value, which is the silent fallback it exists to stop.
 
   ⚠️ **And a status cannot see an interpreter that succeeds while meaning nothing.** `--python
   /bin/echo` is executable, exits 0 and prints its own arguments, so every plist would "answer" a

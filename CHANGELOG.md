@@ -252,8 +252,11 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Both now scan one marker (the bare `--config`) in position order and let the character after it say
   which spelling it is — or that it is not the flag at all, so `--configs/b` sitting inside somebody's
   `--statedir` value no longer makes an untagged bridge read as tagged. Last-wins holds *across* the
-  two spellings, not within each. As a consequence the note explaining a wait is now read off the
-  attribution's own answer rather than re-derived from the line, which had begun to disagree with it.
+  two spellings, not within each. (**The plist side no longer scans anything** — a later entry below
+  hands its argv to `agb_mac.parse_bridge_args`, which knows both spellings and the last-wins rule
+  first-hand; the rule is unchanged, and the `ps` side still spells it.) As a consequence the note
+  explaining a wait is now read off the attribution's own answer rather than re-derived from the
+  line, which had begun to disagree with it.
 
   ⚠️ **`--config` is not the only flag that says which map a bridge holds.** `agb bridge --rows`
   overrides the rows file the config would have chosen (`render_settings`: `opts.get("rows") or
@@ -278,8 +281,9 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   and the every-run 10 s warning does not come back; a hand-started
   `agb bridge --feed-host X --config Y` is now waited for on a default-map run, which is the bounded
   direction. On the **plist** side the same false positive is not undecidable and is not treated as
-  such: `ProgramArguments` is a real argv array, so the reader walks the elements the way the parser
-  walks argv and `<string>--workspace</string><string>--config=/other/config</string>` is a workspace
+  such: `ProgramArguments` is a real argv array, so the elements are read the way the parser reads
+  argv — by handing them to it, in a later entry below — and
+  `<string>--workspace</string><string>--config=/other/config</string>` is a workspace
   *name*. Read as a config, it made the banner, the liveness pattern and `forget-rows` all act on a
   map no process runs on — `the map is already empty`, exit 0, and the stale bindings that sent you
   there still in place. The list of flags that consume the next argument is now a cross-file agreement
@@ -505,9 +509,10 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   is compared against `dist/com.agbridge.plist` itself.
 
 - **A `--python` that is not a python3 is refused, instead of quietly bouncing the wrong job.**
-  The plist reader has three answers, not two: 0 is an answer, **2** means "this file says nothing",
-  and anything else means the *reader* failed — which is a statement about the interpreter, not
-  about the plist. All three call sites read the third as the second, so `agb-refresh --python
+  The plist reader has four answers, not two: 0 is an answer, **2** means "this file says nothing",
+  **3** means the parser could not be loaded from beside `--agb` (the entry above), and anything else
+  means the *reader* failed — which is a statement about the interpreter, not about the plist. All
+  three call sites read everything nonzero as the second, so `agb-refresh --python
   /bin/false` (an ordinary mistake, not a hand-edit) made **every** plist say nothing: no job
   claimed the config, the run fell through to the default label and the conventional config, and
   printed `stopped: com.agbridge` and exit 0 in exactly the words it uses when it is right — while

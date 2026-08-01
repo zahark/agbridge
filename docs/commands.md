@@ -681,15 +681,20 @@ correct refresh. Three details, each closing a failure:
   superset of both, and its only cost is an over-match — a bounded wait. The same last-wins rule
   applies to a hand-edited plist that repeats the flag, where there is no ambiguity at all.
   ⚠️ **Both spellings count, and in position order.** `agb bridge` takes `--config=<path>` as well as
-  `--config <path>`, so both readers scan one marker — the bare `--config` — and let the character
-  after it say which spelling it is. Two `case` arms, one per spelling, picked by *arm* order instead:
-  a line whose inline occurrence came first cut at the later space form and never offered the inline
-  value, which under the one-argument reading is the one the parser keeps. On the plist side the
+  `--config <path>`, so both readers have to know both. The `ps` reader scans one marker — the bare
+  `--config` — and lets the character after it say which spelling it is; the plist reader gets it for
+  free, because it hands the argv to `agb bridge`'s own parser rather than imitating it (below). Two
+  `case` arms, one per spelling, picked by *arm* order instead: a line whose inline occurrence came
+  first cut at the later space form and never offered the inline value, which under the one-argument
+  reading is the one the parser keeps. On the plist side the
   inline form read as *nothing*, and nothing there means "the default config", so an instance's own
   job claimed the default map and the run bounced the wrong label.
   ⚠️ **On the plist side an element is a flag only in flag position**, and that side has no
-  ambiguity to trade against: `ProgramArguments` is a real argv array, so the elements are walked the
-  way `agb bridge` walks argv — a value-taking flag consumes the next element whatever it looks like.
+  ambiguity to trade against: `ProgramArguments` is a real argv array, so the elements after the
+  `bridge` command word are handed to `agb bridge`'s own parser — `agb_mac.parse_bridge_args`, loaded
+  by path from beside `--agb` — instead of being walked by a second implementation of it. A
+  value-taking flag consumes the next element whatever it looks like, and an argv the bridge would
+  *refuse* names no config at all, which is the class no imitation could reach.
   `--workspace` followed by `--config=/other/config` is a workspace *name*; answering
   `/other/config` for it made the banner, the liveness pattern and `forget-rows` all act on a map no
   process runs on, reporting `the map is already empty` for a map that was never opened.
@@ -706,13 +711,16 @@ correct refresh. Three details, each closing a failure:
   job actually holding the map. No `bridge` in the array is "carries no `--config`", the same answer
   a plist predating the flag gives, so such a job ranks *below* every job that names one rather than
   disappearing.
-  ⚠️ **Three exit statuses, and the third is not about the plist.** 0 is an answer (an empty value
-  means "no such flag"); **2** means "this file says nothing" — unreadable, or not a plist; anything
-  else means the *reader* failed, which is a statement about `$python`. Folding the third into the
-  second made `--python /bin/false` — an ordinary mistake — read every plist as silent, fall through
-  to the default label and the conventional config, and report success. It is fatal now, at all three
-  call sites, and an `import plistlib` probe runs once before any plist is read to catch the case a
-  status cannot see (`--python /bin/echo` exits 0 and prints its own arguments).
+  ⚠️ **Four exit statuses, and only the first two are about the plist.** 0 is an answer (an empty
+  value means "no such flag"); **2** means "this file says nothing" — unreadable, or not a plist;
+  **3** means `agb_mac` could not be loaded from beside `--agb`, so the parser the reader asks is not
+  there; anything else means the *reader* failed, which is a statement about `$python`. Folding the
+  last two into the second made `--python /bin/false` — an ordinary mistake — read every plist as
+  silent, fall through to the default label and the conventional config, and report success. Both are
+  fatal now, at all three call sites: `plist_read_ok` spells the rule once — **2 is an answer,
+  anything else is fatal** — and names `--agb` for 3 and the interpreter for the rest. An
+  `import plistlib` probe runs once before any plist is read to catch the case a status cannot see
+  (`--python /bin/echo` exits 0 and prints its own arguments).
   ⚠️ **A missing plist and an unreadable one are different questions.** Both answer exit 2, and the
   conventional path is the right fall-back only for the first. `agb-refresh --instance hostb` with a
   corrupt `com.agbridge.hostb.plist` repaired a map that never existed and reported it empty; it now

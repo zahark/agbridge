@@ -179,10 +179,11 @@ These are not style preferences. Each one has a test, and most were re-learned t
     keeps under the one-argument reading. The plist reader knew only the two-word form, and answered
     `""`, which downstream means *the default config* — so an instance's job claimed the default map.
     One marker (`--config`), cut at its first occurrence, with the next character saying which
-    spelling — or that it is not the flag (`--configs/b` inside a value). Any new reader of that flag
-    owes both spellings. And when a harness proves such a scan safe, check it composes the input the
-    ambiguity is *about*: the permutation check that cleared this built its lines only out of
-    separate flags, the one reading in which the loss is harmless.
+    spelling — or that it is not the flag (`--configs/b` inside a value). That is the `ps` reader's
+    answer and still is; the plist side gets both spellings from `parse_bridge_args` itself (below).
+    Any new reader of that flag owes both spellings. And when a harness proves such a scan safe,
+    check it composes the input the ambiguity is *about*: the permutation check that cleared this
+    built its lines only out of separate flags, the one reading in which the loss is harmless.
     ⚠️ **And `--config` is not the only flag that says which map a bridge holds** — `--rows`
     overrides the rows file the config would have chosen (`render_settings`), so a bridge or a plist
     naming this map only through `--rows` holds it too. Adding a flag to what is *offered* can only
@@ -252,9 +253,9 @@ These are not style preferences. Each one has a test, and most were re-learned t
     exists.** Nothing fails when a harness is simpler than reality, which is why both now have a
     guard of their own — the corpus runs every case in *both* shapes, and the fixture's argv is
     compared against `dist/com.agbridge.plist` itself.
-    ⚠️ **And the eleventh: "I could not answer" is not "the answer is nothing", and it has three
-    spellings here.** `plist_arg` exits 0 (answered), **2** (this file says nothing), **3** (the
-    parser could not be loaded from beside `$agb` — a statement about `--agb`), or something
+    ⚠️ **And the eleventh: "I could not answer" is not "the answer is nothing", and there are four
+    statuses here, not two.** `plist_arg` exits 0 (answered), **2** (this file says nothing), **3**
+    (the parser could not be loaded from beside `$agb` — a statement about `--agb`), or something
     else (the *reader* failed — a statement about `$python`, not about the plist). Folding the last
     into the second made `--python /bin/false` read every plist as silent and bounce the default job
     under a live instance bridge; it is fatal now, at all three call sites, spelled once in
