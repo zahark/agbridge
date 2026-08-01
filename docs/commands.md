@@ -118,6 +118,19 @@ Dock icon *bounces* is agterm's setting, not agbridge's (Settings ▸ Notificati
 until you focus agterm). Which events are worth announcing is this tool's business; how loudly the
 machine interrupts you is the machine's.
 
+⚠️ **Every config key on this page that the bridge reads takes effect only after `agb-refresh`.**
+`run_bridge` reads the config **once**, before it connects, and hands that one dict to both
+`bridge_settings` and `render_settings` — deliberately, so that a single process can never end up
+holding two different configs. The cost is that a live edit is invisible: the file says
+`notify_on_completed_after = 20`, the running bridge still uses what it read at startup, and nothing
+reports the difference. Found the slow way during the first live test of the finished-turn banner,
+where a config edited nine minutes after the bridge started looked like a broken feature for the
+better part of an hour.
+
+`host_<name>` and `jump_host` are the exception **when a row is clicked**: `agb pane` is a fresh
+process per click and reads the config itself, so those need no restart. The same key read by the
+*bridge* (`jump_host` for the feed's ssh) does.
+
 ⚠️ **The transition is tracked separately from the painted status**, which is not the obvious
 implementation. `--blink` gates on `applied`, the last status emitted — but `_render_stale` paints
 every row `idle` on *any* disconnect, including a routine 10 s quiet spell. Gated on `applied`, an
