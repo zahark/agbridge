@@ -438,24 +438,24 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
 - Modify: `agb_ops`
 - Modify: `tests/test_core.py`
 
-- [ ] add `"notify_completed_after": config_seconds(config, "notify_on_completed_after",
+- [x] add `"notify_completed_after": config_seconds(config, "notify_on_completed_after",
       COMPLETED_AFTER)` to the `render_settings` return dict beside the other two (`agb_mac:2343`)
-- [ ] ⚠️ read it off the **`config` dict the function was handed**, never a fresh
+- [x] ⚠️ read it off the **`config` dict the function was handed**, never a fresh
       `agb.read_config()` — `test_the_bridge_reads_its_config_exactly_once`
       (`tests/test_bridge_transport.py:1118`) pins the single read at `agb_mac:2482`
-- [ ] add `notify_on_completed_after`, `notify_on_blocked` **and** `notify_on_new_row` to
+- [x] add `notify_on_completed_after`, `notify_on_blocked` **and** `notify_on_new_row` to
       `agb_ops.CONFIG_KEYS` (`:228-229`) — the latter two are drift, documented in four places but
       reported by `agb doctor` as typos since 0.4.0
-- [ ] add one line per new key to the hand-written config blob in
+- [x] add one line per new key to the hand-written config blob in
       `test_parse_config_reads_the_documented_keys` (`tests/test_core.py:196-206`)
-- [ ] ⚠️ write a test hardcoding **the whole documented key list**, not just the three new ones.
+- [x] ⚠️ write a test hardcoding **the whole documented key list**, not just the three new ones.
       Both existing tests iterate `CONFIG_KEYS` itself (`tests/test_core.py:209-210`, `:232-233`),
       so removing a key makes them weaker rather than failing — which is exactly why this drift
       survived since 0.4.0. Hardcoding only the new three leaves the other seven pinned by nothing
-- [ ] write a test that `render_settings` surfaces `COMPLETED_AFTER` with an empty config and 120
+- [x] write a test that `render_settings` surfaces `COMPLETED_AFTER` with an empty config and 120
       with `notify_on_completed_after = 120`
-- [ ] mutation-test: drop any key from `CONFIG_KEYS` → the hardcoded test must fail
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 4
+- [x] mutation-test: drop any key from `CONFIG_KEYS` → the hardcoded test must fail
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 4
 
 ### Task 4: ➕ Give the `agtermctl` stub a `notify` arm
 

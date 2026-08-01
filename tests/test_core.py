@@ -203,6 +203,9 @@ def test_parse_config_reads_the_documented_keys(agb, ops):
         "remote_python = /bin/python3\n"
         "jump_host = vncbox\n"
         "workspace = agents\n"
+        "notify_on_blocked = 1\n"
+        "notify_on_new_row = 1\n"
+        "notify_on_completed_after = 300\n"
         "host_machine3 = m3.example.com\n"
     )
     assert malformed == []
@@ -210,6 +213,26 @@ def test_parse_config_reads_the_documented_keys(agb, ops):
         assert key in values
     assert values["host_machine3"] == "m3.example.com"
     assert values["statedir"] == "/shared/.agbridge"
+
+
+def test_the_documented_key_list_is_pinned_by_name(ops):
+    """⚠️ The two tests either side of this one both iterate `CONFIG_KEYS` and
+    assert things about its members, so **dropping a key makes them weaker
+    rather than red**. That is not hypothetical: `notify_on_blocked` and
+    `notify_on_new_row` were documented in four places and missing from this
+    list for two releases, and `agb doctor` called them typos the whole time
+    while every test stayed green.
+
+    Spelled out by hand for that reason. A key removed here is a key `agb
+    doctor` starts warning about, which is user-visible, so it should cost a
+    red test rather than a silent downgrade.
+    """
+    assert set(ops.CONFIG_KEYS) == {
+        "statedir", "mac_id", "feed_host", "agb_remote_path", "remote_python",
+        "jump_host", "workspace",
+        "notify_on_blocked", "notify_on_new_row", "notify_on_completed_after",
+    }
+    assert ops.CONFIG_KEY_PREFIXES == ("host_",)
 
 
 def test_parse_config_collects_malformed_lines_without_raising(agb):

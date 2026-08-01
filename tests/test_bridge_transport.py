@@ -1057,6 +1057,33 @@ def test_without_the_flag_every_path_is_exactly_what_it_was(mac, agb,
         agb.config_path())
 
 
+def test_the_notification_settings_come_from_the_config(mac, config_file,
+                                                        fake_home):
+    """The one line joining `notify_on_completed_after` to the renderer.
+
+    Both switches either side of it were wired the same way and neither had a
+    test, so `render_settings`' notification half went two releases with the
+    coercer, the key name and the settings name all unverified. A typo in any
+    of the three is silent: the feature simply never turns on, and every other
+    test injects `settings=` directly and so cannot notice.
+    """
+    config_file("")
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["notify_completed_after"] == mac.COMPLETED_AFTER
+    assert settings["notify_blocked"] is True
+    assert settings["notify_new_row"] is True
+
+    config_file("notify_on_completed_after = 120\nnotify_on_blocked = off\n")
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["notify_completed_after"] == 120.0
+    assert settings["notify_blocked"] is False
+    # `off` is a configured zero, not the default -- the distinction the
+    # coercer exists to keep.
+    config_file("notify_on_completed_after = off\n")
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["notify_completed_after"] == 0.0
+
+
 def test_an_explicit_rows_file_still_wins(mac, tmp_path, instance_config):
     """`--rows` predates this and is a debugging seam; it keeps working."""
     path = instance_config("hostb")
