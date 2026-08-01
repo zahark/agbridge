@@ -459,6 +459,252 @@ def test_pane_resolves_through_the_instance_config_end_to_end(ops, tmp_path,
     assert "ssh target user@instance-b.example" in out.text
     assert "via jump host jump-b" in out.text
     assert "instance-a" not in out.text and "jump-a" not in out.text
+    # ...and it says which file it resolved through, which is what tells two
+    # rows claiming the same host apart.
+    assert "config %s" % (path,) in out.text
+
+
+def test_a_config_the_row_names_but_this_mac_cannot_read_is_said_out_loud(
+        ops, tmp_path, config_file):
+    """⚠️ Otherwise it is silent, and silently WRONG.
+
+    `read_config` answers `{}` for a missing file and `ssh_target_for` returns
+    the raw `host`, so a row whose instance was moved, renamed or reinstalled
+    resolves the bare hostname with no error and no exit code -- and for two
+    clusters with overlapping short hostnames that is the wrong machine again,
+    reached by the one path no bridge-side test performs.
+    """
+    config_file("host_box3 = user@instance-a.example\n")
+    gone = str(tmp_path / "instances" / "hostb" / "config")
+    out = Out()
+    assert ops.run_pane(args() + ["--config", gone], out=out, ask=Ask(),
+                        run=Run()) == 0
+    assert "WARNING" in out.text and gone in out.text
+    # The fallback it is warning about: the bare hostname, NOT the default
+    # config's mapping (which `--config` correctly kept it away from).
+    assert "ssh target %s" % (HOST,) in out.text
+    assert "instance-a" not in out.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
+def test_a_config_that_exists_but_cannot_be_read_warns_instead_of_raising(
+        ops, tmp_path, config_file):
+    """⚠️ A traceback on this path does not print an error -- it CLOSES THE ROW.
+
+    agterm closes a session when its command exits (docs/agtermctl.md), so an
+    exception here takes a live agent's row off the sidebar over a file mode.
+    `agb.read_config` re-raises everything except `ENOENT`/`ENOTDIR` and `agb`'s
+    `__main__` catches only `AgbError`, so `EACCES` went all the way out as a
+    traceback -- while `pane_config_warning`'s branch that names exactly those
+    errnos was unreachable, because the crash came first. The missing-file case
+    was already `{}` and warned; this makes the unreadable one behave the same.
+    """
+    config_file("host_box3 = user@instance-a.example\n")
+    path = _instance_config(tmp_path, "hostb",
+                            "host_box3 = user@instance-b.example\n")
+    os.chmod(path, 0)
+    try:
+        out = Out()
+        assert ops.run_pane(args() + ["--config", path], out=out, ask=Ask(),
+                            run=Run()) == 0
+    finally:
+        os.chmod(path, 0o600)
+    # It said what is wrong, and specifically WHICH failure -- "does not exist"
+    # would be a different repair.
+    assert "WARNING" in out.text and path in out.text
+    assert "Errno 13" in out.text or "Permission denied" in out.text
+    # ...and the row is still usable, resolving the bare hostname it warned
+    # about rather than instance A's table.
+    assert "ssh target %s" % (HOST,) in out.text
+    assert "instance-a" not in out.text and "instance-b" not in out.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
+def test_an_unreadable_config_is_empty_rather_than_an_exception(ops, tmp_path):
+    """The same property one level down, where the read actually is.
+
+    `run_pane` is not the only caller -- `pane_settings` is public and is
+    reached directly by the tests above -- so the guard belongs on the read,
+    not on the printing. Asserted separately because a `run_pane` that stopped
+    calling `pane_config_warning` would make the test above pass for the wrong
+    reason.
+    """
+    path = _instance_config(tmp_path, "hostb",
+                            "host_box3 = user@instance-b.example\n")
+    os.chmod(path, 0)
+    try:
+        opts = ops.parse_pane_args(args() + ["--config", path])
+        target, jump = ops.pane_settings(opts)
+    finally:
+        os.chmod(path, 0o600)
+    assert target == HOST and jump is None
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
+def test_an_unreadable_DEFAULT_config_is_said_out_loud_too(ops, config_file):
+    """⚠️ The row that carries NO `--config` is the majority of rows, and it is
+    the one the warning used to skip.
+
+    `agb_mac.pane_argv` withholds the flag for the default path, so gating the
+    diagnostic on "was a `--config` typed" left an `EACCES` default config
+    completely silent -- the whole `host_<name>` table gone, `jump_host` gone,
+    and a row that looks healthy while it resolves the bare hostname. The
+    default instance IS instance A in a two-instance Mac, so this is the
+    wrong-machine failure `pane_config_warning` was written for, arriving
+    without the warning. The question is whether the READ failed, not whether a
+    flag was on the command line.
+    """
+    path = config_file("host_box3 = user@instance-a.example\n"
+                       "jump_host = jump-a\n")
+    os.chmod(str(path), 0)
+    try:
+        out = Out()
+        assert ops.run_pane(args(), out=out, ask=Ask(), run=Run()) == 0
+    finally:
+        os.chmod(str(path), 0o600)
+    # It names the file it could not read -- nothing else in this row's output
+    # does, because there is no `--config` line to print.
+    assert "WARNING" in out.text and str(path) in out.text
+    assert "Errno 13" in out.text or "Permission denied" in out.text
+    # ...and it says what was lost: both tables, not just the host one.
+    assert "jump_host" in out.text
+    # The fallback it is warning about, still usable rather than a traceback.
+    assert "ssh target %s" % (HOST,) in out.text
+    assert "instance-a" not in out.text and "jump-a" not in out.text
+
+
+def test_no_config_file_at_all_still_says_nothing(ops):
+    """The negative control for the test above, and the reason the second gate
+    is still `opts["config"]`.
+
+    A Mac with no `~/.config/agbridge/config` is a perfectly ordinary install --
+    `read_config` forgives `ENOENT` without raising -- so nothing failed and
+    there is nothing to say. A warning here would fire on every click of every
+    row on a default install, which is how a real one gets ignored.
+    """
+    out = Out()
+    assert ops.run_pane(args(), out=out, ask=Ask(), run=Run()) == 0
+    assert "WARNING" not in out.text
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores the mode bits")
+def test_the_unreadable_config_is_handed_back_to_the_caller(ops, config_file):
+    """One level down, where the read is: `pane_settings` appends the exception
+    to the caller's list.
+
+    Asserted on its own because `run_pane`'s warning is only as good as this --
+    a `pane_settings` that swallowed the exception again would leave the
+    printing correct-looking and unreachable, which is exactly how the silent
+    default row shipped.
+    """
+    path = config_file("host_box3 = user@instance-a.example\n")
+    os.chmod(str(path), 0)
+    try:
+        opts = ops.parse_pane_args(args())
+        failures = []
+        target, jump = ops.pane_settings(opts, unreadable=failures)
+    finally:
+        os.chmod(str(path), 0o600)
+    assert target == HOST and jump is None
+    assert len(failures) == 1 and str(path) in str(failures[0])
+
+
+def test_a_readable_config_hands_back_nothing(ops, config_file):
+    """The other half: the list stays empty when the read worked, so `run_pane`
+    cannot be made to warn about a healthy config."""
+    config_file("host_box3 = user@instance-a.example\n")
+    opts = ops.parse_pane_args(args())
+    failures = []
+    target, _jump = ops.pane_settings(opts, unreadable=failures)
+    assert target == "user@instance-a.example"
+    assert failures == []
+
+
+def test_a_handed_back_failure_is_reported_without_re_probing(ops,
+                                                              config_file):
+    """The read that already failed is the answer; the file is not asked again.
+
+    A second `open()` would be a fresh question, and a fresh question can get a
+    fresh answer -- a config readable by the time the warning is composed would
+    print NOTHING about a read that really did fail, which is the silence this
+    whole line exists to break. Pinned by handing it a failure for a file that
+    is perfectly readable right now: the probe would return None, the exception
+    must still be reported.
+    """
+    path = config_file("host_box3 = user@instance-a.example\n")
+    exc = IOError(13, "Permission denied", str(path))
+    line = ops.pane_config_warning(str(path), exc)
+    assert line is not None and "Permission denied" in line
+    # ...and the negative control: with no exception it really does probe, and
+    # that same readable file says nothing.
+    assert ops.pane_config_warning(str(path)) is None
+
+
+def test_a_config_that_is_a_directory_is_still_named_in_the_warning(
+        ops, tmp_path, config_file):
+    """⚠️ Not every `OSError` carries a filename, and the warning used to assume
+    one did.
+
+    `read_fresh` OPENS the path and then reads it, and a directory opens
+    perfectly well: the failure arrives from `os.read` as a bare
+    `[Errno 21] Is a directory` with `filename` unset. On a default row -- which
+    carries no `--config`, so no other line of the identity block names a config
+    either -- that warning named no path at all and left the operator to guess
+    which file to fix.
+    """
+    d = tmp_path / "a-directory-config"
+    d.mkdir()
+    out = Out()
+    assert ops.run_pane(args() + ["--config", str(d)], out=out, ask=Ask(),
+                        run=Run()) == 0
+    assert "WARNING" in out.text
+    assert str(d) in out.text, out.text
+    # Non-vacuity: the failure really is the filename-less one, not an ENOENT
+    # the probe would have re-raised with a path attached.
+    assert "Is a directory" in out.text or "Errno 21" in out.text
+    # ...and it is named ONCE. The `--config` line above prints it too, but the
+    # warning is what has to stand on its own in a copy-pasted line.
+    assert out.text.count(str(d) + ": ") == 1, out.text
+
+
+def test_an_exception_that_carries_its_filename_is_not_named_twice(ops,
+                                                                   tmp_path):
+    """The other half, and the reason the path is not simply prepended always.
+
+    `open()`/`os.open` DO attach the filename, so `EACCES` already renders as
+    `[Errno 13] Permission denied: '/…/config'`. Prepending unconditionally
+    would print the path twice in one parenthesis, which reads like two
+    different files.
+    """
+    path = str(tmp_path / "config")
+    line = ops.pane_config_warning(path, IOError(13, "Permission denied", path))
+    assert line is not None
+    assert line.count(path) == 1, line
+
+
+def test_a_readable_instance_config_says_nothing_extra(ops, tmp_path,
+                                                       config_file):
+    """The negative control. A warning that fired on a healthy install would be
+    noise on every click, and noise on every click is how a real one gets
+    ignored."""
+    config_file("host_box3 = user@instance-a.example\n")
+    path = _instance_config(tmp_path, "hostb",
+                            "host_box3 = user@instance-b.example\n")
+    out = Out()
+    assert ops.run_pane(args() + ["--config", path], out=out, ask=Ask(),
+                        run=Run()) == 0
+    assert "WARNING" not in out.text
+
+
+def test_a_row_with_no_config_flag_prints_no_config_line(ops, config_file):
+    """A default install's `agb pane` output is exactly what it always was:
+    rows minted before the flag existed carry no `--config`, and there is
+    nothing instance-specific to say about them."""
+    config_file("host_box3 = user@instance-a.example\n")
+    out = Out()
+    assert ops.run_pane(args(), out=out, ask=Ask(), run=Run()) == 0
+    assert "config " not in out.text
+    assert "WARNING" not in out.text
 
 
 # ---------------------------------------------------------------------------

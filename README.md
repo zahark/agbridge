@@ -30,6 +30,11 @@ Agents write their state to a shared directory. The Mac *pulls* that state over 
    └───────────────────────────────────────┘
 ```
 
+One statedir, one feed, one bridge — **per instance.** A machine that shares no disk with this one
+gets its own copy of the whole picture above, driven by a second launchd job, rendering into the
+same agterm sidebar. See *A second machine* below.
+
+
 ## Why not a reverse tunnel
 
 The obvious approach — forward agterm's unix socket to the remote host — is what
@@ -260,7 +265,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1498 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 1546 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -272,7 +277,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1498 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1546 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:
@@ -287,6 +292,8 @@ Verified in real use, not just in tests:
 | `agtermctl session new` returns the row id on stdout | ✅ — the largest assumption in the design; it held |
 | `session split` / `session type` | ✅ `--help`-verified, then run |
 | `session scratch` | ⬜ `--help`-verified, **not yet run** |
+| a second instance: two bridges on one Mac | ⬜ tests only, **not yet run** |
+| clicking a row from each instance → the right machine | ⬜ tests only, **not yet run** |
 | `notify --target <row>` → banner on the right row | ✅ run by hand |
 | the bridge sending it on a `blocked` transition → banner + Dock bounce | ✅ |
 | the badge clearing when the agent leaves `blocked` | ✅ — on a row that is **not** selected; agterm never badges the row you are viewing |
@@ -307,6 +314,11 @@ back with the same shell alive.
 
 Still not exercised, and worth knowing:
 
+- **A second instance, live** (0.5.0). Nobody has yet run two bridges on one Mac. The check that
+  matters is **clicking a row from each instance and landing on the right machine** — that path
+  (`pane_argv` → the row's command → `agb pane`'s own config read) is precisely the one every unit
+  test passes through without performing. Worth running a bare `agb-refresh` while both are up on
+  purpose too, to see whether the banner really does tell you which one it acted on.
 - **`session scratch`'s behaviour**, as above. The `[s]` split it is modelled on *is* verified, and
   the two are the same two calls with different constants, so the risk is narrow — but "narrow" is
   not "none", which is the whole reason this table exists.

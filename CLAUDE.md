@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1498 tests, ~31 s)
+python3 -m pytest tests/ -q                                    # full suite (1546 tests, ~38 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -146,7 +146,18 @@ These are not style preferences. Each one has a test, and most were re-learned t
     own command must carry `--config` for a non-default instance, or `agb pane` resolves `--host`
     through the **default** config and click-to-attach reaches the wrong machine with every test
     green; `pane_argv` emits it only when `normpath` says it differs, so default installs are
-    byte-identical. `docs/design.md` §5, *One Mac, several instances*, is the authority.
+    byte-identical. ⚠️ **Corollary, and it has been got wrong twice: "the same instance" is a
+    comparison of the resolved DIRECTORY, nothing more.** The basename never reaches `rows` or
+    `placements`, so an equivalence test that keeps it — or that compares the path as text — is
+    narrower than the map it guards, and the failure always has the same shape: the right map under
+    the *wrong* label, i.e. bounce instance A while forgetting B's bindings under B's live bridge.
+    `agb-refresh`'s `canon_config` is the one place that comparison lives. ⚠️ **But *matching* the
+    map and *choosing* between the matches are two questions**, and running them together is how the
+    fourth instance of that failure arrived: the basename and "does this plist declare a config or
+    merely imply one" break the tie among candidates that have already matched, so the job naming
+    this exact file wins over one that only shares the directory instead of the winner falling out of
+    `*.plist`'s collating order. Ranking is not matching, and it narrows nothing.
+    `docs/design.md` §5, *One Mac, several instances*, is the authority.
 13. **`agtermctl session split` and `session scratch` are used as `on`, never `toggle`** — either
     key can be pressed twice, and a toggle would close the pane the second time — and the pane must
     exist before anything is typed into it (`--pane right` errors otherwise, and `--select` is
@@ -154,6 +165,20 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
+14. **Two cross-file agreements have no single source of truth, and both fail silently.** `agb` is
+    Python under a byte cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
+    import the others, so each spells the shared value itself.
+    - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
+      `DEFAULT_CONFIG_DIR`/`DEFAULT_CONFIG`, `agb-refresh`'s copy of the same pair. `pane_argv`
+      emits `--config` only when the path *differs* from `agb.config_path()`, so a disagreement
+      between the first two makes **every default install re-mint every row**, reporting success.
+    - **`instance_ok()` exists in both shell scripts** and must accept exactly the same names. A
+      name `agb-refresh` accepts and the installer refuses points at a plist that was never
+      rendered; the reverse writes four things where they were not meant to go. The *messages*
+      differ on purpose (one writes those four things, the other goes looking for three).
+
+    Both are pinned by `tests/test_install_pkg.py` — the path agreement compares the resolved
+    strings, the validator agreement compares the `case` **patterns**, not the bodies.
 
 ## Testing conventions
 
@@ -249,7 +274,7 @@ Released **0.4.0** — notifications: a banner when an agent blocks, one when a 
 the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
 budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
 path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
-`agb_mac`/`agb_ops`). 1498 tests.
+`agb_mac`/`agb_ops`). 1546 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

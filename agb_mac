@@ -1351,11 +1351,54 @@ TITLE_DONE = "[done] "
 # only reaches `[done]` ones, and `RowMap.rebind` only ever returns an entry to
 # the row it already had -- so the recovery is a file, and a recovery nobody
 # can find is not one.
+#
+# ⚠️ The recipe carries THIS instance's `--config`, because the hint is written
+# into THIS instance's log. A fixed `Run agb-refresh` -- which is what shipped
+# first -- is instance A's recipe printed in instance B's log, and followed
+# literally it succeeds: it stops com.agbridge, forgets A's bindings and starts
+# it again, while B's stale row is exactly as stale as it was. Limitation 1's
+# declared mitigation is that the output names the instance, and a bridge that
+# knows its own config path (`settings["config"]`) is the last place that should
+# be naming somebody else's.
+#
+# ⚠️ ...and `--config` alone is only right because `agb-refresh` BINDS THE LABEL
+# TO IT (`bind_label_to_config`, agb-refresh). That flag does not move the
+# launchd label by itself, and the first version of this hint shipped assuming
+# it did: `agb-refresh --config <B>` then booted out `com.agbridge`, waited for
+# A's bridge to exit, and ran `forget-rows` against B's map while B's bridge was
+# still alive -- the one condition the wait exists to prevent, since a live
+# bridge merges-then-writes and re-mints against the ids just closed. That is
+# strictly worse than the fixed recipe it replaced, so the two halves are ONE
+# change: a config is all a bridge knows about itself (nothing tells it its
+# instance name or its label), and the reader is what turns it back into both.
+# `tests/test_agb_refresh.py` runs this string through that resolution rather
+# than asserting on its text -- an assertion that it merely *contains*
+# `--config <B>` is what green-lit the broken version.
 ROW_STALE_HINT = (
     "row %s is gone from agterm -- closed by hand, or lost with an agterm "
     "restart. Nothing more will be sent to it. The binding is KEPT, so the row "
-    "stays gone: closing a row is how you dismiss it. Run agb-refresh to bring "
+    "stays gone: closing a row is how you dismiss it. Run %s to bring "
     "every row back (map: %s).")
+
+
+def refresh_recipe(config=None):
+    """`agb-refresh`, with the `--config` this instance needs and not otherwise.
+
+    The same predicate as `pane_argv`'s, and for the same reason: a default
+    install's advice must not grow a flag it does not need, and a non-default
+    one's must not omit the flag that makes it act on the right map. `normpath`
+    on both sides, because a `$HOME` with a trailing slash would otherwise make
+    every default install print the long form.
+
+    ⚠️ The other end of this string is `agb-refresh`'s `bind_label_to_config`,
+    which is what makes a bare `--config` stop the right launchd job. See the
+    second warning above `ROW_STALE_HINT`: without it this recipe bounces the
+    default bridge and forgets THIS instance's map underneath a live one.
+    """
+    if config and os.path.normpath(config) != os.path.normpath(
+            agb.config_path()):
+        return "agb-refresh --config %s" % (config,)
+    return "agb-refresh"
 
 # What counts as agterm saying "that row does not exist". Matched on the text
 # because `agtermctl` exits 1 for every failure -- there is no distinct code --
@@ -1747,7 +1790,13 @@ class RowRenderer(object):
             # closing a row is how a human dismisses it. `agb-refresh` is the
             # deliberate way to bring them all back.
             self.dead.add(row)
-            self._warn(ROW_STALE_HINT % (row, self.rows.path or rows_path()))
+            # `settings.get`, not `settings[...]`: a `RowRenderer` can be built
+            # with settings that predate the key (`__init__` defaults them to
+            # `{}`), and a KeyError here would turn a warning into a dead
+            # bridge.
+            self._warn(ROW_STALE_HINT
+                       % (row, refresh_recipe(self.settings.get("config")),
+                          self.rows.path or rows_path()))
         return None
 
     def _create_row(self, session):
@@ -2467,23 +2516,18 @@ def instance_paths(opts):
     the other instance's row layout, with both maps then wrong.
 
     An explicit `--rows`/`--placements` still wins. They predate this and are a
-    debugging seam -- pointing one of them somewhere else is a deliberate act,
-    and nothing that exists today passes both a config and an override.
+    debugging seam -- pointing one of them somewhere else is a deliberate act.
+    ⚠️ `agb-refresh --rows X` does pass both: `--config` is unconditional there,
+    so an override arrives beside a config rather than instead of one, and the
+    result is that instance's placements with the named rows file. That is the
+    intended reading of "an explicit override wins" -- but it is a MIXED pair,
+    which is why the banner both commands print names all three paths rather
+    than just the config they were given.
     """
     config = opts.get("config") or agb.config_path()
     return (config,
             opts.get("rows") or rows_path(config),
             opts.get("placements") or placements_path(config))
-
-
-# Printed by both row-map commands on **every** run, not only on failure.
-# Without `--instance`/`--config` these act on the default instance and report
-# success in the usual words, so an operator repairing the wrong Mac-side map
-# sees nothing at all to say so -- the one failure this shape has, and it is
-# silent. The banner is the whole mitigation, which is why it is unconditional.
-def _say_acting_on(out, command, pairs):
-    out.write("%s: %s\n"
-              % (command, "; ".join("%s %s" % pair for pair in pairs)))
 
 
 CLOSE_DONE_VALUE_ARGS = {"--rows": "rows", "--config": "config"}
@@ -2599,9 +2643,15 @@ def run_forget_rows(argv, out=None, run=None):
     # nothing and says it succeeded is the failure class this tool exists to
     # remove, and it shipped in one.
     config, rows_file, places_file = instance_paths(opts)
-    _say_acting_on(out, "forget-rows", [("config", config),
-                                        ("rows", rows_file),
-                                        ("placements", places_file)])
+    # Printed by both row-map commands on **every** run, not only on failure.
+    # Without `--instance`/`--config` these act on the default instance and
+    # report success in the usual words, so an operator repairing the wrong
+    # Mac-side map sees nothing at all to say so -- the one failure this shape
+    # has, and it is silent. The banner is the whole mitigation, which is why it
+    # is unconditional and names every path that was resolved rather than the
+    # one flag that was passed.
+    out.write("forget-rows: config %s; rows %s; placements %s\n"
+              % (config, rows_file, places_file))
     rows = load_rows(rows_file)
     # `done_entries()` yields (key, row) PAIRS, not dicts -- the tests only
     # ever seeded `bound` rows, so this list never ran until a real map with a
@@ -2700,7 +2750,10 @@ def run_close_done(argv, run=None, out=None):
     # but it is resolved through the same door as `forget-rows` so the two
     # cannot drift about what `--config <B>` means.
     config, path, _places = instance_paths(opts)
-    _say_acting_on(out, "close-done", [("config", config), ("rows", path)])
+    # Unconditional, for the reason spelled out at `run_forget_rows`' copy of
+    # this line: acting on the wrong instance succeeds and says so in the words
+    # of the run you meant to make.
+    out.write("close-done: config %s; rows %s\n" % (config, path))
     rows = load_rows(path, warn)
     done = rows.done_entries()
     if not done:

@@ -88,6 +88,7 @@ a missing directory would look, from the Mac, exactly like a dead ssh.
 ```
 agb bridge [--config P] [--from-stdin] [--no-agterm] [--feed-host H] [--mac-id M] [--statedir P]
            [--remote-path P] [--remote-python P] [--watchdog S] [--connections N] [--rows P]
+           [--workspace N]
 ```
 
 | Flag | Default | Meaning |
@@ -103,6 +104,7 @@ agb bridge [--config P] [--from-stdin] [--no-agterm] [--feed-host H] [--mac-id M
 | `--watchdog <seconds>` | `10.0` (five poll intervals) | no line at all — **including a tick** — for this long means the feed is dead: mark every row stale and reconnect. Must be > 0 |
 | `--connections <n>` | unset — reconnect for ever | stop after `n` connections. Must be ≥ 1 |
 | `--rows <path>` | beside the config — `dirname(--config)/rows`, so `~/.config/agbridge/rows` by default | the persisted `key → agterm row` map, on the Mac. An explicit path still wins over the derivation, which is what keeps it usable as a debugging seam |
+| `--workspace <name>` | config `workspace`, else agterm's current one | which agterm workspace new rows are created in (`session new --workspace-name`). A **remembered placement** for a key — written by `forget-rows` before it closed that row — wins over this, so a refresh puts rows back where they were rather than herding them all into one place |
 
 ### The blocked banner
 
@@ -214,6 +216,14 @@ read would hit the default config, so instance B's rows would resolve their targ
 `host_<name>` table: the wrong machine, or `Could not resolve hostname`, with nothing anywhere
 reporting a mismatch. See [`design.md`](design.md) §5, *One Mac, several instances*.
 
+**A config that cannot be read prints a `WARNING` line into the row and carries on** — never a
+traceback, because agterm closes a session when its command exits and that would take a live
+agent's row off the sidebar over a file mode. The line names the errno and the file, because the
+fallback (`{}`, so the bare hostname and no `jump_host`) is otherwise indistinguishable from a
+healthy resolve. It is keyed on the read **failing**, so it covers the default config of a row that
+carries no `--config` at all; a config that is merely *absent* is silent, which is the ordinary
+state of an install with no config file.
+
 ### The prompt
 
 ```
@@ -260,6 +270,12 @@ agb doctor [--statedir P] [--mac-id ID] [--quiet-after S] [--tail N]
 
 Exit **1** only on a failed probe. Warnings — unadjudicable entries, a stale bridge beat — exit 0:
 an exit status that cries wolf is one nobody reads.
+
+⚠️ **There is no `--config`** (design.md §5, limitation 3). This runs on the farm, where the config
+is always `~/.config/agbridge/config` — a farm host belongs to exactly one Mac-side instance, so
+there is nothing to choose between. What that costs you: on a Mac with several instances, `doctor`
+run against the *wrong* cluster's statedir reports that cluster's truth. `--statedir` and `--mac-id`
+are the two values to check when the answer looks wrong.
 
 ## `agb list` — farm
 
@@ -384,6 +400,11 @@ already required to exist at the same absolute path on every host that runs hook
 | interpreter | `sys.executable` — the one running the local `prune` | `remote_python` |
 | `agb` path | the `agb` beside the running one | `agb_remote_path` |
 
+⚠️ **Those config keys are read from `~/.config/agbridge/config` and there is no `--config`**
+(design.md §5, limitation 3). `prune --via-ssh` runs on the farm, where one host belongs to one
+Mac-side instance, so a per-instance config would have nothing to select between. On a Mac with two
+instances, `host_<name>`/`jump_host` come from the default config only.
+
 Anything you confirmed that belongs to a *different* host is **not** removed and is named in the
 output, with the `--via-ssh <that host>` re-run to make: silently dropping it would mean the operator
 answered "yes", watched the command succeed, and nothing happened.
@@ -398,6 +419,11 @@ agb status-line [--statedir P] [--mac-id ID]
 |---|---|---|
 | `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | passing it (or `$AGB_STATEDIR` inline, as `tmux.md` recommends) means the config is not read to find the statedir |
 | `--mac-id <id>` | config `mac_id`, then the newest `bridge/*.beat` | which beat to read. A configured id is never second-guessed: a missing beat reads `bridge:DOWN never`, not "some other Mac is fresh" |
+
+⚠️ **No `--config` here either** (design.md §5, limitation 3): the config it falls back to is always
+`~/.config/agbridge/config`. That is right on the farm — one host, one instance — and it is why the
+Mac-side instances **share a `mac_id`** rather than minting one each: every cluster's farm hosts then
+watch the same `bridge/<mac-id>.beat` name inside their own statedir.
 
 Give **both** and the config file is not opened at all — one avoided NFS `open()` per tick, forever.
 
@@ -513,9 +539,12 @@ having forgotten its rows** — closed, reset or reinstalled — while the map s
 | `--key <key>` | every binding | forget one; repeatable. Use it when only one row was closed — dropping the whole map mints duplicates for rows that are still live |
 | `--config <path>` | `~/.config/agbridge/config` | which instance to repair. **Both** `--rows` and `--placements` are derived from its directory |
 | `--rows <path>` | derived from `--config` | the map. An explicit path wins |
-| `--workspace <name>` | config `workspace`, else agterm's current one | where new rows are created. A **remembered placement** for that key wins over this |
 | `--placements <path>` | derived from `--config` | remembered `key = workspace` file. An explicit path wins |
+| `--no-close` | off | leave agterm's sessions open. They become duplicates as soon as the bridge mints fresh rows, so this is for the case where you are about to close them yourself |
 | `--dry-run` | off | name the bindings and change nothing |
+
+There is **no `--workspace`** here — the parser refuses it. Where a row comes back is decided by the
+*placements* file this command writes, not by a flag on it; `--workspace` is `agb bridge`'s.
 
 ⚠️ **`--config` has to derive the placements file as well, and that is the load-bearing half.**
 `agb-refresh` passes neither override, so a `--config` that moved only `rows` would have
@@ -564,10 +593,23 @@ agb-refresh [--key <key>]... [--dry-run] [--no-close] [--instance <name>] [--con
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--instance <name>` | the default instance | act on the instance `install.sh mac --instance <name>` created: label `com.agbridge.<name>`, config `~/.config/agbridge/<name>/config`. **Sugar for `--label` and `--config`, which must always move together** — a label without its config stops one instance and forgets another's bindings. An explicit `--label`/`--config` still wins. Same name rule as the installer: letters, digits, `-`, `_` |
-| `--config <path>` | `~/.config/agbridge/config` | the config to repair against; `forget-rows` derives the rows map and the placements file from it. Accepted on its own for an install made with `install.sh mac --config <path>` and no `--instance`, which has no instance *name* to pass |
+| `--key <key>` | every binding | forget one; repeatable. Passed straight through to `forget-rows` |
+| `--dry-run` | off | say what would happen; stop and start nothing, change nothing |
+| `--no-close` | off | passed through to `forget-rows`: leave agterm's sessions open |
+| `--instance <name>` | the default instance | act on the instance `install.sh mac --instance <name>` created: label `com.agbridge.<name>`, and the config **that instance's plist names**. **Sugar for `--label` and `--config`, which must always move together** — a label without its config stops one instance and forgets another's bindings. An explicit `--label`/`--config` still wins. Same name rule as the installer: letters, digits, `-`, `_` |
+| `--config <path>` | the config `<label>.plist` was rendered with; failing that `~/.config/agbridge[/<name>]/config` | the config to repair against; `forget-rows` derives the rows map and the placements file from it. Accepted on its own for an install made with `install.sh mac --config <path>` and no `--instance`, which has no instance *name* to pass. **Given alone it also moves the label**: the plists are scanned for the job that holds **the map this path names**, and its label adopted, so the bridge's own `agb-refresh --config …` hint acts on the bridge that printed it. The match is on the **map**, not on the spelling: the **directory** is resolved (`//`, `.`, `..`, a relative path, a symlinked `$HOME`) and **nothing else is matched on**, because `rows` and `placements` are `dirname(config)/rows` and `dirname(config)/placements` — the basename plays no part in either. So `<dir>/config`, `<dir>/`, `<dir>//` and `<dir>/anything` all name the same map and all find the same label; keeping the basename made the match *narrower* than the map it guards, and `--config ~/.config/agbridge/hostb/` (what tab-completion leaves you holding) bounced the **default** job with hostb's map. Among several matches the basename does break the **tie** — the job naming this exact file wins over one that merely shares the directory, rather than the winner falling out of `*.plist`'s collating order. A plist carrying no `--config` counts as naming the **default** config, since that is what its bridge resolves; only if it is readable and its label is in the `com.agbridge` space, so another program's LaunchAgent cannot claim agbridge's map. A path whose directory does not exist has no canonical form and matches nothing. When more than one job claims the map, all of them are named, the chosen one is said, and the run continues — they share a rows file, so there is nothing to choose. If no plist claims it, the default label is used and a `note:` says so — and names the job it is about to bounce |
 | `--label <name>` | `com.agbridge` | the launchd job to boot out and back in |
+| `--launch-agents <dir>` | `~/Library/LaunchAgents` | where that job's plist lives |
+| `--agb <path>` | `~/.local/lib/agbridge/agb` | the installed `agb` to run `forget-rows` through |
+| `--python <path>` | the first `python3` on `$PATH` | interpreter to run it with. `agb` has no shebang on purpose |
 | `--rows <path>` | derived from `--config` | passed through to `forget-rows` |
+
+⚠️ **`--instance <name>` does not mean `~/.config/agbridge/<name>/config`** — it means *whatever
+that instance's plist was rendered with*. `install.sh mac --instance hostb --config <elsewhere>` is
+supported, and rebuilding the conventional path instead would name a file that does not exist:
+`forget-rows` answers `no rows to forget: the map is already empty`, exits 0, and the recovery
+command reports success for a map it never touched. The convention is the fall-back for a Mac whose
+plist was never rendered.
 
 **It names what it is acting on, first line, every run** — including under `--dry-run`:
 
@@ -581,14 +623,34 @@ instance: (default) -- label com.agbridge, config /Users/you/.config/agbridge/co
 restarts it — succeeding, and saying so in exactly the words you were expecting for the instance you
 meant. Nothing can detect the intent, so it states the answer instead.
 
-⚠️ **The liveness poll below is matched per instance**, `pgrep -f "<agb> bridge --config <config>"`,
-because `--dest` is shared by every instance and a bare `<agb> bridge` matches all of them — the
-other instance's live bridge would keep the poll busy for its full 10 s and produce a
-`still running after 10s` warning on a perfectly correct refresh. The narrow pattern is used **only
-when the instance's plist actually contains `--config`**; against a plist rendered before 0.5.0 the
-script says so and waits on the broad pattern instead. A narrow pattern assumed rather than checked
-would match nothing, return instantly, and let the forget land while the bridge is still alive —
-which is the failure the wait exists to prevent.
+⚠️ **The liveness poll below is matched per instance**,
+`pgrep -f "<agb> bridge --config <the plist's config>([[:space:]]|$)"`, because `--dest` is shared by
+every instance and a bare `<agb> bridge` matches all of them — the other instance's live bridge would
+keep the poll busy for its full 10 s and produce a `still running after 10s` warning on a perfectly
+correct refresh. Three details, each closing a failure:
+
+- The pattern is used **only when the instance's plist actually contains `--config`**; against a
+  plist rendered before 0.5.0 the script says so and waits on the broad pattern instead. A narrow
+  pattern assumed rather than checked would match nothing, return instantly, and let the forget land
+  while the bridge is still alive — the failure the wait exists to prevent.
+- The **value** comes from the plist too, not from whatever `--config` this run resolved. They can
+  differ (an explicit `--config` names the map to repair; the plist names what launchd started), and
+  a pattern built from the wrong one matches nothing — the same silent failure from the other end.
+- The trailing `([[:space:]]|$)` is a boundary. `pgrep -f` matches an unanchored regex against the
+  whole command line, so `…/agbridge/config` is a *prefix* of an instance named `configb`'s
+  `…/agbridge/configb/config`, and without it a plain `agb-refresh` polls that live process for the
+  full 10 s and warns — on the most common invocation this command has.
+- A **miss is "not proven gone", not "gone"**: the pattern comes from the plist and the question is
+  about the process, and `install.sh mac --no-load`, a hand-started bridge or a re-rendered plist all
+  leave those disagreeing. So a miss asks whether a bridge with **no `--config` at all** is up
+  (by subtraction — ERE cannot spell "does not contain") and waits for that one too, saying so once.
+  ⚠️ **Only on a run repairing the *default* map**, because that is the only map such a bridge can
+  hold: it resolves `agb.config_path()` itself. Ungated, the commonest untagged bridge there is — the
+  default job, still running from a pre-0.5.0 plist because `install.sh mac --instance` does not
+  restart it — made **every** `agb-refresh --instance <name>` wait 10 s and then report
+  `com.agbridge.<name> is still running after 10s`, which was false: that job's bridge had exited
+  before the first poll. The 10 s warning now names the untagged bridge when the probe is what is
+  holding it, rather than the label that was booted out.
 
 Stop the bridge → `agb forget-rows` → start it again. A separate POSIX-sh script, installed beside
 `agb` on the Mac. It restarts the bridge **whatever the middle step reported**: leaving it down
@@ -600,9 +662,9 @@ the request, not once the process is gone, and the bridge is normally blocked re
 forget that lands while the old bridge is still alive is the thing this script exists to prevent:
 that bridge holds the row map in memory and merges-then-writes on every save, so it can re-mint rows
 against ids `forget-rows` has just closed — reinstating the `no such session` spam that sent you
-here. So it polls (`pgrep -f "<agb> bridge"`) until the process is actually gone, for at most **10
-seconds**; past that it says so and goes on, because a recovery command that hangs is worse than one
-that proceeds with the risk named.
+here. So it polls (with the per-instance `pgrep` pattern above) until the process is actually gone,
+for at most **10 seconds**; past that it says so and goes on, because a recovery command that hangs
+is worse than one that proceeds with the risk named.
 
 **When to reach for it.** All three cases are the same underlying one — agterm no longer knows a row
 id the Mac's map still names — and nothing else clears a *bound* entry: `close-done` only touches

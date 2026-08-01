@@ -51,6 +51,7 @@ import conftest
 HOST = "box2"
 
 INSTALL_SH = os.path.join(conftest.REPO_ROOT, "install.sh")
+REFRESH_SH = os.path.join(conftest.REPO_ROOT, "agb-refresh")
 PLIST_TEMPLATE = os.path.join(conftest.REPO_ROOT, "dist", "com.agbridge.plist")
 DIST_FILES = ("agb", "agb_mac", "agb_ops")
 
@@ -439,8 +440,8 @@ def test_print_mac_id_puts_only_the_id_on_stdout(run_agb, tmp_path, agb):
 # install.sh
 # ---------------------------------------------------------------------------
 
-def extract_sh_function(name):
-    """The text of one `install.sh` function, taken out of the file itself.
+def extract_sh_function(name, script=INSTALL_SH):
+    """The text of one shell function, taken out of the file itself.
 
     A couple of refusals are unreachable end to end on this box -- `find_python`
     only gives up when none of its four absolute candidates exist, and
@@ -448,7 +449,7 @@ def extract_sh_function(name):
     without a chroot; restating the body in the test would mean testing the
     test's own copy of it.
     """
-    with open(INSTALL_SH) as handle:
+    with open(script) as handle:
         lines = handle.read().splitlines()
     start = lines.index(name + "() {")
     end = start
@@ -1312,6 +1313,109 @@ def test_an_instance_name_that_would_escape_its_own_directories_is_refused(
     assert list(fake_home.rglob("config")) == []
 
 
+def test_an_empty_instance_name_is_refused_rather_than_ignored(
+        run_sh, mac_args, tmp_path, fake_home):
+    """`need` only counts arguments, so `--instance ""` would read as "not
+    given" and install the DEFAULT instance while echoing the name back -- the
+    silent-wrong-instance failure the whole flag exists to prevent, arriving
+    from the one input that looks like an accident rather than an attack.
+
+    `agb-refresh` has had this test since the flag existed; the installer, which
+    is the half that actually writes files, did not.
+    """
+    code, out, err = run_sh(_instance_args(mac_args, name=""))
+    assert code != 0
+    assert "--instance" in err
+    # Nothing was installed AT ALL -- not the named instance, and not the
+    # default one it would have fallen through to.
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+    assert list(fake_home.rglob("config")) == []
+
+
+@pytest.mark.parametrize("path", ["relcfg/config", "~/relcfg/config",
+                                  "./config"])
+def test_a_config_path_that_is_not_absolute_is_refused(run_sh, mac_args,
+                                                       tmp_path, path):
+    """⚠️ `--config` is the one path that reaches launchd, and it is rendered
+    into ProgramArguments UNCONDITIONALLY.
+
+    The job runs with `WorkingDirectory /tmp`, so `--config relcfg/config`
+    writes a real config to `$PWD/relcfg/config`, reports success, and then
+    hands the bridge `/tmp/relcfg/config` -- read as `{}`, dying in a KeepAlive
+    restart loop whose error names a path that exists where the operator was
+    standing. `/tmp` is world-writable, so that path is plantable, and a config
+    feeds `feed_host`/`remote_python`/`jump_host` into the ssh argv.
+
+    The quoted `~` form is the same bug with a worse tell: `install-config`
+    expands it and the plist does not, so the two halves of one install disagree
+    about which file they mean.
+
+    Every other path here already went through `absolute`; this one did not.
+    """
+    code, out, err = run_sh(mac_args(**{"--config": path}))
+    assert code != 0
+    assert "--config" in err and "absolute" in err
+    # Refused before anything was copied or rendered.
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+
+
+def test_an_instance_install_bounces_only_its_own_launchd_job(
+        run_sh, mac_args, tmp_path, stub_bin):
+    """⚠️ Which job is stopped and started is a claim no test made.
+
+    `bootout`/`bootstrap` are built from `$label`, and with the label wrong an
+    instance install would stop the OTHER instance's bridge and leave it down --
+    a routine upgrade taking out the sidebar of a machine nobody touched, with
+    every other line of the install identical.
+    """
+    stub_bin.install("launchctl")
+    argv = [arg for arg in _instance_args(mac_args) if arg != "--no-load"]
+    code, out, err = run_sh(argv)
+    assert code == 0, err
+    calls = stub_bin.calls("launchctl")
+    assert [call[0] for call in calls] == ["bootout", "bootstrap"]
+    assert calls[0][1].endswith("/com.agbridge.hostb")
+    assert calls[1][-1] == str(tmp_path / "agents"
+                               / "com.agbridge.hostb.plist")
+    # Non-vacuity, and the failure itself: the default job's label is not what
+    # was bounced, and its plist is not what was bootstrapped.
+    assert not any(arg.endswith("/com.agbridge") for call in calls
+                   for arg in call)
+    assert not any(arg.endswith("/com.agbridge.plist") for call in calls
+                   for arg in call)
+
+
+def test_reinstalling_an_instance_keeps_the_mac_id_it_already_has(
+        run_sh, mac_args, fake_home, agb):
+    """⚠️ Adoption fires on EVERY `--instance` run without `--mac-id`, which
+    means on a routine upgrade -- and `resolve_mac_id` gives `given` priority
+    over `existing`.
+
+    So probing only the default config REPLACES an id this instance already
+    recorded. Every farm host of that cluster still watches
+    `bridge/<old-id>.beat`, so `agb status-line` reads `bridge:DOWN` for ever
+    and `agb doctor` reports no beat -- out of an install that was asked to
+    change nothing.
+    """
+    code, out, err = run_sh(_instance_args(mac_args,
+                                           **{"--mac-id": "mac-b0b0"}))
+    assert code == 0, err
+    code, out, err = run_sh(mac_args(**{"--config": None}))     # the default
+    assert code == 0, err
+    default = agb.read_config(
+        str(fake_home / ".config" / "agbridge" / "config"))["mac_id"]
+    assert default != "mac-b0b0", "the two configs must disagree to test this"
+
+    code, out, err = run_sh(_instance_args(mac_args))           # the upgrade
+    assert code == 0, err
+    assert agb.read_config(
+        str(_instance_config(fake_home)))["mac_id"] == "mac-b0b0"
+    assert "adopted mac-b0b0 from %s" % (_instance_config(fake_home),) in out
+    assert default not in out
+
+
 def test_the_farm_role_refuses_the_instance_sugar(run_sh, tmp_path):
     """⚠️ The option loop is ROLE-AGNOSTIC and `$config` is used by both roles.
 
@@ -1848,3 +1952,66 @@ def test_a_dry_run_writes_no_wrapper(run_sh, tmp_path):
     _code, out, _err = run_sh(argv)
     assert not (bindir / "agb").exists()
     assert "would write the wrapper" in out
+
+
+# ---------------------------------------------------------------------------
+# the two cross-file agreements nothing else can catch
+# ---------------------------------------------------------------------------
+#
+# ⚠️ Neither of these has a single source of truth, and neither can: `agb` is
+# Python under a byte cap, `install.sh` and `agb-refresh` are POSIX sh, and no
+# one of the three can import the others. So the agreement is asserted here
+# instead. Both failures are silent -- a wrong answer that installs cleanly.
+
+
+def _sh_assignment(script, name):
+    """The right-hand side of `NAME=...` in a POSIX-sh script."""
+    with open(script) as handle:
+        for line in handle.read().splitlines():
+            if line.startswith(name + "="):
+                return line[len(name) + 1:].strip()
+    raise AssertionError("%s not assigned in %s" % (name, script))
+
+
+def test_the_default_config_path_is_spelled_the_same_in_all_three_places(agb):
+    """⚠️ `agb.config_path()`, `install.sh` and `agb-refresh` each spell it
+    independently, and a disagreement is invisible at install time.
+
+    `pane_argv` emits `--config` only when the path differs from
+    `agb.config_path()`, so an installer that spelled the default even slightly
+    differently would make **every default install** re-mint **every row** --
+    and the install itself would report success. `agb-refresh`'s copy decides
+    which map a plain refresh repairs.
+    """
+    expected = agb.config_path()
+    home = agb.home_dir()
+    for script in (INSTALL_SH, REFRESH_SH):
+        spelled = _sh_assignment(script, "DEFAULT_CONFIG")
+        # `"$DEFAULT_CONFIG_DIR/config"` -> the resolved path.
+        resolved = spelled.strip('"').replace(
+            "$DEFAULT_CONFIG_DIR",
+            _sh_assignment(script, "DEFAULT_CONFIG_DIR").strip('"'))
+        assert resolved.replace("$HOME", home) == expected, script
+
+
+def test_the_two_instance_name_validators_accept_exactly_the_same_names():
+    """⚠️ A name `agb-refresh` accepts and `install.sh` refuses names a plist
+    that was never rendered; the other way round is worse -- the installer would
+    write four things somewhere they were not meant to go.
+
+    The *messages* deliberately differ (one writes those four things, the other
+    goes looking for three of them), so what is compared is the rule: the `case`
+    patterns, which is the whole of the accept/reject decision.
+    """
+    def patterns(script):
+        body = extract_sh_function("instance_ok", script)
+        found = [line.split(")")[0].strip()
+                 for line in body.splitlines()
+                 if ")" in line and "die" in line or line.strip().endswith(")")]
+        # Only the arms, i.e. lines inside the `case`, not `case`/`esac`.
+        return [p for p in found if p and not p.startswith(("case", "esac"))]
+
+    install = patterns(INSTALL_SH)
+    refresh = patterns(REFRESH_SH)
+    assert install, "no case arms found -- the extraction stopped working"
+    assert install == refresh, (install, refresh)

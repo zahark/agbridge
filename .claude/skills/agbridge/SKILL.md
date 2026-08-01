@@ -25,6 +25,10 @@ Mac:          agb bridge -> owns key -> agterm row, calls agtermctl
 Mac:          agb pane   -> what a row runs when you click it
 ```
 
+That whole column is **one instance**. A machine that shares no disk with the first gets its own
+statedir, feed and bridge — a second launchd job, rendering into the same sidebar — so read every
+path below as "the default instance's", and see *Add a machine that shares no disk* for the rest.
+
 Two facts explain most confusion:
 
 - **Liveness is proven, never inferred.** No age is ever turned into a status. A row is removed only
@@ -141,6 +145,18 @@ Also worth knowing:
 - **`--instance` without `--statedir` is refused**, and `install.sh farm --instance …` too — the
   first would silently inherit the other cluster's directory, the second writes a config nothing on
   the farm reads. Names are letters, digits, `-`, `_`; it is a label, a filename and two directories.
+- **`agb-refresh --config <path>` is equivalent when you have the path but not the name** — it is
+  what the bridge's own `no such session` hint prints, since a config path is all a bridge knows
+  about itself. It looks the path up in the plists and bounces the job that holds its **map**, so the
+  label moves with the config; the banner then names the instance it resolved. The match is on the
+  **map** — the resolved directory, which is all `rows`/`placements` are derived from — not on the
+  spelling, so `//`, a `.` segment, a relative path, a symlinked `$HOME`, a bare `<dir>/` and even
+  `<dir>/some-other-name` all still find it. Where several jobs share one directory the one naming
+  this exact file is used and **all of them are named out loud**, because they share a rows file and
+  the others keep running over it. A plist with no `--config` counts as naming the default config
+  (that is what its bridge resolves), so an old default job is not invisible to the search. If no
+  plist claims the path it says so, keeps `com.agbridge`, and warns that it is about to bounce that
+  job with this config's bindings.
 - **An upgrade is one `install.sh mac`, but each job must be restarted**: `agb-refresh` for the
   default and `agb-refresh --instance <name>` for each other. A running bridge holds the code it
   started with.
@@ -194,10 +210,11 @@ Then on the Mac: delete the `host_<name>` line from the config, and `agb close-d
 | all rows `[?]` | the feed is not talking — VPN, ssh, or the cluster | check `agb doctor`'s beat; `ssh <feed host> true` |
 | a row vanished after you typed `exit` | agterm destroys a session when its command exits, and `exit`/`q` ends `agb pane` | expected; `agb-refresh` brings it back |
 | rows gone after closing/reinstalling agterm | agterm lost its sessions; the map still names them | `agb-refresh` |
-| duplicate rows | a previous refresh forgot bindings without closing the old rows | `agb-refresh` (it closes before forgetting) |
+| duplicate rows | a previous refresh forgot bindings without closing the old rows | `agb-refresh` (it closes before forgetting). On a Mac with several instances: `agb-refresh --instance <name>`, or `--config <path>` for an install that has no instance name |
 | every row duplicated right after upgrading to 0.5.0, on an install made with `install.sh mac --config <path>` and no `--instance` | the plist used to ignore that flag and now carries it, so the bridge looks for its map beside *that* config and mints everything again | `agb forget-rows --rows ~/.config/agbridge/rows` clears the orphans (it closes each as it forgets it); moving `rows` and `placements` beside the config before reinstalling avoids it |
 | no glyph at all | `idle` renders as nothing — a `[?]` or `[done]` row, or a row not yet painted | check the title prefix |
 | a row never updates | it may be an orphan not in the map | compare `cat ~/.config/agbridge/rows` against the sidebar |
+| clicking a row prints `WARNING: this row's config could not be read` | `agb pane` resolves `host_<name>` and `jump_host` through that config; unread, the ssh target is the bare hostname and any jump host is gone. The errno on the line says which failure | fix the file's mode (or the mount); if the instance moved, `agb-refresh --config <path>` re-mints the rows with the new path |
 
 `agb-refresh` on the Mac is the general repair: stop the bridge → forget the bindings → start it.
 Nothing on the cluster is touched and rows come back with the same identities.
@@ -267,11 +284,15 @@ notifications on a row that is not selected.
 
 Set `workspace = <name>` on the Mac and new rows land there (created if absent). A row you drag
 elsewhere keeps its place: `agb-refresh` records each row's workspace before closing it and restores
-it afterwards, via `~/.config/agbridge/placements`.
+it afterwards, via `placements` **beside that instance's config** —
+`~/.config/agbridge/placements` for the default one, `~/.config/agbridge/<name>/placements` for any
+other.
 
 ## Config keys
 
-`~/.config/agbridge/config`, `key = value`, never read on the hot path.
+`key = value`, never read on the hot path. `~/.config/agbridge/config` for the default instance;
+`~/.config/agbridge/<name>/config` (or whatever `install.sh mac --instance <name> --config <path>`
+was told) for any other, and the Mac-side keys below are **per instance**.
 
 | key | side | meaning |
 |---|---|---|

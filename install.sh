@@ -355,6 +355,20 @@ if [ -n "$instance" ]; then
 fi
 
 [ -n "$config" ] || config="$DEFAULT_CONFIG"
+# ABSOLUTE, like every other path this script writes down. `--config` is the one
+# that reaches launchd: it is rendered UNCONDITIONALLY into ProgramArguments,
+# and the job runs with `WorkingDirectory /tmp`. So `--config relcfg/config`
+# writes a real config to `$PWD/relcfg/config`, reports success, and hands the
+# bridge `/tmp/relcfg/config` -- a path that does not exist there, read as `{}`,
+# with KeepAlive turning it into a permanent restart loop naming a file that
+# exists where the operator was standing. The quoted `~` form is the same bug
+# with a worse tell: `install-config` expands it and the plist does not.
+# `/tmp` is world-writable, so the relative path is plantable too, and a config
+# supplies `feed_host`/`remote_python`/`jump_host` straight into the ssh argv.
+# Checked for both roles: on the farm a relative config is written where no
+# farm-side reader looks (`agb hook` resolves `agb.config_path()` and nothing
+# else), which is the same silent no-op with no launchd to make it loud.
+absolute "--config" "$config"
 if [ -n "$statedir" ]; then shell_safe "--statedir" "$statedir"
                             absolute "--statedir" "$statedir"; fi
 if [ -n "$macid" ]; then shell_safe "--mac-id" "$macid"; fi
@@ -447,13 +461,32 @@ role_mac() {
         esac
     fi
 
-    # A second instance ADOPTS this Mac's existing mac-id rather than minting a
-    # second one. The id names THIS MAC, not this connection: each instance's
-    # bridge writes bridge/<mac-id>.beat inside its OWN statedir, and those
-    # statedirs share no disk, so the same id on both sides is the truth and not
-    # a collision. A freshly minted one would instead have to be re-installed on
-    # every farm host of the new cluster before its `agb status-line` could see
-    # a beat at all.
+    # A second instance ADOPTS an existing mac-id rather than minting a second
+    # one. The id names THIS MAC, not this connection: each instance's bridge
+    # writes bridge/<mac-id>.beat inside its OWN statedir, and those statedirs
+    # share no disk, so the same id in both is the truth and not a collision.
+    #
+    # ⚠️ The reason recorded here used to be "a fresh id would have to be
+    # re-installed on every farm host of the new cluster", and that reason does
+    # NOT hold -- kept, per the house rule, because a withdrawn reason that is
+    # deleted gets re-proposed. The Mac instance is installed FIRST, and the
+    # `install.sh farm --mac-id` hint below carries whatever id this instance
+    # ended up with, so a new cluster's hosts would simply be installed with the
+    # new id and nothing would need re-installing. The reason that does hold is
+    # OPERATOR LEGIBILITY: one Mac, one id means `bridge/<mac-id>.beat` names
+    # the same machine in every cluster, so `agb doctor` and `agb status-line`
+    # are talking about one identity rather than N that have to be kept straight
+    # -- and pasting the wrong one of N into a farm install produces a beat file
+    # nobody writes, which reads exactly like a dead bridge.
+    #
+    # ⚠️ ITS OWN config first, the default's only as a fall-back. The adoption
+    # fires on EVERY `--instance` run without `--mac-id`, i.e. on a routine
+    # upgrade -- and `resolve_mac_id` gives `given` priority over `existing`, so
+    # probing only the default config would REPLACE an id this instance already
+    # recorded. Every farm host of that cluster still watches the old
+    # `bridge/<old-id>.beat`, so `agb status-line` reads `bridge:DOWN` for ever
+    # and `agb doctor` reports no beat, out of an install that changed nothing
+    # anybody asked to change.
     #
     # Read back through `agb` itself -- a dry run that prints the id it resolved
     # -- and never by grepping `key = value` here: a second reader of the config
@@ -466,14 +499,17 @@ role_mac() {
     # would abort the install of the first instance on a Mac that never had a
     # default one -- exactly the case the fall-back to minting is for.
     if [ -n "$instance" ] && [ -z "$macid" ]; then
-        adopted=$(run_agb "$python" "$installed" install-config \
-                          --config "$DEFAULT_CONFIG" --dry-run --print-mac-id \
-                      2>/dev/null) || adopted=""
-        if [ -n "$adopted" ]; then
-            shell_safe "the adopted mac-id" "$adopted"
-            macid=$adopted
-            say "mac-id:   adopted $macid from $DEFAULT_CONFIG"
-        fi
+        for known in "$config" "$DEFAULT_CONFIG"; do
+            adopted=$(run_agb "$python" "$installed" install-config \
+                              --config "$known" --dry-run --print-mac-id \
+                          2>/dev/null) || adopted=""
+            if [ -n "$adopted" ]; then
+                shell_safe "the adopted mac-id" "$adopted"
+                macid=$adopted
+                say "mac-id:   adopted $macid from $known"
+                break
+            fi
+        done
     fi
 
     # The config, and with it the mac-id: --print-mac-id puts the id alone on
