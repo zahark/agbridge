@@ -10,16 +10,19 @@
 # clears a *bound* entry -- `close-done` only touches `[done]` rows and `prune`
 # works from farm-side state -- so the binding has to be forgotten and re-minted.
 #
-#   agb-refresh                  # forget every binding; all rows come back
-#   agb-refresh --key a3f9c1e0   # just one, when the other rows are still fine
+#   agb-refresh                  # EVERY instance; all rows come back
+#   agb-refresh --key a3f9c1e0   # one binding, wherever it lives
 #   agb-refresh --dry-run        # say what would happen
-#   agb-refresh --instance hostb # the second Mac-side instance, not the default
+#   agb-refresh --instance hostb # only that Mac-side instance
 #
-# WHICH INSTANCE is the one thing this command cannot infer and the one thing
-# it is dangerous to get wrong: without --instance it stops com.agbridge,
-# forgets the default instance's bindings and starts it again, reporting
-# success in exactly the words it would have used for the instance you meant.
-# So it names the instance, the label and the config file on every run.
+# WHICH INSTANCE used to be the one thing this command could not infer and the
+# one thing it was dangerous to get wrong: with no --instance it stopped
+# com.agbridge, forgot the DEFAULT instance's bindings and started it again,
+# reporting success in exactly the words it would have used for the instance
+# you meant. A bare run visits every instance now, so there is nothing left to
+# infer -- but it still names the instance, the label and the config file on
+# every run, because --instance/--label/--config/--rows narrow it back to one
+# and such a run is exactly as silent about its own aim as it always was.
 #
 # NOTHING ON THE FARM IS TOUCHED. The agents, their keys and their state are
 # untouched; only this Mac's binding is discarded, so rows return with the same
@@ -55,7 +58,11 @@ usage() {
     cat >&2 <<'EOF'
 usage: agb-refresh [--key <key>]... [--dry-run] [options]
 
-  --key <key>        forget one binding; repeatable. Default: all of them
+  With none of --instance/--label/--config/--rows this acts on EVERY Mac-side
+  instance in turn; any one of those narrows it to that instance alone.
+
+  --key <key>        forget one binding; repeatable, and looked for in every
+                     instance. Default: all of them
   --dry-run          say what would happen; change nothing
   --no-close         leave agterm's sessions open (they become duplicates
                      when the bridge mints fresh rows)
@@ -390,134 +397,54 @@ BRIDGE_VALUE_FLAGS="--config --feed-host --mac-id --statedir --remote-path --rem
 # one for a named instance, which is why the reader asks the real parser rather
 # than drawing a boundary at what `install.sh` happens to write.
 #
-# ⚠️ TWO RULES ON THE PROGRAM TEXT BELOW, both of which fail at a distance:
+# ⚠️ THE READER IS `agb instances`, NOT AN EMBEDDED `-c` PROGRAM. Every
+# paragraph above still describes what it does -- `plistlib`, only
+# `ProgramArguments`, only what follows the `bridge` command word, and
+# `agb_mac.parse_bridge_args` for the rest -- but the code that does it now
+# lives in `agb_mac.run_instances`, and this function is the two-line call.
 #
-#   * NO APOSTROPHE. It would close the shell quoting around it. That is why the
-#     comments above spell possessives with a backquote, and why the program
-#     uses double-quoted strings throughout.
-#   * PURE ASCII, so no `⚠️` inside it however much the rest of this file uses
-#     one. Python decodes a `-c` program using the LOCALE`s filesystem encoding,
-#     so under `LC_ALL=C` a non-ASCII byte in the SOURCE is
-#     `Unable to decode the command from the command line` -- the reader never
-#     runs at all, and every caller reads "this plist names no config". Measured
-#     on 3.6.8 with a single emoji in a comment.
+# It moved for one reason: this script is no longer the only caller. `agb
+# close-done` and `agb forget-rows` sweep every instance too, and they run
+# in-process on the Mac where a shell reader is unreachable. A second copy of
+# the four-status contract, in a second language, is invariant 14`s fourth
+# cross-file agreement arriving where it did not have to.
+#
+# TWO RULES THAT WENT WITH IT, and both still apply -- to Python source now
+# rather than to a string this file quotes:
+#
+#   * NO APOSTROPHE was a rule about `'...'` shell quoting. There is no quoted
+#     program left, so it is retired here and nowhere else; the possessives in
+#     the comments above are still spelled with a backquote because rewriting
+#     them would bury the diff that matters.
+#   * PURE ASCII / BYTES OUT is NOT retired, it MOVED. Python decoded a `-c`
+#     program with the LOCALE`s filesystem encoding, so one non-ASCII byte in
+#     the source was `Unable to decode the command from the command line` and
+#     every caller read "this plist names no config". A file loaded from disk
+#     is decoded as UTF-8 regardless of locale, so that half is structural now.
+#     The OUTPUT half is not: `-E` does not touch `LC_ALL`, so `run_instances`
+#     writes the value to `sys.stdout.buffer` as UTF-8 bytes rather than with
+#     `print`, which would raise under `LC_ALL=C` and -- worse -- SUCCEED under
+#     ISO-8859-1, handing back a transcoded path that exists nowhere. That is
+#     contract 1, it is stated beside the code in `agb_mac`, and it is guarded
+#     by a three-locale test on both sides.
+#
+# ⚠️ AND THE EXIT-CODE COLLISION THIS OPENED, which is why the probe further
+# down asks `agb instances --probe` rather than `import plistlib`. `agb` answers
+# an UNKNOWN COMMAND with exit 2, `USAGE` on stderr and EMPTY STDOUT -- which is
+# byte-identical to a new `agb` answering "this plist says nothing". So an
+# `agb` older than `agb instances` would make every plist silent, the run would
+# fall through to the default label and the conventional config, and it would
+# report success in the words it uses when it is right. The probe is what makes
+# exit 2 unambiguous afterwards, and it has to be STDOUT-compared: a status
+# alone cannot see `--python /bin/echo`.
 plist_arg() {
-    "$python" -S -E -c '
-import os, plistlib, sys
-
-# THE PARSER `agb bridge` ITSELF USES, loaded the way `agb` loads it: by PATH,
-# from the directory the installed `agb` lives in, with `agb` registered in
-# `sys.modules` first so that `agb_mac`s own `import agb` binds this one. Neither
-# file has a `.py` extension, so the ordinary import machinery cannot find them
-# (agb constraint #17) - which is also what stops a stray `agb_mac` on the path
-# from being picked up here.
-#
-# FIRST, before the plist is even opened, so that a tree missing `agb_mac`
-# answers the same way whatever the plist looks like. Exit 3 - not 2 - because
-# this is not a statement about the file at all; `plist_read_ok` turns it into a
-# `die` naming `--agb`.
-def load(name, path):
-    import importlib.util
-    from importlib.machinery import SourceFileLoader
-    loader = SourceFileLoader(name, path)
-    spec = importlib.util.spec_from_file_location(name, path, loader=loader)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    loader.exec_module(mod)
-    return mod
-
-try:
-    lib = os.path.dirname(os.path.realpath(sys.argv[3]))
-    load("agb", os.path.join(lib, "agb"))
-    mac = load("agb_mac", os.path.join(lib, "agb_mac"))
-    parse = mac.parse_bridge_args
-    # WHICH KEY the answer lands under, taken from the parsers own table rather
-    # than derived from the flag name: `--feed-host` is `feed_host` there, and a
-    # rule spelled here would be one more thing to keep in step. A flag that
-    # takes no value at all is not in the table, and `opts.get(None)` is `None`,
-    # which is the same answer as "this argv does not carry it".
-    key = mac.BRIDGE_VALUE_ARGS.get(sys.argv[2])
-except Exception:
-    sys.exit(3)
-
-# Read and parse are one answer, not two: both mean "this file says nothing",
-# and separating them would only give the caller a distinction it has no use
-# for. `EnvironmentError` rather than `OSError` for the 3.6 floor - they are the
-# same class there, and this spelling reads on every version the farm has.
-try:
-    fh = open(sys.argv[1], "rb")
-except EnvironmentError:
-    sys.exit(2)
-try:
-    try:
-        doc = plistlib.load(fh)
-    except Exception:
-        # WARNING: `plistlib` SNIFFS the format off the first 32 bytes and only
-        # recognises `<?xml`, `<plist` and the binary magic. A plist that opens
-        # with its DOCTYPE - valid XML, and launchd loads it - is refused
-        # before the parser ever sees it. Naming the format skips the sniff.
-        # This is a widening, not a loosening: a file that is genuinely not XML
-        # still fails, one line lower, in the parser.
-        fh.seek(0)
-        doc = plistlib.load(fh, fmt=plistlib.FMT_XML)
-except Exception:
-    sys.exit(2)
-finally:
-    fh.close()
-
-# `<plist/>` parses to None and a plist whose root is an array parses to a list;
-# neither is a launchd job, and neither is an ERROR. They carry no argv, which
-# is exit 0 with no output - the same answer as a job plist with no such flag.
-argv = doc.get("ProgramArguments") if isinstance(doc, dict) else None
-if not isinstance(argv, list):
-    sys.exit(0)
-
-# A NON-STRING ELEMENT IS ANSWERED HERE, not by the parser, which would raise on
-# it (`arg.partition` on an int) rather than answer. launchd refuses such a job
-# outright, so nothing is running from it and it carries no map: "no such flag".
-if not all(isinstance(el, str) for el in argv):
-    sys.exit(0)
-
-# WHERE THE BRIDGE`S ARGV STARTS. `ProgramArguments` is the whole command line -
-# interpreter, its options, the `agb` path, THEN the command word - and `agb`
-# hands `cmd_bridge` only what follows that word. A flag in front of it is the
-# COMMAND, refused as unknown, so a job spelled that way runs no bridge and
-# holds no map; reading a config off it made a dead job outrank a live one.
-#
-# No `bridge` in the array is "no such flag" (exit 0, no value), not an error:
-# see the block above the function for why that direction and not exit 2.
-try:
-    start = argv.index("bridge") + 1
-except ValueError:
-    sys.exit(0)
-
-# AND THE REST IS THE PARSERS ANSWER, not a walk that imitates it. An argv it
-# REFUSES starts no bridge - `agb bridge` prints the error and exits, launchd
-# restarts it for ever under `KeepAlive` - so the job holds no map and "carries
-# no such flag" is the correct answer, not a fallback. Every rejection rule comes
-# with it: a missing value either spelling, an unknown option, a stray
-# positional, a `--watchdog` that is not a number.
-try:
-    value = parse(argv[start:]).get(key)
-except Exception:
-    sys.exit(0)
-
-# WARNING: BYTES, not `print`. `print` encodes with whatever the LOCALE says, and
-# `-E` does not touch `LC_ALL`: under `LC_ALL=C` a non-ASCII config path is a
-# `UnicodeEncodeError` (the reader dies and the caller reads "no config"), and
-# under an ISO-8859-1 locale it comes out MANGLED - a path that exists nowhere,
-# which is the unsafe direction, silently. The awk this replaced passed bytes
-# through untouched and this has to as well. UTF-8 because that is what the
-# filesystem takes on both sides: macOS enforces it, and it is the convention
-# everywhere the farm runs.
-#
-# `%s` because two of the parsers values are NUMBERS (`--watchdog` is a float,
-# `--connections` an int). Nothing asks this for either - `bind_label_to_config`
-# asks `--config` and `--rows`, both paths - but answering "the value the bridge
-# resolved" for a flag it was handed beats raising on it.
-if value is not None:
-    sys.stdout.buffer.write(("%s" % (value,)).encode("utf-8") + b"\n")
-' "$1" "$2" "$agb"
+    # `--launch-agents` is INERT under `--plist` (that mode opens the file it
+    # was handed and never lists a directory) and is passed anyway, so that
+    # every `agb instances` call in this script names the same directory and
+    # the sweep`s `--labels` call cannot be the only one carrying it -- a flag
+    # forwarded from one site out of two is a flag that silently stops working.
+    "$python" -S -E "$agb" instances \
+        --plist "$1" --arg "$2" --launch-agents "$agentsdir"
 }
 
 # WHAT EACH `plist_arg` STATUS MEANS, spelled ONCE and asked at every call site.
@@ -534,8 +461,21 @@ if value is not None:
 #      about the plist, and a different one from the interpreter failing: the
 #      tree cannot run `agb bridge` OR `agb forget-rows` either, so this run
 #      cannot do its job at all. Fatal, and the message names `--agb`.
+#      ⚠️ `agb.cmd_instances` catches `Exception` around the LOAD ONLY, not
+#      around `run_instances`, and it must keep catching that broadly: a tree
+#      with no `agb_mac` raises `FileNotFoundError` (the sibling is loaded by
+#      PATH), which is an `OSError` and not an `ImportError`. Catching the
+#      narrow pair let it escape as a traceback and exit 1 -- read here as
+#      "the reader failed", i.e. blamed on `$python` instead of on `--agb`.
 #   *  THE READER ITSELF FAILED, which is not a statement about the plist at
-#      all. It is a statement about `$python`.
+#      all. ⚠️ It is a statement about `$python` OR about `$agb`, and it stopped
+#      being about the interpreter alone when the reader moved into `agb`:
+#      exit 1 is now what `agb` returns for an `AgbError` and for any uncaught
+#      exception in `run_instances`, neither of which the interpreter did. The
+#      message below names BOTH files rather than guessing between them --
+#      naming only `--python` would send an operator to replace a python3 that
+#      is working. The probe further down has already proved that both can run
+#      `agb instances --probe`, so a failure here is later than that.
 #
 # ⚠️ BOTH of the last two were folded into the second at all three call sites,
 # and that is an ordinary operator mistake away: `--python /bin/false`,
@@ -564,10 +504,14 @@ plist_read_ok() {
        file -- so this tree cannot do either. Pass --agb <path to the installed
        agb>, or re-run install.sh mac to put agb, agb_mac and agb_ops back
        together."
-    die "cannot read a plist: $python exited $1 reading $2.
-       That is the reader failing, not the plist -- pass --python <path to a
-       real python3>. Continuing would bounce whichever job the unread plists
-       left unclaimed and forget the wrong instance's bindings."
+    die "cannot read a plist: $python -S -E $agb instances exited $1 reading $2.
+       That is the READER failing, not the plist -- and the reader is two files
+       now, so this names both rather than guessing: either $python is not a
+       real python3 (pass --python <path>), or that agb tree is broken (pass
+       --agb <path to the installed agb>). The probe above proved both could
+       answer --probe, so whatever this is, it is later than that.
+       Continuing would bounce whichever job the unread plists left unclaimed
+       and forget the wrong instance's bindings."
 }
 
 # WHERE A CONFIG'S MAP LIVES, canonically -- so two config paths can be compared
@@ -921,6 +865,29 @@ fi
 # made of the reader`s source code. That is the unsafe polarity and no status
 # can see it, which is why this asks a question with a known answer instead.
 #
+# ⚠️ ONE PROBE, NOT TWO, and it asks the REAL COMMAND rather than
+# `import plistlib`. Since the reader moved into `agb instances`, this script
+# runs no `-c` program at all -- `plistlib` is imported by `agb_mac`, not by the
+# shell -- so a `plistlib` probe would prove a library nothing here calls
+# directly. A known-answer probe of `agb instances` itself subsumes it and
+# proves three more things at once:
+#
+#   * `$python` runs Python (`/bin/false`, a shell script, a missing file).
+#   * `$python` is not merely EXITING 0 (`--python /bin/echo` prints its own
+#     arguments, which is why the ANSWER is compared and not the status).
+#   * `$agb` IS NEW ENOUGH TO HAVE `agb instances`. This is the one that had no
+#     probe before and needs one most: `agb` answers an unknown command with
+#     exit 2 and EMPTY STDOUT, which is byte-identical to a new `agb` saying
+#     "this plist carries no such flag". Without this line a checkout
+#     `agb-refresh` against an installed 0.5.0 `agb` would read every plist as
+#     silent, fall through to the default label and the conventional config, and
+#     bounce the wrong job reporting success. After it, exit 2 is unambiguous.
+#
+# ⚠️ Exit 3 is answered FIRST and separately, with `plist_read_ok`s own message.
+# A tree with no `agb_mac` fails `--probe` too (`run_instances` lives there), and
+# folding it into the message below would send an operator to replace a `python3`
+# that is working. Same words as the three plist call sites, from one place.
+#
 # One extra process per run, in a command that already starts several and sleeps
 # in a poll loop.
 #
@@ -931,12 +898,230 @@ fi
 # is what the awk this reader replaced did, and it swallowed the traceback that
 # explains WHY. Letting it through prints the real diagnosis immediately above
 # the message below, and leaves the decision to the one string that answers it.
-if [ "$("$python" -S -E -c 'import plistlib, sys
-sys.stdout.write("plistlib-ok")')" != plistlib-ok ]; then
-    die "$python is not a usable python3 (it cannot import plistlib).
-       agb-refresh reads the launchd plists with it to find out which config
-       each job runs; without one it cannot tell which map to repair.
-       Pass --python <absolute path to python3>."
+probestatus=0
+probeanswer=$("$python" -S -E "$agb" instances --probe) || probestatus=$?
+if [ "$probestatus" = 3 ]; then plist_read_ok 3 "$agb"; fi
+if [ "$probeanswer" != instances-ok ]; then
+    die "$python -S -E $agb instances --probe did not answer instances-ok.
+       agb-refresh asks agb instances which config each launchd job was started
+       with, so it can tell which map to repair.
+       Either $python is not a usable python3, or that agb predates
+       agb instances (0.5.0 and earlier) and answers unknown command -- which is
+       empty stdout, exactly like a plist that names no config, so the two
+       cannot be told apart later.
+       Pass --python <absolute path to python3>, or re-run install.sh mac to
+       install a current agb, agb_mac and agb_ops together."
+fi
+
+# HOW THIS SCRIPT NAMES ITSELF FOR THE RE-EXEC BELOW. `$0` is whatever the
+# caller typed, and it is not always a path: `agb-refresh` found on `$PATH` (the
+# installed spelling -- `install.sh` copies this file into `--dest`) and
+# `sh agb-refresh` typed in the script's own directory both leave a `$0` with no
+# slash. The suite invokes an ABSOLUTE path and would never see either, which is
+# the harness-simpler-than-reality shape this file keeps being bitten by.
+#
+# ⚠️ THE CURRENT DIRECTORY FIRST, THEN `$PATH`, and the order is not a
+# preference: it is the order `sh <name>` itself uses to find a script operand
+# (bash tries the name as a path relative to the cwd and only then searches
+# `$PATH`; verified, not assumed). Matching it is what guarantees the CHILDREN
+# ARE THE SAME FILE AS THE PARENT -- with a copy in both places, `$PATH` first
+# would sweep through a different copy of this script than the one running, and
+# nothing would say so.
+#
+# ⚠️ And it is spelled out rather than left to `sh "$0"`, which happens to work
+# on bash for both spellings, because POSIX does not require the `$PATH` search
+# at all (dash does not do it) and because a name that resolves NOWHERE has to
+# be one loud `die` here rather than `sh: can't open` once per instance, after
+# the first job has already been booted out.
+#
+# `command -v` and not a hand-rolled `$PATH` walk: it is the shell's own
+# resolution, including its `$PATH` parsing and its executable test. It answers
+# a bare word for a builtin or a function, so only an answer WITH A SLASH is
+# taken as a file.
+sweep_self() {
+    case $1 in
+        */*) printf '%s' "$1"; return 0 ;;
+    esac
+    if [ -f "./$1" ]; then printf './%s' "$1"; return 0; fi
+    ss_found=$(command -v "$1" 2>/dev/null || :)
+    case $ss_found in
+        */*) printf '%s' "$ss_found"; return 0 ;;
+    esac
+    return 1
+}
+
+# EVERY INSTANCE, unless this run named one.
+#
+# A bare `agb-refresh` used to act on the UNNAMED instance and report success in
+# exactly the words it would have used for the one you meant. That default was
+# an artifact of install order rather than of the domain: all the Mac-side
+# instances have the same standing, any of them can be closed by hand, killed or
+# come back with its rows forgotten, and the command that repairs that should not
+# have to be told which. (design.md §5, limitation 1.)
+#
+# WHAT NARROWS IT, and why each one does:
+#
+#   --instance / --label / --config   name an instance outright.
+#   --rows                            names ONE map, and naming a map IS naming
+#                                     what to act on; such a run keeps today's
+#                                     semantics exactly.
+#
+# ⚠️ `--key` does NOT narrow it, and that is the decision that keeps this file's
+# own documented recipe (`agb-refresh --key a3f9c1e0`, at the top) working: it is
+# typed by someone reading a key out of a bridge log, who has no way to know
+# which instance minted it -- "you should not have to know which instance" is the
+# whole point of the sweep. A key belongs to exactly one map, so the sweep finds
+# it wherever it lives and fails only when NO instance had it.
+#
+# ⚠️ IT RE-EXECS THIS SCRIPT ONCE PER LABEL RATHER THAN LOOPING IN PROCESS. This
+# is 1600 lines of `set -eu` with per-run globals -- `pattern`, `broad`,
+# `notedloose`, `looseheld`, `waited`, `plistconfig`, `plistsaid` -- and a `die`
+# on most error paths. An in-process loop would carry one instance's state into
+# the next, and, worse, any `die` would end the whole sweep with jobs already
+# booted out and never started again. A fresh process resets every global for
+# free and leaves each `die` correct for the single instance it is about.
+#
+# ⚠️ AND THE CHILD CANNOT RE-SWEEP, structurally rather than by a rule it is
+# told to obey: it is given `--label`, which is one of the four flags above.
+if [ -z "$instance" ] && [ -z "$label" ] && [ -z "$config" ] && [ -z "$rows" ]
+then
+    # ⚠️ NON-ZERO IS FATAL, and it is contract 2 of `agb instances`: a missing
+    # `~/Library/LaunchAgents` is exit 0 with no output ("no instances"), and
+    # every other errno is exit 1 with the reason on stderr. Reading the second
+    # as the first is invariant 12 verbatim -- "I could not answer" collapsing
+    # into "the answer is nothing" -- and it would make a Mac with a momentarily
+    # unreadable directory sweep nothing, fall through to the default job and
+    # report success.
+    sweepstatus=0
+    sweeplabels=$("$python" -S -E "$agb" instances --labels \
+        --launch-agents "$agentsdir") || sweepstatus=$?
+    [ "$sweepstatus" = 0 ] || die "cannot list the instances in $agentsdir
+       ($python -S -E $agb instances --labels exited $sweepstatus; the reason is
+       on stderr above). \"I could not list them\" is not \"there are none\":
+       taking it as none would fall back to the default instance and report
+       success for a run that swept nothing.
+       Fix that directory, or name one instance with --instance/--label/--config."
+    if [ -z "$sweeplabels" ]; then
+        # ⚠️ NO INSTANCES IS NOT AN ERROR, because a Mac with no plist at all is
+        # the commonest thing this command is run on: agterm forgot its rows,
+        # `install.sh mac --no-load` was used, or the plist was never rendered.
+        # That run still forgets the default map and warns that nothing was
+        # restarted, which is the recipe in SKILL.md and has to keep working. So
+        # this falls THROUGH to the single-instance path below rather than
+        # exiting.
+        say "note:     no agbridge instance is installed in $agentsdir, so this"
+        say "          run acts on the default instance alone."
+    else
+        sweepself=$(sweep_self "$0") || die "cannot find this script again to sweep with: \$0 is \"$0\", which is neither a path, nor a file in this directory, nor on \$PATH.
+       The sweep re-runs this file once per instance, so it has to be able to
+       name it. Invoke it by path (sh /path/to/agb-refresh), or name one
+       instance with --instance/--label/--config."
+        # ⚠️ EVERY FLAG IS FORWARDED EXPLICITLY, and `--dry-run` above all: a
+        # sweep that dropped it would perform a REAL refresh of every instance
+        # for a command that promised to change nothing. `--agb` and `--python`
+        # matter just as much and are easier to lose sight of, because a child
+        # without them falls back to `~/.local/lib/agbridge/agb` -- which exists
+        # on a real Mac, so the sweep would quietly act through a DIFFERENT tree
+        # from the one the parent was told to use.
+        #
+        # `--rows` is absent on purpose: it is one of the four flags that narrow,
+        # so a run that carries one never reaches here.
+        set -- --agb "$agb" --python "$python" --launch-agents "$agentsdir"
+        for k in $keys; do set -- "$@" --key "$k"; done
+        [ "$dry" = yes ] && set -- "$@" --dry-run
+        [ "$noclose" = yes ] && set -- "$@" --no-close
+        say "sweep:    every agbridge instance in $agentsdir"
+        sweepn=0; sweepok=""; sweepfailed=""; sweepdown=""
+        sweepstopped=""; sweepskipped=""; sweepsigcode=0
+        # A here-document rather than a pipe, for the reason `bridge_alive` gives
+        # for the same shape: a `while` on the right of a `|` runs in a subshell
+        # in POSIX sh, and every counter below would be discarded with it.
+        #
+        # ⚠️ And `read -r` line by line rather than `for l in $sweeplabels`,
+        # because `install.sh --label` puts no shape rule on a label: one
+        # containing a blank would be split into two by IFS and swept as two
+        # instances that do not exist. (A label containing a NEWLINE is
+        # unrepresentable here, as a config path containing one already is.)
+        while IFS= read -r sweeplabel; do
+            [ -n "$sweeplabel" ] || continue
+            # ⚠️ A CHILD KILLED BY A SIGNAL STOPS THE SWEEP. Ctrl-C reaches the
+            # whole process group, so this is usually moot -- but when only the
+            # child was signalled, carrying on would bounce the remaining
+            # instances after the operator asked for it to stop.
+            if [ "$sweepsigcode" != 0 ]; then
+                sweepskipped="$sweepskipped $sweeplabel"
+                continue
+            fi
+            sweepn=$((sweepn + 1))
+            say ""
+            sweepcode=0
+            # ⚠️ `</dev/null`, because the loop's own stdin IS the here-document
+            # holding the labels: a child that read one byte of it would eat the
+            # instances that had not been swept yet.
+            sh "$sweepself" --label "$sweeplabel" "$@" </dev/null || sweepcode=$?
+            if [ "$sweepcode" = 0 ]; then
+                sweepok="$sweepok $sweeplabel"
+            elif [ "$sweepcode" = 4 ]; then
+                # 4 is the child saying "I could not start the bridge again"
+                # (see `start_label`). It is a different fact from a failed
+                # forget and it is always an error, `--key` or not: an instance
+                # left without a running bridge is the thing that would make
+                # bare-is-all unsafe.
+                sweepdown="$sweepdown $sweeplabel"
+            elif [ "$sweepcode" -ge 128 ]; then
+                sweepsigcode=$sweepcode
+                sweepstopped=$sweeplabel
+            else
+                sweepfailed="$sweepfailed $sweeplabel(exit $sweepcode)"
+            fi
+        done <<EOF
+$sweeplabels
+EOF
+        say ""
+        sweeprc=0
+        if [ -n "$sweepdown" ]; then
+            say "WARNING:  no bridge was started again for:${sweepdown}."
+            say "          Every instance is meant to end this run with its"
+            say "          bridge back up -- re-run install.sh mac for those."
+            sweeprc=1
+        fi
+        if [ -n "$keys" ]; then
+            # ⚠️ WITH `--key`, A CHILD'S EXIT 1 IS THE ORDINARY ANSWER and not a
+            # failure: `agb forget-rows` returns 1 when a named key was not in
+            # the map it opened, so every instance that does not hold the key
+            # says 1. A key belongs to exactly one map, so the run succeeds when
+            # ANY instance reported success and fails only when none did.
+            #
+            # ⚠️ What that cannot see, stated rather than hidden: several `--key`s
+            # spread across DIFFERENT instances make every child answer 1 (each
+            # forgets its own and reports the others missing), so this says no
+            # instance had them although all of them were forgotten. It errs
+            # towards a failure for work that succeeded -- the safe direction --
+            # and each child's own `forget <key> -> <row>` lines are on the
+            # terminal above. Telling the two apart would mean reading the
+            # children's output instead of their status.
+            if [ -n "$sweepok" ]; then
+                say "keys:     forgotten by:${sweepok}"
+            else
+                say "WARNING:  no instance had all of these keys:${keys}"
+                sweeprc=1
+            fi
+        elif [ -n "$sweepfailed" ]; then
+            say "WARNING:  failed:${sweepfailed}"
+            say "          The rest were still swept; the output above says how"
+            say "          each one ended."
+            sweeprc=1
+        fi
+        if [ "$sweepsigcode" != 0 ]; then
+            say "WARNING:  $sweepstopped was interrupted, so the sweep stopped"
+            say "          there. Its own bridge was started again before it"
+            say "          exited; NOT visited:${sweepskipped:- (none)}"
+            sweeprc=$sweepsigcode
+        fi
+        if [ "$sweepn" = 1 ]; then sweepword=instance; else sweepword=instances; fi
+        say "swept:    $sweepn $sweepword"
+        exit "$sweeprc"
+    fi
 fi
 
 # The LABEL half is resolved first, on its own, because the plist it names is
@@ -1022,10 +1207,22 @@ fi
 # "(default)" there would be the one line of output that is wrong, in the line
 # whose entire job is to say which instance moved. `com.agbridge` itself has no
 # suffix and stays "(default)".
+#
+# ⚠️ AND A LABEL OUTSIDE THE `com.agbridge` SPACE IS NOT THE DEFAULT ONE EITHER.
+# `install.sh mac --label <anything>` puts no shape rule on a label, so
+# `weird.label` is a real install -- and the fall-through used to answer
+# "(default)" for it, which is the same falsehood the paragraph above forbids,
+# in the same line. It became reachable without anybody typing a label when the
+# bare run started SWEEPING: the sweep types `--label` for each plist it finds,
+# custom labels included, so an operator who never named an instance was told a
+# custom-label one was the default. Such an instance has no name but its label,
+# so the label is what is shown; only `$DEFAULT_LABEL` itself is "(default)".
 shown=$instance
 if [ -z "$shown" ]; then
     case $label in
         "$DEFAULT_LABEL".*) shown=${label#"$DEFAULT_LABEL".} ;;
+        "$DEFAULT_LABEL") ;;
+        *) shown=$label ;;
     esac
 fi
 say "instance: ${shown:-(default)} -- label $label, config $config"
@@ -1501,6 +1698,66 @@ EOF
     return 0
 }
 
+# START THE JOB AGAIN. A function because there are now TWO ways out of the
+# window between the bootout and the restart -- running to the end of the script,
+# and being killed in the middle of it -- and both have to leave the bridge up.
+# Spelling the four launchctl lines twice is how the two would drift.
+#
+# ⚠️ ITS RETURN VALUE IS A FACT ABOUT THE BRIDGE, not about launchctl: 1 means
+# "this Mac is now without a bridge for this label", which the caller turns into
+# exit 4 and the sweep reports as an error. Two branches deliberately answer 0:
+#
+#   * no `launchctl` at all -- nothing was stopped either, so nothing is down.
+#   * NO PLIST AT THIS LABEL. It is what a Mac whose plist was never rendered
+#     (or was hand-deleted) looks like, and `agb-refresh --instance <name>`
+#     against one is a DOCUMENTED, working recipe -- the convention is the
+#     fall-back for the config, and the warning below is the whole of what it
+#     costs. Making it an error would repeal that promise, which is why "no
+#     running bridge is an error" is a rule about the SWEEP: a label the sweep
+#     visits came out of a plist in `$agentsdir`, so this branch cannot be
+#     reached there -- unless that file is deleted underneath the run, a race
+#     with a human `rm` whose only alternative is a second flag telling the child
+#     it is inside a sweep.
+start_label() {
+    command -v launchctl >/dev/null 2>&1 || return 0
+    if [ ! -f "$plist" ]; then
+        say "WARNING:  no plist at $plist -- the bridge was not restarted"
+        return 0
+    fi
+    if launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
+        say "started:  $label"
+        return 0
+    fi
+    if launchctl load -w "$plist" >/dev/null 2>&1; then
+        say "started:  $label (legacy load -w)"
+        return 0
+    fi
+    say "WARNING:  could not start $label -- run install.sh mac again"
+    return 1
+}
+
+# ⚠️ THE TRAP LIVES IN THIS PROCESS, WHICH UNDER A SWEEP IS THE CHILD. The
+# window that matters is between `launchctl bootout` and the restart: a Ctrl-C
+# there leaves that instance's bridge DOWN, with its rows forgotten and nothing
+# to re-mint them -- the dark sidebar this command exists to cure, caused by it.
+# A trap in the sweeping parent could not help, because the parent never boots
+# anything out; one in BOTH would bootstrap the same job twice.
+#
+# Re-raised rather than `exit`ed, so the caller sees the conventional 128+signo
+# and can tell an interrupt from a failure -- which is what stops the sweep at
+# the instance the operator interrupted instead of carrying on through the rest.
+on_signal() {
+    trap - INT TERM HUP
+    say ""
+    say "WARNING:  interrupted (SIG$1) with $label stopped -- starting it again"
+    say "          before exiting, so nothing is left down."
+    start_label || :
+    kill -"$1" $$
+    # Only reached if the signal is somehow not fatal here; still non-zero, so
+    # the sweep records it rather than reading the interrupt as a success.
+    exit 1
+}
+
 # Derived INSIDE the launchctl branch, with the note it prints: `bridge_alive`
 # is called from nowhere else, so on a host without launchctl this is advice
 # about a poll that never runs.
@@ -1536,6 +1793,12 @@ if command -v launchctl >/dev/null 2>&1; then
         say "          plist that carries it."
     fi
     pgrep=$(command -v pgrep 2>/dev/null || :)
+    # Armed HERE, one statement before the job goes down, and cleared once it is
+    # back up: outside that window there is nothing for it to repair, and a trap
+    # that outlived it would restart a job this run never stopped.
+    trap 'on_signal INT' INT
+    trap 'on_signal TERM' TERM
+    trap 'on_signal HUP' HUP
     launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || :
     waited=0
     while bridge_alive; do
@@ -1596,19 +1859,17 @@ code=0
 
 # 3. start again, whatever step 2 said: leaving the bridge down because one key
 #    was not in the map would turn a small surprise into a dark sidebar.
-if command -v launchctl >/dev/null 2>&1; then
-    if [ -f "$plist" ]; then
-        if launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1; then
-            say "started:  $label"
-        else
-            launchctl load -w "$plist" >/dev/null 2>&1 \
-                && say "started:  $label (legacy load -w)" \
-                || say "WARNING:  could not start $label -- run install.sh mac again"
-        fi
-    else
-        say "WARNING:  no plist at $plist -- the bridge was not restarted"
-    fi
-fi
+startok=yes
+start_label || startok=no
+trap - INT TERM HUP
 
 say "next:     reopen agterm if it is closed; rows return on the next snapshot"
+
+# ⚠️ 4 OVERRIDES `$code`, and it is the one status the sweep reads specially.
+# `$code` is `agb forget-rows`' -- 1 when a `--key` was not in this map, which
+# under a sweep is the ORDINARY answer from every instance that does not hold
+# that key. A bridge that could not be started again is a different fact
+# entirely: it is the one outcome that leaves this Mac worse than before the run,
+# so it must not be indistinguishable from the answer the sweep expects most.
+[ "$startok" = yes ] || exit 4
 exit $code

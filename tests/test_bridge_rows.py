@@ -2590,6 +2590,12 @@ def test_forget_rows_uses_the_default_map_when_none_is_named(mac, tmp_path,
 
     Every earlier test passed `--rows` explicitly, so none of them went near the
     default. That is what made it invisible.
+
+    ⚠️ INVERTED, and only in its first line: the run is now `--all` rather than
+    bare, because a bare `forget-rows` is refused (its own test, below). What is
+    guarded here did not change and must not be lost -- there are no instances
+    on this Mac, so the sweep falls through to the single default map, which is
+    the same resolution the bug was in. `--all` is the flag that reaches it.
     """
     home = tmp_path / "home"
     (home / ".config" / "agbridge").mkdir(parents=True)
@@ -2599,7 +2605,7 @@ def test_forget_rows_uses_the_default_map_when_none_is_named(mac, tmp_path,
     rows.save(force=True)
 
     out = _RowOut()
-    assert mac.run_forget_rows([], out=out) == 0        # no --rows at all
+    assert mac.run_forget_rows(["--all"], out=out) == 0   # no --rows at all
     assert "already empty" not in out.text
     assert "aaaa1111" in out.text
     assert mac.load_rows(mac.rows_path()).bound_keys() == []
@@ -3033,19 +3039,29 @@ def test_a_row_map_command_says_which_instance_it_acted_on(
     assert mac.rows_path(hostb) in out.text
 
 
-@pytest.mark.parametrize("name", ["close-done", "forget-rows"])
-def test_the_banner_names_the_default_config_when_no_flag_is_passed(
-        mac, agb, name, instance_config):
-    """`opts["config"]` is `None` on every run that passes no flag, and the
+@pytest.mark.parametrize("name,argv", [("close-done", []),
+                                       ("forget-rows", ["--all"])])
+def test_the_banner_names_the_default_config_when_no_map_is_named(
+        mac, agb, name, argv, instance_config):
+    """`opts["config"]` is `None` on every run that names no map, and the
     banner is printed on every one of those runs -- so resolving it is not
     cosmetic: the unresolved value prints `config None`, which names no file
-    and is worse than saying nothing."""
+    and is worse than saying nothing.
+
+    ⚠️ INVERTED in its argv, not in its claim. Such a run now SWEEPS, so the
+    only reason it reaches the default config at all is that this Mac has no
+    launchd job -- the no-instances fall-through, which is `docs/cookbook.md`'s
+    bare `agb close-done` recipe and the commonest shape there is. The banner is
+    what tells those two apart, which makes it more load-bearing than it was,
+    not less. `forget-rows` needs `--all` to say it: it restarts no bridge, so
+    the rows it forgets stay closed.
+    """
     # Non-vacuity, and the one place `instance_config`'s no-name branch is
     # pinned: it has to BE `agb.config_path()`, or this sets up a file the
     # command never reads while asserting on a path it prints regardless.
     assert instance_config() == agb.config_path()
     out = _RowOut()
-    _run_row_command(mac, name, [], out)
+    _run_row_command(mac, name, argv, out)
     assert agb.config_path() in out.text
     assert "None" not in out.text
 
@@ -3460,3 +3476,878 @@ def test_working_memory_is_reclaimed_when_the_map_forgets_a_key(bridge):
     b.tick()
 
     assert b.renderer.working == {}
+
+
+# ---------------------------------------------------------------------------
+# `agb instances`
+# ---------------------------------------------------------------------------
+
+def _write_inst_plist(path, argv):
+    """Write a plist file with the given ProgramArguments."""
+    import plistlib
+    label = os.path.basename(str(path))[:-len(".plist")]
+    doc = {"Label": label, "ProgramArguments": argv}
+    with open(str(path), "wb") as fh:
+        plistlib.dump(doc, fh)
+
+
+def test_instances_probe_prints_instances_ok(agb, tmp_path):
+    """--probe prints `instances-ok` and exits 0 (the known-answer probe)."""
+    import subprocess
+    proc = subprocess.Popen(conftest.AGB_ARGV + ["instances", "--probe"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 0
+    assert out == b"instances-ok\n"
+    assert err == b""
+
+
+def test_instances_probe_ignores_launch_agents(agb, tmp_path):
+    """--probe does not read LaunchAgents -- missing dir is still exit 0."""
+    import subprocess
+    proc = subprocess.Popen(
+        conftest.AGB_ARGV + ["instances", "--probe",
+                             "--launch-agents", str(tmp_path / "no_such")],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 0
+    assert out == b"instances-ok\n"
+
+
+def test_instances_labels_empty_when_no_launch_agents_dir(mac, tmp_path):
+    """ENOENT on the agents dir is 'no instances yet', not an error."""
+    out = _RowOut()
+    rc = mac.run_instances(
+        ["--labels", "--launch-agents", str(tmp_path / "no_such_dir")], out=out)
+    assert rc == 0
+    assert out.text == ""
+
+
+def test_instances_labels_fatal_on_non_enoent_dir_error(mac, tmp_path):
+    """An errno other than ENOENT is fatal -- 'could not list' (contract 2)."""
+    file_not_dir = tmp_path / "notadir"
+    file_not_dir.write_text("content")
+    # Trying to listdir a file gives ENOTDIR, not ENOENT.
+    rc = mac.run_instances(
+        ["--labels", "--launch-agents", str(file_not_dir)],
+        out=_RowOut())
+    assert rc != 0
+
+
+def test_instances_labels_lists_com_agbridge_instance(mac, tmp_path):
+    """A plist in the com.agbridge space appears in --labels."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "com.agbridge.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb", "bridge"])
+    out = _RowOut()
+    rc = mac.run_instances(
+        ["--labels", "--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert "com.agbridge\n" in out.text
+
+
+def test_instances_labels_excludes_non_agbridge_plist(mac, tmp_path):
+    """A plist outside com.agbridge with no `agb bridge` in argv is excluded."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(agents / "com.other-app.plist",
+                     ["/usr/bin/python3", "other-app"])
+    out = _RowOut()
+    rc = mac.run_instances(
+        ["--labels", "--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert out.text == ""
+
+
+def test_instances_labels_includes_custom_label_in_com_agbridge_space(mac,
+                                                                      tmp_path):
+    """A custom label like com.agbridge.hostb is in the space and included.
+
+    ⚠️ The plist has NO agb+bridge in its argv so this relies entirely on
+    the label-space check -- removing the dot-prefix arm breaks this test.
+    """
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    # No `agb bridge` in argv: included only because of the label space.
+    _write_inst_plist(
+        agents / "com.agbridge.hostb.plist",
+        ["/usr/bin/python3", "/Users/me/other-binary"])
+    out = _RowOut()
+    rc = mac.run_instances(
+        ["--labels", "--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert "com.agbridge.hostb\n" in out.text
+
+
+def test_instances_labels_includes_non_label_space_with_agb_bridge_argv(
+        mac, tmp_path):
+    """Contract 3: a plist outside com.agbridge is included when its argv
+    has `bridge` immediately after an element whose basename is `agb`."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "com.myorg.myapp.plist",
+        ["/usr/bin/python3", "-S", "-E", "/custom/dir/agb",
+         "bridge", "--config", "/a/config"])
+    out = _RowOut()
+    rc = mac.run_instances(
+        ["--labels", "--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    # Non-vacuity: the plist IS in the output.
+    assert "com.myorg.myapp\n" in out.text
+
+
+def test_instances_plist_arg_exit_2_for_missing_file(mac, tmp_path):
+    """Exit 2 when the plist file does not exist."""
+    rc = mac.run_instances(
+        ["--plist", str(tmp_path / "no.plist"), "--arg", "--config"])
+    assert rc == 2
+
+
+def test_instances_plist_arg_exit_2_for_invalid_plist(mac, tmp_path):
+    """Exit 2 when the file exists but is not a valid plist."""
+    bad = tmp_path / "bad.plist"
+    bad.write_text("not a plist at all")
+    rc = mac.run_instances(
+        ["--plist", str(bad), "--arg", "--config"])
+    assert rc == 2
+
+
+def test_instances_plist_arg_exit_0_empty_for_no_bridge_in_argv(mac, tmp_path):
+    """Exit 0 with no written value when the plist argv has no `bridge`."""
+    import plistlib
+    p = tmp_path / "no_bridge.plist"
+    doc = {"Label": "com.agbridge",
+           "ProgramArguments": ["/usr/bin/python3", "/Users/me/agb", "doctor"]}
+    with open(str(p), "wb") as fh:
+        plistlib.dump(doc, fh)
+    rc = mac.run_instances(["--plist", str(p), "--arg", "--config"])
+    assert rc == 0
+
+
+def test_instances_plist_arg_value_written_to_stdout_buffer(agb, tmp_path):
+    """--plist --arg writes the config value to stdout as bytes."""
+    import plistlib, subprocess
+    p = tmp_path / "com.agbridge.plist"
+    doc = {"Label": "com.agbridge",
+           "ProgramArguments": ["/usr/bin/python3", "-S", "-E",
+                                "/Users/me/agb", "bridge",
+                                "--config", "/a/config"]}
+    with open(str(p), "wb") as fh:
+        plistlib.dump(doc, fh)
+    proc = subprocess.Popen(
+        conftest.AGB_ARGV + ["instances", "--plist", str(p), "--arg", "--config"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 0
+    assert out == b"/a/config\n"
+    assert err == b""
+
+
+def test_instances_plist_arg_path_with_space(agb, tmp_path):
+    """A config path with a space is returned verbatim."""
+    import plistlib, subprocess
+    p = tmp_path / "com.agbridge.plist"
+    config = "/home/user/my config/config"
+    doc = {"Label": "com.agbridge",
+           "ProgramArguments": ["/usr/bin/python3", "-S", "-E",
+                                "/Users/me/agb", "bridge", "--config", config]}
+    with open(str(p), "wb") as fh:
+        plistlib.dump(doc, fh)
+    proc = subprocess.Popen(
+        conftest.AGB_ARGV + ["instances", "--plist", str(p), "--arg", "--config"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 0
+    assert out == (config + "\n").encode("utf-8")
+
+
+@pytest.mark.parametrize("locale", ["C", "POSIX", "en_US.ISO-8859-1"])
+def test_instances_plist_arg_byte_output_under_any_locale(agb, tmp_path, locale):
+    """⚠️ --arg writes sys.stdout.buffer, not sys.stdout.write (contract 1).
+
+    -E does not touch LC_ALL. Under ISO-8859-1 sys.stdout.write() would
+    transcode a non-ASCII path into bytes that name nowhere, silently.
+    Under C it would raise UnicodeEncodeError. The awk `plist_arg` replaced
+    passed bytes through unchanged; this must too.
+    """
+    import plistlib, subprocess
+    p = tmp_path / ("locale_%s.plist" % locale.replace(".", "_"))
+    config = "/été/config"
+    doc = {"Label": "com.agbridge",
+           "ProgramArguments": ["/usr/bin/python3", "-S", "-E",
+                                "/Users/me/agb", "bridge", "--config", config]}
+    with open(str(p), "wb") as fh:
+        plistlib.dump(doc, fh)
+    env = dict(os.environ)
+    env["LC_ALL"] = env["LANG"] = locale
+    proc = subprocess.Popen(
+        conftest.AGB_ARGV + ["instances", "--plist", str(p), "--arg", "--config"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    out, err = conftest.communicate(proc)
+    assert (proc.returncode, out, err) == (0, (config + "\n").encode("utf-8"), b""), \
+        locale
+
+
+def test_instances_plist_arg_plistlib_guard(agb, tmp_path):
+    """⚠️ --arg reads the plist with plistlib, not a text scan.
+
+    A plist with HTML entities in the config path is the proof: plistlib
+    decodes `&amp;` to `&`; a text scan would return the raw encoding.
+    Non-vacuity: the raw and decoded forms must differ.
+    """
+    import subprocess
+    raw = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
+        ' "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0"><dict>'
+        '<key>ProgramArguments</key><array>'
+        '<string>/usr/bin/python3</string><string>-S</string>'
+        '<string>-E</string><string>/Users/me/agb</string>'
+        '<string>bridge</string>'
+        '<string>--config</string><string>/a&amp;b/config</string>'
+        '</array></dict></plist>'
+    )
+    p = tmp_path / "entities.plist"
+    p.write_bytes(raw.encode())
+    decoded = "/a&b/config"
+    assert "&amp;" not in decoded      # non-vacuity: raw and decoded differ
+    proc = subprocess.Popen(
+        conftest.AGB_ARGV + ["instances", "--plist", str(p), "--arg", "--config"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc)
+    assert proc.returncode == 0
+    assert out == (decoded + "\n").encode("utf-8")
+
+
+def test_instances_default_listing_shows_instances(mac, tmp_path):
+    """Default mode lists name, label, config per instance."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "com.agbridge.hostb.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb",
+         "bridge", "--config", "/a/config"])
+    out = _RowOut()
+    rc = mac.run_instances(["--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert "hostb" in out.text
+    assert "com.agbridge.hostb" in out.text
+    assert "/a/config" in out.text
+
+
+def _listing_columns(text):
+    """The human listing's rows as [name, label, config] triples.
+
+    `split()` is enough because these tests choose configs without blanks in
+    them, and it is what makes the assertions about the NAME COLUMN rather
+    than about a substring of the whole line -- `hostb` appears inside
+    `com.agbridge.hostb` too, so an `in out.text` check cannot tell a working
+    name column from an empty one.
+    """
+    return [line.split() for line in text.splitlines() if line.strip()]
+
+
+def test_instances_listing_names_the_default_instance(mac, tmp_path):
+    """⚠️ `com.agbridge` is `(default)`, not a blank name column.
+
+    Found by running `agb instances` on the owner's real Mac: the default
+    instance printed a row starting with two spaces. The name was derived by
+    stripping the `com.agbridge.` prefix and answering "" when the label did
+    not start with it -- and the default label never does, because it IS the
+    prefix. `agb-refresh:1207-1219` had already settled this for the banner.
+    """
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "com.agbridge.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb",
+         "bridge", "--config", "/a/config"])
+    out = _RowOut()
+    rc = mac.run_instances(["--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert _listing_columns(out.text) == [
+        ["(default)", "com.agbridge", "/a/config"]], out.text
+
+
+def test_instances_listing_names_a_named_instance(mac, tmp_path):
+    """A `com.agbridge.<name>` label shows `<name>` -- the case that worked."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "com.agbridge.hostb.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb",
+         "bridge", "--config", "/b/config"])
+    out = _RowOut()
+    rc = mac.run_instances(["--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert _listing_columns(out.text) == [
+        ["hostb", "com.agbridge.hostb", "/b/config"]], out.text
+
+
+def test_instances_listing_names_a_custom_label_instance(mac, tmp_path):
+    """⚠️ A custom label shows the LABEL, and is not called `(default)`.
+
+    `install.sh mac --label <anything>` puts no shape rule on a label
+    (`install.sh:369`), so `weird.label` is a real install with no name but its
+    label. Both wrong answers are asserted against here, because the listing
+    gave one of them and the banner used to give the other: "" (this bug) and
+    "(default)" (the banner's, fixed in Task 5 --
+    `test_a_custom_label_instance_is_not_reported_as_the_default_one`).
+    """
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "weird.label.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb",
+         "bridge", "--config", "/c/config"])
+    out = _RowOut()
+    rc = mac.run_instances(["--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert _listing_columns(out.text) == [
+        ["weird.label", "weird.label", "/c/config"]], out.text
+    assert "(default)" not in out.text, out.text
+
+
+def test_instances_listing_columns_line_up(mac, tmp_path):
+    """The three columns are padded, and a missing config leaves no blanks.
+
+    Names have no natural width now that one of them can be `(default)` or a
+    whole dotted label, so the config column only lines up if the first two are
+    padded. The second half is the reason padding stops at the last column that
+    exists: a job with no `--config` must not end its line in the blanks that
+    were meant to separate it from something.
+    """
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    _write_inst_plist(
+        agents / "com.agbridge.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb",
+         "bridge", "--config", "/a/config"])
+    _write_inst_plist(
+        agents / "com.agbridge.a-much-longer-name.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb",
+         "bridge", "--config", "/b/config"])
+    _write_inst_plist(                      # no --config: two columns only
+        agents / "com.agbridge.nocfg.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb", "bridge"])
+    out = _RowOut()
+    rc = mac.run_instances(["--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    lines = [ln for ln in out.text.splitlines() if ln.strip()]
+    assert len(lines) == 3, out.text          # non-vacuity: all three listed
+    # Non-vacuity for the alignment claim: the names really are different
+    # lengths, so an unpadded listing could not pass this.
+    starts = [len(ln) - len(ln.lstrip()) for ln in lines]
+    assert starts == [0, 0, 0], out.text      # nothing indented by a blank name
+    with_config = [ln for ln in lines if ln.rstrip().endswith("/config")]
+    assert len(with_config) == 2, out.text
+    assert len({ln.index("/") for ln in with_config}) == 1, with_config
+    for ln in lines:
+        assert ln == ln.rstrip(), repr(ln)    # no line ends in padding
+
+
+def test_instances_default_listing_says_so_when_empty(mac, tmp_path):
+    """Default mode reports 'no instances found' for an empty agents dir."""
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    out = _RowOut()
+    rc = mac.run_instances(["--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert "no agbridge instances" in out.text
+
+
+def test_instances_launch_agents_overrides_default_dir(mac, tmp_path):
+    """--launch-agents is used instead of ~/Library/LaunchAgents."""
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    _write_inst_plist(
+        custom / "com.agbridge.plist",
+        ["/usr/bin/python3", "-S", "-E", "/Users/me/agb", "bridge"])
+    out = _RowOut()
+    rc = mac.run_instances(["--labels", "--launch-agents", str(custom)], out=out)
+    assert rc == 0
+    assert "com.agbridge\n" in out.text
+
+
+# ---------------------------------------------------------------------------
+# the row-map commands sweep every instance
+# ---------------------------------------------------------------------------
+#
+# Bare `close-done` and `forget-rows --all` visit every instance on this Mac.
+# The default instance's privilege was an artifact of install order: a helper
+# run without `--config` repaired the *unnamed* map and reported success in
+# exactly the words of the run you meant to make (`docs/design.md` §5,
+# limitation 1). `agb-refresh` sweeps the same set from the shell; these two run
+# in-process, which is why every test below drives them through `--launch-agents`
+# rather than by monkeypatching `$HOME` and hoping the default lands somewhere
+# harmless. Under `fake_home` it does land somewhere harmless -- which is
+# precisely the trap: a fixture that ALSO wrote its plists where the default
+# looks would make the flag untestable while every test stayed green.
+
+def _instance_plist(agents, label, config):
+    """A launchd plist for one instance, with the real four-element preamble.
+
+    `ProgramArguments` is the whole command line, not the bridge's argv --
+    `<python> -S -E <agb> bridge …` -- and a harness simpler than reality is how
+    forty plist cases were once proved against an array four elements short.
+    `config=None` writes a job that names no config: contract 2's case, which
+    must read as `agb.config_path()`.
+    """
+    argv = ["/usr/bin/python3", "-S", "-E", "/Users/me/agb", "bridge"]
+    if config is not None:
+        argv += ["--config", config]
+    _write_inst_plist(agents / (label + ".plist"), argv)
+
+
+def _agents_dir(tmp_path):
+    """A LaunchAgents directory that is NOT the one the default resolves to.
+
+    Non-vacuity for every `--launch-agents` test in this section: if the plists
+    were reachable from `~/Library/LaunchAgents` as well, a sweep that ignored
+    the flag would find them anyway and the flag would be proved by nothing.
+    """
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    assert not os.path.exists(os.path.join(os.path.expanduser("~"),
+                                           "Library", "LaunchAgents"))
+    return agents
+
+
+def test_bare_close_done_reclaims_done_rows_in_every_instance(
+        mac, tmp_path, instance_config):
+    """The whole point: two instances, one command, both maps reclaimed.
+
+    Each also keeps a *bound* row, so "closed everything it found" and "closed
+    the [done] ones" stay distinguishable -- and the banner is counted, because
+    an operator reading the output has to be able to tell which map each line
+    below it is about.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    _bound_map(mac, mac.rows_path(default), "cccc3333", "ROW-9")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    runner = Runner()
+    out = _RowOut()
+    rc = mac.run_close_done(["--launch-agents", str(agents)],
+                            run=runner, out=out)
+
+    assert rc == 0
+    closed = [c[-1] for c in runner.calls if c[1:3] == ["session", "close"]]
+    assert sorted(closed) == ["ROW-1", "ROW-3"]
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == []
+    assert mac.load_rows(mac.rows_path(hostb)).done_entries() == []
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == ["cccc3333"]
+    assert out.text.count("close-done: config") == 2
+
+
+def test_a_plist_that_names_no_config_is_the_default_map_not_a_convention(
+        mac, tmp_path, instance_config):
+    """⚠️ Contract 2, and the one reading that must not be invented here.
+
+    A bridge started with no `--config` resolves `agb.config_path()`, so that is
+    the map its job holds -- which is `agb-refresh`'s `bind_label_to_config`
+    reading, taken verbatim. The other available reading, the
+    `<dir>/<name>/config` convention, belongs to `agb-refresh --instance <name>`
+    and would make this sweep repair a map that never existed while reporting
+    the default one empty: invariant 12, arriving in-process.
+
+    The control is the second instance, whose plist *does* name a config: if the
+    sweep were resolving the convention, only that one would be reclaimed.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", None)          # no --config at all
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    runner = Runner()
+    mac.run_close_done(["--launch-agents", str(agents)], run=runner,
+                       out=_RowOut())
+
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == []
+    assert mac.load_rows(mac.rows_path(hostb)).done_entries() == []
+
+
+def test_an_unreadable_plist_of_ours_stops_the_whole_sweep(
+        mac, agb, tmp_path, instance_config):
+    """⚠️ "I could not answer" is not "the answer is nothing".
+
+    Skipping the instance we cannot read acts on the others and returns 0, and
+    the operator has no way to know an instance was missed -- which is exactly
+    the failure this plan exists to remove, arriving one level down. So it is
+    fatal, and nothing is closed at all.
+
+    The control differs in ONE variable: the same run, after the same file is
+    made readable, does close the row. Without it this test would pass against a
+    sweep that could never close anything.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    (agents / "com.agbridge.hostb.plist").write_text("not a plist at all\n")
+
+    with pytest.raises(agb.AgbError) as excinfo:
+        mac.run_close_done(["--launch-agents", str(agents)], run=Runner(),
+                           out=_RowOut())
+    assert "com.agbridge.hostb.plist" in str(excinfo.value)
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == [
+        ("aaaa1111", "ROW-1")]
+
+    _instance_plist(agents, "com.agbridge.hostb", hostb)   # the one variable
+    assert mac.run_close_done(["--launch-agents", str(agents)], run=Runner(),
+                              out=_RowOut()) == 0
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == []
+
+
+def test_an_unreadable_plist_that_is_not_ours_does_not_stop_the_sweep(
+        mac, tmp_path, instance_config):
+    """The other half of the same rule, and it is not a softening of it.
+
+    `_is_agbridge_instance` cannot attribute a plist it could not parse unless
+    the LABEL says so, so an unreadable third-party file is not claimed here any
+    more than `agb instances --labels` claims it -- the two must visit the same
+    set or `agb-refresh` and this command disagree about which Mac they are on.
+    A broken file some other installer left behind would otherwise stop every
+    sweep on the machine.
+    """
+    default = instance_config()
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    (agents / "com.other-app.plist").write_text("not a plist at all\n")
+
+    assert mac.run_close_done(["--launch-agents", str(agents)], run=Runner(),
+                              out=_RowOut()) == 0
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == []
+
+
+def test_a_launch_agents_directory_that_cannot_be_listed_is_fatal(
+        mac, agb, tmp_path, instance_config):
+    """`os.listdir` failing with anything but ENOENT is "I could not answer".
+
+    ⚠️ `os.path.isdir`/`exists` swallow every stat errno, so the tempting
+    spelling reports a broken filesystem as "no instances yet" -- which here
+    means falling through to the default map and reporting success. ENOENT is
+    the one errno that IS an answer, and it has its own test below.
+    """
+    default = instance_config()
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    os.chmod(str(agents), 0)
+    try:
+        with pytest.raises(agb.AgbError):
+            mac.run_close_done(["--launch-agents", str(agents)],
+                               run=Runner(), out=_RowOut())
+    finally:
+        os.chmod(str(agents), 0o755)
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == [
+        ("aaaa1111", "ROW-1")]
+
+
+@pytest.mark.parametrize("name,argv", [("close-done", []),
+                                       ("forget-rows", ["--all"])])
+def test_no_instances_at_all_still_acts_on_the_default_map(
+        mac, name, argv, tmp_path, instance_config):
+    """⚠️ Do not regress the documented recipe.
+
+    `docs/cookbook.md` tells a Mac with a config and no launchd job to run a
+    bare `agb close-done`, and that is the commonest shape there is. Discovery
+    finding nothing is not an error and not a refusal: a note, then the single
+    default run -- the same answer `agb-refresh`' sweep gives.
+    """
+    default = instance_config()
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(default), "bbbb2222", "ROW-2")
+    agents = _agents_dir(tmp_path)                     # exists, and is empty
+
+    out = _RowOut()
+    _run_row_command(mac, name, argv + ["--launch-agents", str(agents)], out)
+
+    assert "no instances found" in out.text
+    assert default in out.text
+    if name == "close-done":
+        assert mac.load_rows(mac.rows_path(default)).done_entries() == []
+    else:
+        assert mac.load_rows(mac.rows_path(default)).bound_keys() == []
+
+
+def test_a_missing_launch_agents_directory_is_not_an_error(
+        mac, tmp_path, instance_config):
+    """ENOENT is the ordinary Mac, not a failure: no `~/Library/LaunchAgents`
+    at all means no instances, which is an answer. Every other errno is not."""
+    default = instance_config()
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    out = _RowOut()
+    rc = mac.run_close_done(["--launch-agents", str(tmp_path / "nope")],
+                            run=Runner(), out=out)
+    assert rc == 0
+    assert "no instances found" in out.text
+    assert mac.load_rows(mac.rows_path(default)).done_entries() == []
+
+
+def test_bare_forget_rows_is_refused_and_names_the_flag_that_means_it(
+        mac, agb, tmp_path, instance_config):
+    """⚠️ The one command that does NOT default to all, and the reason is not
+    "it closes rows" -- `agb-refresh` closes every row it forgets too.
+
+    The difference is what happens next: `agb-refresh` restarts the bridge, so
+    the rows come back within seconds; this restarts nothing, so a sweep nobody
+    meant leaves every row of every instance closed until each bridge is bounced
+    by hand. The refusal has to name `--all`, or it is a dead end rather than a
+    question.
+    """
+    default = instance_config()
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+
+    with pytest.raises(agb.AgbError) as excinfo:
+        mac.run_forget_rows(["--launch-agents", str(agents)], out=_RowOut(),
+                            run=_tree_run)
+    assert "--all" in str(excinfo.value)
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == ["aaaa1111"]
+
+
+def test_forget_rows_all_writes_each_instances_own_placements(
+        mac, tmp_path, instance_config):
+    """⚠️ The half that corrupts silently if the sweep resolves paths once.
+
+    `forget-rows` rewrites `dirname(<config>)/placements`, so a sweep that
+    derived the placements file from the run's own flags rather than from each
+    instance's config would write B's `key = workspace` lines into A's file --
+    the recovery command destroying the row layout of the instance it was not
+    even asked about, with both maps then wrong and nothing said.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    out = _RowOut()
+    rc = mac.run_forget_rows(["--all", "--launch-agents", str(agents)],
+                             out=out, run=_tree_run)
+
+    assert rc == 0
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == []
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == []
+    # TREE_JSON puts ROW-1 in "working repos" and ROW-3 in "agbridge".
+    assert mac.read_placements(mac.placements_path(default)) == {
+        "aaaa1111": "working repos"}
+    assert mac.read_placements(mac.placements_path(hostb)) == {
+        "bbbb2222": "agbridge"}
+
+
+def test_forget_rows_all_beside_a_named_map_is_refused(
+        mac, agb, tmp_path, instance_config):
+    """`--all` means every instance and `--rows` means this one. Letting either
+    win silently is the shape invariant 12 keeps producing -- the right map
+    under the wrong label, reported as success -- so it is one line either way
+    and this is the safe one."""
+    default = instance_config()
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    with pytest.raises(agb.AgbError):
+        mac.run_forget_rows(["--all", "--rows", mac.rows_path(default)],
+                            out=_RowOut(), run=_tree_run)
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == ["aaaa1111"]
+
+
+def test_a_named_map_still_means_exactly_that_map(
+        mac, tmp_path, instance_config):
+    """⚠️ `--rows`/`--placements`/`--config` keep TODAY's semantics exactly.
+
+    Naming a map *is* naming what to act on, and `agb forget-rows --rows
+    ~/.config/agbridge/rows` is the documented recovery for an install with no
+    instance name to give. It is also the seam ~26 tests above this one use, so
+    a narrowing flag that started sweeping would quietly widen all of them.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    mac.run_forget_rows(["--rows", mac.rows_path(default),
+                         "--launch-agents", str(agents)],
+                        out=_RowOut(), run=_tree_run)
+
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == []
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == ["bbbb2222"]
+
+
+def test_forget_rows_key_sweeps_and_names_the_instance_that_had_it(
+        mac, tmp_path, instance_config):
+    """⚠️ `--key` names WHAT to forget, not WHERE -- so it sweeps.
+
+    A key is read out of a bridge log and nothing in that log says which
+    instance minted it; "you should not have to know which" is the whole thesis,
+    and it is the reading `agb-refresh --key` already took. A key belongs to
+    exactly one map, so "not in this map" is the ORDINARY answer from every
+    other instance and must not be a failure -- which is why the run reports 0
+    and names the instance that had it.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    out = _RowOut()
+    rc = mac.run_forget_rows(["--key", "bbbb2222",
+                              "--launch-agents", str(agents)],
+                             out=out, run=_tree_run)
+
+    assert rc == 0
+    assert "com.agbridge.hostb" in out.text
+    assert "no instance has" not in out.text
+    # ⚠️ And the instance that did NOT have it says nothing about it. `not in
+    # the map` is true of that instance and misleading about the run: the key
+    # was found, and a line saying otherwise beside a successful exit is the
+    # kind of output an operator reads as a failure.
+    assert "not in the map" not in out.text
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == []
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == ["aaaa1111"]
+
+
+def test_forget_rows_key_that_no_instance_has_is_a_failure(
+        mac, tmp_path, instance_config):
+    """The other half, and the one that goes vacuous first: a sweep that
+    reported success for a key nobody had would make the previous test pass
+    against a command that never looked. Failing only when NO instance had it is
+    the whole distinction -- and it is one this side can make honestly, unlike
+    `agb-refresh`'s shell sweep, which sees only its children's exit codes."""
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    out = _RowOut()
+    rc = mac.run_forget_rows(["--key", "ffff9999",
+                              "--launch-agents", str(agents)],
+                             out=out, run=_tree_run)
+
+    assert rc == 1
+    assert "no instance has ffff9999" in out.text
+    assert mac.load_rows(mac.rows_path(default)).bound_keys() == ["aaaa1111"]
+    assert mac.load_rows(mac.rows_path(hostb)).bound_keys() == ["bbbb2222"]
+
+
+def test_the_sweep_reads_the_launch_agents_directory_it_was_given(
+        mac, tmp_path, instance_config):
+    """⚠️ The forwarding guard, and the trap it is written against.
+
+    `fake_home` makes `~/Library/LaunchAgents` a path that does not exist, so a
+    sweep ignoring `--launch-agents` finds nothing, falls through to the default
+    map and *still* reclaims the default instance's row. Only the second
+    instance can tell the two apart -- which is why this asserts on hostb's map
+    and why `_agents_dir` refuses to let the plists be reachable from both
+    places. That exact trap (a fixture writing the file into both candidate
+    directories) shipped green in this plan's Task 3.
+    """
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _done_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+
+    assert mac.run_close_done(["--launch-agents", str(agents)],
+                              run=Runner(), out=_RowOut()) == 0
+    assert mac.load_rows(mac.rows_path(hostb)).done_entries() == []
+    assert default != hostb                    # the two maps really are two
+
+
+def test_two_plists_naming_one_config_are_swept_once(
+        mac, tmp_path, instance_config):
+    """A job with no `--config` and a job naming the default config are one
+    instance, and sweeping it twice would print two banners for one map.
+
+    ⚠️ The dedupe is `normpath`, never `realpath`: `realpath` never fails, so it
+    would also collapse two configs whose directories do not exist yet, and here
+    collapsing means dropping an instance from the sweep -- the unsafe
+    direction. `agb-refresh`'s `same_map` is fail-closed for the same reason.
+    """
+    default = instance_config()
+    _done_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", None)
+    _instance_plist(agents, "com.agbridge.twin", default)
+
+    out = _RowOut()
+    assert mac.run_close_done(["--launch-agents", str(agents)],
+                              run=Runner(), out=out) == 0
+    assert out.text.count("close-done: config") == 1
+
+
+def test_a_sweep_reports_the_first_failure_and_not_the_last(mac):
+    """The aggregate exit code, as a rule rather than as an accident.
+
+    The FIRST non-zero wins: these statuses carry meanings that differ per
+    command (`agb-refresh`'s 4 is "a bridge was left down", its 1 is "a key was
+    not in this map"), so folding them into "whatever the last instance said" is
+    how a failure in the middle of a sweep disappears -- the run ends on a
+    healthy instance and reports success.
+    """
+    assert mac.sweep_status(0, 0) == 0
+    assert mac.sweep_status(0, 4) == 4
+    assert mac.sweep_status(4, 1) == 4
+    assert mac.sweep_status(1, 0) == 1
+
+
+def test_both_row_map_commands_resolve_every_map_through_instance_paths(
+        agb_tree, mac_tree, ops_tree):
+    """⚠️ Structural: one door in, every path out -- for the sweep too.
+
+    `instance_paths` derives `rows` AND `placements` from the config, which is
+    what stops `forget-rows --config B` writing B's placements into A's file.
+    A sweep that resolved its own paths per instance would be a second copy of
+    that derivation, and the copy is where the two drift apart.
+
+    ⚠️ Non-vacuity is `root in funcs`, NOT `root in reachable`:
+    `reachable_from` seeds its result with the root, so the obvious spelling
+    passes even when the function has been renamed out from under it and the
+    walk covered nothing at all.
+    """
+    funcs = conftest.functions(agb_tree, mac_tree, ops_tree)
+    for root in ("run_close_done", "run_forget_rows"):
+        assert root in funcs                                   # non-vacuity
+        reachable = conftest.reachable_from(funcs, root)
+        assert "instance_paths" in reachable, root
+        assert "instance_configs" in reachable, root
+        assert "sweep_targets" in reachable, root
+
+
+def test_the_sweep_and_agb_instances_share_one_membership_rule(
+        agb_tree, mac_tree, ops_tree):
+    """Which plists are ours is asked in two places -- `agb instances --labels`,
+    which `agb-refresh` sweeps from, and these two commands, which sweep
+    in-process. A second copy of the rule would let the shell sweep and the
+    in-process sweep visit different sets of instances, and the one that visits
+    fewer leaves an instance nobody repairs."""
+    funcs = conftest.functions(agb_tree, mac_tree, ops_tree)
+    assert "_is_agbridge_instance" in funcs                    # non-vacuity
+    for root in ("run_close_done", "run_forget_rows", "run_instances"):
+        assert root in funcs
+        assert "_is_agbridge_instance" in conftest.reachable_from(funcs, root)

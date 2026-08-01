@@ -108,9 +108,18 @@ sh install.sh mac --instance hostb \
 `--instance` is sugar over `--config`, `--label` and `--log-dir`: the config moves to
 `~/.config/agbridge/hostb/config`, and the rows map, the remembered workspaces and the `host_<name>`
 table move with it, because all three live beside the config. `--dest` stays shared — one code
-install, N configurations. Repair that one with `agb-refresh --instance hostb`; run the helpers
-**without** `--instance` and they act on the default instance and say so, which is the first of the
-seven limitations in [`docs/design.md`](docs/design.md) §5.
+install, N configurations. Repair that one with `agb-refresh --instance hostb` — or with a plain
+`agb-refresh`, which **sweeps every instance**, as a plain `agb close-done` does. Naming a map
+(`--instance`, `--label`, `--config`, `--rows`) narrows a run to it; `--key` does not, since a key
+read out of a log does not say which instance minted it. `agb forget-rows` is the one command that
+refuses a bare run and asks for `--all`, because nothing restarts the bridges afterwards. `agb
+instances` lists what you have. The remaining limitations of running several are in
+[`docs/design.md`](docs/design.md) §5.
+
+⚠️ **Symmetry is a convention, not yet a guarantee.** `install.sh mac` without `--instance` still
+creates a *nameless* instance, so a Mac can still have one unnamed default alongside named ones. The
+commands no longer privilege it — but making the installer refuse an unnamed install is a separate
+change that has not landed.
 
 Both roles write an `agb` wrapper into `~/.local/bin` (`--bin-dir` to change it, `--no-wrapper` to
 skip). It exists because `agb` is deliberately **not executable and has no shebang** — a hook must
@@ -130,8 +139,9 @@ agb doctor          # probes, not existence checks — see below
 | `agb hook <state>` | cluster | the hot path — invoked by Claude Code on every tool call |
 | `agb feed <mac-id>` | cluster | long-lived; streams NDJSON to the Mac over the bridge's ssh |
 | `agb bridge` | Mac | long-lived launchd job; owns the key → row bijection |
-| `agb close-done` | Mac | reclaim rows whose agent has finished |
-| `agb forget-rows` | Mac | drop `key → row` bindings so rows are re-created |
+| `agb close-done` | Mac | reclaim rows whose agent has finished — **every instance**, unless a map flag narrows it |
+| `agb forget-rows` | Mac | drop `key → row` bindings so rows are re-created. The one sweep that is **refused** without `--all`, because nothing restarts the bridges afterwards |
+| `agb instances` | Mac | which instances this Mac has: a listing, `--labels` for the sweeps, `--plist … --arg` for one plist's bridge flag |
 | `agb pane <key> …` | Mac | what a row's command runs: print identity, attach on demand |
 | `agb list` | cluster | every session the statedir knows about, with addressable keys |
 | `agb rename <key> <label>` | cluster | set a row's label |
@@ -276,7 +286,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1777 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 1877 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -288,7 +298,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1777 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1877 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:
@@ -303,8 +313,8 @@ Verified in real use, not just in tests:
 | `agtermctl session new` returns the row id on stdout | ✅ — the largest assumption in the design; it held |
 | `session split` / `session type` | ✅ `--help`-verified, then run |
 | `session scratch` | ⬜ `--help`-verified, **not yet run** |
-| a second instance: two bridges on one Mac | ⬜ tests only, **not yet run** |
-| clicking a row from each instance → the right machine | ⬜ tests only, **not yet run** |
+| a second instance: two bridges on one Mac | ✅ two named instances, two bridges, verified live |
+| clicking a row from each instance → the right machine | ✅ each row resolved through its own config |
 | `notify --target <row>` → banner on the right row | ✅ run by hand |
 | the bridge sending it on a `blocked` transition → banner + Dock bounce | ✅ |
 | the badge clearing when the agent leaves `blocked` | ✅ — on a row that is **not** selected; agterm never badges the row you are viewing |
@@ -328,8 +338,13 @@ Still not exercised, and worth knowing:
 - **A second instance, live** (0.5.0). Nobody has yet run two bridges on one Mac. The check that
   matters is **clicking a row from each instance and landing on the right machine** — that path
   (`pane_argv` → the row's command → `agb pane`'s own config read) is precisely the one every unit
-  test passes through without performing. Worth running a bare `agb-refresh` while both are up on
-  purpose too, to see whether the banner really does tell you which one it acted on.
+  test passes through without performing.
+- **The sweeps, live.** A bare `agb-refresh` and a bare `agb close-done` visiting every instance were
+  driven end to end against a throwaway `$HOME` with stub `launchctl`/`pgrep`/`agtermctl` — which is
+  not the same thing as two real bridges coming back with their identities. Three things to watch:
+  both sidebars returning, **Ctrl-C mid-sweep** (the child's trap is the only thing between that and
+  a bridge left down), and a deliberately broken instance — the others should still be refreshed and
+  the broken one's job **restarted anyway**, with the summary naming it and a non-zero exit.
 - **`session scratch`'s behaviour**, as above. The `[s]` split it is modelled on *is* verified, and
   the two are the same two calls with different constants, so the risk is narrow — but "narrow" is
   not "none", which is the whole reason this table exists.

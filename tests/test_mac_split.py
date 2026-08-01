@@ -194,14 +194,14 @@ def test_the_loader_is_reached_only_from_the_mac_side_commands(agb_tree):
     leaves the count wrong, and the whole map then reads as corrupt, discarding
     the bindings that were meant to survive.
 
-    All three are `agb` stubs of two lines; the implementations are in
-    `agb_mac`, which no hook ever loads.
+    All four are `agb` stubs; the implementations are in `agb_mac`, which no
+    hook ever loads.
     """
     funcs = conftest.functions(agb_tree)
     callers = set(name for name, node in funcs.items()
                   if (None, "_load_mac") in conftest.calls(node))
     assert callers == set(["cmd_bridge", "cmd_close_done",
-                           "cmd_forget_rows"])
+                           "cmd_forget_rows", "cmd_instances"])
     for name in callers:
         assert (None, "main") not in conftest.calls(funcs[name])
         assert (None, name) in conftest.calls(funcs["main"])

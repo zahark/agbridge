@@ -2301,3 +2301,29 @@ def test_every_option_that_consumes_a_value_asks_need_for_it(script):
     assert len(consuming) > 5, "no value-taking arm was found: %s" % (arms,)
     for arm in consuming:
         assert "need $#" in arm, arm
+
+
+def test_the_launch_agents_dir_and_label_prefix_are_spelled_the_same_everywhere(
+        agb, mac):
+    """⚠️ A fourth cross-file agreement (invariant 14).
+
+    `agb_mac.default_agents_dir()` and `INSTANCES_LABEL_PREFIX` are a third
+    spelling beside install.sh and agb-refresh. A disagreement makes
+    `agb instances --labels` scan the wrong directory or mis-classify plists
+    while the installers write to the right place -- and it is invisible at
+    install time because neither file can import the other.
+
+    Patterns compared, never substring greps.
+    """
+    home = agb.home_dir()
+    expected_dir = mac.default_agents_dir()
+    expected_label = mac.INSTANCES_LABEL_PREFIX
+    # Non-vacuity: the values must be non-empty and meaningful.
+    assert "Library/LaunchAgents" in expected_dir
+    assert expected_label == "com.agbridge"
+    for script in (INSTALL_SH, REFRESH_SH):
+        agents_raw = _sh_assignment(script, "DEFAULT_AGENTS").strip('"')
+        agents = agents_raw.replace("$HOME", home)
+        assert agents == expected_dir, (script, agents, expected_dir)
+        label = _sh_assignment(script, "DEFAULT_LABEL").strip('"')
+        assert label == expected_label, (script, label, expected_label)

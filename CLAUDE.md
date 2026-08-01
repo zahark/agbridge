@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1777 tests, ~51 s)
+python3 -m pytest tests/ -q                                    # full suite (1877 tests, ~73 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -27,7 +27,7 @@ cluster hosts whose interpreter you do not control.
 | File | Loaded by | Contains |
 |---|---|---|
 | `agb` | **every** hook invocation | hot path, feed, identity, the shared unlink authority, primitives |
-| `agb_mac` | `agb bridge`, `agb close-done` | the Mac side: transport, watchdog, row bijection, rendering |
+| `agb_mac` | `agb bridge`, `agb close-done`, `agb forget-rows`, `agb instances` | the Mac side: transport, watchdog, row bijection, rendering, instance discovery |
 | `agb_ops` | `doctor`/`prune`/`pane`/`status-line`/`install-*` | operator and diagnostic commands |
 
 Plus **`agb-claude`**, a standalone POSIX-sh script that is not part of `agb` at all: it starts
@@ -54,9 +54,13 @@ The siblings are reached by a **one-statement lazy hop** from `agb`'s dispatch a
 by a hook. `tests/test_mac_split.py` proves this directly — it `chmod 000`s the sibling and runs a
 hook, rather than asserting a timing.
 
-`conftest.AGB_PARSE_BUDGET` caps `agb`'s source size. **Raising it is almost always the wrong
-answer** — pay for new code by moving other code into a sibling. It has been raised exactly once, on
-a measurement; the comment above the constant records the bar.
+`conftest.AGB_PARSE_BUDGET` caps `agb`'s source size, **in characters**. **Raising it is almost
+always the wrong answer** — pay for new code by moving other code into a sibling. It has been raised
+**twice**, each time on a measurement; the comment above the constant records both and the bar. The
+second raise (+716, for `agb instances`' dispatch arm) is worth reading before proposing a third: the
+route that avoided it would have forced an `agb_mac` → `agb_ops` edge that does not exist and is
+asserted absent, so the cap was doing its job by making the architectural cost visible rather than by
+being obeyed.
 
 ### The data flow
 
@@ -271,6 +275,24 @@ These are not style preferences. Each one has a test, and most were re-learned t
     **pure ASCII** and its output written as UTF-8 **bytes**, since `-E` does not touch `LC_ALL`.
     The acceptance bar is a **differential corpus** of forty-odd hand-editable plists checked against `plistlib` *and*
     `agb_mac.parse_bridge_args` — authorities that are not `agb-refresh`'s own code.
+    ⚠️ **And the thirteenth is where the reader ended up: it is not in `agb-refresh` at all any more.**
+    `plist_arg` is two lines of shell calling `agb instances --plist <path> --arg <flag>`; the parse,
+    the `plistlib` sniff-retry and the `parse_bridge_args` call live in `agb_mac.run_instances`.
+    `bind_label_to_config` is **byte-identical** to before — the loop, `same_map`, the five ranks,
+    `nclaim`, the claimant warning, the `${rows:-$config}` input and its twelve named tests all
+    survive, because *the ranking in shell was never what broke; the plist parsing was.* Porting the
+    ranks too was proposed and rejected: `same_map` would be re-implemented in Python (this
+    invariant's whole subject), `config_map_dir` is fail-closed via `cd -P … && pwd -P` while
+    `os.path.realpath` never fails (silent widening, the direction that bounces the wrong job), and
+    the multi-claimant warning would die. Two things follow that are easy to get wrong. **The 0/2/3
+    contract had to be inherited, not re-invented**, because its two consumers read an empty value
+    *differently on purpose* — `bind_label_to_config` reads it as `$DEFAULT_CONFIG`, the named-instance
+    path reads it as the `<dir>/<name>/config` convention — and one table for both restores this
+    invariant under a new name. And **`agb` answers an unknown command with exit 2 and empty stdout**,
+    byte-identical to "this plist says nothing", so an old installed `agb` would make every plist
+    silent and succeed on the wrong instance: `agb instances --probe` must answer the literal
+    `instances-ok`, **stdout-compared**, before any plist is read. A status alone cannot see
+    `--python /bin/echo`.
     ⚠️ **And the tenth instance is about that corpus, not about the reader: `ProgramArguments` is not
     the bridge's argv, it is the whole command line.** The real array is `<python> -S -E <agb> bridge
     --config <path>`, so four elements go by before `agb bridge` sees anything, and `agb` reads its
@@ -302,8 +324,8 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Three cross-file agreements have no single source of truth, and all fail silently.** `agb` is
-    Python under a byte cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
+14. **Four cross-file agreements have no single source of truth, and all fail silently.** `agb` is
+    Python under a character cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
       `DEFAULT_CONFIG_DIR`/`DEFAULT_CONFIG`, `agb-refresh`'s copy of the same pair. `pane_argv`
@@ -321,10 +343,21 @@ These are not style preferences. Each one has a test, and most were re-learned t
       `ProgramArguments`; it calls `parse_bridge_args` now and takes the table out of it, so the
       agreement got **narrower** rather than wider. It cannot go away entirely: by the time `ps` has
       flattened argv there is no argv left to hand a parser.
+    - **`~/Library/LaunchAgents` and the `com.agbridge` label space are spelled in all three** —
+      `install.sh` renders the plist there under that prefix, `agb-refresh` defaults `$agentsdir` to
+      it, and `agb_mac` now does too (`default_agents_dir`, `INSTANCES_LABEL_PREFIX`), because
+      `agb instances`, `close-done` and `forget-rows` all have to discover instances without a shell.
+      A disagreement is silent in the worst way: the shell sweep and the in-process sweep would visit
+      **different sets** of instances, so one command repairs an instance the other cannot see. Note
+      the label space is used for *two different questions* here and only one of them is this
+      agreement — `bind_label_to_config`'s claimant guard and `_is_agbridge_instance`'s membership
+      rule are deliberately different predicates (the second also accepts any plist running
+      `<…>/agb bridge`), so a test comparing them for equality would be wrong.
 
     The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
-    resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — and
-    the third by `tests/test_agb_refresh.py`.
+    resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — the
+    third by `tests/test_agb_refresh.py`, and the fourth beside the first two in
+    `tests/test_install_pkg.py`.
 
 ## Testing conventions
 
@@ -407,7 +440,7 @@ environment — several are version- or mount-specific.
 - **Comments carry the reason, not just the rule.** A withdrawn rule keeps its reasoning on purpose
   — a rule without its reason gets re-litigated. Preserve this when editing.
 - Hand-rolled argv parsing is deliberate (`argparse` costs ~10 ms of import on the hot path). The
-  nine parsers share a `*_FLAGS` / `*_VALUE_ARGS` table convention; `--opt=` with an empty inline
+  thirteen parsers share a `*_FLAGS` / `*_VALUE_ARGS` table convention; `--opt=` with an empty inline
   value is a missing-value error in all of them.
 - Function-local imports (`json`, `select`, `subprocess`, `re`, `fcntl`) are deliberate. `agb`'s
   module-level imports are pinned to exactly `{errno, os, sys, time}` by a test.
@@ -429,9 +462,10 @@ Released **0.5.0** — **instances**: a machine that shares no disk with the fir
 (`install.sh mac --instance <name> --statedir …`), one independent bridge per machine, all rendering
 into the same sidebar. One flag, `--config`, carries it everywhere: bridge, `close-done`,
 `forget-rows`, the row's own `agb pane` command, the launchd plist and `agb-refresh`. Invariant 12
-and `docs/design.md` §5 hold the reasoning; the seven limitations are written out there, the first of
-which — a helper without `--instance` succeeding on the wrong instance — is mitigated only by the
-banner those commands now print on every run.
+and `docs/design.md` §5 hold the reasoning; the seven limitations are written out there. As shipped,
+the first of them — a helper without `--instance` succeeding on the wrong instance — was mitigated
+**only** by the banner those commands print on every run; the unreleased change above replaced that
+with a default that has nothing to be wrong about. The banner still matters, for a **narrowed** run.
 
 ⚠️ **It shipped without ever having been run live**, which is unusual here and is said out loud in
 `CHANGELOG.md`'s `### Not verified`: nobody has had two bridges up on one Mac. The check that
@@ -439,7 +473,27 @@ matters is clicking a row from *each* instance and landing on the right machine.
 treat the feature as tests-only — and this project's own history is that two of the last four
 features passed every test and still needed a fix after live use.
 
-Unreleased since: **a banner when a long-running agent finishes** (`notify_on_completed_after`, on by
+Unreleased, and the headline: **the Mac side has no default instance any more.** A bare `agb-refresh`
+and a bare `agb close-done` sweep **every** instance; a bare `agb forget-rows` is **refused** and
+names `--all` — not because it closes rows (`agb-refresh` closes every row it forgets too) but
+because nothing restarts the bridges afterwards, so the sweep that ends in a restart may default to
+all and the one that does not, may not. `--key` **sweeps** on both, because a key read out of a log
+does not say which instance minted it; naming a **map** (`--instance`/`--label`/`--config`/`--rows`/
+`--placements`) is what narrows a run. An instance left without a running bridge is a distinct error
+(exit **4**), which is what makes bare-is-all safe. New command **`agb instances`** — a listing,
+`--labels` for the sweeps, `--plist … --arg` (now `agb-refresh`'s whole plist reader), and `--probe`,
+whose literal `instances-ok` answer is load-bearing because `agb` answers an unknown command with
+exit 2 and empty stdout, byte-identical to "this plist says nothing". `docs/design.md` §5 is the
+authority; limitation 1 is fixed **by the default** rather than by the banner, and limitation 6 is
+mitigated (the maps stay per-instance; only the commands visit all of them).
+
+⚠️ **Symmetry is a convention, not a guarantee, and will be until a follow-up lands.**
+`install.sh mac` can still create a *nameless* instance — mandating `--instance` reaches 24+ test
+functions through `test_install_pkg.py`'s `mac_args` fixture, changes what `dist/com.agbridge.plist`
+stands for, and forces a transitive `--statedir` decision on every Mac install *and upgrade*. Split
+out deliberately; the plan is `docs/plans/20260801-install-mac-requires-instance.md`.
+
+Before it, **a banner when a long-running agent finishes** (`notify_on_completed_after`, on by
 default at 300 s). The threshold is the feature — `completed` fires once per *turn*, so ungated it
 announces every "yes" you type, and agterm banners and bounces even for the row you are looking at.
 It also fixed three things it tripped over: `agb doctor` had been calling two of its own documented
@@ -451,10 +505,15 @@ and the unseen badge cleared when a block is answered.
 
 ⚠️ **`agb`'s budget is measured in CHARACTERS, not bytes** — the guard is
 `len(agb_source) < AGB_PARSE_BUDGET` (`tests/test_mac_split.py`), and `agb` is not pure ASCII. It is
-102,419 characters (102,429 *bytes*) against 102,500, so the real headroom is **80 characters**, and
-`wc -c` is the wrong number to compare. This is the single hardest constraint on any change to the
-hot path. Neither 0.5.0 nor the finished-turn banner added anything to it: every new line landed in
-`agb_mac`/`agb_ops`. 1798 tests.
+**103,198 characters** (103,212 *bytes*) against **103,200**, so the real headroom is **2
+characters**, and `wc -c` is the wrong number to compare. This is the single hardest constraint on
+any change to the hot path. Neither 0.5.0 nor the finished-turn banner added anything to it; the
+instances change did — the only part of it in `agb` is `cmd_instances`, a dispatch arm and a `USAGE`
+line, measured at +716 and paid for with the second budget raise. Everything else landed in
+`agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
+measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
+widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1877 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
@@ -476,12 +535,19 @@ agterm, and think about which row you test it on.**
   nobody has watched a drawer open, be hidden, and come back with **the same shell still alive**.
   That claim is the entire reason `scratch` was chosen over `overlay`, so it is the one worth
   checking first. `README.md`'s verification table carries unchecked rows for it.
-- **A second instance, live.** The whole of 0.5.0 is covered by tests only — nobody has yet run two
-  bridges on one Mac. The check that matters is **clicking a row from each instance and landing on
-  the right machine**, because that path (`pane_argv` → the row's command → `agb pane`'s own config
-  read) is exactly the one whose failure every unit test passes through. Worth trying the wrong
-  command on purpose too: a plain `agb-refresh` while both are up, to see whether the banner actually
-  tells you which one it acted on.
+- ~~**A second instance, live.**~~ **Verified 2026-08-01**, on a Mac with two named instances and two
+  bridges: `agb instances` listed both, a bare `agb-refresh` swept both, and clicking a row from
+  *each* landed on the right machine with the right config on its identity line. The unnamed default
+  instance is gone — migrated to a name, which is what `docs/plans/completed/` describes.
+
+  ⚠️ **And the live run found two things 1867 tests did not.** `agb instances` printed a **blank**
+  name column for the default instance *and* for any custom-`--label` one — the same bug the banner
+  had, surviving in the listing because the fix was applied in one place. And the migration exposed
+  a `feed_host` that had been **wrong and dormant in the config for hours** — a misspelling of the
+  *other* instance's ssh alias. The bridge reads its config once at startup, so the file was wrong
+  and the process was right until a restart reconciled them, and then every row went `[?]`. Both are
+  fixed; the second is why the upgrade note tells you to read the installer's `probed:` line rather
+  than trust the alias you copied out of the config you are migrating.
 - **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
   host. This is why the version is 0.x.
 
@@ -581,8 +647,8 @@ the release notes every time; it is the single most common way a fix appears not
   to: they are expected to **diverge**. `session scratch` takes a `--command` that `session split`
   has no equivalent for, so the drawer may yet become a single call while the split cannot. The
   same reasoning is recorded at the call site and in `tests/test_identity.py`'s enumeration.
-- `agb <cmd> --help` is not implemented — it would need a `--help` arm in nine hand-rolled parsers
+- `agb <cmd> --help` is not implemented — it would need a `--help` arm in thirteen hand-rolled parsers
   across three files, against the byte cap. [`docs/commands.md`](docs/commands.md) is the reference.
-- The nine `parse_*_args` functions share scaffolding that could collapse into one helper. It was
+- The thirteen `parse_*_args` functions share scaffolding that could collapse into one helper. It was
   deliberately not done: the helper would have to live in `agb`, the byte-capped file, so that two
   *lazily loaded* siblings could share it — inverting the constraint the cap exists to enforce.

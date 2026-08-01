@@ -21,7 +21,7 @@ import os
 import sys
 import time
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 DEFAULT_STATEDIR_NAME = ".agbridge"
 
@@ -2653,6 +2653,23 @@ def cmd_close_done(argv):
     return _load_mac().run_close_done(argv)
 
 
+def cmd_instances(argv):
+    """`agb instances` -- list/query instances (Mac). One lazy hop.
+
+    ⚠️ The except is HERE, not in `run_instances`: `_load_mac()` raises first
+    when `agb_mac` is missing. Exit 3 -- not 2 ("plist says nothing") -- is
+    what `agb-refresh`'s `plist_read_ok` turns into a `die` naming `--agb`, and
+    stderr stays empty: every call site asserts `err == b""`.
+    `Exception`, and the LOAD only; both narrower spellings shipped once and
+    were wrong. Reasons in `agb_mac.run_instances`; `agb` is capped.
+    """
+    try:
+        run = _load_mac().run_instances
+    except Exception:
+        return 3
+    return run(argv)
+
+
 # Rare-path commands: parsed by every hook if they lived here, run by
 # essentially none. They share ONE door rather than a `cmd_*` stub each --
 # Task 6a left ~600 bytes under the parse budget, and one hop per command is the
@@ -2680,7 +2697,7 @@ commands:
   hook <state>        record an agent state transition (hot path)
   feed <mac-id>       stream NDJSON session state to the Mac
   bridge              consume the feed and drive agterm rows (Mac)
-  close-done          close rows marked [done] (Mac)\n  forget-rows         drop key->row bindings so rows are re-created (Mac)
+  close-done          close rows marked [done] (Mac)\n  forget-rows         drop key->row bindings so rows are re-created (Mac)\n  instances           list or query agbridge instances (Mac)
   pane <key>          print identity, attach on demand
   doctor              probe the statedir, the mount and the bridge beat
   prune               remove unadjudicable entries, per-entry confirmation
@@ -2719,6 +2736,8 @@ def main(argv):
         return cmd_close_done(rest)
     if cmd == "forget-rows":
         return cmd_forget_rows(rest)
+    if cmd == "instances":
+        return cmd_instances(rest)
     if cmd in OPS_COMMANDS:
         return cmd_ops(cmd, rest)
     if cmd == "version":
