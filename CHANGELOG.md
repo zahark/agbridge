@@ -65,6 +65,41 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   step was busywork that also implied the automatic one had not happened. It now says when you
   genuinely need it: `--no-probe`, a machine that would not answer, or a rename.
 
+- **`[enter]` failing with `missing or unsuitable terminal` is now diagnosed rather than discovered.**
+  Found on the first attach to a second machine, and it reads as a broken row for several minutes:
+  the identity is right, the ssh target is right, the config it resolved through is right, the ssh
+  connects — and then tmux refuses to start because that host's terminfo database has no entry for
+  the terminal you are attaching from. agbridge never sets `TERM`; `ssh -t` carries yours across, and
+  modern terminals (Ghostty, Kitty, WezTerm) all ship terminfo an ordinary cluster box has never
+  seen.
+
+  The recipe is one line — `infocmp -x "$TERM" | ssh <target> -- tic -x -` — with two conditions that
+  are the whole difference between it working and it silently installing the wrong entry:
+
+  ⚠️ **Run it from inside agterm**, and use `"$TERM"` rather than a name you type. agterm is the
+  terminal that runs the row, so it is the only place `$TERM` holds the value that reaches the far
+  side. On the Mac this was found on, agterm reports `xterm-ghostty` while the same user's login
+  shell reports `xterm-kitty` — copying the second would have installed a terminal the row never
+  uses, and said `wrote` while doing it. A row's own `[s]`/`[d]` shells are no good either: both ssh
+  to the *agent's* host.
+
+  That also settles a tempting feature: **`install.sh` must not ship its own `$TERM`** to the farm
+  host. It runs in your login terminal and the row does not, so it would be guessing about a terminal
+  that does not exist yet, on every machine. If it is ever automated it belongs in `agb pane`, which
+  knows the real value at the moment the attach fails. `docs/agtermctl.md` records agterm's `TERM` as
+  a CONFIRMED observation, with that argument, so the idea does not get re-proposed.
+
+  Written up in `docs/cookbook.md` (symptom → why → recipe → fallbacks when the Mac cannot dump the
+  entry either) and in the skill's symptom table. The copy fixes **one host** — machine #3 behind a
+  jump host, and every agent host on a shared-disk cluster, each need their own.
+
+  ⚠️ The *verification* line that went with it was wrong on its first outing and is worth keeping
+  right: **a farm login shell is often tcsh**, which has no `2>&1` and answers
+  `Ambiguous output redirect.`, so `ssh host 'cmd >/dev/null 2>&1'` fails on the shell rather than
+  on the command. Redirects belong outside the quotes. The copy itself was never affected —
+  `tic -x -` has nothing to misparse — but every remote one-liner in these docs now keeps its
+  redirects local.
+
 - **The no-shared-disk check is about the disk, not the path.** Two sites using one home-directory
   convention give the *same* `--statedir` string on both machines while being separate filesystems —
   the normal shape of this, and previously easy to read as a mistake. What actually matters is the
