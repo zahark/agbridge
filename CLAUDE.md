@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1557 tests, ~38 s)
+python3 -m pytest tests/ -q                                    # full suite (1769 tests, ~51 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -158,6 +158,112 @@ These are not style preferences. Each one has a test, and most were re-learned t
     merely imply one" break the tie among candidates that have already matched, so the job naming
     this exact file wins over one that only shares the directory instead of the winner falling out of
     `*.plist`'s collating order. Ranking is not matching, and it narrows nothing.
+    ⚠️ **And the same comparison is owed to the PROCESS side, where a pattern cannot give it.**
+    `agb-refresh`'s liveness poll asks `pgrep -f` about a running bridge, and `pgrep -f` matches a
+    regex against whatever spelling that process was *started with* — the far side of a regex match
+    cannot be canonicalised, so a bridge over this map spelled `<dir>/./config` matches nothing and
+    reads as gone. The fifth instance of the same failure arrived exactly there. The answer is not a
+    cleverer pattern: it is `ps -ww -o args=` on the pids `pgrep` returns, and `same_map` on what it
+    says. Anything that has to decide *whose* a running bridge is belongs on that route.
+    ⚠️ **And WHICH `--config` on that line is `parse_bridge_args`' answer, which keeps the LAST** —
+    it reads value flags into a dict with no duplicate check, so a repeat overwrites. Reading the
+    first (the sixth instance of the same failure) attributes
+    `… bridge --config /old --config <ours>` to `/old`. Both readings are kept anyway, because `ps`
+    flattens the arguments and `--config "/a --config /b"` is one path containing that text: every
+    occurrence is offered, since an over-match costs a bounded wait and an under-match is
+    `forget-rows` under a live bridge.
+    ⚠️ **And `--config=<path>` is that same flag** — `parse_bridge_args` partitions on `=` before
+    looking the name up — so "every occurrence" spans both spellings, **in position order**. The
+    seventh instance arrived here: two `case` arms, one per spelling, pick by *arm* order, so an
+    inline occurrence before a space-form one was discarded whole — and it is the one the parser
+    keeps under the one-argument reading. The plist reader knew only the two-word form, and answered
+    `""`, which downstream means *the default config* — so an instance's job claimed the default map.
+    One marker (`--config`), cut at its first occurrence, with the next character saying which
+    spelling — or that it is not the flag (`--configs/b` inside a value). Any new reader of that flag
+    owes both spellings. And when a harness proves such a scan safe, check it composes the input the
+    ambiguity is *about*: the permutation check that cleared this built its lines only out of
+    separate flags, the one reading in which the loss is harmless.
+    ⚠️ **And `--config` is not the only flag that says which map a bridge holds** — `--rows`
+    overrides the rows file the config would have chosen (`render_settings`), so a bridge or a plist
+    naming this map only through `--rows` holds it too. Adding a flag to what is *offered* can only
+    add "ours" answers, so it is safe by construction; the reverse is not, and `--rows` deliberately
+    does **not** answer the *untagged* question, since such a bridge still resolves the default
+    config for its placements.
+    ⚠️ **And the eighth instance is the one worth generalising: ` --config ` BYTES ARE NOT A FLAG.**
+    `ps` flattens argv, so `--workspace "farm --config /x"` prints a line identical to one carrying
+    the flag; the plist side has no such excuse, since `ProgramArguments` *is* the argv and an
+    element consumed as a value is not a flag at any distance. Two rules follow, and they are
+    different rules: where the input is genuinely ambiguous, **the undecidable case must resolve to
+    "ours"** (a bounded 10 s wait, not a `forget-rows` under a live bridge) — here, a `--config` is
+    proof only when no other value-taking flag precedes it; where it is *not* ambiguous, **call the
+    parser** rather than imitating it. The `ps` side cannot (argv is already flattened) and so still
+    needs the list of flags that consume the next argument, which is why `BRIDGE_VALUE_FLAGS` remains
+    a third cross-file agreement (invariant 14); the plist side does not, and stopped.
+    ⚠️ **And the twelfth instance is why "simulate the parser exactly" was the wrong instruction:
+    A SIMULATION CANNOT SIMULATE A REFUSAL.** `plist_arg` walked the array for five rounds, each
+    round adding one of `parse_bridge_args`' properties in a second language, and the class it could
+    never reach was an argv `agb bridge` **rejects** — `--config=` with no value, a stray positional,
+    an unknown option, a `--watchdog` that is not a number. Such a job starts no bridge and holds no
+    map, and the walk answered a real-looking config for all four: a dead `KeepAlive` job as an
+    exact, declaring, rank-1 claimant outranking the live one. Adding the rejection rules would have
+    needed the *boolean* flag list as a second agreement plus two numeric validations — a **wider**
+    agreement and a sixth round. So the post-`bridge` elements go to `agb_mac.parse_bridge_args`
+    itself, loaded by path from beside `$agb` (no new dependency: `agb forget-rows`, step 2 of the
+    same script, already loads that file). A tree missing it is **exit 3, fatal, naming `--agb`** —
+    not "this plist says nothing", which would bounce an unclaimed job and then fail the forget
+    anyway. ⚠️ A refused argv answering "no `--config`" is correct (it holds no map) but not free:
+    `agb-refresh --instance <name>` against a plist hand-edited into a refusal falls back to the
+    conventional config path. Ranking it *below* a working claimant is unavailable — with the argv
+    refused there is no parsed value to rank, and recovering one is the simulation again.
+    ⚠️ **And "simulate the parser" includes simulating WHERE THE ARGV IS.** A plist is not an argv,
+    only one of its keys is; `ProcessType`, the log paths, `WorkingDirectory`, an
+    `EnvironmentVariables` value and a `WatchPaths` array all carry strings too. Reading the whole
+    file let a hand-edited pair *after* the array overwrite the real value (last-wins, which is
+    right *inside* argv) and one *before* it manufacture a config for a job whose argv has none —
+    both silent, both the wrong-job bounce. ⚠️ Too *tight* is not the safe side either: a missed
+    `ProgramArguments` demotes that plist to "carries no `--config`", so a named instance's label is
+    never found and the default job gets bounced instead.
+    ⚠️ **And the ninth instance is the one that ended the sequence: A HAND-ROLLED XML TOKENIZER IS
+    NOT AN XML PARSER, and four consecutive review rounds found exactly that, each round finding the
+    rule the previous round's rule did not have.** Whitespace inside a tag (`<string >`, `</array >`
+    — both valid XML, and the second let a `WatchPaths` array overwrite the config), a comment
+    splitting a value across lines (`<string>/tmp/a<!--`⏎`-->b/config</string>` *is* `/tmp/ab/config`
+    — so "a comment can only ever hide argv" was true only of a comment sitting *between* elements),
+    CDATA, PIs, DOCTYPE, character references, minification, nesting. `plist_arg` now parses with
+    **`plistlib`** — stdlib on both sides, and `agb-refresh` already requires a python3, so it is no
+    new dependency — which makes "only `ProgramArguments`" structural (ask a dict for one key) and
+    retires the whole written-down limitation list: binary plists, CDATA-carried values, character
+    references in a flag *name*, DOCTYPE, multi-line tags. What remains is a file that is not a
+    plist, which exits **2** and is skipped rather than standing for the default config. ⚠️ Two
+    traps if you touch it: `plistlib.load` **sniffs** the format and rejects a file starting with
+    `<!DOCTYPE` (retry with `fmt=FMT_XML`), and `$python` must be resolved **before**
+    `bind_label_to_config` or every plist answers nothing; the inline `-c` program must also be
+    **pure ASCII** and its output written as UTF-8 **bytes**, since `-E` does not touch `LC_ALL`.
+    The acceptance bar is a **differential corpus** of forty-odd hand-editable plists checked against `plistlib` *and*
+    `agb_mac.parse_bridge_args` — authorities that are not `agb-refresh`'s own code.
+    ⚠️ **And the tenth instance is about that corpus, not about the reader: `ProgramArguments` is not
+    the bridge's argv, it is the whole command line.** The real array is `<python> -S -E <agb> bridge
+    --config <path>`, so four elements go by before `agb bridge` sees anything, and `agb` reads its
+    command from `argv[1]` — a flag in *front* of the command name **is** the command name
+    (`unknown command: --config`), a job that starts no bridge and holds no map. Walking the whole
+    array made that dead job an exact, declaring, rank-1 claimant that outranked the live one. The
+    corpus missed it because it modelled argv as `["bridge", …]`, and so did the fixture every other
+    plist test goes through: **forty cases proved on an array four elements shorter than any that
+    exists.** Nothing fails when a harness is simpler than reality, which is why both now have a
+    guard of their own — the corpus runs every case in *both* shapes, and the fixture's argv is
+    compared against `dist/com.agbridge.plist` itself.
+    ⚠️ **And the eleventh: "I could not answer" is not "the answer is nothing", and it has three
+    spellings here.** `plist_arg` exits 0 (answered), **2** (this file says nothing), **3** (the
+    parser could not be loaded from beside `$agb` — a statement about `--agb`), or something
+    else (the *reader* failed — a statement about `$python`, not about the plist). Folding the last
+    into the second made `--python /bin/false` read every plist as silent and bounce the default job
+    under a live instance bridge; it is fatal now, at all three call sites, spelled once in
+    `plist_read_ok` and **called from the parent shell** (a wrapper inside `value=$(…)` would `exit`
+    only the subshell). A status cannot see `--python /bin/echo`, which exits 0 printing its own
+    arguments, so an `import plistlib` probe asks a question with a known answer once, up front. And
+    exit 2 itself covers two different questions — **a missing plist and an unreadable one** — where
+    the conventional path is a fall-back for the first and a *guess* for the second; the guess
+    repaired a map that never existed and reported it empty, so it refuses and asks for `--config`.
     `docs/design.md` §5, *One Mac, several instances*, is the authority.
 13. **`agtermctl session split` and `session scratch` are used as `on`, never `toggle`** — either
     key can be pressed twice, and a toggle would close the pane the second time — and the pane must
@@ -166,7 +272,7 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Two cross-file agreements have no single source of truth, and both fail silently.** `agb` is
+14. **Three cross-file agreements have no single source of truth, and all fail silently.** `agb` is
     Python under a byte cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
@@ -177,9 +283,18 @@ These are not style preferences. Each one has a test, and most were re-learned t
       name `agb-refresh` accepts and the installer refuses points at a plist that was never
       rendered; the reverse writes four things where they were not meant to go. The *messages*
       differ on purpose (one writes those four things, the other goes looking for three).
+    - **`agb-refresh`'s `BRIDGE_VALUE_FLAGS` is `agb_mac.BRIDGE_VALUE_ARGS`**, because the liveness
+      attribution has to know which `agb bridge` flags consume the argument after them: it asks
+      whether a `--config` on a `ps` line could be inside an earlier flag's value. A flag missing
+      from the shell copy stops it seeing that value as a place a `--config` can hide. ⚠️ **One
+      reader, not two, and that is the point.** `plist_arg` needed the same list while it *walked*
+      `ProgramArguments`; it calls `parse_bridge_args` now and takes the table out of it, so the
+      agreement got **narrower** rather than wider. It cannot go away entirely: by the time `ps` has
+      flattened argv there is no argv left to hand a parser.
 
-    Both are pinned by `tests/test_install_pkg.py` — the path agreement compares the resolved
-    strings, the validator agreement compares the `case` **patterns**, not the bodies.
+    The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
+    resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — and
+    the third by `tests/test_agb_refresh.py`.
 
 ## Testing conventions
 
@@ -275,7 +390,7 @@ Released **0.4.0** — notifications: a banner when an agent blocks, one when a 
 the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
 budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
 path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
-`agb_mac`/`agb_ops`). 1557 tests.
+`agb_mac`/`agb_ops`). 1769 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

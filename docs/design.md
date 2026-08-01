@@ -1438,16 +1438,49 @@ which shipped as its opposite first:
   (`--instance hostb --config ~/.config/agbridge/hostb-config`; one map, two jobs) and
   `agb-refresh --config <default config>` saw only hostb's plist, adopted its label, and had nothing
   to warn about because it was then the only match. Two guards on the implication, because both
-  directions of it are wrong: the plist must be **readable** (`plist_config` answers `""` equally for
-  "no `--config`" and "could not read it", and the second says nothing about any map), and its name
-  must be in the **`com.agbridge` label space** (`~/Library/LaunchAgents` is shared with every other
-  program on the Mac, and none of *their* plists carries a `--config` either). An agbridge install
-  under a `--label` of its own is therefore not implied — the pre-existing answer, below.
+  directions of it are wrong: the plist must be **readable and parseable**, and its name must be in
+  the **`com.agbridge` label space** (`~/Library/LaunchAgents` is shared with every other program on
+  the Mac, and none of *their* plists carries a `--config` either). An agbridge install under a
+  `--label` of its own is therefore not implied — the pre-existing answer, below.
+
+  The first guard is the reader's **exit status**, not a `-r` test. `plist_arg` prints nothing for
+  three different things — "no `--config` in it", "could not read it at all", and "this is not a
+  plist" — and only the first is an answer. It exits **2** for the other two, and
+  `bind_label_to_config` spells the read as an `if` so that the status survives. A `-r` test caught
+  only the middle case: a plist truncated by a full disk, or some other file that ended up under a
+  `com.agbridge.*` name, is perfectly readable and went on to *stand for the default config*, so a
+  file saying nothing about any map claimed one under a real job's label. Nothing is lost by skipping
+  it — launchd cannot load it either, so no bridge was ever started from it.
+
+  ⚠️ **There are THREE statuses, not two, and the third was being folded into "this file says
+  nothing" at every call site.** Exit 2 is the intended *unreadable / not-a-plist* answer; a reader
+  that exits **1, 126 or 127** has not answered about the plist at all — it has said something about
+  `$python`. An `--python` naming a shell script, a missing file or an interpreter without
+  `plistlib` is an ordinary operator mistake, and it made *every* plist say nothing: no job claimed
+  the config, the run fell through to the **default label** and the **conventional config**, and
+  `stopped: com.agbridge` / exit 0 came out in exactly the words it uses when it is right, while the
+  named instance's bridge kept running over the map that had just been forgotten. So the rule is
+  spelled once, in `plist_read_ok`, and asked at all three call sites: **2 is an answer, anything
+  else is fatal.** It must be called from the parent shell — a wrapper returning the value would run
+  inside `value=$(…)`, where `exit 1` ends the substitution and the script carries on with an empty
+  value, which is the silent fallback it exists to stop.
+
+  ⚠️ **And a status cannot see an interpreter that succeeds while meaning nothing.** `--python
+  /bin/echo` is executable, exits 0 and prints its own arguments, so every plist would "answer" a
+  config path made of the reader's own source. That one is caught by *asking a question with a known
+  answer* — one `import plistlib` probe, before any plist is read — which is also where the good
+  error message lives.
 - **The ambiguity warning counts claimants, not runners-up of one kind.** One exact match plus one
   directory-only match is two jobs over one rows file; accounting that keeps two lists finds one
   entry in each and says nothing. It stays a warning rather than a refusal because there is nothing
   to choose — whichever job is bounced, the other keeps running over the map `forget-rows` is about
   to rewrite — and this is a recovery command.
+- **A job whose `--config` is elsewhere but whose `--rows` is in this map still holds it**, for the
+  reason given under the liveness probe above: `render_settings` spends `--rows` before the config.
+  That is a claim too, and it is ranked **last** — `install.sh` renders no `--rows`, so it is a
+  hand-edited plist, and it may only ever replace the "nothing claims this config" fallback, never
+  outbid a job that names the config itself. It is counted as a claimant like any other, so two jobs
+  over one rows file are still named.
 
 When no plist claims the path — an `install.sh mac --config <nondefault>` install made before the
 plist carried the flag, which really is a `com.agbridge` job — the default label is kept and a
@@ -1491,43 +1524,393 @@ printed as a claim nobody checked — the forget then lands under a live bridge,
 failure the wait exists to prevent. Before the pattern was narrowed at all, that bridge **was**
 waited for, so treating a miss as proof is a regression rather than a gap.
 
-So a miss asks one further question: **is a bridge up that carries no `--config` at all?** It is
-asked by **subtraction** (`pgrep -f "<agb> bridge"` minus `pgrep -f "<agb> bridge --config"`) because
-"does not contain" is not an extended regular expression. A wait for such a bridge is announced,
-once, with the reason.
+So a miss is not the end of the question — but the further question cannot be another **pattern**.
+`pgrep -f` matches a regex against whatever spelling the process was *started with*, and there is no
+way to canonicalise the far side of a regex match. So what is running is asked **directly**:
+`pgrep -f "<agb> bridge"` hands back the pids, `ps -ww -o args=` turns those pids back into the
+command lines they were started with, and each one is attributed to a map by `same_map` — the same
+canonical comparison `bind_label_to_config` uses to pick the label (invariant 12).
 
-⚠️ **And that question is only this run's to ask when this run repairs the *default* map.** The
+| the running bridge's command line | this run's? |
+|---|---|
+| `--config X` (or several) | iff `X` names a file this run rewrites, for **any** occurrence on the line |
+| `--rows R` (or several) | iff `R` does, whatever its `--config` says — `render_settings` spends `--rows` **before** the config (`opts.get("rows") or rows_path(config)`) |
+| no **provable** `--config` | iff this run repairs the **default** map — the only one such a bridge can hold, since it resolves `agb.config_path()` itself |
+| `ps` will not say | yes; unattributable is not gone |
+
+"A file this run rewrites" is `ci_hits`, and it is two files from two flags on this side too:
+`dirname(<config>)/placements` always, plus either `dirname(<config>)/rows` or the `--rows` this run
+was given (`instance_paths`). `same_map` compares directories, so one call per path covers both.
+
+⚠️ **`--config` is not the only flag that decides which map a bridge holds, and asking only about it
+was an under-match.** `agb bridge --config <elsewhere> --rows <this map's rows>` is writing the very
+file `forget-rows` is about to rewrite while its `--config` names somewhere else entirely — read as
+somebody else's, that is zero waits and the forget landing under a live bridge that
+merges-then-writes. Both flags are scanned and a `--rows` hit is enough on its own. But **only
+`--config` answers the untagged question**: a bridge with a `--rows` and no `--config` still resolves
+`agb.config_path()` for its *placements*, so letting `--rows` count as "this line carries a flag"
+would skip that question and under-match again. The same asymmetry holds on the plist side, where a
+`--rows` claim exists but is ranked **last** (below).
+
+⚠️ **" --config " BYTES ARE NOT A `--config` FLAG, and reading them as one was the unsafe polarity.**
+`bridge --workspace "farm --config /other/config"` leaves `config` unset — that bridge runs on
+`agb.config_path()` and holds the **default** map — but `ps` flattens argv and prints a line
+byte-for-byte identical to one carrying the flag. Taking those bytes as proof skipped the
+default-map question entirely and answered "not ours" on a *default* refresh: zero waits,
+`forget-rows` under a live bridge over the map being repaired. It is undecidable from the line alone
+(both readings are real argvs), so it is resolved towards the wait: **a `--config` is proof only when
+no other value-taking flag appears before it**, because there is then no value it could be part of.
+`$BRIDGE_VALUE_FLAGS` in `agb-refresh` is what makes "value-taking" answerable — this script's copy
+of `agb_mac.BRIDGE_VALUE_ARGS`, a cross-file agreement with no single source of truth (invariant 14),
+pinned by `tests/test_agb_refresh.py`. ⚠️ **This is the only reader that still needs it**, and it is
+the one that cannot ask the parser: by the time `ps` has flattened argv there is no argv left to hand
+anybody. `plist_arg` had a copy of the same problem and solved it the other way (below). The scan
+starts **after** `<agb> bridge`, because argv does: a
+` --config ` inside the *agb path* is not an argument, and taking it as one made a line "proof" with
+nothing before it to disprove it.
+
+This costs nothing in the ordinary case and it is worth saying why: `ProgramArguments` puts
+`--config` immediately after `bridge` (`dist/com.agbridge.plist`), so every launchd-started bridge is
+proof and another instance's is still not waited for — the every-run 10 s warning that narrowing the
+pattern removed does not come back. What changes is a hand-started
+`agb bridge --feed-host X --config Y`, now waited for on a default-map run, which the "does nothing
+for" list below already claimed from the other direction.
+
+⚠️ **"Any occurrence", because which one the bridge is actually running on is `parse_bridge_args`'
+answer and it keeps the LAST.** That parser reads its value flags into a dict with no duplicate check
+(`opts[name] = inline`), so a repeated flag overwrites. Reading only the first — which both the
+command-line reader and `plist_arg` did — attributes
+`… bridge --config /old --config <this instance's>` to `/old`: not ours, zero waits, `forget-rows`
+under a live bridge. The blank walk below cannot rescue it, since it only *shortens* the remainder.
+But "the last one" cannot simply replace "the first one" either: `ps` flattens the arguments, so
+`--config "/a --config /b"` is **one** path containing that literal text and is indistinguishable
+from two flags — the first reading is right for that line and the last for a genuinely repeated flag,
+and nothing on the line says which. Every occurrence is therefore offered, each with its own walk: a
+strict superset of both readings, whose extra candidates can only ever over-match, which costs a
+bounded wait. `plist_arg` has no such ambiguity — a plist's `ProgramArguments` **is** the argv — so
+it simply keeps the last one, which is what launchd starts the bridge with.
+
+⚠️ **And "every occurrence" is over BOTH spellings, in POSITION order.** `agb bridge` accepts
+`--config=<path>` as well as `--config <path>` — `parse_bridge_args` partitions every argument on `=`
+before looking the name up — so both readers have to know both. Neither did, and each failed
+differently:
+
+- The command-line reader scanned with two `case` arms, one per spelling, and `case` picks by **arm
+  order, not by position**. A line carrying an inline occurrence *before* a space-form one cut at the
+  space form and threw the inline value away — and under the one-flag-with-blanks reading that walk
+  exists for, the discarded value is exactly the one the parser keeps (`--config=/tmp/a --config
+  b/config` is **one** argument). Not ours, no wait, `forget-rows` under a live bridge. The earlier
+  round's permutation check missed this by only ever composing lines out of *separate* flags, the
+  reading in which the loss is a harmless over-match. The fix is one marker — the bare `--config` —
+  cut at its first occurrence, with the character after it saying which spelling it is (and saying
+  it is not the flag at all when it is neither `=` nor a blank, so `--configs/b` inside somebody's
+  `--statedir` value does not make an untagged bridge read as tagged).
+- `plist_arg` recognised only the two-element form, so `<string>--config=/path</string>` read as
+  `""` — and `""` is not "no answer" downstream: `bind_label_to_config` reads it as the *default*
+  config (below), so an instance's own job claimed the default map, the run fell through to the
+  default label, and it forgot that instance's bindings while that instance's bridge was still up.
+  Last-wins also has to hold **across** the spellings rather than within each, since
+  `--config /decoy --config=<real>` leaves the bridge on `<real>`. Both of those are free now that
+  this side calls the parser instead of imitating it; the `ps` side cannot, and still spells them.
+
+The value line a two-element pair consumes is never re-read as a flag, because the parser takes the
+argument after `--config` **verbatim** — `--config --config=/x` puts the bridge on a file literally
+named `--config=/x`.
+
+⚠️ **And on the plist side that rule generalises: a `<string>` is a flag only when it is in FLAG
+POSITION.** `<string>--workspace</string>` followed by `<string>--config=/other/config</string>` is a
+*workspace name* that reads like a flag, and `agb bridge` never sees a config there — but a reader
+that searches for the text answers `/other/config`, and then every path in the script acts on a map
+no process is running on: the banner named it, the liveness pattern was built from it, and
+`forget-rows` "repaired" it, reporting `the map is already empty` and exiting 0 while the real map
+kept the stale bindings that sent you there. Unlike the `ps` side there is no ambiguity to resolve
+and none is invented: `ProgramArguments` is a real argv array, so a blank inside a value is inside
+one `<string>`, the answer is exact, and this side may answer "no config" confidently where a
+flattened line may not.
+
+### The plist reader does not simulate the parser, it calls it
+
+⚠️ **`plist_arg` walked the array itself for five review rounds, and that sequence has the same shape
+as the awk one below it: each round added a rule and the next round found the rule it did not have.**
+Last occurrence and not first; both spellings; flag position; only `ProgramArguments`; only after the
+command word. Every one of those is a property of `agb_mac.parse_bridge_args` **restated in a second
+language**, and each was a wrong-job bounce before it was a rule.
+
+The fifth round found the class a restatement cannot reach: **an argv the parser REJECTS**.
+`bridge --config=/real/config --config=` is a missing-value error; `bridge --config /real bridge
+--config /decoy` a stray positional; `bridge --config /real --bogus` an unknown option;
+`bridge --config /real --watchdog soon` a number that is not one. `agb bridge` exits on every one, so
+the job runs no bridge and holds no map — and the walk answered a real-looking config for all four,
+which made a dead `KeepAlive` job an **exact, declaring, rank-1** claimant that outranked the live
+one. Simulating the rejection rules too would have needed the **boolean** flag list as a second
+cross-file agreement, plus the two numeric validations, plus the positional rule: a *wider* agreement
+and a sixth round.
+
+So the elements after the command word are handed to `parse_bridge_args` itself, loaded by path from
+the directory `$agb` lives in (`agb` registered in `sys.modules` first, so `agb_mac`'s own
+`import agb` binds it — the same hop `agb._load_sibling` makes). **This is not a new dependency**:
+`install.sh` copies the three files together and refuses an install where they are not, and step 2 of
+`agb-refresh` — `agb forget-rows` — already goes through `agb._load_mac()`. A tree where the load
+fails cannot do the forget either, which is why the failure is **exit 3, fatal, naming `--agb`**
+rather than "this plist says nothing": that answer would bounce whichever job the unread plists left
+unclaimed and then fail the forget anyway, after the bootout. It costs one import per question,
+measured at 19.0 ms → 21.6 ms on the 3.6.8 floor; `agb_mac` is kept off the *hook's* hot path, and
+this is a recovery command that already sleeps in a poll loop.
+
+⚠️ **An argv the parser refuses is "carries no `--config`", and the fail direction was checked rather
+than assumed.** The job holds no map, so it is not a claimant — that is simply correct. What it costs
+is at the one call site asking a different question: `agb-refresh --instance hostb`, whose plist has
+been hand-edited into something the parser refuses, falls back to the conventional path instead of
+the config that broken argv names. That is the same answer the shape already got when the `--config`
+sat in *front* of the command word, and it is the merely-useless direction rather than the
+destructive one (`forget-rows` reports an empty map and exits 0, against bouncing a live instance's
+job); `--config` settles it. Ranking such a plist *below* a working claimant instead of dropping it
+would be better still and is **not available**: with the argv refused there is no parsed value to
+rank, and recovering one means the simulation again.
+
+The `--rows` claim above is the same call asked for a different key, taken from
+`BRIDGE_VALUE_ARGS` rather than derived from the flag name — `--feed-host` is `feed_host` there, and
+a rule spelled in the shell would be one more thing to keep in step.
+
+A **non-string** element is the one thing answered without the parser, which would raise on it rather
+than answer: launchd refuses such a job outright, so the whole array is "carries no `--config`". That
+is also a behaviour change — a nested `<array>` in *argument* position used to be stepped over, and
+`agb bridge` would have refused it as a stray positional.
+
+⚠️ **And only `ProgramArguments`, which three places claimed and none did.** A plist is not an argv —
+only one of its keys is — and every other key carries strings too: `ProcessType`, the two log paths,
+`WorkingDirectory`, an `EnvironmentVariables` value, a `WatchPaths` array. Reading the whole file
+took them all as arguments, and **both** directions of that were reachable on a hand-edited plist
+while nothing said a word:
+
+| where the stray pair sits | what came out |
+|---|---|
+| **after** `ProgramArguments` | it *overwrote* the real value, because last-wins is right inside argv — the banner, the liveness pattern and `forget-rows` all named a map launchd started nothing on, while the argv one kept its stale bindings |
+| **before** `ProgramArguments` | it *manufactured* a config for a job whose argv has none, so a plist standing for the default map claimed some other one |
+
+That is now **structural** rather than a boundary the reader has to hold: `plistlib` hands back a
+dict and `plist_arg` asks it for one key, so a nested `ProgramArguments` under `EnvironmentVariables`
+is under `EnvironmentVariables` and a `WatchPaths` array is a `WatchPaths` array. It got there the
+long way round, and the next section is why.
+
+⚠️ **And only the part of `ProgramArguments` AFTER the `bridge` command word, because that array is
+the whole command line and not the bridge's argv.** What `install.sh` renders is
+
+```
+<python> -S -E <agb> bridge --config <path>
+```
+
+so four elements go by before anything the bridge ever sees, and `agb` reads its command from
+`argv[1]` and nothing else. A flag in **front** of the command name therefore *is* the command name:
+`<agb> --config /real/config bridge` is `agb: unknown command: --config`, refused, and restarted
+once every `ThrottleInterval` for ever under `KeepAlive`. That job runs no bridge and holds no map —
+and reading `/real/config` off it made it an **exact, declaring claimant, rank 1**, the top of the
+table. With it sorting first (`com.agbridge.aaa` before `com.agbridge.hostb`) a `--config
+/real/config` run bounced the job that was not running, waited for nothing, and forgot the map while
+the real bridge was still live and merging.
+
+**No `bridge` in the array at all is "carries no `--config`", not "this file says nothing"**, and the
+direction was chosen rather than fallen into. It is the same answer a plist predating the flag gives,
+so the caller's existing implication (`no --config` ⇒ `$DEFAULT_CONFIG`, ranked *below* every job
+that names one) already puts such a job where it belongs. Exit 2 would make it invisible instead —
+and would swallow `<plist/>` and every plist with no `ProgramArguments` with it, which is the shape a
+Mac installed before instances existed is still in.
+
+⚠️ **The harness had never seen the real shape.** The differential corpus modelled `ProgramArguments`
+as `["bridge", …]` and the fixture that renders plists for every other test did the same, so forty
+cases were checked against an array four elements shorter than any that exists — a property proved on
+inputs the property was not about. Nothing *fails* when a harness is simpler than reality; that is
+what makes it worth a guard of its own, and there are now two: the corpus runs every case in **both**
+shapes (`_as_installed`), and the fixture's rendered argv is compared against `dist/com.agbridge.plist`
+itself rather than against a constant in the test file.
+
+### The plist is parsed, not tokenized
+
+⚠️ **`plist_arg` was an awk token scan for four review rounds, and every round produced a finding of
+exactly one kind: a hand-rolled XML tokenizer is not an XML parser.** Whitespace inside a tag,
+comments spanning a value, CDATA, processing instructions, DOCTYPE, character references,
+minification, nesting — each round added a rule and the next round found the rule it did not have.
+The last two are worth writing down because both were **valid plists** that `plistlib` and `plutil`
+read without complaint, and both failed towards a path *no bridge is running on*, which is the unsafe
+direction (the liveness poll matches nothing and `forget-rows` lands under a live bridge):
+
+- **Whitespace inside a tag.** XML says a start tag is `<` Name (S Attribute)\* S? `>` and an end tag
+  is `</` Name S? `>`, so `<string >` and `</array >` are both well-formed. The scan matched neither
+  literal. `<string >/real/config</string>` therefore **vanished**, and the dangling `--config` was
+  spent on the next element — `--workspace`. `</array >` never **closed** argv, so a later
+  `WatchPaths` array overwrote the real config with its own strings.
+- **A comment splitting a value across lines.** `<string>/tmp/a<!--` ⏎ `-->b/config</string>` is the
+  string `/tmp/ab/config` — XML says character data either side of a comment is one value. The scan
+  carried its "inside a comment" state from record to record but not the text *before* the opener, so
+  the halves were never joined, the element vanished, and the `--config` was spent on the next one.
+  The comment that shipped with that code claimed comments were one-directional and could only ever
+  *hide* argv; that is true only of a comment sitting **between** elements.
+
+The replacement is not a fifth rule. `plist_arg` parses the file with **`plistlib`**, which costs no
+new dependency: it is stdlib on macOS and on the Linux the suite runs on, it imports clean under
+`-S -E`, and `agb-refresh` already *requires* a python3 — it dies without one and runs `agb` through
+it. (That is also why `$python` is resolved **before** the label is bound: this reader is the first
+thing in the script that needs it. Left where it was, every read inside `bind_label_to_config` ran
+`"" -S -E -c …`, so every plist answered nothing and the run fell through to the default label with a
+named instance's bridge live.) `plutil` was rejected for the opposite reason — macOS-only, so the
+suite could not test what it shipped.
+
+It also reads what the scan could not, and these were all written down as permanent limitations:
+**binary** plists (`plutil -convert binary1`, which is what Xcode, `PlistBuddy` and `defaults write`
+leave behind), a config delivered **as CDATA**, entities and **character references** anywhere
+including in a flag *name* (`&#45;-config`), a **DOCTYPE** with an internal subset, and a tag whose
+text **spans lines**. They are gone, not narrowed.
+
+⚠️ **One `plistlib` quirk needed handling and is not obvious.** `plistlib.load` **sniffs** the format
+off the first 32 bytes and recognises only `<?xml`, `<plist` and the binary magic — so a plist that
+opens with its **DOCTYPE**, which is valid XML and which launchd loads, is refused before the parser
+sees it. Naming the format (`fmt=plistlib.FMT_XML`) skips the sniff, so the reader tries that on any
+failure. It is a widening, not a loosening: a file that is genuinely not XML still fails, one line
+lower, in the parser.
+
+The cost is a **process per question** rather than an awk per question. Measured: a pathological
+directory of 20 plists, read twice each, is 0.75 s against the scan's 0.20 s; a real
+`~/Library/LaunchAgents` holds one or two agbridge plists (~36 ms). This is a recovery command that
+already sleeps in a poll loop waiting for a bridge to exit and starts a second python for
+`forget-rows`.
+
+There is no `2>/dev/null`. The awk had one — so that an unreadable plist stayed quiet — and it
+swallowed the interpreter's own diagnostics too, so a parse error *in the program itself* read as
+"this plist names no config" at every call site. The reader is silent by construction instead: it
+catches its own errors and answers with a status, which leaves stderr free to carry a real bug.
+
+⚠️ **Three rules on the reader's own text and output, all of which fail at a distance, and two of
+them only under a locale nobody tests in.** The program is inline in POSIX sh, so it **may contain no
+apostrophe** — one would close the quoting around it. It must be **pure ASCII**, however much the
+rest of that file uses `⚠️`: Python decodes a `-c` program with the *locale's* filesystem encoding
+(and `-E` does not touch `LC_ALL`), so under `LC_ALL=C` one non-ASCII byte in a comment is
+`Unable to decode the command from the command line` — the reader never runs, and every caller reads
+"this plist names no config". And the value is written as **UTF-8 bytes to `sys.stdout.buffer`**,
+never `print`: `print` encodes with the locale too, so a non-ASCII config path — ordinary on a Mac,
+where the filesystem is UTF-8 by fiat — raises `UnicodeEncodeError` under `LC_ALL=C` and, worse,
+*succeeds* under an ISO-8859-1 locale, handing back a transcoded path that names nothing. The awk
+passed bytes through untouched and this has to as well. A structural test pins the first two and
+three locales pin the third.
+
+⚠️ **Too TIGHT is not the safe side here, which is why the reader is a real parser and not a boundary
+drawn to what `install.sh` happens to write.** Missing a real `ProgramArguments` demotes that plist
+to "carries no `--config`" — which for a *named* instance means its label is never found and the run
+bounces the **default** job while that instance's bridge is live, the same accident from the other
+end. One test still feeds it `dist/com.agbridge.plist` rendered, XML comment and all, and a
+**differential corpus** of forty-odd hand-editable plists compares the reader against authorities
+that are not `agb-refresh`'s own code: `plistlib` says what the argv *is*, and
+`agb_mac.parse_bridge_args` says what `agb bridge` *does* with it. The corpus keeps every shape the
+token scan got wrong **and** every shape it got right — a corpus holding only the cases the current
+reader passes proves nothing about the next one.
+
+A wait for any of those is announced once, saying which of the five it is, and the 10 s warning
+names **what was actually still running** rather than `$label` — `$label` is the job that was booted
+out, so it is the one process provably *not* still matching.
+
+⚠️ **The first shape of this was a SUBTRACTION, and it had a hole in exactly the place the label side
+did.** It asked only "is a bridge up that carries no `--config` at all?", by counting
+`pgrep -f "<agb> bridge"` and subtracting `pgrep -f "<agb> bridge --config"`, because "does not
+contain" is not an extended regular expression. A bridge over **this** map started with a merely
+different spelling of the same path — `<dir>/./config`, a relative path, a symlinked `$HOME`, or the
+plist re-rendered by `install.sh mac --instance` after the running bridge was started from an older
+one — is counted on both sides, so it reads as "tagged, therefore somebody else's" and is not waited
+for: `forget-rows` under a live bridge, silently. That is the same bug `same_map` was extracted to
+fix on the label side, arriving on the process side, and it is why the answer is now a canonical
+comparison and not a regex.
+
+⚠️ **The untagged rule is gated on the map, and that gate is now asked per bridge.** The
 justification first written here — the flag is rendered unconditionally, so no 0.5.0 plist can start
 an untagged bridge, so it cannot be another instance's — is true only of a bridge some 0.5.0 plist
 **started**, and contradicted twenty lines above by the case that motivated the whole narrowing:
 `install.sh mac --instance hostb` renders hostb's plist, installs the newer `agb-refresh`, and does
 **not** restart the default job, whose bridge therefore keeps running untagged from a plist rendered
-before the flag existed. Ungated, the probe waited the full 10 s on **every**
+before the flag existed. Ungated, that probe waited the full 10 s on **every**
 `agb-refresh --instance hostb` and then printed `com.agbridge.hostb is still running after 10s` — a
 warning that the forget may have been undone, provably false (hostb's bridge exited before the first
-poll), on every run of a recovery command. That is exactly the every-run false warning the narrow
-pattern existed to remove, reinstated by the fix for the narrowing.
+poll), on every run of a recovery command. The gate used to be spelled **once**, by emptying the
+broad pattern on a non-default run — which switched off the attribution of every *other* bridge too,
+and is how the differently-spelled case above went unwaited-for. It is asked per bridge now, where it
+can only ever be about an untagged one.
 
-An untagged bridge **is** attributable, just not by its command line: with no `--config` it resolves
-`agb.config_path()` itself, so the only map it can hold is the default instance's. When that is the
-map being repaired the wait is real and is kept — which is also the pre-0.5.0 behaviour, since the
-broad pattern is all `main` ever had. And the 10 s warning names **what was actually still running**:
-`$label` is the job that was booted out, so a probe-driven wait that named it named the one process
-provably *not* still matching.
+What this deliberately does **nothing** for: a bridge started from a **different** `agb` path (the
+broad pattern names this one, and always has); a Mac with no `pgrep`, where there is no poll at all;
+a plist with no `--config`, where the pattern is already the broad one, matches any bridge, and the
+note above already says so; a config path containing a **newline**, which `ps` cannot put back
+together; and a bridge whose `--config` names a directory that no longer exists, where `same_map`
+fails closed and it reads as another map's — which it is, in the only sense that matters here, since
+there is no map there to protect; and a bridge that repeats `--config` where the value the *parser*
+keeps is another instance's while an earlier one is this map's, which is attributed as ours and
+waited for although it is somebody else's — an over-match, and the price of not having to decide
+which reading of a flattened line is the right one. A config path containing a **blank** *is*
+handled: `ps` flattens the arguments, so the value cannot be delimited from the flag that follows it,
+and every blank-terminated prefix is offered to `same_map` instead. So is a **repeated** `--config`,
+by offering every occurrence, and either **spelling** of it, by scanning one marker in position
+order; so is a `--rows` that moves the map out from under the config; and so is a `--config` that
+might be **part of another flag's value**, which is resolved towards the wait. Those, `ps` saying
+nothing, and a hand-started `agb bridge --feed-host X --config Y` all err towards a bounded wait
+rather than towards forgetting under a live bridge.
 
-What the probe deliberately does **nothing** for: an untagged bridge when this run repairs a
-non-default map — it cannot hold that map unless it was hand-started with an explicit `--rows`, which
-no plist produces; a bridge whose command line carries some *other* `--config` — it is attributable
-to whichever instance that path names, and waiting for another instance's bridge is exactly the
-warning the narrowing removed; a Mac with no `pgrep`, where there is no poll at all; and a plist with
-no `--config`, where the pattern is already the broad one, matches any bridge, and the note above
-already says so.
+On the plist side, what `plist_arg` does **nothing** for is now a short list. Most of it is files no
+bridge was started from — but **not all of it**, and the exception is the fourth bullet, so the list
+is not a safe thing to summarise:
+
+- **A file that is not a plist** — unreadable, truncated mid-element, or neither XML nor binary.
+  `plistlib` raises and the reader exits 2, where the token scan used to keep the last *complete*
+  value it had seen. That reads like a loss and is not: the scan's partial answer was not safe
+  either — truncate a plist one element later and it answered `--workspace`, a flag name, as the
+  config path. Exit 2 says "this file says nothing", and `bind_label_to_config` skips it rather than
+  letting it stand for the default config (above).
+- **A `ProgramArguments` element that is not a string.** launchd refuses such a job outright, so
+  nothing is running from it. It consumes a pending flag — the walk stays in step — but is never
+  reported as a value.
+- **A path containing a newline**, which the command substitution would strip and which `ps` cannot
+  put back together on the other side either.
+- ⚠️ **An argv that reaches `agb bridge` indirectly — the one entry that IS a running bridge.**
+  `/bin/sh -c "exec python3 <agb> bridge --config /x"` is *one* element, not seven, so no element
+  equals `bridge` and the answer is "no `--config`" — for a job that is running a bridge, on `/x`,
+  and is read as the **default** instance's. That is a genuine wrong-instance hazard on a hand-edited
+  plist, not a file that holds no map: `bind_label_to_config` ranks it as a default-config claimant,
+  so a default refresh can bounce it while the instance it really serves keeps its bridge, and a
+  refresh of `/x` will not find it at all. Unchanged by the command-word boundary (the whole-array
+  walk found no `--config` element either): the boundary is drawn to argv shaped the way `install.sh`
+  writes it, not to every command line that ends up running a bridge. Handling it would mean parsing
+  a shell word-splitting out of an arbitrary `-c` string, which is a second language to get wrong;
+  the mitigation is that `install.sh` never writes one.
+- **`bridge` appearing before the command word as some other argument's value** — `<agb> hook
+  bridge`, or an interpreter option that takes `bridge` as its argument. The walk starts one element
+  early and reads the rest as bridge flags. Neither is a command line that starts a bridge, and both
+  fail towards "no `--config`" for every shape a human writes, since there are no flags after the
+  command word in either.
+
+All of them fail towards "no config found", which is the **loud** direction *for the default instance*
+— the default label, and the note that says so — and the quiet one for a named instance. Five things
+that used to be on this list are not any more, and it is worth saying which, because each was
+written down as permanent: a **minified** plist; an **XML comment**, a **processing instruction** or
+a **CDATA section**, in either direction; a **character reference** in a flag name or a key; the
+**DOCTYPE** declaration, internal subset and all; and a **binary** plist. An element **outside**
+`ProgramArguments` that reads like a flag left the list earlier, and for a sharper reason: it was
+listed as a "no config found" case and was not one — it could silently *overwrite* a perfectly valid
+argv value.
 
 ⚠️ **`--instance <name>` therefore does not *mean* `~/.config/agbridge/<name>/config`** anywhere in
 `agb-refresh`: it means the config that instance's plist names, with the conventional path as the
 fall-back for a Mac whose plist was never rendered. Rebuilding the convention unconditionally names
 a file that may not exist, and `forget-rows` answers `the map is already empty` and exits 0 — the
 recovery command reporting success for a map it never opened.
+
+⚠️ **And "there is no plist" and "the plist is there and unreadable" are not the same question**,
+though `plist_arg` answers exit 2 to both. The convention is the right fall-back for the first and a
+*guess* for the second — a guess about a file that is sitting there saying otherwise. `agb-refresh
+--instance hostb` against an install made with `--config <elsewhere>` and a corrupted
+`com.agbridge.hostb.plist` repaired `~/.config/agbridge/hostb/config`, a map that never existed, so
+`forget-rows` reported "already empty" and exited 0 — while the liveness pattern, built from the same
+empty answer, waited for a bridge whose command line names the real config. Success, twice, on the
+wrong instance. So the unreadable case **refuses**, and names the flag that settles it (`--config`).
+`[ -e ]` is deliberately the weaker test: a dangling symlink or a plist under a directory this user
+cannot search answers false and takes the convention exactly as before, so this can only turn the
+noisier direction on, never a working `agb-refresh --instance` off. With `--config` given there is
+nothing to guess and the run proceeds — with its own note, because the old one said "no `--config`
+in <plist>" and gave the advice for a plist predating the flag, about a file that had not been read.
 
 #### Limitations — documented, not solved
 
@@ -1537,18 +1920,25 @@ recovery command reporting success for a map it never opened.
    intent, so the mitigation is in the **output, not the docs** — every run, unconditionally, before
    the dry-run exit:
 
-   | | prints |
+   | run | prints |
    |---|---|
-   | `agb-refresh` | `instance: hostb -- label com.agbridge.hostb, config …/hostb/config` |
-   | `agb forget-rows` | `forget-rows: config …; rows …; placements …` |
-   | `agb close-done` | `close-done: config …; rows …` |
+   | `agb-refresh --instance hostb` | `instance: hostb -- label com.agbridge.hostb, config …/hostb/config` |
+   | `agb-refresh` (the mistake) | `instance: (default) -- label com.agbridge, config …/config` |
+   | `agb forget-rows --config …` | `forget-rows: config …; rows …; placements …` |
+   | `agb close-done --config …` | `close-done: config …; rows …` |
+
+   ⚠️ The **second** row is the whole point of the table: those two runs differ by one flag, and
+   without the banner the only other difference is which map is now empty. A bare `agb-refresh`
+   resolves the default label and the default config, so it prints `(default)` — the table used to
+   show `hostb` against a bare `agb-refresh`, which is the one thing this line cannot be allowed to
+   be wrong about.
 
    Only `agb-refresh` has an instance *name* to print — it is the only one of the three that takes
    `--instance`. The other two know a config path and the files derived from it, which is the same
    answer in the spelling they have. When the name was never typed but the label was resolved from a
    config (above), `agb-refresh` reads the name back out of the label rather than printing
-   `(default)` — the one line whose whole job is to say which instance moved must not be the line
-   that is wrong.
+   `(default)` — so `agb-refresh --config …/hostb/config` prints `hostb` too, and the one line whose
+   whole job is to say which instance moved must not be the line that is wrong.
 2. **An upgrade needs each job restarted.** The code is shared, so `install.sh mac` updates every
    instance at once — but a running bridge holds the `agb_mac` it started with until its own job is
    booted out and back in.

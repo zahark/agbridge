@@ -122,7 +122,7 @@ the config path**, because it is all derived from that file's directory:
 | launchd label | `com.agbridge` | `com.agbridge.hostb` |
 | logs | `~/Library/Logs/agbridge/` | `~/Library/Logs/agbridge/hostb/` |
 | the three code files, `~/.local/bin` | **shared** | **shared** — one install, N configurations |
-| `mac_id` | minted | **adopted** from the default config; it names the Mac, not the connection |
+| `mac_id` | minted | **adopted** — this instance's own config first, then the default's, minted only if neither has one; it names the Mac, not the connection |
 
 Everyday operation, and the trap:
 
@@ -154,9 +154,26 @@ Also worth knowing:
   `<dir>/some-other-name` all still find it. Where several jobs share one directory the one naming
   this exact file is used and **all of them are named out loud**, because they share a rows file and
   the others keep running over it. A plist with no `--config` counts as naming the default config
-  (that is what its bridge resolves), so an old default job is not invisible to the search. If no
-  plist claims the path it says so, keeps `com.agbridge`, and warns that it is about to bounce that
-  job with this config's bindings.
+  (that is what its bridge resolves), so an old default job is not invisible to the search; one whose
+  `--config` is elsewhere but whose `--rows` is in this map counts too, ranked last, because
+  `agb bridge --rows` overrides the rows file the config would have chosen. If no plist claims the
+  path it says so, keeps `com.agbridge`, and warns that it is about to bounce that job with this
+  config's bindings. The plists are **parsed** (`plistlib`), not text-searched, so a hand-edited one
+  is read the way launchd reads it — comments, CDATA, entities, a DOCTYPE, minification and a binary
+  `plutil -convert binary1` copy all included. Only the part of `ProgramArguments` **after the
+  `bridge` command word** counts, because that array is the whole command line and `agb` reads its
+  command from the first argument: `<agb> --config X bridge` is `unknown command: --config`, a job
+  that starts no bridge, and it used to claim X's map and outrank the job really holding it. What
+  those arguments *mean* is asked of `agb bridge`'s own parser (loaded from beside the `--agb` path),
+  not of a walk that imitates it — so an argv the bridge would **refuse** (`--config=` with no value,
+  a stray positional, an unknown option, a `--watchdog` that is not a number) counts as naming no
+  config, which is right: launchd restarts such a job for ever and no bridge ever starts. A file
+  that is *not* a plist (truncated, or something else under a `com.agbridge.*` name) is skipped
+  entirely rather than counted as naming the default config — and if `--python` names something that
+  is not a usable python3, or `--agb` names a tree with no `agb_mac` beside it, the run **refuses**
+  instead of reading every plist as silent and bouncing the default job. Likewise `agb-refresh --instance <name>` against an *unreadable* plist refuses and
+  asks for `--config`, rather than guessing `~/.config/agbridge/<name>/config`; a plist that is not
+  there at all still falls back to that convention.
 - **An upgrade is one `install.sh mac`, but each job must be restarted**: `agb-refresh` for the
   default and `agb-refresh --instance <name>` for each other. A running bridge holds the code it
   started with.
