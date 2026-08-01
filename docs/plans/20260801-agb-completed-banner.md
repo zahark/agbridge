@@ -281,17 +281,17 @@ test, and Task 2 tests it rather than leaving it to the live check.
 - Modify: `agb_mac`
 - Modify: `tests/test_bridge_rows.py`
 
-- [ ] add `config_seconds(config, key, default)` immediately after `config_flag` (`agb_mac:2363`),
+- [x] add `config_seconds(config, key, default)` immediately after `config_flag` (`agb_mac:2363`),
       implementing the table under Technical Details: absent/empty → `default`, `CONFIG_FALSE` → 0,
       unparseable → `default`, `<= 0` → 0, otherwise `float(value)`
-- [ ] docstring records **why it never raises** (it runs on the render path, where an exception
+- [x] docstring records **why it never raises** (it runs on the render path, where an exception
       would wedge a paint) and that `agb doctor` therefore cannot catch a mistyped *value*
-- [ ] write a table-driven test covering every row of that table, negative and garbage included
-- [ ] ⚠️ write the **first ever** test for `config_flag` in the same place — all four `CONFIG_FALSE`
+- [x] write a table-driven test covering every row of that table, negative and garbage included
+- [x] ⚠️ write the **first ever** test for `config_flag` in the same place — all four `CONFIG_FALSE`
       spellings, absent, empty, and a truthy value. The `"0"`-is-truthy reasoning at
       `agb_mac:2348-2352` is the entire reason the function exists and is currently unexercised
-- [ ] mutation-test: return the default for `0` instead of disabling → the table test must fail
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 2
+- [x] mutation-test: return the default for `0` instead of disabling → the table test must fail
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 2
 
 ### Task 2: Add the `working` memory and `_notify_completed`
 

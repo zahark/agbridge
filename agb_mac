@@ -2363,6 +2363,38 @@ def config_flag(config, key, default):
     return value not in CONFIG_FALSE
 
 
+def config_seconds(config, key, default):
+    """A non-negative number of seconds, with `default` when absent or empty.
+
+    Shares `CONFIG_FALSE` with `config_flag` on purpose: one falsy vocabulary
+    rather than two, so `notify_on_completed_after = off` reads the way anyone
+    would expect after writing `notify_on_blocked = off`. A negative value is
+    the same answer -- a threshold below zero cannot mean anything else -- and
+    both come back as `0.0`, which is distinguishable from *absent*: absent
+    gives the default, so "off" and "not configured" stay different states.
+
+    **Never raises**, and that is the interesting decision. This runs on the
+    render path, where an exception wedges a paint, so an unparseable value
+    falls back to `default` rather than stopping the bridge. The cost is real
+    and is worth stating: `agb doctor` validates key *names*, not values, so a
+    typo'd number is silent everywhere -- `= 5 minutes` quietly means 300, not
+    an error. The alternative was worse.
+    """
+    value = (config or {}).get(key)
+    if value is None:
+        return default
+    value = value.strip().lower()
+    if not value:
+        return default
+    if value in CONFIG_FALSE:
+        return 0.0
+    try:
+        number = float(value)
+    except ValueError:
+        return default
+    return number if number > 0 else 0.0
+
+
 def bridge_sink(model, opts, warn=None, config=None, run=None):
     """The op sink: the log always, the agterm renderer unless disabled.
 
