@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1769 tests, ~51 s)
+python3 -m pytest tests/ -q                                    # full suite (1777 tests, ~51 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -396,7 +396,7 @@ Before it, **0.4.0** — notifications: a banner when an agent blocks, one when 
 and the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
 budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
 path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
-`agb_mac`/`agb_ops`). 1769 tests.
+`agb_mac`/`agb_ops`). 1777 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

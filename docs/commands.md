@@ -524,6 +524,47 @@ Three refusals, each because the alternative is silent:
 | `install.sh farm --instance <name>` | nothing on the farm reads a per-instance config — `agb hook` and `agb status-line` resolve `~/.config/agbridge/config` and nothing else — so it would write a config no one opens and report success |
 | a name with `/`, `.`, a leading `-`, or empty | it becomes a launchd label component, a plist *filename*, a log directory **and** a config directory. Letters, digits, `-` and `_` only; the general `shell_safe` check permits `.` and `/`, so `--instance ../../evil` would otherwise pass |
 
+### `--instance auto` — let the machine say
+
+```
+sh install.sh mac --instance auto --statedir <path> --feed-host <target> …
+```
+
+The installer already ssh's `--feed-host` for its hostname, to derive the `host_<name>` mapping a
+row needs to be clickable. `auto` spends that same answer on the instance name, so the config, the
+label and the log directory all follow what the machine calls itself:
+
+```
+instance: auto -> hostb01 (read back from hostb-alias)
+instance: hostb01 -- label com.agbridge.hostb01, config …/agbridge/hostb01/config
+```
+
+**One ssh, two readers.** The probe is asked once and the `host_<name>` mapping finds it already
+answered — so there is no second round trip, and no way for a box that renamed itself between two
+calls to produce a config whose mapping does not match its own directory.
+
+⚠️ **It is a word you type, and it can never be the default.** Re-running `install.sh mac` with the
+original flags is how you pick up new code, so an **absent** `--instance` has to keep meaning the
+default instance. If it meant "name it after whatever the feed host calls itself", every upgrade of
+an existing install would mint a *new* instance beside it — new config, new launchd job, new rows
+map, and every row duplicated in the sidebar.
+
+⚠️ **Every failure is a refusal, and nothing is written.** Falling back to the default instance is
+precisely the accident this avoids: that run would rewrite the first machine's `feed_host` and
+`statedir`, boot out its launchd job and point its bridge at the new box — in the same words a
+correct run uses. So the probe being best-effort for the *mapping* (a note, and you pass `--host`
+yourself) does not carry over to the *name*:
+
+| Refused | Why |
+|---|---|
+| the machine will not answer | the fall-back would be the default instance, above |
+| `--instance auto` with no `--feed-host` | there is nothing to ask |
+| `--instance auto --no-probe` | the probe **is** the name |
+| a hostname that is not a usable name | `probe_farmhost` allows a `.` because a `.` is fine in a `host_<name>` key; a launchd label component is stricter, so `auto` re-asks with the narrow rule and names the host in the message — you typed `auto`, not `weird.name` |
+
+One consequence: the literal name `auto` is unavailable. A machine really called that needs its
+instance spelled some other way — or the three flags the sugar stands for.
+
 The `next:` hint it prints carries **this instance's** statedir into the farm-side command, so the
 copy-paste is right for the machine you just added.
 
