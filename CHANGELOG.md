@@ -6,10 +6,11 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
-## Unreleased
+## 0.6.0 — 2026-08-01
 
-> `agb`'s `VERSION` is already **0.6.0** — a new command plus two breaking CLI changes. The heading
-> above is still `Unreleased`: the tag has not been cut.
+> **Two breaking changes**, both in the same direction: a command with no instance flag used to act
+> on the unnamed instance and now acts on **every** one, and `agb forget-rows` refuses a bare run.
+> Read *Upgrading from ≤ 0.5.0* below before installing — nothing has to change, but one habit does.
 
 ### Changed, and it is a breaking change
 
@@ -445,13 +446,22 @@ named, and giving them a `--config` is deliberately not part of this change.
 
 ### Not verified
 
-- **Two bridges, live, through a sweep.** Everything above was driven end to end against a throwaway
-  `$HOME` with stub `launchctl`/`pgrep`/`ps`/`agtermctl` — which is not two real bridges coming back
-  with their identities. This project's own history is that two of the last four features passed
-  every test and still needed a fix after live use. Worth watching in particular: **Ctrl-C
-  mid-sweep**, which the child's trap is the only thing standing between and a bridge left down; and
-  a deliberately broken instance, where the others should still be refreshed and the broken one's job
-  **restarted anyway**.
+- ~~**Two bridges, live, through a sweep.**~~ **Done, and it earned its keep.** Verified on a Mac
+  with two named instances: `agb instances` listed both, a bare `agb-refresh` swept both, clicking a
+  row from *each* landed on the right machine with the right config on its identity line, and the
+  farm side confirmed the beat at one second old. The unnamed default instance was migrated to a
+  name in the same session, following the steps under *Upgrading* above.
+
+  ⚠️ **The live run found two things the 1877 tests did not** — both listed under `### Fixed`: the
+  blank name column in `agb instances`, and a `feed_host` that had been wrong and dormant in a config
+  for hours. That is now **three of the last six** features needing a fix after live use, which is
+  the argument for doing this every time rather than the argument for a bigger suite.
+
+- **Two sweep failure modes still stub-only.** **Ctrl-C mid-sweep** — the child's trap is the only
+  thing between that and a bridge left down — and a **deliberately broken instance**, where the
+  others should still be refreshed and the broken one's job **restarted anyway**. Both are covered by
+  named tests against stub `launchctl`/`pgrep`/`ps`, which is not the same as watching a real job
+  come back.
 - **Symmetry is a convention, not a guarantee.** `install.sh mac` can still create a *nameless*
   instance. Mandating `--instance` was split into a follow-up plan rather than bundled here: it does
   not fix the stated problem — the sweeps do — and it reaches 24+ test functions through the
