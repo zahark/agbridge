@@ -1,0 +1,131 @@
+#!/bin/sh
+# agb-host-line -- print the `host_<name>` line to add on the Mac, and the
+# command that puts it in the RIGHT config.
+#
+# Why this exists: a record's `host` is a hostname, but ssh needs a target, so
+# the Mac needs `host_<hostname> = <ssh-target>` before click-to-attach can
+# reach a new cluster host. Two things about that are easy to get wrong and
+# neither is visible when you get it wrong:
+#
+#   * with more than one instance, `~/.config/agbridge/config` is the wrong
+#     file -- the line belongs to whichever instance watches THIS host's
+#     statedir, and a line in the other one does nothing at all;
+#   * the hostname must be what agbridge actually records (`uname -n` with the
+#     domain stripped), not what you call the box.
+#
+# So this is run on the cluster host, and prints a Mac-side command that
+# resolves the instance by statedir rather than assuming the default.
+#
+#   agb-host-line                      # suggest an ssh target
+#   agb-host-line --alias box-a        # you already know the alias
+
+set -e
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'agb-host-line: %s\n' "$*" >&2; exit 1; }
+
+alias_target=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h|--help)
+            cat >&2 <<'EOF'
+usage: agb-host-line [--alias <ssh-target>]
+
+Run on a cluster host. Prints the `host_<name> = <ssh-target>` line the Mac
+needs, plus a command that appends it to the config of the instance that
+actually watches this host's statedir.
+
+  --alias <t>  the ssh target the Mac should use (default: this host's FQDN)
+EOF
+            exit 0 ;;
+        --alias) [ $# -gt 1 ] || die "--alias needs a value"
+                 alias_target=$2; shift 2 ;;
+        *)       die "unknown argument: $1" ;;
+    esac
+done
+
+# The name agbridge records: `own_host()` is os.uname()[1] with the domain
+# stripped, so a config keyed on the FQDN would never match a record.
+host=$(uname -n | cut -d. -f1)
+[ -n "$host" ] || die "could not determine this host's name"
+
+# Statedir resolution, in agb's own order: $AGB_STATEDIR, then the config, then
+# the default. Spelled out here rather than shelled out to `agb doctor`, which
+# probes the mount and takes seconds.
+statedir="${AGB_STATEDIR:-}"
+if [ -z "$statedir" ]; then
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/agbridge/config"
+    [ -r "$cfg" ] && statedir=$(sed -n 's/^[[:space:]]*statedir[[:space:]]*=[[:space:]]*//p' "$cfg" | head -1)
+fi
+[ -n "$statedir" ] || statedir="$HOME/.agbridge"
+
+[ -d "$statedir" ] || say "agb-host-line: WARNING $statedir is not a directory here -- is the shared mount up?"
+
+# The ssh target is genuinely Mac-side knowledge: it is how the MAC reaches this
+# box, over the Mac's network and its ~/.ssh/config. The FQDN is a starting
+# guess, not an answer -- one of these has already failed to resolve from the
+# Mac in this project's history, which is exactly why it is printed for a human
+# to confirm rather than written automatically.
+# ...unless this host is the one the Mac already ssh's into to run the feed. A
+# live `agb feed <mac-id>` here was started BY the Mac over ssh, which makes the
+# Mac's `feed_host` a target proven to work -- the only such evidence available
+# from this side, and far better than a guess. It is also the common case: the
+# feed host is usually the first host anyone adds.
+mac_id=""
+cfgfile="${XDG_CONFIG_HOME:-$HOME/.config}/agbridge/config"
+[ -r "$cfgfile" ] && mac_id=$(sed -n 's/^[[:space:]]*mac_id[[:space:]]*=[[:space:]]*//p' "$cfgfile" | head -1)
+is_feed_host=no
+if [ -n "$mac_id" ] && ps -eo args= 2>/dev/null | grep -q "agb feed $mac_id"; then
+    is_feed_host=yes
+fi
+
+if [ -z "$alias_target" ]; then
+    alias_target=$(uname -n)
+    guessed=yes
+else
+    guessed=no
+fi
+
+say "host as agbridge records it : $host"
+say "statedir                    : $statedir"
+say "ssh target for the Mac      : $alias_target"
+if [ "$guessed" = yes ] && [ "$is_feed_host" = yes ]; then
+    say "                              ^ A GUESS, and for this host there is a BETTER"
+    say "                                answer. A live \`agb feed $mac_id\`"
+    say "                                is running here, started by the Mac over ssh --"
+    say "                                so the Mac's own \`feed_host\` is a target already"
+    say "                                PROVEN to reach this box. Use that value instead:"
+    say ""
+    say "                                    grep feed_host ~/.config/agbridge/config   # on the Mac"
+    say ""
+    say "                                then re-run: agb-host-line --alias <that value>"
+elif [ "$guessed" = yes ]; then
+    say "                              ^ A GUESS (this host's FQDN). Confirm it with"
+    say "                                \`ssh $alias_target true\` ON THE MAC -- a cluster"
+    say "                                FQDN that resolves here often does not resolve"
+    say "                                there, and the failure is a silent dead row."
+fi
+say ""
+say "Run this ON THE MAC. It finds the instance watching this statedir, so it"
+say "works whether or not you use --instance, and does nothing if already set:"
+say ""
+# ⚠️ An if/elif/else, deliberately, and no `exit` anywhere: this is pasted into
+# an interactive shell, where `exit` closes the window. The empty-`cfg` case has
+# to be a branch rather than a guard, or `grep` runs against an empty path.
+cat <<EOF
+  sd='$statedir'
+  cfg=\$(grep -l "^[[:space:]]*statedir[[:space:]]*=[[:space:]]*\$sd\$" \\
+        ~/.config/agbridge/config ~/.config/agbridge/*/config 2>/dev/null | head -1)
+  if [ -z "\$cfg" ]; then
+      echo "no instance on this Mac watches \$sd -- is this host's statedir right?"
+  elif grep -q "^host_$host[[:space:]]*=" "\$cfg"; then
+      echo "already set in \$cfg"
+  else
+      echo 'host_$host = $alias_target' >> "\$cfg"
+      echo "added to \$cfg"
+  fi
+EOF
+say ""
+say "No bridge restart needed: host_<name> is read by \`agb pane\`, a fresh"
+say "process per click -- unlike the bridge-side keys, which are read once at"
+say "startup and need \`agb-refresh\`."

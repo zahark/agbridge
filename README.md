@@ -143,6 +143,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb version` | both | load-bearing: both installers probe with it |
 | `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable. `-d` starts it in the background with the row already showing |
 | `agb-ralphex <plan>` | cluster | helper: runs [ralphex](https://github.com/umputun/ralphex) under **one** row for the whole plan, so the Mac banners once when it finishes rather than once per task |
+| `agb-host-line` | cluster | helper: prints the `host_<name>` line a new cluster host needs, **and** a Mac-side command that appends it to the config of the instance actually watching this statedir — not blindly the default one |
 | `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows — a close, a reset, a reinstall, **a Mac reboot**, or an upgrade of the Mac's files |
 
 Full flag reference: [`docs/commands.md`](docs/commands.md).

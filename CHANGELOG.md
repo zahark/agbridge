@@ -38,6 +38,29 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   inflates the reported duration, because it is wall time and not work; and `--from-stdin` replays
   re-announce everything in the recording.
 
+- **`agb-host-line`** — run it on a new cluster host and it prints the `host_<name> = <ssh-target>`
+  line the Mac needs, plus a command that appends it **to the right config**. Three things it gets
+  right that a hand-written `echo` does not, each of which fails silently:
+
+  **The instance.** With more than one bridge on a Mac, `~/.config/agbridge/config` is the wrong
+  file — the line belongs to whichever instance watches *this* host's statedir, and a line in the
+  other one does nothing at all. The emitted command resolves it by statedir, which is the
+  discriminator (two instances sharing one would be two bridges rendering the same agents twice).
+
+  **The name.** `own_host()` is `uname -n` with the domain stripped, so a key written against the
+  FQDN never matches a record.
+
+  **The ssh target, which the farm cannot actually know** — it is how the *Mac* reaches this box,
+  over the Mac's network and ssh config. So it is printed as a guess to confirm rather than written
+  automatically. And when this host is running a feed for the configured mac-id, the tool says so:
+  that feed was started by the Mac over ssh, which makes the Mac's own `feed_host` a target already
+  **proven** to work, and it points you at that instead. Not hypothetical — the FQDN guess for the
+  host this was written on appears dozens of times in a real bridge log as
+  `ssh: Could not resolve hostname …`.
+
+  The emitted snippet is idempotent, and is an `if/elif/else` with no `exit` anywhere: it is pasted
+  into an interactive shell, where `exit` closes the window.
+
 - **`agb-ralphex`** — run [ralphex](https://github.com/umputun/ralphex) under **one** agbridge row
   for the whole plan. ralphex starts a fresh Claude per task and agbridge mints a key per *agent*,
   so a ten-task plan is ten rows carrying the same label and a banner apiece. This opens a row
