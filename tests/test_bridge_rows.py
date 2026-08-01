@@ -3105,3 +3105,82 @@ def test_the_stale_row_hint_stays_short_for_the_default_instance(
     assert hint, warnings
     assert "Run agb-refresh to" in hint[0]
     assert "--config" not in hint[0]
+
+
+# ---------------------------------------------------------------------------
+# reading a value out of the config -- the two coercers
+# ---------------------------------------------------------------------------
+# ⚠️ Until this section existed, `config_flag`, `CONFIG_FALSE` and the
+# notification half of `render_settings` had NO tests at all. The two
+# off-switch tests above inject `settings={"notify_blocked": False}` straight
+# into the renderer and never go through the coercer, so the whole reason
+# `config_flag` exists -- that the *string* "0" is true in Python -- was
+# unexercised for two releases. That is the shape of a guard nobody notices is
+# missing: the feature works, the switch works, and the one line that connects
+# them is covered by nothing.
+
+
+def test_config_flag_reads_the_documented_spellings(mac):
+    """`notify_on_blocked = 0` must mean off, and `bool("0")` is True.
+
+    Every spelling here is one somebody will actually write. The `default`
+    branches matter as much as the false ones: an absent key has to read as the
+    default so that an existing config gets a new feature without being edited,
+    and an empty value is a half-finished edit, not a decision.
+    """
+    cases = [
+        ({}, True), ({"k": "0"}, False), ({"k": "no"}, False),
+        ({"k": "off"}, False), ({"k": "false"}, False),
+        ({"k": "OFF"}, False), ({"k": "  off  "}, False),
+        ({"k": ""}, True), ({"k": "   "}, True),
+        ({"k": "1"}, True), ({"k": "yes"}, True), ({"k": "banana"}, True),
+    ]
+    for config, want in cases:
+        assert mac.config_flag(config, "k", True) is want, config
+    # `default` is honoured in both directions, not just as "on".
+    assert mac.config_flag({}, "k", False) is False
+    assert mac.config_flag({"k": ""}, "k", False) is False
+    assert mac.config_flag(None, "k", True) is True
+
+
+def test_config_seconds_reads_the_documented_spellings(mac):
+    """A threshold whose number is also its switch.
+
+    Two states have to stay distinguishable and both look like "no": *absent*
+    means "not configured", which is the default, and `off`/`0`/negative mean
+    "configured to nothing", which is 0.0. Collapsing them would make the
+    default unreachable once anybody had written the key.
+
+    ⚠️ Unparseable falls back to the **default**, not to zero and not to an
+    exception -- this runs on the render path, where raising wedges a paint.
+    The cost is that `= 5 minutes` silently means 300; `agb doctor` checks key
+    names, not values. That trade is deliberate and is recorded here because
+    the alternative reading ("garbage means off") is equally plausible and
+    would be a silent behaviour change.
+    """
+    cases = [
+        ({}, 300.0), ({"k": ""}, 300.0), ({"k": "   "}, 300.0),
+        ({"k": "0"}, 0.0), ({"k": "off"}, 0.0), ({"k": "no"}, 0.0),
+        ({"k": "false"}, 0.0), ({"k": "OFF"}, 0.0),
+        ({"k": "-5"}, 0.0), ({"k": "-0.1"}, 0.0),
+        ({"k": "120"}, 120.0), ({"k": "120.5"}, 120.5),
+        ({"k": " 120 "}, 120.0),
+        ({"k": "5 minutes"}, 300.0), ({"k": "abc"}, 300.0),
+    ]
+    for config, want in cases:
+        assert mac.config_seconds(config, "k", 300.0) == want, config
+    assert mac.config_seconds(None, "k", 300.0) == 300.0
+    # Absent and off are different states, which is the whole point.
+    assert mac.config_seconds({}, "k", 300.0) != mac.config_seconds(
+        {"k": "off"}, "k", 300.0)
+
+
+def test_the_two_coercers_share_one_falsy_vocabulary(mac):
+    """`off` in one and `off` in the other must not come to mean different
+    things. A second tuple is how that drifts, so `config_seconds` reads
+    `CONFIG_FALSE` rather than spelling its own -- asserted here because the
+    duplicate would be invisible: both files would pass their own tests."""
+    assert mac.CONFIG_FALSE, "empty vocabulary would make this vacuous"
+    for word in mac.CONFIG_FALSE:
+        assert mac.config_flag({"k": word}, "k", True) is False, word
+        assert mac.config_seconds({"k": word}, "k", 300.0) == 0.0, word
