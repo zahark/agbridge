@@ -1479,6 +1479,20 @@ NOTIFY_INTERVAL = 300.0
 # 3 s fixes the first while still spanning one 2 s poll.
 NEW_ROW_QUIET = 3.0
 
+# How long a turn has to run before finishing it is worth interrupting you for.
+# See `RowRenderer._notify_completed`.
+#
+# A constant rather than a literal in two places, because `render_settings` and
+# the renderer's own fallback have to agree: a `RowRenderer` built with `{}` --
+# which is how every test and any future direct caller builds one -- behaving
+# differently from production is a trap that costs an afternoon.
+#
+# Five minutes is chosen so an upgrade is not a new interruption. `completed`
+# fires once per turn, so at a low threshold this announces every "yes" you
+# type; at five minutes it announces the job you walked away from and nothing
+# else. `notify_on_completed_after` moves it, and `off` disables it.
+COMPLETED_AFTER = 300.0
+
 # How often every row's status is re-sent regardless of whether it changed.
 # See `RowRenderer._reassert`: agterm resets a row's status when the row's
 # command starts, so the renderer's memory cannot be trusted as a description of
@@ -1678,7 +1692,8 @@ class RowRenderer(object):
 
     __slots__ = ("model", "rows", "settings", "run", "warn",
                  "seen", "applied", "titles", "stale", "clock", "notified",
-                 "placements", "reasserted", "blocked", "quiet_until", "dead")
+                 "placements", "reasserted", "blocked", "quiet_until", "dead",
+                 "working")
 
     def __init__(self, model, rows, run=None, warn=None, settings=None,
                  clock=None):
@@ -1705,6 +1720,13 @@ class RowRenderer(object):
         # Keys announced as blocked. Deliberately NOT derived from `applied`:
         # see `_notify_blocked`.
         self.blocked = set()
+        # key -> the feed-clock instant we first saw this key working. Also
+        # deliberately not derived from `applied`, and for a sharper reason
+        # than `blocked`'s: `_render_stale` writes `idle` into `applied` on any
+        # disconnect, so a start time recovered from it would restart on every
+        # 10 s hiccup. Nothing but `_render_upsert` and `_render_remove` ever
+        # writes here, so no repaint can move it. See `_notify_completed`.
+        self.working = {}
         # Row ids agterm has told us do not exist. See `_agtermctl`.
         self.dead = set()
         # Armed by the FIRST batch, not here: the catch-up burst arrives with
@@ -1742,7 +1764,7 @@ class RowRenderer(object):
         """Drop per-key memory for keys the row map no longer holds.
 
         The bridge is launchd-resident and restarted only by a crash or a
-        reboot, so three dicts that only ever grow are three dicts that grow
+        reboot, so four dicts that only ever grow are four dicts that grow
         for months. `save()` has just merged the disk copy, so an entry `agb
         close-done` reclaimed in another process is gone from the map by now --
         and a key the map does not hold cannot be rendered again: every reader
@@ -1750,7 +1772,7 @@ class RowRenderer(object):
         the map. A `[done]` entry is deliberately still *in* the map, so its
         memory survives until it is actually closed.
         """
-        for memory in (self.seen, self.applied, self.titles):
+        for memory in (self.seen, self.applied, self.titles, self.working):
             for key in [k for k in memory if not self.rows.known(k)]:
                 del memory[key]
         # A set, so it cannot go through the loop above.
@@ -1935,6 +1957,7 @@ class RowRenderer(object):
         self._status(key, row, state,
                      blink=(state == "active" and previous not in (None, "active")))
         self._notify_blocked(key, row, session, state)
+        self._notify_completed(key, row, session, state)
 
     def _notify_blocked(self, key, row, session, state):
         """One desktop banner when an agent starts waiting for a human.
@@ -1979,6 +2002,74 @@ class RowRenderer(object):
         label = (session or {}).get("label") or key
         host = (session or {}).get("host") or "?"
         self._agtermctl(["notify", "%s is waiting for a response" % (label,),
+                         "--title", "agbridge: %s" % (host,),
+                         "--target", row])
+
+    def _notify_completed(self, key, row, session, state):
+        """One desktop banner when a turn that ran a while finishes.
+
+        The counterpart to `_notify_blocked`, and the reason it needs a
+        threshold at all: `blocked` is rare and always means a human is
+        required, while a turn ends *every time* an agent answers you. An
+        ungated banner would fire three seconds after you type "yes" -- and
+        agterm raises the banner and bounces the Dock even for the row you are
+        looking at, so there is no "only when you are away" to fall back on.
+        The threshold is therefore the feature: it turns "the agent stopped"
+        into "the thing you walked away from is done".
+
+        **The `pop` IS the transition memory.** A second report of the same
+        finished turn finds nothing and stays silent, so unlike `blocked` this
+        needs no second set to remember what it announced -- and three
+        properties fall out rather than being enforced:
+
+        * a disconnect cannot restart the clock, because `_render_stale` never
+          routes through here and `key not in self.working` keeps the FIRST
+          sighting across a reconnect;
+        * a bridge restart announces nothing, because a fresh renderer's first
+          snapshot shows finished agents with no entry at all;
+        * a block resets it, so answering a prompt and finishing seconds later
+          is silent -- correct, since that block was already announced.
+
+        `started` is popped before the settings check for the same reason
+        `_notify_blocked` adds to its set first: turning the key on mid-flight
+        must not deliver a backlog of stale durations.
+
+        ⚠️ The clock is `model.now`, the feed's server-stamped one. Using the
+        Mac's would make this a third clock domain skewed against both, and
+        every duration here is a subtraction between two wire values.
+        """
+        now = self.model.now
+        if state == "active":
+            # First sighting wins. `setdefault` semantics, spelled out because
+            # the guard is load-bearing: `model.now` is None until the first
+            # event carries a number, and storing that None would make this
+            # test false for ever after, so the real clock would never land and
+            # the turn would be lost. It is NOT protecting a subtraction --
+            # `pop` returns None for a stored None exactly as for a missing
+            # key, so the arithmetic below is unreachable either way.
+            if now is not None and key not in self.working:
+                self.working[key] = now
+            return
+        started = self.working.pop(key, None)
+        # `now is None` here is unreachable twice over -- `model.now` never
+        # returns to None once set, and nothing is stored while it is None --
+        # but it is the kind of thing a refactor reintroduces, and a TypeError
+        # out of a render path is worse than a redundant clause.
+        if state != "completed" or started is None or now is None:
+            return
+        after = (self.settings or {}).get("notify_completed_after",
+                                          COMPLETED_AFTER)
+        if not after or (now - started) < after:
+            return
+        label = (session or {}).get("label") or key
+        host = (session or {}).get("host") or "?"
+        body = "%s finished" % (label,)
+        # Below `BEAT_LATE` this renders empty, and "finished after " with a
+        # dangling preposition is worse than saying nothing about the duration.
+        took = beat_age_text(now - started)
+        if took:
+            body += " after %s" % (took,)
+        self._agtermctl(["notify", body,
                          "--title", "agbridge: %s" % (host,),
                          "--target", row])
 
@@ -2070,7 +2161,17 @@ class RowRenderer(object):
         out from under the user the instant an agent finished. Reclamation is
         `agb close-done`, a separate deliberate act -- and if the agent turns
         out to be alive after all, `_render_upsert` binds the row straight back.
+
+        A removal also ends any turn we were timing. Without this, an agent
+        removed while working -- a complete snapshot dropping it, or `agb
+        prune` -- and then re-asserted as finished would be announced with a
+        duration spanning the removal, for a turn nobody watched. It is placed
+        before the early return because that is free, NOT because the early
+        return needs covering: two drafts of this claimed a reason and both
+        were wrong, so the honest note is that `_forget_unmapped` already
+        handles the `unbind`-returns-`None` case and this is defence in depth.
         """
+        self.working.pop(key, None)
         row = self.rows.unbind(key)
         if row is None:
             return

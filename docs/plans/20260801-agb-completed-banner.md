@@ -301,21 +301,21 @@ test, and Task 2 tests it rather than leaving it to the live check.
 
 **Code:**
 
-- [ ] add `COMPLETED_AFTER = 300.0` at module level near `NEW_ROW_QUIET`, with decision 10's reason
-- [ ] add `"working"` to `__slots__` (`:1679-1681`) and `self.working = {}` in `__init__` beside
+- [x] add `COMPLETED_AFTER = 300.0` at module level near `NEW_ROW_QUIET`, with decision 10's reason
+- [x] add `"working"` to `__slots__` (`:1679-1681`) and `self.working = {}` in `__init__` beside
       `self.blocked` (`:1707`), commented with what it holds and why it is **not** derived from
       `applied`
-- [ ] add `self.working` to the dict tuple in `_forget_unmapped` (`:1753`)
-- [ ] add `_notify_completed` after `_notify_blocked` (`:1983`), exactly as in Solution Overview —
+- [x] add `self.working` to the dict tuple in `_forget_unmapped` (`:1753`)
+- [x] add `_notify_completed` after `_notify_blocked` (`:1983`), exactly as in Solution Overview —
       including the `COMPLETED_AFTER` default on the `.get()` and the `beat_age_text` empty guard
-- [ ] add `self.working.pop(key, None)` to `_render_remove` (`:2074`) **before** the `row is None`
+- [x] add `self.working.pop(key, None)` to `_render_remove` (`:2074`) **before** the `row is None`
       return, with decision 7's reason in a comment
-- [ ] call `_notify_completed` from `_render_upsert` (`:1937`) right after `_notify_blocked`
-- [ ] ⚠️ **the docstring must not name all four status words.**
+- [x] call `_notify_completed` from `_render_upsert` (`:1937`) right after `_notify_blocked`
+- [x] ⚠️ **the docstring must not name all four status words.**
       `test_the_status_vocabulary_has_exactly_one_source` (`tests/test_bridge_rows.py:2167`) walks
       the *whole* `agb_mac` AST including docstrings. Naming `active`, `blocked` and `completed`
       without `idle` is safe
-- [ ] ⚠️ record in a comment that the `now is None` clause on the `completed` side is
+- [x] ⚠️ record in a comment that the `now is None` clause on the `completed` side is
       **unreachable twice over** — `model.now` never returns to `None` once set
       (`agb_mac:276-278`), and `working` is only written when `now is not None`, so
       `started is not None` implies `now is not None`. Kept as defence. The *reachable* `None`
@@ -323,9 +323,9 @@ test, and Task 2 tests it rather than leaving it to the live check.
 
 **Harness:**
 
-- [ ] add a `_finished(b)` helper beside `_notifies` (`:1118`) filtering on the body — no test may
+- [x] add a `_finished(b)` helper beside `_notifies` (`:1118`) filtering on the body — no test may
       count total banners (see Testing Strategy)
-- [ ] add `"_notify_completed"` to the tuple in
+- [x] add `"_notify_completed"` to the tuple in
       `test_the_renderer_never_consults_the_macs_own_clock` (`:2159-2161`). ⚠️ **This guards
       `time.time`/`time.monotonic` only** — `conftest.calls` yields `("self", "clock")` for
       `self.clock()` (`tests/conftest.py:271-283`), so it does **not** pin "uses `model.now`". That
@@ -334,16 +334,16 @@ test, and Task 2 tests it rather than leaving it to the live check.
 **Tests.** ⚠️ Except where stated, **every test passes `settings={"notify_completed_after": <n>}`
 explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
 
-- [ ] `test_a_long_turn_is_announced_when_it_finishes` — `active` at `NOW`, `completed` at
+- [x] `test_a_long_turn_is_announced_when_it_finishes` — `active` at `NOW`, `completed` at
       `NOW + 400` with `seq=2`; one finished banner, right `--target`, label in the body
-- [ ] `test_a_short_turn_finishes_silently` — the same pair 10 s apart; zero. Companion to the above
-- [ ] ⚠️ `test_the_default_threshold_applies_with_no_settings` — build with **`settings={}`** and
+- [x] `test_a_short_turn_finishes_silently` — the same pair 10 s apart; zero. Companion to the above
+- [x] ⚠️ `test_the_default_threshold_applies_with_no_settings` — build with **`settings={}`** and
       drive a 400 s turn; one banner. **This is the only victim mutation (i) has**, and no existing
       test can stand in: every existing `active`/`completed` upsert in the file runs at the harness
       default `now=NOW`, so their durations are 0
-- [ ] `test_a_finished_turn_is_announced_once_not_per_snapshot` — the second `completed` carries
+- [x] `test_a_finished_turn_is_announced_once_not_per_snapshot` — the second `completed` carries
       `seq=3` so it genuinely reaches the renderer; still one banner
-- [ ] ⚠️ `test_a_disconnect_mid_turn_does_not_reset_the_timer` — **pin every clock, or mutations (a)
+- [x] ⚠️ `test_a_disconnect_mid_turn_does_not_reset_the_timer` — **pin every clock, or mutations (a)
       and (b) both pass.** With `settings={"notify_completed_after": 300}`: `active` at `NOW` →
       `stale("eof")` → `active` at **`NOW + 350`** (`seq=2`) → `completed` at `NOW + 400` (`seq=3`);
       assert one banner. `Harness.upsert` defaults to `now=NOW`
@@ -352,14 +352,14 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
       asserting the duration text does not discriminate. At `+350`, correct code measures 400 s and
       announces; either mutation measures 50 s and goes silent. ⚠️ Also the test that catches
       `self.clock()` substituted for `model.now`
-- [ ] `test_a_reconnect_full_of_finished_agents_is_silent` — call `_past_quiet(b)` (`:1190`) first
+- [x] `test_a_reconnect_full_of_finished_agents_is_silent` — call `_past_quiet(b)` (`:1190`) first
       so new-row banners **do** fire, then assert the total is non-zero and the finished count is
       zero. That non-emptiness assertion is the non-vacuity guard
-- [ ] `test_a_block_mid_turn_restarts_the_clock` — `active` → `blocked` → `active` → `completed`
+- [x] `test_a_block_mid_turn_restarts_the_clock` — `active` → `blocked` → `active` → `completed`
       shortly after; silent. Companion: the same sequence without the block announces
-- [ ] `test_a_removal_then_a_rebind_does_not_announce` — `active`, `remove`, then a `completed`
+- [x] `test_a_removal_then_a_rebind_does_not_announce` — `active`, `remove`, then a `completed`
       upsert that rebinds; silent. Companion: without the removal it announces. Covers decision 7
-- [ ] ⚠️ `test_a_first_event_with_no_feed_clock_does_not_poison_the_turn` — target the **`active`
+- [x] ⚠️ `test_a_first_event_with_no_feed_clock_does_not_poison_the_turn` — target the **`active`
       branch**, and **three events, not two**, or it proves nothing:
 
       ```
@@ -375,12 +375,12 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
       exposes: without the guard, `working[key] = None` is stored, which makes the later
       `key not in self.working` **false**, so the real clock is never recorded and the turn is
       silently lost. With the guard the banner fires; without it, nothing does
-- [ ] ⚠️ `test_a_sub_thirty_second_turn_names_no_duration` — `settings={"notify_completed_after":
+- [x] ⚠️ `test_a_sub_thirty_second_turn_names_no_duration` — `settings={"notify_completed_after":
       5}` with a 10 s turn; the body is exactly `"<label> finished"`, no trailing `" after"`.
       Companion at 400 s asserting the duration text **is** present. This is `beat_age_text`
       returning `""` below `BEAT_LATE`, and it is the one output rule the live check would
       otherwise be first to find
-- [ ] ⚠️ `test_the_finished_banner_can_be_turned_off` — `settings={"notify_completed_after": 0}`.
+- [x] ⚠️ `test_the_finished_banner_can_be_turned_off` — `settings={"notify_completed_after": 0}`.
       **Two assertions, both required.** `key in b.renderer.working` **between** the `active` and
       `completed` upserts — not at the end, where the pop has already run — and then
       `assert b.renderer.working == {}` **after** the `completed` one. The second is not decoration:
@@ -389,17 +389,17 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
       assertion still hold. (The `:1181` template asserts membership at the end because
       `self.blocked` is a set that persists; `working` is popped by decision 8, so a literal copy
       fails — and the tempting "fix" *is* mutation (d))
-- [ ] ➕ `test_two_long_turns_in_a_row_are_both_announced` — `active`/`completed`, then
+- [x] ➕ `test_two_long_turns_in_a_row_are_both_announced` — `active`/`completed`, then
       `active`/`completed` again, all long, `seq` climbing; **two** banners. The `pop` is the entire
       re-arming mechanism (decision 3) and nothing else pins it: an implementation that announced
       once per key — a `set` of announced keys, added by someone "stopping repeats" — would pass
       every other test in this list
-- [ ] ⚠️ `test_working_memory_is_reclaimed_when_the_map_forgets_a_key` — spell it out:
+- [x] ⚠️ `test_working_memory_is_reclaimed_when_the_map_forgets_a_key` — spell it out:
       `upsert(active)` → `b.rows.forget(key)` → `tick()` → `assert b.renderer.working == {}`.
       **No `remove()` step.** The template at `:2344` has one (`:2356`), and decision 7's pop would
       empty `working` there, making the assertion — and mutation (f) — vacuous. The path is real:
       an external `agb close-done` merged by `rows.save()` drops a key that is still `active`
-- [ ] mutation-test, each naming its victim. ⚠️ **Three of these are only real if the tests above
+- [x] mutation-test, each naming its victim. ⚠️ **Three of these are only real if the tests above
       are written as specified** — (a) and (b) need the disconnect test's pinned clocks, (d) needs
       the off-switch test's *final* emptiness assertion. A mutation whose victim still passes is a
       false guarantee, and this plan has shipped three of them across two review passes:
@@ -416,9 +416,20 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
       | h | drop the `_render_remove` pop | removal test |
       | i | drop the `COMPLETED_AFTER` default | the no-settings default test |
       | j | drop the `beat_age_text` empty guard | the sub-thirty-second test |
-      | k | announce once per key instead of popping | the two-consecutive-turns test |
+      | k | announce once per key instead of popping | ⚠️ **predicted the two-turns test; measured otherwise** — see below |
       | l | drop the `now is not None` guard in the `active` branch | the no-feed-clock test |
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 3
+
+      ⚠️ **Measured result of (k): the prediction was wrong, and the honest record is that
+      `test_two_long_turns_in_a_row_are_both_announced` is a *characterization* guard, not a
+      mutation-backed one.** Expressed as `pop` → `get` — the only single-token spelling of
+      "announce once per key" — it kills `test_a_finished_turn_is_announced_once_not_per_snapshot`,
+      the block test and the off-switch test, but **not** the two-turns test: with the entry never
+      cleared, the second turn still measures long enough to announce. No mutation of the present
+      code produces the shape the two-turns test guards (somebody adding a set of announced keys to
+      "stop repeats"), because that shape is an *insertion*, not a substitution. The test is kept
+      for exactly that future, and this note is here so nobody later reads it as covered when it is
+      only anticipated.
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 3
 
 ### Task 3: Wire the setting through, and teach `agb doctor` all three notify keys
 
