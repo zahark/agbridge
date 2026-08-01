@@ -164,6 +164,7 @@ that is the *default* path: `--config <path>` (or `--instance <name>`, which spe
 | `workspace` | `bridge` | agterm workspace for new rows, by **name**; created if absent. Without it they land in whichever workspace is current when the row is made. A row you have moved keeps its own place — see below |
 | `notify_on_blocked` | `bridge` | desktop banner when an agent starts waiting for you. **On by default**; `0`, `no`, `off` or `false` disables it. Whether the Dock icon bounces is agterm's own setting |
 | `notify_on_new_row` | `bridge` | desktop banner when an agent appears that had no row — naming its label, host and directory. **On by default**. Rows minted in a burst (a bridge start, a reconnect, `agb-refresh`) are silent for 3 seconds, or a nine-row refresh would be nine banners |
+| `notify_on_completed_after` | `bridge` | desktop banner when an agent **finishes a turn that ran at least this many seconds**. **On by default at `300`** (5 minutes); `0`, `off`, `no`, `false` or a negative value disables it. The number is the switch, so there is no separate on/off key. A threshold rather than a plain banner because `completed` fires *once per turn* — ungated it would announce every "yes" you type, three seconds later |
 | `host_<name> = <ssh-target>` | `pane`, `prune` | a record's `host` is a hostname, not an ssh alias |
 
 **Environment overrides:**

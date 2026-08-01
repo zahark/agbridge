@@ -125,6 +125,40 @@ agent that merely stayed blocked would be announced again after every hiccup. Th
 changes only when the **agent's** state does, so it is one banner per block regardless of the
 network. A test asserts exactly this, and the wrong gate fails five of them.
 
+### The finished-turn banner
+
+On a transition into **`completed`** — the `Stop` hook — the bridge sends
+`agtermctl notify "<label> finished after <duration>" --title "agbridge: <host>" --target <row>`,
+**but only if the turn ran for at least `notify_on_completed_after` seconds**. Config
+`notify_on_completed_after`, **on by default at 300** (5 minutes); `0`, `off`, `no`, `false` or a
+negative number turns it off. The number is the switch, so there is no second key.
+
+**The threshold is the feature, not a refinement.** `blocked` is rare and always means a human is
+required, but a turn ends *every time an agent answers you*. Ungated this announces the "yes" you
+typed three seconds ago — and there is no falling back on "only when I'm away", because agterm
+raises the banner and bounces the Dock **even for the row you are currently looking at**. At five
+minutes it announces the job you walked away from and nothing else.
+
+The memory is a `pop`: the start time is recorded on the first `active` sighting and removed when
+the turn ends, so a second report of the same finished turn finds nothing and stays silent. Three
+properties fall out of that shape rather than being enforced — a disconnect cannot restart the clock
+(the first sighting wins across a reconnect), a bridge restart announces nothing (a fresh renderer
+sees finished agents with no start time at all), and a `blocked` in the middle resets it, so
+answering a prompt and finishing seconds later is silent. That block was already announced.
+
+⚠️ **The duration is a heuristic, not a measurement**, in five ways worth knowing before tuning it:
+
+| | |
+|---|---|
+| **sub-poll floor** | the bridge polls every 2 s, so a turn shorter than one poll is never seen as `active` and can never announce. The right answer for a short turn, reached for the wrong reason |
+| **restart floor** | a bridge that restarts mid-turn first sees the agent as `active` *then*, so a three-hour turn interrupted by a restart announces as whatever elapsed since |
+| **bridge was down** | a turn that both started **and finished** while the bridge was not running is never announced at all — the feature is quietest exactly when you were away longest. Distinct from a *connection* loss, where the process survives, the start time survives with it, and the banner does fire |
+| **outage inflation** | keeping the original start across a 600 s watchdog outage means the announced duration can be mostly outage. Deliberate — the alternative is losing the turn — but it is wall time, not work |
+| **replay** | `agb bridge --from-stdin` against a captured feed re-announces every long turn in the recording |
+
+Below 30 s (`BEAT_LATE`) the duration renders as nothing, so the body is just `"<label> finished"` —
+`"finished after "` with a dangling preposition is worse than saying nothing about how long it took.
+
 ### The new-agent banner
 
 When a key arrives that has no row, the bridge mints one and sends

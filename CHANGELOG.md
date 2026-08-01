@@ -10,6 +10,34 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **A banner when a long-running agent finishes** — `notify_on_completed_after`, **on by default at
+  300 seconds**. You start a long job on a detached agent, walk away, and until now the only way to
+  learn it finished was to go and look. `blocked` already gets a banner because it means a human is
+  required; finishing means the same thing, more quietly.
+
+  **The threshold is the feature, not a refinement.** `blocked` is rare, but a turn ends *every time
+  an agent answers you* — so an ungated banner announces the "yes" you typed three seconds ago. And
+  there is no falling back on "only when I'm away": agterm raises the banner and bounces the Dock
+  **even for the row you are currently looking at** (it suppresses only the unseen badge). At five
+  minutes it announces the job you walked away from and nothing else.
+
+  ⚠️ **This is on after an upgrade with no config change.** `notify_on_completed_after = off` opts
+  out; any number retunes it. The number is the switch, so there is no second key to keep in step —
+  and no way to write a combination that silently does nothing.
+
+  **Rejected: `idle` as the trigger.** It is the obvious reading of "the agent went idle" and it is
+  wrong — `idle` is emitted by the *bridge*, for `[?]` (feed quiet) and `[done]` (agent gone), and a
+  farm-side stall flips every row to `[?]` roughly every 12–16 s. That would be an anti-feature.
+  Also rejected: a boolean plus a separate threshold, which is two keys and one more way to get a
+  silent no-op.
+
+  **Carry these forward** — the duration is a heuristic and `docs/commands.md` lists all five ways:
+  a turn shorter than one 2 s poll can never announce; a bridge that restarts mid-turn measures from
+  the restart; **a turn that both started and finished while the bridge was down is never announced
+  at all**, which is the feature being quietest exactly when you were away longest; a long outage
+  inflates the reported duration, because it is wall time and not work; and `--from-stdin` replays
+  re-announce everything in the recording.
+
 - **`install.sh mac --instance auto`** — name the instance after the machine, instead of thinking of
   one. The installer was already ssh'ing `--feed-host` to read its hostname back, because a record's
   `host` is a *hostname* while `--feed-host` is an ssh *alias* and `host_<name>` is what makes a row
@@ -45,6 +73,27 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb doctor` called two of its own documented config keys typos.** `notify_on_blocked` and
+  `notify_on_new_row` have been missing from `agb_ops.CONFIG_KEYS` since 0.4.0, so a Mac with
+  notifications configured got *"unknown key -- a typo here is silent everywhere else"* for each,
+  and a `WARN` on the whole config probe. Both are now known, along with the new key.
+
+  Nothing caught it because **both tests that check that list iterate the list itself**, so dropping
+  a key made them weaker rather than red — confirmed by mutation. The replacement spells the whole
+  documented set out by hand. `docs/design.md`'s config table was missing the same two keys *and*
+  `workspace`; all three are added there too.
+
+- **`config_flag` had no tests at all**, through two releases — the off-switch tests inject settings
+  straight into the renderer and never reach the coercer, so the entire reason the function exists
+  (that the string `"0"` is true in Python) was covered by nothing. It is covered now, along with the
+  new `config_seconds` beside it.
+
+- **`agtermctl notify` had no contract oracle.** The test stub rejects anything outside
+  `session <verb>`, so every `notify` the bridge sent through it came back "unknown command",
+  `_agtermctl` turned that into a best-effort warning, and the end-to-end test stayed green while
+  proving nothing about the banner path. The stub now has a `notify` arm requiring `--target`, and
+  the test asserts both the recorded call and a clean stderr — a swallowed failure being precisely
+  what went unnoticed.
 - **`--farm` is documented, and the cookbook no longer tells you to write a config line the
   installer already wrote.** Both came out of the first real instance install on a second machine.
 
