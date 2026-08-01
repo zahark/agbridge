@@ -465,20 +465,20 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
 - Modify: `tests/stubs/agtermctl`
 - Modify: `tests/test_bridge_rows.py`
 
-- [ ] ⚠️ **the stub already records `notify`** — `:31` appends every argv *before* the
+- [x] ⚠️ **the stub already records `notify`** — `:31` appends every argv *before* the
       `$1 != "session"` rejection at `:33-36` — so the recording assertion can be written today
       without touching the stub. What the arm actually buys is **exit 0** (removing a warning
       `test_the_bridge_drives_agtermctl_end_to_end` never checks) and a `--target` requirement
-- [ ] add a `notify` arm before the `session` check: require `--target`, exit 4 without
-- [ ] strengthen `test_the_bridge_drives_agtermctl_end_to_end` (`:1823`) to assert the recorded
+- [x] add a `notify` arm before the `session` check: require `--target`, exit 4 without
+- [x] strengthen `test_the_bridge_drives_agtermctl_end_to_end` (`:1823`) to assert the recorded
       `notify` call **and** a clean warning channel. ⚠️ Do not assert the arm exists by grepping
       the stub's source — `CLAUDE.md` forbids substring guards because they match the comment that
       describes the rule. The recording is the oracle
-- [ ] ⚠️ **`seen` is deliberately left out.** Its arm would never execute: `_seen` needs a
+- [x] ⚠️ **`seen` is deliberately left out.** Its arm would never execute: `_seen` needs a
       `blocked` → non-`blocked` transition (`agb_mac:2030`, `:2047-2050`) and that test's event
       list is `active → blocked → remove`, which never reaches it. The prerequisite, if it is ever
       wanted, is one more `active` upsert in that test — recorded here rather than done
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 5
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 5
 
 ### Task 5: Update the user-facing docs and the changelog
 
