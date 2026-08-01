@@ -34,6 +34,16 @@ Plus **`agb-claude`**, a standalone POSIX-sh script that is not part of `agb` at
 Claude Code in a named tmux session. It exists because the session name is resolved once, at an
 agent's first hook, so it has to be set before the agent starts.
 
+And **`agb-ralphex`**, the same idea for a *supervisor* rather than an agent. ralphex runs a fresh
+Claude per task, and a key is minted per **agent**, so ten tasks are ten rows with the same label and
+a banner apiece. This gives the plan its own row — `agb hook active` before, `agb hook completed`
+after — so the finished-turn banner fires once and names the plan. ⚠️ **The marker lives in its own
+tmux session, and that is the design, not tidiness.** The anchor is `(host, tmux-server-pid, %PANE)`
+and every Claude ralphex spawns inherits `$TMUX_PANE`, so a marker sharing that pane loses its key to
+the first task that hooks and its closing hook mints a *new* row instead of closing its own —
+measured, not assumed. It also proves `agb hook` needs no Claude: it is a command that writes a state
+file, and nothing about the wire cares what produced it.
+
 `agb hook` runs on **every Claude Code tool call**, over a network filesystem. `agb` has no `.py`
 extension and runs as `__main__`, so **CPython caches no bytecode for it** — the whole file is
 re-parsed every single invocation. (This is a property of being `__main__`, not of the missing

@@ -38,6 +38,30 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   inflates the reported duration, because it is wall time and not work; and `--from-stdin` replays
   re-announce everything in the recording.
 
+- **`agb-ralphex`** — run [ralphex](https://github.com/umputun/ralphex) under **one** agbridge row
+  for the whole plan. ralphex starts a fresh Claude per task and agbridge mints a key per *agent*,
+  so a ten-task plan is ten rows carrying the same label and a banner apiece. This opens a row
+  before ralphex starts and closes it after — one finished-turn banner, naming the plan and its
+  outcome (`OK add-auth` / `FAILED add-auth`), with ralphex's own exit code passed through.
+
+  ⚠️ **The marker row lives in its own tmux session, and that is load-bearing.** agbridge's anchor
+  is `(host, tmux-server-pid, %PANE)`, and every Claude ralphex spawns inherits `$TMUX_PANE` — so a
+  marker sharing that pane loses its key to the first task that hooks, and its closing
+  `agb hook completed` mints a *fresh* row rather than closing its own. Measured before it was
+  written, not assumed: in a shared pane the wrapper's own row is left stranded.
+
+  It holds on the wrapper's **pid**, not a flag file, so a `Ctrl-C`, a kill or a dropped ssh still
+  closes the row — a flag only gets written on the paths somebody remembered. And the wrapper does
+  **not** wait for the marker to close: the holder's exit condition is "the wrapper is gone", so
+  waiting would be each waiting on the other, every run.
+
+  Two things it deliberately does not do. It does not touch ralphex's config — `notify_custom_script`
+  would give richer detail (files, branch, additions) at the cost of coupling, and the exit code plus
+  the banner's own duration covers the question actually being asked. And it does **not** suppress
+  the per-task rows; those are useful (you can attach to a running task) and are a separate problem.
+
+  Nothing here assumes anything about Claude Code: `agb hook` is a command that writes a state file.
+
 - **`install.sh mac --instance auto`** — name the instance after the machine, instead of thinking of
   one. The installer was already ssh'ing `--feed-host` to read its hostname back, because a record's
   `host` is a *hostname* while `--feed-host` is an ssh *alias* and `host_<name>` is what makes a row

@@ -1,0 +1,130 @@
+#!/bin/sh
+# agb-ralphex -- run ralphex under ONE agbridge row for the whole plan, so the
+# Mac banners once when the plan finishes instead of once per task.
+#
+# Why this exists: agbridge mints a key per *agent*, and ralphex runs a fresh
+# Claude per task. Ten tasks are ten keys, ten rows with the same label, and a
+# banner apiece -- the sidebar equivalent of shouting. This gives the plan its
+# own row, minted before ralphex starts and closed after it finishes, so the
+# finished-turn banner (`notify_on_completed_after`) fires exactly once and
+# names the plan rather than a task.
+#
+#   agb-ralphex docs/plans/add-auth.md
+#   agb-ralphex --name auth -- docs/plans/add-auth.md --dry-run
+#
+# Everything after `--` is passed to `ralphex` untouched. Nothing here assumes
+# anything about Claude Code: `agb hook` is a command that writes a state file,
+# and it neither knows nor cares whether an agent exists.
+
+set -e
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'agb-ralphex: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat >&2 <<'EOF'
+usage: agb-ralphex [--name <label>] [-- <ralphex args>...]
+
+  --name <label>  what the row is called (default: the plan file's basename)
+  --              everything after this is passed to `ralphex`
+  -h, --help      this message
+
+The row appears when ralphex starts and closes when it exits; the Mac banners
+on the close, via notify_on_completed_after. Per-task rows still appear for the
+Claude sessions ralphex spawns -- this adds the plan-level one, it does not
+remove those.
+EOF
+}
+
+name=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        --name)    [ $# -gt 1 ] || die "--name needs a value"
+                   name=$2; shift 2 ;;
+        --)        shift; break ;;
+        -*)        die "unknown option: $1 (use -- to pass options to ralphex)" ;;
+        *)         break ;;
+    esac
+done
+
+[ $# -gt 0 ] || die "nothing to run: give ralphex a plan (see --help)"
+
+command -v tmux    >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
+command -v ralphex >/dev/null 2>&1 || die "ralphex is not installed or not on \$PATH"
+command -v agb     >/dev/null 2>&1 || die "agb is not installed or not on \$PATH"
+
+# The label defaults to the plan's basename, which is the first argument that
+# looks like a file. `agb rename` caps a label at 40 characters and forbids the
+# title separator, so trim to something it will accept rather than letting it
+# refuse at the far end where the error is invisible.
+if [ -z "$name" ]; then
+    for a in "$@"; do
+        case $a in -*) continue ;; esac
+        name=$(basename "$a" .md); break
+    done
+fi
+[ -n "$name" ] || name="ralphex"
+name=$(printf '%s' "$name" | tr -cd 'A-Za-z0-9._ -' | cut -c1-32)
+[ -n "$name" ] || die "the name is empty after removing characters a label cannot hold"
+
+# tmux session names cannot contain "." or ":" -- both are target delimiters.
+marker="agb-ralph-$(printf '%s' "$name" | tr ' .:' '---')"
+tmux has-session -t "=$marker" 2>/dev/null \
+    && die "'$marker' already exists -- a previous run is still open. Close it with: tmux kill-session -t $marker"
+
+status=$(mktemp "${TMPDIR:-/tmp}/agb-ralphex.XXXXXX")
+holder=$(mktemp "${TMPDIR:-/tmp}/agb-ralphex-holder.XXXXXX")
+# ⚠️ Only until the holder exists. After that the HOLDER owns both files and
+# deletes them, because it reads `$status` *after* this process is gone -- a
+# `trap ... EXIT` here would delete it at exactly the moment it is needed.
+trap 'rm -f "$status" "$holder"' EXIT INT TERM
+
+# ⚠️ The holder runs in its OWN tmux session, and that is the whole design.
+# agbridge's anchor is (host, tmux server pid, %PANE), and every Claude that
+# ralphex spawns inherits $TMUX_PANE from wherever ralphex runs -- so a marker
+# sharing that pane loses its key to the first task that hooks, and its closing
+# `agb hook completed` mints a fresh row instead of closing its own. Measured,
+# not assumed. A separate pane makes it structurally impossible.
+#
+# It waits on the wrapper's *pid* rather than a flag file so that a Ctrl-C, a
+# kill, or a dropped ssh still closes the row: anything that ends the wrapper
+# ends the wait. A flag file only gets written on the paths somebody remembered.
+cat > "$holder" <<'HOLDER'
+#!/bin/sh
+label=$1; parent=$2; status=$3
+agb hook active || exit 0
+agb rename "$label" >/dev/null 2>&1 || true
+while kill -0 "$parent" 2>/dev/null; do sleep 2; done
+if [ -s "$status" ]; then
+    agb rename "$(cat "$status")" >/dev/null 2>&1 || true
+fi
+agb hook completed || true
+rm -f "$status" "$0"
+HOLDER
+
+tmux new-session -d -s "$marker" -c "$(pwd)" \
+    sh "$holder" "$name" "$$" "$status"
+trap - EXIT INT TERM          # the holder owns the files from here on
+
+say "agb-ralphex: row '$name' opened (marker session $marker)"
+
+# ralphex runs HERE, in the caller's terminal, so its output goes where you are
+# already looking. `set -e` must not kill us on a non-zero exit: a failed plan
+# is exactly the case the banner is most wanted for.
+rc=0
+ralphex "$@" || rc=$?
+
+if [ "$rc" -eq 0 ]; then
+    printf 'OK %s' "$name" > "$status"
+else
+    printf 'FAILED %s' "$name" > "$status"
+fi
+say "agb-ralphex: ralphex exited $rc; row '$name' closes within ~2s"
+
+# ⚠️ Deliberately NO wait for the marker session here. The holder's condition is
+# "the wrapper has exited", so waiting for the holder would be each waiting on
+# the other -- a guaranteed stall for the length of any timeout, every single
+# run. Exiting IS the signal. The row closes on the holder's next 2 s poll and
+# the Mac banners a moment after that.
+exit "$rc"
