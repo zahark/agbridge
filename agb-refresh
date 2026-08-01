@@ -173,7 +173,11 @@ BRIDGE_VALUE_FLAGS="--config --feed-host --mac-id --statedir --remote-path --rem
 # is a DIFFERENT answer from "it carries no such flag" -- both print nothing, so
 # the caller has to look at the status. `bind_label_to_config` does, and treats
 # exit 2 as "this file says nothing", not as "this file implies the default
-# config"; see the two guards there.
+# config"; see the two guards there. And 2 is NOT the only non-zero status: there
+# are FOUR in all, and only 0 and 2 are statements about the plist. They are
+# spelled out once above `plist_read_ok`, which is what every call site asks --
+# reading "non-zero" as "this file says nothing" is the wrong-job bounce that
+# function exists to stop.
 #
 # ⚠️ THE PLIST IS PARSED WITH `plistlib`, AND THAT IS THE WHOLE DESIGN. This was
 # an awk token scan for four review rounds, and every round found the same class
@@ -292,8 +296,8 @@ BRIDGE_VALUE_FLAGS="--config --feed-host --mac-id --statedir --remote-path --rem
 #
 #     <python> -S -E <agb> bridge --config <path>
 #
-# so four elements go by before the walk has anything to do with `agb bridge` at
-# all, and `agb` itself reads its command from argv[1] and nothing else
+# so four elements go by before any of it has anything to do with `agb bridge`
+# at all, and `agb` itself reads its command from argv[1] and nothing else
 # (`agb.main`; the wrong order is *run* in
 # `tests/test_install_pkg.py::test_the_templates_config_flag_comes_after_the_command_name`,
 # which is the authority for this paragraph rather than the shape of the
@@ -335,7 +339,8 @@ BRIDGE_VALUE_FLAGS="--config --feed-host --mac-id --statedir --remote-path --rem
 #
 # ⚠️ Unlike the `ps` side (`cmdline_is_ours`), there is NO AMBIGUITY to resolve
 # here and none is invented: `ProgramArguments` is a real argv array, so a blank
-# inside a value is inside one element and the walk is exact. That is also why
+# inside a value is inside one element and the parser is handed exactly what
+# `agb bridge` would have been handed -- it is not a reading. That is also why
 # this side may answer "no config" confidently where the flattened `ps` line may
 # not.
 #
@@ -516,7 +521,8 @@ if value is not None:
 }
 
 # WHAT EACH `plist_arg` STATUS MEANS, spelled ONCE and asked at every call site.
-# Three answers, not two, and the third is the one that kept being lost:
+# FOUR answers, not two, and only the first two are about the plist -- the last
+# two are the ones that kept being lost:
 #
 #   0  answered. An empty value means "this argv carries no such flag", which
 #      the callers read as a real answer (the default config is implied). An
@@ -531,16 +537,18 @@ if value is not None:
 #   *  THE READER ITSELF FAILED, which is not a statement about the plist at
 #      all. It is a statement about `$python`.
 #
-# ⚠️ The third was folded into the second at all three call sites, and that is
-# an ordinary operator mistake away: `--python /bin/false`, `--python` naming a
-# shell script, an interpreter with no `plistlib`, a traceback in the reader.
-# Every one of those exits 1/126/127, every plist then "said nothing", and the
-# run fell through to the DEFAULT label and the CONVENTIONAL config -- bouncing
-# `com.agbridge` and forgetting a named instance`s bindings with that instance`s
-# bridge live, reporting success in the words it uses when it is right.
-# (Measured with `--python /bin/false`: `instance: (default)`, `stopped:
-# com.agbridge`, exit 0.) So it is FATAL, and the message names the interpreter
-# rather than the plist -- the plist is fine.
+# ⚠️ BOTH of the last two were folded into the second at all three call sites,
+# and that is an ordinary operator mistake away: `--python /bin/false`,
+# `--python` naming a shell script, an interpreter with no `plistlib`, a
+# traceback in the reader -- or, for 3, an `--agb` naming a tree whose `agb_mac`
+# is missing. Every one of the `--python` mistakes exits 1/126/127, every plist
+# then "said nothing", and the run fell through to the DEFAULT label and the
+# CONVENTIONAL config -- bouncing `com.agbridge` and forgetting a named
+# instance`s bindings with that instance`s bridge live, reporting success in the
+# words it uses when it is right. (Measured with `--python /bin/false`:
+# `instance: (default)`, `stopped: com.agbridge`, exit 0.) So both are FATAL,
+# and the message names the file that is actually wrong -- `--agb` for 3, the
+# interpreter for the rest -- rather than the plist, which is fine in either.
 #
 # ⚠️ `die` from the PARENT shell, which is why this is a separate function
 # called with `$?` rather than a wrapper around `plist_arg` that returns the
@@ -739,8 +747,8 @@ bind_label_to_config() {
         if value=$(plist_arg "$candidate" --config); then
             said=yes
         else
-            # ⚠️ `$?` FIRST, before anything else can overwrite it. The three
-            # statuses are three different answers and only ONE of them is
+            # ⚠️ `$?` FIRST, before anything else can overwrite it. The four
+            # statuses are four different answers and only ONE of them is
             # "this file says nothing"; see `plist_read_ok`, which dies on the
             # rest from here -- the parent shell -- rather than from inside the
             # substitution above, where an exit would be swallowed.
@@ -783,7 +791,7 @@ bind_label_to_config() {
             # hand-edited plist -- `install.sh` renders no `--rows` -- so it may
             # only ever replace the "nothing claims this config" fallback, never
             # outbid a job that names the config itself.
-            # The same three-way status as above, and asked the same way: this
+            # The same four-way status as above, and asked the same way: this
             # file parsed a moment ago, so exit 2 here is a file that changed
             # under the run -- but a reader that has broken since is still the
             # reader, and reading it as "no --rows" is the same silent fallback.
