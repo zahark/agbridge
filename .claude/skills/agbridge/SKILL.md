@@ -250,6 +250,7 @@ Then on the Mac: delete the `host_<name>` line from the config, and `agb close-d
 | every row duplicated right after upgrading to 0.5.0, on an install made with `install.sh mac --config <path>` and no `--instance` | the plist used to ignore that flag and now carries it, so the bridge looks for its map beside *that* config and mints everything again | `agb forget-rows --rows ~/.config/agbridge/rows` clears the orphans (it closes each as it forgets it); moving `rows` and `placements` beside the config before reinstalling avoids it |
 | no glyph at all | `idle` renders as nothing — a `[?]` or `[done]` row, or a row not yet painted | check the title prefix |
 | a row never updates | it may be an orphan not in the map | compare `cat ~/.config/agbridge/rows` against the sidebar |
+| a config change seems to be ignored — a new `workspace`, or `notify_on_*` that never fires | the bridge reads its config **once, at startup**; the file changed, the running process did not. No error is printed | `agb-refresh` (or `--instance <name>`). ⚠️ Check `pgrep -f 'agb bridge'` shows a **different** pid afterwards — with several instances, a refresh without `--instance` bounces the wrong one and still reports success |
 | `[enter]` prints `open terminal failed: missing or unsuitable terminal: <name>` then `ssh exited 1 -- nothing was attached` | the ssh worked; **tmux** refused. That host has no terminfo entry for agterm's terminal, and `ssh -t` carries `TERM` across (agbridge never sets it). Ghostty, Kitty and WezTerm all ship their own; a cluster box has none | from a local shell **inside agterm** — not a row's `[s]`/`[d]`, which ssh to the agent's host — run `infocmp -x "$TERM" \| ssh <target> -- tic -x -`. `"$TERM"`, never a typed name: agterm's differs from your login shell's. Writes `~/.terminfo` remotely, no root. `older tic versions may treat the description field as an alias` is a warning, not a failure. Verify with `ssh <target> "infocmp -1 $TERM" >/dev/null 2>&1 && echo INSTALLED` — redirects **outside** the quotes, since a farm login shell is often tcsh and answers `Ambiguous output redirect.` to `2>&1`. Fixes that host only — repeat per machine. Details and fallbacks in [`docs/cookbook.md`](../../../docs/cookbook.md) |
 | clicking a row prints `WARNING: this row's config could not be read` | `agb pane` resolves `host_<name>` and `jump_host` through that config; unread, the ssh target is the bare hostname and any jump host is gone. The errno on the line says which failure | fix the file's mode (or the mount); if the instance moved, `agb-refresh --config <path>` re-mints the rows with the new path |
 
@@ -348,6 +349,12 @@ was told) for any other, and the Mac-side keys below are **per instance**.
 | `notify_on_blocked`, `notify_on_new_row` | Mac | `0`/`no`/`off`/`false` to disable |
 | `notify_on_completed_after` | Mac | seconds a turn must run before finishing is announced; default `300`, and `0`/`off`/`no`/`false`/negative disables |
 | `host_<hostname> = <ssh target>` | Mac | a record's host is a hostname, not an alias |
+
+⚠️ **A bridge-side key needs `agb-refresh` before it means anything.** The bridge reads its config
+**once, at startup**, so editing `workspace`, `feed_host` or any `notify_on_*` leaves the running
+process on the old value — silently, with no error and no warning. `host_<hostname>` and `pane`'s
+use of `jump_host` are the exception: they are read per click, so they take effect immediately.
+If a config change appears to have been ignored, this is why.
 
 ## Things that surprise people
 

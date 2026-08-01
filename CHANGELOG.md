@@ -73,6 +73,23 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **Nothing said that a config change needs the bridge restarted.** The bridge reads its config
+  once, at startup, so editing `workspace`, `feed_host` or any `notify_on_*` leaves the running
+  process on the old value — with no error, no warning, and a file that disagrees with the sidebar
+  indefinitely. The config tables in `README.md`, `docs/commands.md` and the skill listed the keys
+  and their defaults and never mentioned it.
+
+  Found the slow way, during the first live test of the finished-turn banner: a config edited nine
+  minutes after the bridge started made a working feature look broken for the better part of an
+  hour, and the diagnosis went through the installed code, the process tree and the launchd job
+  first. `host_<name>` and `pane`'s use of `jump_host` are genuinely different — `agb pane` is a
+  fresh process per click — which is exactly what made the inconsistency easy to assume away.
+
+  The skill also gains a troubleshooting row keyed on the *symptom* ("a config change seems to be
+  ignored"), since that is the form the problem actually arrives in — and a warning to check that
+  `agb-refresh` bounced the pid you meant, because with several instances a refresh without
+  `--instance` acts on the default and reports success either way.
+
 - **`agb doctor` called two of its own documented config keys typos.** `notify_on_blocked` and
   `notify_on_new_row` have been missing from `agb_ops.CONFIG_KEYS` since 0.4.0, so a Mac with
   notifications configured got *"unknown key -- a typo here is silent everywhere else"* for each,

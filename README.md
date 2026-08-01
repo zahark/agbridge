@@ -167,6 +167,14 @@ that is the *default* path: `--config <path>` (or `--instance <name>`, which spe
 | `notify_on_completed_after` | `bridge` | desktop banner when an agent **finishes a turn that ran at least this many seconds**. **On by default at `300`** (5 minutes); `0`, `off`, `no`, `false` or a negative value disables it. The number is the switch, so there is no separate on/off key. A threshold rather than a plain banner because `completed` fires *once per turn* — ungated it would announce every "yes" you type, three seconds later |
 | `host_<name> = <ssh-target>` | `pane`, `prune` | a record's `host` is a hostname, not an ssh alias |
 
+⚠️ **Editing a key the *bridge* uses does nothing until the bridge is restarted** — `agb-refresh`,
+or `agb-refresh --instance <name>`. The bridge reads its config **once, at startup**, so a changed
+`workspace`, `feed_host` or `notify_on_*` sits in the file while the running process keeps using
+what it read when it started. There is no error and no warning: the file says one thing and the
+sidebar behaves like another, indefinitely. The keys used by `pane` and `prune` — `host_<name>`, and
+`jump_host` when a row is clicked — are read per invocation instead, so those *do* take effect on
+the next click with no restart.
+
 **Environment overrides:**
 
 | Variable | Effect |
