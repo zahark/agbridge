@@ -15,6 +15,13 @@
 #   * `session new` prints one opaque row id and requires `--command`, because
 #     that command line is the only thing connecting `agb pane` to the system.
 #   * `rename`, `status` and `close` require `--target`.
+#   * `notify` -- the one top-level verb, not under `session` -- requires
+#     `--target` too. Without it agterm attributes the banner to the active
+#     session of the frontmost window, which is never what the bridge wants.
+#     ⚠️ This arm exists because until it did, every `notify` the bridge sent
+#     through this stub was rejected as an unknown command and swallowed into a
+#     best-effort warning nobody asserted on. The recording was there; the
+#     verdict was not, so three call sites had no oracle at all.
 #   * every invocation's argv is appended to $AGB_AGTERMCTL_LOG, in the same
 #     \037-separated format `conftest.StubBin` already parses.
 #
@@ -29,6 +36,16 @@ if [ -z "$log" ]; then
     exit 64
 fi
 { for a in "$@"; do printf '%s\037' "$a"; done; printf '\n'; } >> "$log"
+
+if [ "$1" = "notify" ]; then
+    for a in "$@"; do
+        if [ "$a" = "--target" ]; then
+            exit 0
+        fi
+    done
+    echo "agtermctl: notify: no --target" >&2
+    exit 4
+fi
 
 if [ "$1" != "session" ]; then
     echo "agtermctl: unknown command: $1" >&2

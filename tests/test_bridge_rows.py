@@ -1856,6 +1856,16 @@ def test_the_bridge_drives_agtermctl_end_to_end(run_agb, agtermctl, rows_file,
     assert ("session", "close") not in verbs
     statuses = [call[2] for call in agtermctl.calls() if call[1] == "status"]
     assert statuses == ["active", "blocked", "idle"]
+    # ⚠️ `notify` is a TOP-LEVEL verb, so it reads call[0], not call[1]. Until
+    # the stub grew an arm for it this call was rejected as an unknown command,
+    # `_agtermctl` absorbed the exit-2 into a warning, and this test stayed
+    # green while the only end-to-end exercise of the banner path proved
+    # nothing. Asserting the clean stderr is half the point: a swallowed
+    # failure is exactly what went unnoticed.
+    notifies = [call for call in agtermctl.calls() if call[0] == "notify"]
+    assert len(notifies) == 1, agtermctl.calls()
+    assert "--target" in notifies[0]
+    assert b"agtermctl" not in err, err
     # the map is persisted, and the row is reclaimable
     with open(str(rows_file)) as handle:
         assert handle.read().startswith("agbridge-rows 2\ndone\taaaa1111\t")
