@@ -1126,6 +1126,19 @@ def _notifies(bridge_obj):
     return out
 
 
+def _finished(bridge_obj):
+    """Just the "finished" banners, as (body, title, target).
+
+    ⚠️ Filtered rather than counted off `_notifies`, and that is not fussiness.
+    `_notifies` returns EVERY banner, including `_notify_new_row`'s, so
+    `len(_notifies(b)) == 1` in a fresh harness holds only because
+    `NEW_ROW_QUIET` happens to be suppressing the new-row one -- a reason with
+    nothing to do with the feature under test, which will stop being true the
+    moment a test calls `_past_quiet`.
+    """
+    return [n for n in _notifies(bridge_obj) if " finished" in n[0]]
+
+
 def test_a_block_raises_one_desktop_banner(bridge):
     """`blocked` is the only state that means *you* are the blocker -- a
     permission prompt waiting for an answer. A glyph is enough for `active`; it
@@ -2158,7 +2171,13 @@ def test_the_renderer_never_consults_the_macs_own_clock(mac_tree):
     funcs = conftest.functions(mac_tree)
     for name in ("beat_age", "beat_age_text", "row_title", "_render_upsert",
                  "_render_remove", "_render_stale", "_render_live",
-                 "_render_tick", "_title", "_status", "__call__"):
+                 "_render_tick", "_title", "_status", "__call__",
+                 # ⚠️ This catches `time.time`/`time.monotonic` and nothing
+                 # else -- `conftest.calls` yields ("self", "clock") for
+                 # `self.clock()`, so it does NOT pin "measures in `model.now`".
+                 # That property is caught behaviourally, by
+                 # `test_a_disconnect_mid_turn_does_not_reset_the_timer`.
+                 "_notify_completed"):
         made = conftest.calls(funcs[name])
         assert ("time", "time") not in made, name
         assert ("time", "monotonic") not in made, name
@@ -3184,3 +3203,250 @@ def test_the_two_coercers_share_one_falsy_vocabulary(mac):
     for word in mac.CONFIG_FALSE:
         assert mac.config_flag({"k": word}, "k", True) is False, word
         assert mac.config_seconds({"k": word}, "k", 300.0) == 0.0, word
+
+
+# ---------------------------------------------------------------------------
+# a banner when a long-running turn finishes
+# ---------------------------------------------------------------------------
+# ⚠️ Two mechanical traps govern every test below, and three review passes were
+# needed to get them right:
+#
+# 1. `BridgeModel._upsert` drops a record identical to the last one BEFORE the
+#    renderer sees it, and `wire()` has a constant `seq`. Every repeat upsert
+#    here varies `seq`, or the renderer is never entered and the test proves
+#    nothing about the code it names.
+# 2. `Harness.upsert` defaults to `now=NOW`. A test that leaves the clock
+#    implicit puts two events at the same instant, which makes "measured from
+#    the first sighting" and "measured from the last" indistinguishable -- so
+#    the disconnect test below pins every clock explicitly.
+
+THRESHOLD = {"notify_completed_after": 300}
+
+
+def test_a_long_turn_is_announced_when_it_finishes(bridge):
+    """The whole feature: you started something, walked away, and want to be
+    told it is done rather than having to look."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    banners = _finished(b)
+    assert len(banners) == 1, _notifies(b)
+    body, title, target = banners[0]
+    assert "build" in body                      # the label, not the key
+    assert target == b.rows.row_for("aaaa1111")
+    assert title
+
+
+def test_a_short_turn_finishes_silently(bridge):
+    """The companion to the test above, and the reason the threshold exists at
+    all: `completed` fires once per TURN, so without this every "yes" you type
+    bounces the Dock three seconds later -- on the row you are looking at,
+    since agterm banners regardless of which row is selected."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 10)
+    assert _finished(b) == []
+
+
+def test_the_default_threshold_applies_with_no_settings(bridge):
+    """A `RowRenderer` built with `{}` must behave like production.
+
+    ⚠️ This is the ONLY test that exercises the renderer's own
+    `COMPLETED_AFTER` fallback: every other test here injects a threshold, and
+    no pre-existing test can stand in because they all run at `now=NOW`, giving
+    every turn a duration of zero. Without it, deleting the default from the
+    `.get()` would break nothing.
+    """
+    b = bridge(settings={})
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    assert len(_finished(b)) == 1, _notifies(b)
+
+
+def test_a_finished_turn_is_announced_once_not_per_snapshot(bridge):
+    """The `pop` is the transition memory. ⚠️ `seq` climbs so the second report
+    genuinely reaches the renderer -- an identical record is dropped by
+    `BridgeModel._upsert`, and this test would pass with `_notify_completed`
+    deleted if it did not."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    b.upsert(wire("aaaa1111", state="completed", seq=3), now=NOW + 410)
+    assert len(_finished(b)) == 1, _notifies(b)
+
+
+def test_two_long_turns_in_a_row_are_both_announced(bridge):
+    """The other half of the `pop`: it re-arms. Nothing else here pins that, so
+    an implementation that remembered announced keys in a set -- the obvious
+    way somebody "stops repeats" -- would pass every other test in this file."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    b.upsert(wire("aaaa1111", state="active", seq=3), now=NOW + 500)
+    b.upsert(wire("aaaa1111", state="completed", seq=4), now=NOW + 900)
+    assert len(_finished(b)) == 2, _notifies(b)
+
+
+def test_a_disconnect_mid_turn_does_not_reset_the_timer(bridge):
+    """⚠️ Every clock here is pinned, and that is what makes the test real.
+
+    `_render_stale` writes `idle` into `applied` for every bound row on any
+    disconnect, including a routine 10 s quiet spell. A start time recovered
+    from `applied`, or one overwritten on each `active`, would restart at the
+    reconnect -- so the turn below would measure 50 s against a 300 s
+    threshold and go silent.
+
+    Left at the harness default both events land on `NOW`, and correct code and
+    both mutations announce identically. The `+350` is the discriminator.
+    """
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.stale("eof")
+    b.upsert(wire("aaaa1111", state="active", seq=2), now=NOW + 350)
+    b.upsert(wire("aaaa1111", state="completed", seq=3), now=NOW + 400)
+    assert len(_finished(b)) == 1, _notifies(b)
+
+
+def test_a_reconnect_full_of_finished_agents_is_silent(bridge):
+    """A restarted bridge sees every finished agent as `completed` with no
+    start time, so it announces nothing -- burst-immune without needing the
+    quiet window `_notify_new_row` has.
+
+    ⚠️ `_past_quiet` first, so the new-row banners DO fire. Asserting the total
+    is non-empty is the non-vacuity guard: without it this passes against a
+    renderer that emits no banners at all, for any reason.
+    """
+    b = bridge(settings=THRESHOLD)
+    _past_quiet(b)
+    b.snapshot([wire("aaaa1111", state="completed"),
+                wire("bbbb2222", state="completed")], now=NOW + 9999)
+    assert _notifies(b), "new-row banners should have fired"
+    assert _finished(b) == []
+
+
+def test_a_block_mid_turn_restarts_the_clock(bridge):
+    """You answered a prompt and it finished seconds later. That block was
+    already announced; announcing the finish too would be two interruptions
+    for one event."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="blocked", seq=2), now=NOW + 380)
+    b.upsert(wire("aaaa1111", state="active", seq=3), now=NOW + 390)
+    b.upsert(wire("aaaa1111", state="completed", seq=4), now=NOW + 400)
+    assert _finished(b) == []
+
+
+def test_without_the_block_that_same_span_is_announced(bridge):
+    """The companion to the test above: same key, same clocks, same threshold,
+    only the block removed. Without it, "silent" proves nothing -- the span
+    might simply have been too short."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=4), now=NOW + 400)
+    assert len(_finished(b)) == 1, _notifies(b)
+
+
+def test_a_removal_then_a_rebind_does_not_announce(bridge):
+    """A removal ends the turn. `agb prune`, or a complete snapshot dropping
+    the key, then the feed asserting it again -- without the pop in
+    `_render_remove` the banner would carry a duration spanning the removal,
+    for a turn nobody watched.
+
+    ⚠️ `_forget_unmapped` does not cover this: a `[done]` entry is deliberately
+    still in the map, so the reclaimer skips it by design.
+    """
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.remove("aaaa1111")
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    assert _finished(b) == []
+
+
+def test_without_the_removal_that_same_span_is_announced(bridge):
+    """Companion to the removal test, so "silent" is attributable."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    assert len(_finished(b)) == 1, _notifies(b)
+
+
+def test_a_first_event_with_no_feed_clock_does_not_poison_the_turn(bridge):
+    """⚠️ Three events, not two, and the damage is subtler than it looks.
+
+    There is no exception to prevent: `working.pop(key, None)` returns None for
+    a STORED None exactly as for a missing key, so the arithmetic is never
+    reached either way. What the guard actually stops is `working[key] = None`
+    being stored at all -- which makes the later `key not in self.working`
+    false, so the real clock never lands and the turn is silently lost.
+
+    Without the third event this test passes against code with the guard
+    deleted, which is how two drafts of it were written.
+    """
+    b = bridge(settings=THRESHOLD)
+    b.send("upsert", now=None, session=wire("aaaa1111", state="active"))
+    assert b.renderer.working == {}, "a clockless event must store nothing"
+    b.upsert(wire("aaaa1111", state="active", seq=2), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=3), now=NOW + 400)
+    assert len(_finished(b)) == 1, _notifies(b)
+
+
+def test_a_sub_thirty_second_turn_names_no_duration(bridge):
+    """`beat_age_text` renders "" below `BEAT_LATE` (30 s), and "finished
+    after " with a dangling preposition is worse than saying nothing.
+
+    Reachable only at a low threshold, which is exactly what the live-test
+    recipe uses -- so this would otherwise be found by a human on a Mac.
+    """
+    b = bridge(settings={"notify_completed_after": 5})
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 10)
+    banners = _finished(b)
+    assert len(banners) == 1, _notifies(b)
+    assert banners[0][0] == "build finished"
+
+
+def test_a_long_turn_does_name_its_duration(bridge):
+    """Companion: the "after ..." clause is dropped only when it is empty, not
+    always."""
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    assert _finished(b)[0][0] == "build finished after 6m"
+
+
+def test_the_finished_banner_can_be_turned_off(bridge):
+    """`notify_on_completed_after = off`. ⚠️ TWO assertions, both load-bearing.
+
+    Membership BETWEEN the two upserts, because the pop has already run by the
+    end -- unlike `self.blocked`, which is a set that persists. And emptiness
+    AFTER, because that is the only thing distinguishing a correct off-switch
+    from one that returns before the pop: both stay silent, and both still hold
+    the mid-test assertion. Leaving the entry behind would deliver a stale
+    duration the moment the key was turned back on.
+    """
+    b = bridge(settings={"notify_completed_after": 0})
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    assert "aaaa1111" in b.renderer.working
+    b.upsert(wire("aaaa1111", state="completed", seq=2), now=NOW + 400)
+    assert _finished(b) == []
+    assert b.renderer.working == {}, "a parked switch must not hoard a backlog"
+
+
+def test_working_memory_is_reclaimed_when_the_map_forgets_a_key(bridge):
+    """The fourth dict in a launchd-resident process needs the same reclamation
+    path as the other three.
+
+    ⚠️ Deliberately NO `remove()` step, unlike the template this copies: the
+    pop in `_render_remove` would empty `working` two steps early and the
+    assertion would hold against a `_forget_unmapped` that ignores it. The path
+    without a removal is real -- an external `agb close-done`, merged by
+    `rows.save()`, drops a key that is still working.
+    """
+    b = bridge(settings=THRESHOLD)
+    b.upsert(wire("aaaa1111", state="active"), now=NOW)
+    assert "aaaa1111" in b.renderer.working
+
+    b.rows.forget("aaaa1111")                  # what `close-done` does
+    b.tick()
+
+    assert b.renderer.working == {}
