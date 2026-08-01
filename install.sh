@@ -75,7 +75,8 @@ mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/config with a
   --agb-remote-path <path>   absolute path of `agb` on the farm             (required)
   --statedir <path>          farm-side statedir            (default: agb's own default)
   --instance <name>          a SECOND machine: its own config, label and logs
-                             under <name>. Requires --statedir; mac only
+                             under <name>. Requires --statedir; mac only.
+                             `auto` reads the name off --feed-host instead
   --remote-python <path>     absolute farm-side interpreter        (default /bin/python3)
   --jump-host <target>       ssh jump host for machine #3
   --host <name>=<target>     ssh target for a record's host; repeatable
@@ -147,12 +148,50 @@ absolute() {
 # them were meant to go -- with an install that reports success. Alphanumerics,
 # `-` and `_`: `.` is excluded too, so neither a leading dot nor a `..` segment
 # can be spelled at all, and `com.agbridge.<name>` stays one label component.
+#
+# `$2`, when given, says where the name came from. `--instance auto` reads it
+# back off the machine, so a hostname that is not a usable name has to complain
+# about the HOST rather than read as a complaint about something the operator
+# typed -- they typed `auto`. `agb-refresh`'s copy has no such argument and
+# needs none (it has no `auto`); the cross-script agreement is over the `case`
+# PATTERNS, not the messages, which is what lets these two differ.
 instance_ok() {
+    io_from=${2:-}
     case "$1" in
-        "") die "--instance needs a name" ;;
-        -*) die "--instance must not start with '-': $1" ;;
+        "") die "--instance needs a name$io_from" ;;
+        -*) die "--instance must not start with '-': $1$io_from" ;;
         *[!A-Za-z0-9_-]*)
-            die "--instance must be letters, digits, '-' or '_': $1. It becomes a launchd label component, a plist filename, a log directory and a config directory, so a '/' or a '.' in it would place all four somewhere other than where they were meant to go" ;;
+            die "--instance must be letters, digits, '-' or '_': $1$io_from. It becomes a launchd label component, a plist filename, a log directory and a config directory, so a '/' or a '.' in it would place all four somewhere other than where they were meant to go" ;;
+    esac
+}
+
+# A record's `host` is the farm's HOSTNAME; `--feed-host` is an ssh ALIAS. This
+# is the one mapping the installer can derive rather than ask for: ssh once and
+# read the hostname back.
+#
+# Extracted because there are now TWO readers and they run at different times.
+# `--instance auto` needs the answer BEFORE the config path is decided (the
+# sugar block below), while the `host_<name>` mapping wants it inside
+# `role_mac`, after the files are copied. One ssh either way -- `$farmhost` is
+# set once and the second caller finds it already answered, so the two cannot
+# disagree about a machine that renamed itself in between.
+#
+# ⚠️ `|| farmhost=""` is load-bearing under `set -e`: an assignment from a
+# command substitution takes that command's status, so an unreachable host, a
+# `BatchMode` refusal or a box that is simply down would kill the script rather
+# than answer "could not tell". Answering nothing is the point -- for the
+# mapping it is a note, for `auto` it is a refusal, and that is the callers'
+# decision, not this function's.
+probe_farmhost() {
+    [ -n "$farmhost" ] && return 0
+    farmhost=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$feedhost" \
+                   'hostname -s' 2>/dev/null | tr -d '\r' | head -1) || farmhost=""
+    # Anything that is not a plain hostname is no answer at all: a shell profile
+    # that greets you, an ssh banner, a `hostname` that printed an error. Wider
+    # than `instance_ok`'s rule on purpose -- a `.` is fine in a `host_<name>`
+    # key and is not fine in a label -- so `auto` re-asks with the narrow one.
+    case "$farmhost" in
+        *[!A-Za-z0-9._-]*) farmhost="" ;;
     esac
 }
 
@@ -280,6 +319,9 @@ dest=""; python=""; config=""; statedir=""; macid=""; feedhost=""
 remotepath=""; remotepython=""; jumphost=""; hosts=""; agentsdir=""
 logdir=""; launchpath=""; label=""; farm=""; settings=""; agbpath=""
 load=yes; hooks=yes; dry=no; probe=yes; bindir=""; wrapper=yes; instance=""
+# `probe_farmhost` reads it before it writes it (the once-only guard), and
+# `set -u` would kill the script on the unset name rather than ask the question.
+farmhost=""
 
 # A value must be PRESENT and NON-EMPTY. ⚠️ The second half is not pedantry:
 # `--config "$cfg"` with `$cfg` unset expands to one empty argument, so the
@@ -351,6 +393,40 @@ absolute "the interpreter" "$python"
 # Everything an instance is, is these three paths -- there is no fourth thing to
 # forget, and an explicit --config/--label/--log-dir still wins, because the
 # defaults below are all `[ -n ... ] ||`.
+# `--instance auto` names the instance after the machine, from the hostname this
+# installer already ssh's for. Resolved HERE, before the paths below, because
+# the name is what decides all three of them.
+#
+# ⚠️ OPT-IN, and it can never become the default. Re-running `install.sh mac`
+# with the original flags is the documented upgrade path, so an ABSENT
+# `--instance` has to keep meaning the default instance. If it meant "name it
+# after whatever the feed host calls itself", every upgrade of an existing
+# install would mint a NEW instance beside it -- new config, new launchd job,
+# new rows map, and every row duplicated in the sidebar. Typing the word is the
+# whole difference between those two.
+#
+# ⚠️ And a failure here is a REFUSAL, never a fall-back to the default instance.
+# That fall-back is the accident this feature exists to avoid: the run would
+# rewrite the first machine's `feed_host` and `statedir`, boot out its launchd
+# job and point its bridge at the new box -- reporting success in the same words
+# a correct run uses. The probe is best-effort for the host MAPPING (a note, and
+# you pass `--host` yourself) and cannot be for the NAME, which decides where
+# four things are written.
+#
+# The literal name `auto` is therefore unavailable. A machine really called
+# `auto` needs its instance spelled some other way -- or the three flags the
+# sugar stands for.
+if [ "$instance" = auto ]; then
+    [ "$role" = mac ] || die "--instance auto is for the mac role only (and so is --instance at all): nothing on the farm reads a per-instance config"
+    [ -n "$feedhost" ] || die "--instance auto needs --feed-host: the name is read back off that machine, and there is nothing else to ask"
+    [ "$probe" = yes ] || die "--instance auto and --no-probe contradict each other: the probe IS the name. Drop one, or pass --instance <name> explicitly"
+    probe_farmhost
+    [ -n "$farmhost" ] || die "--instance auto: could not read a hostname back from $feedhost. Refusing rather than falling back to the DEFAULT instance, which would repoint the machine you already have -- rewriting its feed_host and statedir and booting out its launchd job. Pass --instance <name> explicitly, or fix the ssh and re-run"
+    instance_ok "$farmhost" " -- read back from $feedhost, which is what --instance auto asked it"
+    instance=$farmhost
+    say "instance: auto -> $instance (read back from $feedhost)"
+fi
+
 if [ -n "$instance" ]; then
     # Mac only. `--label` and `--log-dir` are mac-only already, so the sugar is
     # mac-only by construction -- but `$config` is not, and nothing on the FARM
@@ -456,19 +532,20 @@ role_mac() {
         verify_tree "$python" "$installed"
     fi
 
-    # A record's `host` is the farm's HOSTNAME; `--feed-host` is an ssh ALIAS.
-    # `ssh_target_for` maps one to the other through `host_<name>`, and without
-    # it `agb pane` tries to ssh to a name this Mac cannot resolve -- the row
-    # renders fine and simply refuses to open, which is a confusing place to
-    # land. The feed host is the one mapping we can derive rather than ask for:
-    # ssh to it once and read its hostname back. Read-only, never fatal, and
-    # skipped entirely by --no-probe or by naming that host explicitly.
+    # `ssh_target_for` maps a record's hostname to an ssh alias through
+    # `host_<name>`, and without it `agb pane` tries to ssh to a name this Mac
+    # cannot resolve -- the row renders fine and simply refuses to open, which
+    # is a confusing place to land. So the feed host's own hostname is read back
+    # (`probe_farmhost`, above). Read-only, never fatal HERE, and skipped
+    # entirely by --no-probe or by naming that host explicitly.
+    #
+    # `--instance auto` has usually asked already, in which case this costs no
+    # second ssh and cannot disagree with the name that was derived from it:
+    # one answer, two readers.
     if [ "$probe" = yes ] && [ -n "$feedhost" ]; then
-        farmhost=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$feedhost" \
-                       'hostname -s' 2>/dev/null | tr -d '\r' | head -1) || farmhost=""
+        probe_farmhost
         case "$farmhost" in
-            ""|*[!A-Za-z0-9._-]*)
-                [ -n "$farmhost" ] && farmhost=""
+            "")
                 say "note:     could not read a hostname back from $feedhost."
                 say "          If a row will not attach, add:  --host <its-hostname>=$feedhost" ;;
             *)  case " $hosts " in
