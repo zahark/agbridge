@@ -75,18 +75,37 @@ its evidence class; nothing here may be added from a guess.
 | identity or marker changed | `session rename <title> --target <row>` |
 | status changed, or every 30 s | `session status <state> --target <row> [--blink]` |
 | transition **into** `blocked` | `notify <body> --title … --target <row>` |
+| transition **into** `completed`, if the turn ran ≥ `notify_on_completed_after` | `notify <body> --title … --target <row>` |
 | `agb close-done` | `session close --target <row>` |
 
-Two of these are gated on a **transition**, not on the level state, and for the same reason: they
-are events, not renderings. `--blink` fires only on a real move into `active`; the banner only on a
-real move into `blocked`. Both would otherwise repeat on every snapshot and on the 30 s re-assert.
+Three of these are gated on a **transition**, not on the level state, and for the same reason: they
+are events, not renderings. `--blink` fires only on a real move into `active`; the banners only on a
+real move into `blocked` or `completed`. All would otherwise repeat on every snapshot and on the
+30 s re-assert.
 
-The banner is the only one with a config gate — `notify_on_blocked`, **on by default**, read through
-`agb_mac.config_flag` (which lives there and not in `agb`: the hot path never reads a flag, and
-`agb` has no bytes to spare). It spells out what counts as false, because `"0"` is truthy in Python
-and a key that silently means its opposite is worse than one that does not exist. Whether the Dock
-icon *bounces* is agterm's own setting, not ours — which events are worth announcing is this tool's
-business; how loudly the machine interrupts you is the machine's.
+The banners have config gates — `notify_on_blocked` and `notify_on_new_row`, **on by default**, read
+through `agb_mac.config_flag` (which lives there and not in `agb`: the hot path never reads a flag,
+and `agb` has no bytes to spare). It spells out what counts as false, because `"0"` is truthy in
+Python and a key that silently means its opposite is worse than one that does not exist. Whether the
+Dock icon *bounces* is agterm's own setting, not ours — which events are worth announcing is this
+tool's business; how loudly the machine interrupts you is the machine's.
+
+**`notify_on_completed_after` is a number, not a flag**, read through `config_seconds` beside it, and
+the number *is* the switch — `0`/`off`/`no`/`false`/negative disable it, absent gives the default.
+Those two states must stay distinguishable or the default becomes unreachable once anybody writes the
+key. It is thresholded because `blocked` is rare while a turn ends **every time an agent answers
+you**: ungated it announces the "yes" you typed three seconds ago, and there is no "only when I'm
+away" to fall back on, because agterm raises the banner and bounces the Dock even for the row you are
+looking at (it suppresses only the unseen badge).
+
+⚠️ **This one's transition memory is a `pop`, and that is why it is safe.** `RowRenderer.working`
+maps a key to the feed-clock instant the turn was first seen; the `completed` branch pops it, so a
+repeat report finds nothing. Nothing but `_render_upsert` and `_render_remove` ever writes it, so no
+*repaint* can move it — which makes it disconnect-immune and burst-immune **structurally** rather
+than by a rule someone has to remember. That is the `applied`-as-a-gate trap below, and this is the
+worked example of a case where it cannot fire at all. `_render_remove` pops too: a removal ends the
+turn, or an agent removed while working and re-asserted as finished would be announced with a
+duration spanning the removal.
 
 `agb pane` adds two more calls from `agb_ops` — `session split` / `session scratch` plus
 `session type` — which is why there are **three** doors to `agtermctl` rather than one.
@@ -321,6 +340,24 @@ exits, reaps, then verifies the pid is actually free.
 review round in this repo's history found guards that passed vacuously; running the suite green
 proves the tests ran, not that they hold anything up.
 
+⚠️ **Three harness facts make a renderer test vacuous, and none is obvious from reading it.** All
+three cost a review round on the finished-turn banner:
+
+- **`BridgeModel._upsert` drops a record identical to the last one** before the renderer sees it,
+  and `wire()` has a constant `seq`. A "this is announced only once" test that re-sends the same
+  record never enters `_render_upsert` at all, and passes with the code under test deleted. **Vary
+  `seq` on every repeat upsert.**
+- **`Harness.upsert` defaults to `now=NOW`.** A test that leaves the clock implicit puts every event
+  at the same instant, which makes "measured from the first sighting" and "measured from the last"
+  indistinguishable. **Pin every clock in any test about durations.**
+- **`model.now` never returns to `None` once set** (`BridgeModel.apply` assigns only for a numeric
+  value). A "no clock" test must therefore target the *first* event of a fresh harness; later ones
+  inherit the previous value and prove nothing.
+
+And the general form, which is the one worth carrying: **a test asserting that nothing happened needs
+a companion that differs only in the variable under test.** Otherwise it passes against a feature
+that can never fire, for any reason at all.
+
 **Always pass `timeout=` to `communicate()`.** `conftest.communicate()` wraps this. Without it a
 regression that wedges a subprocess hangs the suite instead of failing it.
 
@@ -392,11 +429,22 @@ matters is clicking a row from *each* instance and landing on the right machine.
 treat the feature as tests-only — and this project's own history is that two of the last four
 features passed every test and still needed a fix after live use.
 
+Unreleased since: **a banner when a long-running agent finishes** (`notify_on_completed_after`, on by
+default at 300 s). The threshold is the feature — `completed` fires once per *turn*, so ungated it
+announces every "yes" you type, and agterm banners and bounces even for the row you are looking at.
+It also fixed three things it tripped over: `agb doctor` had been calling two of its own documented
+config keys typos since 0.4.0, `config_flag` had never had a test, and `agtermctl notify` had no
+contract oracle in the stub.
+
 Before it, **0.4.0** — notifications: a banner when an agent blocks, one when a new agent appears,
-and the unseen badge cleared when a block is answered. `agb` is at 102,429 of its 102,500-byte parse
-budget — **71 bytes of headroom**, which is the single hardest constraint on any change to the hot
-path (0.5.0 added nothing to it: the version string is the same length, and every new line landed in
-`agb_mac`/`agb_ops`). 1777 tests.
+and the unseen badge cleared when a block is answered.
+
+⚠️ **`agb`'s budget is measured in CHARACTERS, not bytes** — the guard is
+`len(agb_source) < AGB_PARSE_BUDGET` (`tests/test_mac_split.py`), and `agb` is not pure ASCII. It is
+102,419 characters (102,429 *bytes*) against 102,500, so the real headroom is **80 characters**, and
+`wc -c` is the wrong number to compare. This is the single hardest constraint on any change to the
+hot path. Neither 0.5.0 nor the finished-turn banner added anything to it: every new line landed in
+`agb_mac`/`agb_ops`. 1798 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
