@@ -43,6 +43,36 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   **host** when it fails. You typed `auto`; a complaint about `weird.name` would otherwise read as
   being about something you wrote.
 
+### Fixed
+
+- **`--farm` is documented, and the cookbook no longer tells you to write a config line the
+  installer already wrote.** Both came out of the first real instance install on a second machine.
+
+  `--farm <ssh-target>` had no entry in `docs/commands.md` at all, and it is one flag away from
+  `--feed-host` in every example — so the two read as interchangeable, and they are not.
+  `--feed-host` is **stored** and is the bridge's transport for the life of the install; `--farm` is
+  used **once**, by the installer, to run the farm side instead of printing it, and is written
+  nowhere. For a no-shared-disk instance they name one machine and should be one string typed twice;
+  they differ only on a shared-disk cluster, where the farm install runs on every agent host while
+  only one is the feed host. Both now say so, in `commands.md`, `cookbook.md` and the skill.
+
+  Getting `--farm` wrong is loud and stops safely — the Mac half is configured, then `ssh: Could not
+  resolve hostname …` and `the farm side failed; the Mac is configured, the farm is not` — so the
+  recovery is now written down too, because "half installed" reads worse than it is.
+
+  Separately, the cookbook's *Make its rows clickable* step told you to append `host_<name> =
+  <alias>` by hand. The installer has always derived that mapping by ssh'ing the feed host, so the
+  step was busywork that also implied the automatic one had not happened. It now says when you
+  genuinely need it: `--no-probe`, a machine that would not answer, or a rename.
+
+- **The no-shared-disk check is about the disk, not the path.** Two sites using one home-directory
+  convention give the *same* `--statedir` string on both machines while being separate filesystems —
+  the normal shape of this, and previously easy to read as a mistake. What actually matters is the
+  opposite case: a second instance pointed at a statedir the first can see makes both bridges read
+  every session, so **every agent gets two rows**, one per instance, with nothing erroring. The
+  cookbook now says to run the `touch`/`ls` probe rather than compare paths by eye, and what to do
+  instead when it turns out the disk *is* shared.
+
 ## 0.5.0 — 2026-08-01
 
 ### Added

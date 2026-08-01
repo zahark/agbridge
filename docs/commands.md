@@ -568,6 +568,38 @@ instance spelled some other way — or the three flags the sugar stands for.
 The `next:` hint it prints carries **this instance's** statedir into the farm-side command, so the
 copy-paste is right for the machine you just added.
 
+### `--farm <ssh-target>` — run the farm side instead of printing it
+
+```
+sh install.sh mac … --farm <ssh-target>
+```
+
+Optional. Without it the installer ends by *printing* the farm-side command; with it, it ssh's to
+that target and runs it. Same command either way —
+`test_the_printed_farm_command_and_the_sshed_one_are_the_same_argv` compares the two forms token for
+token, because they diverged once and hooks were installed against a statedir the bridge never read.
+
+⚠️ **It is not `--feed-host`, and for a one-machine instance you want the same string in both.**
+They are different kinds of thing, which is the whole reason both exist:
+
+| | written to the config? | who uses it, and when |
+|---|---|---|
+| `--feed-host <target>` | **yes**, as `feed_host` | the **bridge**, on every connection, for the life of the install — it is the transport |
+| `--farm <target>` | **no**, used once and forgotten | the **installer**, during this command, to save you a paste |
+
+They legitimately differ only on a **shared-disk** cluster, where the farm install runs on *every*
+agent host while only one of them is the feed host. A no-shared-disk instance is a single machine
+playing both roles, so it is one value typed twice.
+
+Mistyping the `--farm` half is **loud, and stops at a safe point**: the Mac half is already
+configured, so the run ends `ssh: Could not resolve hostname …` followed by `the farm side failed;
+the Mac is configured, the farm is not`. Nothing needs undoing — fix the alias and re-run (the mac
+half is idempotent), or run the printed command on the machine by hand.
+
+A failing farm side is fatal on purpose. Half an install is the state nothing can diagnose later:
+the plist is loaded and the bridge is up, so the sidebar looks alive while the farm has no hooks and
+never writes a session.
+
 Then repair it with `agb-refresh --instance <name>`, and read
 [`design.md`](design.md) §5, *One Mac, several instances* for the seven limitations — the first of
 which is that a helper run **without** `--instance` acts on the default one and reports success.
