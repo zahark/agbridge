@@ -189,6 +189,23 @@ first statedir, so it gets **its own** — and with it its own feed and its own 
 That pair is an **instance**. Rows from every instance land in the same sidebar; nothing about the
 machines you already have changes, and no cluster-side change is needed on any of them.
 
+⚠️ **The check is about the DISK, not the path.** Two sites that both mount home directories under
+the same convention give you the same `--statedir` string on both machines — `/home/you/.agbridge`
+in each case — while the two are entirely separate filesystems. That is the normal shape of this and
+is fine. What you must not do is point a second instance at a statedir the first one can *see*: both
+bridges then read every session and **every agent gets two rows**, one per instance, each with its
+own `agb pane` command. Nothing errors; the sidebar just doubles. So run the probe rather than
+comparing the paths by eye:
+
+```sh
+touch ~/.agb-probe                    # on the machine you already have
+ls -l ~/.agb-probe                    # on the new one
+```
+
+Found it? Then this is not a no-shared-disk machine at all, and you want the much shorter recipe:
+`install.sh farm --mac-id <the id>` over there and nothing on the Mac — the bridge you already have
+picks its agents up on the next snapshot.
+
 ### Step 1 — Get the code onto the new machine
 
 Exactly as Step 1 above, on the new machine:
@@ -257,10 +274,29 @@ a Mac whose *first* install is a named instance — it mints one, and the `next:
 
 **Copy the `next:` command it prints.** It already carries the mac-id *and* this instance's statedir.
 
+Or add **`--farm hostb-alias`** and skip the copy entirely — the installer ssh's over and runs that
+exact command itself, so Step 3 below is already done when it finishes.
+
+⚠️ **`--feed-host` and `--farm` name the same machine here, so give them the same string.** They are
+not the same *kind* of thing, which is why both exist:
+
+| | stored? | who uses it |
+|---|---|---|
+| `--feed-host hostb-alias` | **yes**, as `feed_host` | the **bridge**, on every connection, for the life of the install |
+| `--farm hostb-alias` | **no** — used once, then forgotten | the **installer**, right now, to run the farm side for you |
+
+They differ only on a *shared-disk* cluster, where the farm install runs on every agent host but only
+one of them is the feed host. A no-shared-disk instance is one machine, so it is one value typed
+twice. Getting the second one wrong is loud, not silent — the Mac half installs correctly and the
+run ends with `ssh: Could not resolve hostname …` plus `the farm side failed; the Mac is configured,
+the farm is not`. Fix the alias and re-run, or just do Step 3 by hand; nothing needs undoing.
+
 ### Step 3 — Install the farm side on the new machine
 
-Paste that command there. It is the ordinary farm install — config plus the four hooks — pointed at
-the new machine's own statedir:
+**Skip this if you used `--farm`** — it has already run.
+
+Otherwise paste the printed command there. It is the ordinary farm install — config plus the four
+hooks — pointed at the new machine's own statedir:
 
 ```sh
 cd ~/agbridge
@@ -288,15 +324,25 @@ healthy while this one is broken.
 
 ### Step 5 — Make its rows clickable
 
-The `host_<hostname>` mapping goes in **that instance's** config, not the default one:
+**Usually already done.** The installer ssh's `--feed-host` once to read its hostname back and writes
+the mapping into **that instance's** config for you — it is the `probed:` line in Step 2's output:
+
+```
+probed:   hostb-alias is 'hostb01' -> host_hostb01 = hostb-alias
+set:      host_hostb01 = hostb-alias
+```
+
+Add it by hand only if that line is missing — you passed `--no-probe`, the machine would not answer
+(the installer says so and names the flag), or it has been renamed since:
 
 ```sh
 echo 'host_hostb01 = hostb-alias' >> ~/.config/agbridge/hostb/config
 ```
 
-That is the whole reason a row's command carries `--config`: clicking a row runs `agb pane`, which
-resolves the hostname through a config of its own, and without the flag it would read the *first*
-instance's table and take you to the wrong machine — or nowhere.
+It has to be **that instance's** config, not the default one. That is the whole reason a row's
+command carries `--config`: clicking a row runs `agb pane`, which resolves the hostname through a
+config of its own, and without the flag it would read the *first* instance's table and take you to
+the wrong machine — or nowhere. Takes effect on the next click; no restart.
 
 ⚠️ Rows minted before the Mac was upgraded to 0.5.0 carry no such flag. `agb-refresh --instance hostb`
 re-mints them; nothing updates a live row in place.

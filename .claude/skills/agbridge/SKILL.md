@@ -95,19 +95,30 @@ sidebar. Nothing on the existing machines changes.
 ```sh
 # on the Mac. --statedir is REQUIRED with --instance, and it is the NEW
 # machine's own path -- absolute, and never spelled with a `~` the Mac would
-# expand against its own home
+# expand against its own home. `--instance auto` names it after the machine.
 sh install.sh mac --instance hostb \
     --statedir /home/you/.agbridge \
     --feed-host hostb-alias \
-    --agb-remote-path /path/to/agb/on/hostb
+    --agb-remote-path /path/to/agb/on/hostb \
+    --farm hostb-alias                        # optional: run the farm side too
 ```
 
-Then run the `next:` command it prints on the new machine (it carries the mac-id *and* this
-instance's statedir), and put that machine's host mapping in **this instance's** config:
+⚠️ **`--feed-host` and `--farm` are the same machine here — give them the same string.**
+`--feed-host` is *stored* (`feed_host`) and used by the bridge on every connection; `--farm` is used
+**once**, by the installer, to run the farm side instead of printing it, and is never written
+anywhere. They differ only on a shared-disk cluster, where the farm install runs on every agent host
+while one of them is the feed host. A wrong `--farm` is loud: the Mac half installs, then
+`ssh: Could not resolve hostname …` and `the farm side failed; the Mac is configured, the farm is
+not`. Fix the alias and re-run, or run the printed command by hand — nothing needs undoing.
+
+Without `--farm`, run the `next:` command it prints on the new machine (it carries the mac-id *and*
+this instance's statedir). The **host mapping is already written for you** — the installer ssh's
+`--feed-host` for its hostname and records `host_<name>` in this instance's config (the `probed:`
+line). Add it by hand only after `--no-probe`, a machine that would not answer, or a rename. What is
+worth adding is the workspace:
 
 ```sh
-echo 'host_hostb01 = hostb-alias' >> ~/.config/agbridge/hostb/config
-echo 'workspace = hostb'          >> ~/.config/agbridge/hostb/config   # nothing else groups rows by machine
+echo 'workspace = hostb' >> ~/.config/agbridge/hostb/config   # nothing else groups rows by machine
 ```
 
 `--instance <name>` is sugar over `--config`, `--label` and `--log-dir`. **Everything else follows
