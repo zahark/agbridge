@@ -1299,7 +1299,18 @@ everything else the Mac side owns moves with it (see *One Mac, several instances
 | `agb_remote_path` | `bridge`, `prune --via-ssh` | path to `agb` on the farm, **absolute** | `bridge`: `/opt/agbridge/agb`. `prune --via-ssh`: `agb.sibling_path("agb")` — the running tree's own `agb` |
 | `remote_python` | `bridge`, `prune --via-ssh` | farm-side interpreter, **absolute** | `bridge`: `/bin/python3`. `prune --via-ssh`: `sys.executable` |
 | `jump_host` | `pane`, `bridge`, `prune --via-ssh` | for machine #3. All three consumers drop it when the hop would go through the target or through the host they are already on (`agb_mac.jump_for`, `pane_settings`, `prune_jump_host`) — `install.sh` copies the Mac's `--jump-host` into the farm's config, where that is the normal case | none |
+| `workspace` | `bridge` | agterm workspace for new rows, by **name**; created if absent. A remembered placement for a key beats it, so a refresh puts a moved row back rather than herding everything into one place | none; agterm's current workspace |
+| `notify_on_blocked` | `bridge` | desktop banner on a transition into `blocked`, and the `session seen` that clears the badge when it ends. One key governs both halves — *unwind what you did* | on |
+| `notify_on_new_row` | `bridge` | desktop banner when a key arrives with no row. Silent for `NEW_ROW_QUIET` after a connection's first batch, or a refresh banners every row at once | on |
+| `notify_on_completed_after` | `bridge` | desktop banner when a turn **that ran at least this many seconds** finishes. The number is the switch; `0`/`off`/`no`/`false`/negative disables it. A threshold rather than a flag because `completed` fires once per *turn*, so ungated it announces every reply | `300` (5 min) |
 | `host_<name> = <ssh-target>` | `pane`, `prune --via-ssh` | a record's `host` is a hostname, not an ssh alias | the hostname, used as the ssh target |
+
+⚠️ The four rows above `host_<name>` were **missing from this table** until 0.6.0 — `workspace` since
+it was added, the two notification switches since 0.4.0. They were documented in `README.md` and
+`docs/commands.md` the whole time, and `agb_ops.CONFIG_KEYS` was missing the notification pair too,
+so `agb doctor` reported them as typos. Nothing caught it: there is no doc-consistency test, and both
+tests that check `CONFIG_KEYS` iterate the list itself, so an omission made them weaker rather than
+red. A key added here belongs in all four places at once.
 
 The two consumers of `agb_remote_path`/`remote_python` default differently on purpose. The bridge
 runs on the **Mac**, which has no farm paths to introspect, so it needs written-down ones;

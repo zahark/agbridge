@@ -489,32 +489,32 @@ explicitly**, and **every repeat upsert varies `seq`** (`agb_mac:336-337`).
 - Modify: `.claude/skills/agbridge/SKILL.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] `README.md` config table (the `notify_on_blocked` row, `:165` at `adc3284`) — one row stating
+- [x] `README.md` config table (the `notify_on_blocked` row, `:165` at `adc3284`) — one row stating
       the default and that the number is the switch
-- [ ] `docs/commands.md` beside the `blocked` banner (`:116`, `:133-134`) — the threshold, the
+- [x] `docs/commands.md` beside the `blocked` banner (`:116`, `:133-134`) — the threshold, the
       transition memory, and ⚠️ **all four known limits**: sub-poll floor, restart floor, outage
       inflation, replay banners
-- [ ] ⚠️ `docs/design.md:1294-1302` — the config **table** is missing `workspace`,
+- [x] ⚠️ `docs/design.md:1294-1302` — the config **table** is missing `workspace`,
       `notify_on_blocked` and `notify_on_new_row` as well. Add all four rows; adding one to a table
       missing three leaves the design authority wrong about its own config surface. There is no
       doc-consistency test anywhere in `tests/`, so this fails silently and for ever
-- [ ] **verify only** — `docs/design.md:1354`, the §5 per-instance row, already reads *"`statedir`,
+- [x] **verify only** — `docs/design.md:1354`, the §5 per-instance row, already reads *"`statedir`,
       `feed_host`, `mac_id`, the notification switches"*. Generic and plural, so a third switch
       needs no edit. Confirm and move on; an earlier draft listed this as work
-- [ ] `.claude/skills/agbridge/SKILL.md` — the Notifications table (`:309-313` at `adc3284`) **and**
+- [x] `.claude/skills/agbridge/SKILL.md` — the Notifications table (`:309-313` at `adc3284`) **and**
       the Config-keys table (`:331-342`, notify row at `:341`). ⚠️ These moved; the `:314-323`
       anchor in the first draft now points at the Workspaces section
-- [ ] ⚠️ `CHANGELOG.md` — **append to the existing `## Unreleased`** (`:9`, `### Added` at `:11`,
+- [x] ⚠️ `CHANGELOG.md` — **append to the existing `## Unreleased`** (`:9`, `### Added` at `:11`,
       added by `ee8e976`). Do **not** create a second heading, as the first draft of this plan said
-- [ ] the entry says **why**, per house style: `completed` fires once per turn, so the threshold is
+- [x] the entry says **why**, per house style: `completed` fires once per turn, so the threshold is
       the feature and not a refinement. Name the rejected alternatives (`idle` as trigger, a
       bool-plus-threshold config), and carry the caveats forward — the banner and bounce fire even
       for the row you are looking at, and the duration is wall time
-- [ ] ⚠️ state the **upgrade effect**: the default is 300, so this is **on** for every existing
+- [x] ⚠️ state the **upgrade effect**: the default is 300, so this is **on** for every existing
       install after `sh install.sh mac`, with `notify_on_completed_after = off` as the opt-out
-- [ ] ⚠️ if the code lands in its own commit, the changelog entry belongs **in that commit** —
+- [x] ⚠️ if the code lands in its own commit, the changelog entry belongs **in that commit** —
       `CLAUDE.md`'s rule is same-commit, because by release time the reason is gone
-- [ ] no tests (documentation only); run the suite anyway
+- [x] no tests (documentation only); run the suite anyway
 
 ### Task 6: Verify acceptance criteria
 

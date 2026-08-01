@@ -311,7 +311,13 @@ On by default; each has its own config key:
 |---|---|---|
 | banner: an agent needs you | `notify_on_blocked` | a transition into `blocked` |
 | banner: a new agent appeared | `notify_on_new_row` | a row is minted (silent for 3 s after a bridge start/reconnect, or a refresh would banner every row) |
+| banner: an agent finished | `notify_on_completed_after` | a turn ends **that ran at least N seconds** — default 300. The number is the switch; `off`/`0` disables |
 | the unseen badge is cleared | `notify_on_blocked` | the agent leaves `blocked` |
+
+⚠️ The finished-turn banner is thresholded because `completed` fires **once per turn**: ungated it
+announces the "yes" you typed three seconds ago, and there is no "only when I'm away" to fall back
+on, since agterm banners and bounces even for the row you are looking at. A turn that started *and*
+finished while the bridge was down is never announced — the one case people expect and do not get.
 
 Whether the **Dock bounces** is agterm's setting, not agbridge's: Settings ▸ Notifications ▸
 Dock-icon bounce. ⚠️ agterm never raises a badge on the row you are **currently viewing**, so test
@@ -340,6 +346,7 @@ was told) for any other, and the Mac-side keys below are **per instance**.
 | `jump_host` | Mac | for hosts not directly reachable |
 | `workspace` | Mac | agterm workspace for new rows, by name |
 | `notify_on_blocked`, `notify_on_new_row` | Mac | `0`/`no`/`off`/`false` to disable |
+| `notify_on_completed_after` | Mac | seconds a turn must run before finishing is announced; default `300`, and `0`/`off`/`no`/`false`/negative disables |
 | `host_<hostname> = <ssh target>` | Mac | a record's host is a hostname, not an alias |
 
 ## Things that surprise people
