@@ -1935,6 +1935,181 @@ def test_no_probe_makes_no_ssh_call_at_all(run_sh, mac_args, stub_bin):
 
 
 # ---------------------------------------------------------------------------
+# --instance auto: the same probe, spent on the name
+# ---------------------------------------------------------------------------
+#
+# The hostname was already being read back for `host_<name>`. `auto` reuses that
+# one answer as the instance name -- so the interesting assertions are not that
+# it works, but the three things that must NOT happen: a second ssh, a silent
+# fall-back to the default instance when the machine will not answer, and the
+# word `auto` becoming redundant.
+
+def _auto_args(mac_args, **over):
+    """`--instance auto`, probing, with the paths the instance decides dropped.
+
+    `--config` and `--log-dir` have to go or the sugar has nothing to set --
+    every default below it is `[ -n ... ] ||`, so `mac_args`' pinned `--config`
+    would win and the test would pass while asserting nothing about `auto`.
+    """
+    args = {"--config": None, "--log-dir": None, "--instance": "auto"}
+    args.update(over)
+    return _probing_args(mac_args, **args)
+
+
+def test_instance_auto_names_the_instance_after_the_machine(
+        run_sh, mac_args, stub_bin, tmp_path, fake_home, agb):
+    """The name, and everything it decides, come off the machine.
+
+    Asserted as a set for the reason the explicit-name test gives: any one of
+    the label, the config and the logs can be right while the set is incoherent,
+    and it is the set that makes a second bridge a second bridge.
+    """
+    _ssh_answering(stub_bin, "hostb01")
+    code, out, err = run_sh(_auto_args(mac_args))
+    assert code == 0, err
+
+    config = _instance_config_path(fake_home, "hostb01")
+    plist = tmp_path / "agents" / "com.agbridge.hostb01.plist"
+    parsed = plistlib.loads(read_bytes(plist))
+    assert parsed["Label"] == "com.agbridge.hostb01"
+    assert parsed["ProgramArguments"][-2:] == ["--config", str(config)]
+    assert agb.read_config(str(config))["statedir"] == str(tmp_path / "state")
+
+    # Said out loud, and said as a DERIVATION -- `auto` is not a name and a
+    # banner that printed it would name nothing.
+    assert "instance: auto -> hostb01" in out
+
+    # Non-vacuity, and the isolation claim: the DEFAULT instance is untouched.
+    assert not (fake_home / ".config" / "agbridge" / "config").exists()
+    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+
+
+def test_instance_auto_asks_the_machine_once_and_both_readers_use_the_answer(
+        run_sh, mac_args, stub_bin, fake_home, agb):
+    """ONE ssh, two readers -- and they cannot disagree.
+
+    The name and the `host_<name>` mapping are the same fact, so asking twice
+    would be both a wasted round trip and a way for a machine that renamed
+    itself between the two calls to produce a config whose mapping does not
+    match its own directory. The mapping is asserted because it is the *second*
+    reader: if it re-probed, this would still pass -- so the call count is what
+    holds it up, and the mapping is what proves the second reader ran at all.
+    """
+    _ssh_answering(stub_bin, "hostb01")
+    code, out, err = run_sh(_auto_args(mac_args))
+    assert code == 0, err
+    calls = stub_bin.calls("ssh")
+    assert len(calls) == 1, calls
+    assert calls[0][-2:] == ["box2", "hostname -s"]
+    values = agb.read_config(str(_instance_config_path(fake_home, "hostb01")))
+    assert values["host_hostb01"] == "box2"
+
+
+def test_instance_auto_refuses_rather_than_falling_back_to_the_default(
+        run_sh, mac_args, stub_bin, tmp_path, fake_home):
+    """⚠️ The one that matters. A machine that will not answer is a REFUSAL.
+
+    The probe is best-effort for the host mapping -- it prints a note and you
+    pass `--host` yourself (`test_a_failing_probe_is_not_fatal_and_says_what_to
+    _do`). It cannot be best-effort for the NAME, because the fall-back is the
+    DEFAULT instance: that run would rewrite the first machine's `feed_host` and
+    `statedir`, boot out its launchd job and point its bridge at the new box --
+    reporting success in the same words a correct run uses.
+
+    So: non-zero, and nothing written anywhere.
+    """
+    _ssh_answering(stub_bin, "", exit_code=255)
+    code, out, err = run_sh(_auto_args(mac_args))
+    assert code != 0
+    assert "--instance auto" in err
+    assert "DEFAULT instance" in err            # it says WHY it is refusing
+    assert not (fake_home / ".config" / "agbridge" / "config").exists()
+    assert not (tmp_path / "agents").exists()
+    assert not (tmp_path / "dest").exists()
+
+
+def test_instance_auto_refuses_a_hostname_that_is_not_a_usable_name(
+        run_sh, mac_args, stub_bin, tmp_path, fake_home):
+    """A hostname may hold a `.`; an instance name may not.
+
+    `probe_farmhost` allows one, because a `.` is fine in a `host_<name>` key
+    and this is the same answer serving both readers -- so `auto` re-asks with
+    the narrower rule. The message names the HOST, since `auto` is what the
+    operator typed and a complaint about `weird.name` would otherwise read as
+    being about something they wrote.
+    """
+    _ssh_answering(stub_bin, "weird.name")
+    code, out, err = run_sh(_auto_args(mac_args))
+    assert code != 0
+    assert "weird.name" in err
+    assert "box2" in err                        # ...and where it came from
+    assert not (fake_home / ".config" / "agbridge" / "weird.name").exists()
+    assert not (tmp_path / "dest").exists()
+
+
+@pytest.mark.parametrize("over,wanted", [
+    ({"--feed-host": None}, "--feed-host"),
+    ({}, "--no-probe"),
+])
+def test_instance_auto_refuses_when_it_could_not_ask_at_all(
+        run_sh, mac_args, stub_bin, tmp_path, over, wanted):
+    """Two ways of asking for a derived name while removing the derivation.
+
+    Both are refused up front rather than at the ssh, so neither can reach the
+    fall-back the test above is about. The `--no-probe` case rebuilds the argv
+    from `mac_args` (which carries it) instead of `_auto_args` (which strips
+    it) -- the flag under test is the one being put back.
+    """
+    _ssh_answering(stub_bin, "hostb01")
+    args = {"--config": None, "--log-dir": None, "--instance": "auto"}
+    args.update(over)
+    argv = (mac_args(**args) if wanted == "--no-probe"
+            else _auto_args(mac_args, **over))
+    code, out, err = run_sh(argv)
+    assert code != 0
+    assert wanted in err
+    assert stub_bin.calls("ssh") == []          # refused before asking
+    assert not (tmp_path / "dest").exists()
+
+
+def test_instance_auto_is_refused_on_the_farm_role(run_sh, tmp_path, stub_bin):
+    """Nothing on the farm reads a per-instance config, `auto` or otherwise."""
+    _ssh_answering(stub_bin, "hostb01")
+    code, out, err = run_sh(_farm(tmp_path, **{"--instance": "auto"}))
+    assert code != 0
+    assert "mac role" in err
+    assert stub_bin.calls("ssh") == []
+
+
+def test_an_absent_instance_is_the_default_one_even_when_the_probe_answers(
+        run_sh, mac_args, stub_bin, tmp_path, fake_home, agb):
+    """⚠️ Why `auto` is a WORD and not the default, pinned.
+
+    Re-running `install.sh mac` with the original flags is the documented
+    upgrade path. If an absent `--instance` meant "name it after whatever the
+    feed host calls itself", every upgrade would mint a new instance beside the
+    old one -- new config, new launchd job, new rows map, and every row
+    duplicated in the sidebar.
+
+    So: probe on, a hostname that would make a perfectly good instance name, and
+    the install still lands on the DEFAULT paths. Breaking `auto` open (making
+    the derivation unconditional) fails here and nowhere else.
+    """
+    _ssh_answering(stub_bin, "hostb01")
+    code, out, err = run_sh(_probing_args(mac_args))
+    assert code == 0, err
+    # The probe DID answer -- otherwise this passes for the wrong reason.
+    assert "hostb01" in out
+    values = agb.read_config(str(tmp_path / "cfg" / "config"))
+    assert values["host_hostb01"] == "box2"
+    # ...and none of it became an instance.
+    assert "instance:" not in out
+    assert not _instance_config_path(fake_home, "hostb01").exists()
+    assert not (tmp_path / "agents" / "com.agbridge.hostb01.plist").exists()
+    assert (tmp_path / "agents" / "com.agbridge.plist").exists()
+
+
+# ---------------------------------------------------------------------------
 # the `agb` wrapper -- what makes every doc example true
 # ---------------------------------------------------------------------------
 
