@@ -3396,8 +3396,20 @@ CONFIG_VALUE_ARGS = {
 CONFIG_FLAGS = {
     "--generate-mac-id": "generate_mac_id",
     "--print-mac-id": "print_mac_id",
+    "--print-statedir": "print_statedir",
     "--dry-run": "dry_run",
 }
+
+# `--print-statedir` is a **pure query**, and this is the list of everything it
+# tolerates on the same argv. `--config` is exempt because it names *which*
+# file to read and is exactly what `install.sh` passes; `--dry-run` because it
+# is a no-op for a read, and refusing the obvious first guess would only trap
+# the caller. Everything else is refused rather than ignored: measured, an
+# `install-config --config C --statedir /new --feed-host zzz --print-statedir`
+# printed the *old* value, exited 0 and wrote nothing -- "you asked me to write
+# and I silently did not", which is the family of failure this project spells
+# out as "'I could not answer' is not 'the answer is nothing'".
+PRINT_STATEDIR_ALLOWED = ("--print-statedir", "--config", "--dry-run")
 
 # `--host <hostname>=<ssh-target>`, repeatable: a record's `host` is a hostname,
 # not an ssh alias, and `agb pane` needs the mapping.
@@ -3617,17 +3629,22 @@ def parse_config_args(argv):
     """`install-config [--config P] [--statedir P] [--mac-id ID] [--feed-host H]
     [--agb-remote-path P] [--remote-python P] [--jump-host H]
     [--host <name>=<target>]... [--generate-mac-id] [--print-mac-id]
-    [--dry-run]`.
+    [--print-statedir] [--dry-run]`.
 
     Hand-rolled like every other parser here (constraint #3). Only `--config` is
     `expanduser`d: it is the one path that names a file on *this* machine. The
     others are farm-side and are resolved on a different host, where `~` means
     something else.
+
+    The two `--print-*` flags are refused together, and `--print-statedir` is
+    refused beside anything that writes -- both here rather than in
+    `run_install_config`, so a refused argv is refused before the config file
+    has even been opened.
     """
     opts = {"config": None, "statedir": None, "mac_id": None,
             "feed_host": None, "agb_remote_path": None, "remote_python": None,
             "jump_host": None, "hosts": {}, "generate_mac_id": False,
-            "print_mac_id": False, "dry_run": False}
+            "print_mac_id": False, "print_statedir": False, "dry_run": False}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -3661,6 +3678,35 @@ def parse_config_args(argv):
         if arg.startswith("-"):
             raise agb.AgbError("install-config: unknown option: %s" % (arg,))
         raise agb.AgbError("install-config: unexpected argument: %s" % (arg,))
+    if opts["print_statedir"]:
+        # Two `--print-*` flags, one stdout. Neither answer is labelled, so a
+        # caller reading "the line" would get the other one's and never know:
+        # `install.sh` reads a mac-id here and a statedir there, both with the
+        # same `value=$(run_agb …)` idiom.
+        if opts["print_mac_id"]:
+            raise agb.AgbError(
+                "install-config: --print-mac-id and --print-statedir both own "
+                "stdout, and neither answer says which one it is. Ask for one "
+                "at a time.")
+        # Walked off the parser's own tables rather than a written-out list:
+        # a hand-kept list silently misses whatever gets added to them next.
+        for name in sorted(list(CONFIG_VALUE_ARGS) + list(CONFIG_FLAGS)
+                           + [CONFIG_HOST_ARG]):
+            if name in PRINT_STATEDIR_ALLOWED:
+                continue
+            if name == CONFIG_HOST_ARG:
+                key = "hosts"
+            elif name in CONFIG_FLAGS:
+                key = CONFIG_FLAGS[name]
+            else:
+                key = CONFIG_VALUE_ARGS[name]
+            if opts[key]:
+                raise agb.AgbError(
+                    "install-config: --print-statedir is a read-only query "
+                    "and %s asks for a write, which it would not perform. It "
+                    "reports the statedir the file already carries; run it "
+                    "alone (only --config and --dry-run go with it)."
+                    % (name,))
     return opts
 
 
@@ -3676,6 +3722,11 @@ def run_install_config(argv, out=None):
     the installer still sees it. That is what lets `install.sh` hand the Mac's
     minted id to the farm side without re-implementing `key = value` parsing in
     shell, which is the sort of second reader that drifts.
+
+    `--print-statedir` is the same channel for the statedir, and is a **pure
+    query**: it answers from the parsed file and returns, having written
+    nothing. That is what lets `install.sh mac` adopt an existing instance's
+    statedir instead of re-demanding it on every upgrade.
     """
     opts = parse_config_args(argv)
     if out is None:
@@ -3683,6 +3734,39 @@ def run_install_config(argv, out=None):
     path = opts["config"] or agb.config_path()
     text, previous = read_config_text(path)
     existing, _malformed = agb.parse_config(text)
+    if opts["print_statedir"]:
+        # **The placement is the feature.** Both of these were measured, not
+        # reasoned about:
+        #
+        #  * run this after `write_settings` (where `--print-mac-id` emits, and
+        #    which is safe only because `resolve_mac_id` raises much earlier)
+        #    and an instance config carrying a mac_id but no statedir exits
+        #    non-zero *having been rewritten with the default config's
+        #    statedir* -- the exact failure the flag exists to prevent, caused
+        #    by the flag;
+        #  * run it after `install_config_values` and a config carrying a
+        #    statedir but no `mac_id` raises MAC_ID_MISSING_NOTE instead of
+        #    answering, so a non-zero exit would stop meaning "no own
+        #    statedir" and `install.sh`'s `|| statedir=""` would demand
+        #    `--statedir` for a file that already carries one.
+        #
+        # Hence: after the parse, before everything else, and `return`.
+        #
+        # And it reports the file's **own** value, never
+        # `install_config_values`' `or agb.statedir()` fallback -- that
+        # fallback reads the *default-path* config, so a bridge for one cluster
+        # would silently adopt another's directory and report `exit 0`.
+        statedir = existing.get("statedir")
+        if not statedir:
+            raise agb.AgbError(
+                "install-config: %s carries no statedir of its own%s. Nothing "
+                "is guessed here: the fallback would be whatever the "
+                "default-path config says, which is another machine's "
+                "directory." % (path, "" if previous is not None
+                                else " (it does not exist)"))
+        sys.stdout.write("%s\n" % (statedir,))
+        sys.stdout.flush()
+        return 0
     values, source = install_config_values(opts, existing, path)
     merged = merge_config_text(text, values, CONFIG_HEADER)
     malformed = verify_config_text(merged, values)

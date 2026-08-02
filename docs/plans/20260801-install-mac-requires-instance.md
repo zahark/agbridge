@@ -401,21 +401,21 @@ Two consequences:
 - Modify: `agb_ops`
 - Modify: `tests/test_install_pkg.py`
 
-- [ ] add `"--print-statedir": "print_statedir"` to `CONFIG_FLAGS` (`agb_ops:3396`), to
+- [x] add `"--print-statedir": "print_statedir"` to `CONFIG_FLAGS` (`agb_ops:3396`), to
       `parse_config_args`' defaults (`:3630`), and to its docstring usage line (`:3617-3620`)
-- [ ] in `run_install_config` (`:3667`), handle it **immediately after
+- [x] in `run_install_config` (`:3667`), handle it **immediately after
       `existing, _malformed = agb.parse_config(text)`** (`:3686`) and **return** — before
       `install_config_values`, `merge_config_text` and `write_settings`. Write
       `existing.get("statedir")` alone to stdout, or raise `agb.AgbError` naming the file
-- [ ] comment the two reasons the placement is load-bearing, both measured: run after the write and a
+- [x] comment the two reasons the placement is load-bearing, both measured: run after the write and a
       statedir-less config is *rewritten with the default config's statedir*; run after
       `install_config_values` and a config with no `mac_id` raises `MAC_ID_MISSING_NOTE` instead of
       answering, so non-zero would stop meaning "no own statedir"
-- [ ] comment that it prints the file's **own** value and never `agb.statedir()`'s fallback, naming
+- [x] comment that it prints the file's **own** value and never `agb.statedir()`'s fallback, naming
       the failure that would follow
-- [ ] refuse `--print-mac-id` and `--print-statedir` together: both own stdout, and a caller reading
+- [x] refuse `--print-mac-id` and `--print-statedir` together: both own stdout, and a caller reading
       one line would silently get the other's
-- [ ] ⚠️ **refuse** a mutating option alongside it — decided here, not in the implementation.
+- [x] ⚠️ **refuse** a mutating option alongside it — decided here, not in the implementation.
       **measured**: today `install-config --config C --statedir /new --feed-host zzz --print-statedir`
       prints the *old* value, exits 0 and writes nothing. Correct for a pure query, but "you asked me
       to write and I silently did not" is invariant 12's family. **Allowed set: `--config` and
@@ -423,23 +423,30 @@ Two consequences:
       exactly what `install.sh` passes (Decision 2's snippet is `install-config --config "$config"
       --print-statedir`); `--dry-run` is a no-op for a query and refusing it would trap the obvious
       first guess
-- [ ] write tests for that refusal **parametrized over the parser's own tables**, not an enumerated
+- [x] write tests for that refusal **parametrized over the parser's own tables**, not an enumerated
       list — `CONFIG_VALUE_ARGS` (`agb_ops:3386-3394`) has seven entries and `CONFIG_HOST_ARG` and
       `--generate-mac-id` add two more, so a hand-written list silently misses `--agb-remote-path`,
       `--remote-python` and `--jump-host`. Assert `--config` and `--dry-run` accepted, every other
       table entry refused
-- [ ] write tests: prints the own value; **exits non-zero with nothing on stdout** for a config with
+- [x] write tests: prints the own value; **exits non-zero with nothing on stdout** for a config with
       no statedir key, and for a config that does not exist
-- [ ] write a test with **both** files present holding **different** statedirs, asserting the
+- [x] write a test with **both** files present holding **different** statedirs, asserting the
       instance's own is printed — so it cannot pass by coincidence
-- [ ] write a test that a config with a statedir and **no `mac_id`** still answers (important: the
+- [x] write a test that a config with a statedir and **no `mac_id`** still answers (important: the
       measured regression)
-- [ ] write a test that the config file is **byte-identical** after `--print-statedir` **without**
+- [x] write a test that the config file is **byte-identical** after `--print-statedir` **without**
       `--dry-run`, in both the answering and the raising case
-- [ ] write tests: the two `--print-*` flags together are refused
-- [ ] **mutation-check**: move the read below `install_config_values`; confirm a **named** test fails;
+- [x] write tests: the two `--print-*` flags together are refused
+- [x] **mutation-check**: move the read below `install_config_values`; confirm a **named** test fails;
       restore. Then: make the raise a `return ""`; confirm a **named** test fails; restore
-- [ ] run tests — must pass before Task 2
+      — ➕ all three done (a third moved the read to the tail beside `--print-mac-id`, failing
+      `…leaves_the_config_byte_identical`). ⚠️ **The first attempt was VACUOUS and said so only by
+      flipping between runs**: `agb_ops` is loaded by path through importlib, which caches bytecode
+      and validates it on (source mtime in *whole seconds*, source size) — two of the three mutations
+      only *move* text, so the size is identical and a same-second rewrite reuses the stale `.pyc`.
+      **Any mutation-check in this repo must delete `__pycache__/agb_ops*.pyc` after writing.** Worth
+      a `CLAUDE.md` "Testing conventions" bullet in Task 5
+- [x] run tests — must pass before Task 2 — ⚠️ **re-measured: 1900 baseline → 1910** with the 10 new
 
 ### Task 2: `install.sh mac` requires `--instance`, and the suite says so
 

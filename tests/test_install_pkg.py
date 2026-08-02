@@ -437,6 +437,194 @@ def test_print_mac_id_puts_only_the_id_on_stdout(run_agb, tmp_path, agb):
 
 
 # ---------------------------------------------------------------------------
+# --print-statedir: the same channel, but a *pure query*
+#
+# `install.sh mac --instance <name>` reads it to adopt an existing instance's
+# statedir instead of re-demanding `--statedir` on every upgrade, with the
+# `|| statedir=""` idiom the mac-id loop already uses -- so a non-zero exit has
+# to mean "this file carries no statedir of its own" and nothing else, and the
+# run has to write nothing at all.
+# ---------------------------------------------------------------------------
+
+def write_config(path, text):
+    """Seed a config file, creating its directory."""
+    parent = os.path.dirname(str(path))
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent)
+    with open(str(path), "w") as handle:
+        handle.write(text)
+    return str(path)
+
+
+def print_statedir_argv(config, *extra):
+    return ["install-config", "--config", str(config),
+            "--print-statedir"] + list(extra)
+
+
+def test_print_statedir_puts_only_the_files_own_statedir_on_stdout(run_agb,
+                                                                   tmp_path):
+    config = write_config(tmp_path / "cfg" / "config",
+                          "statedir = /shared/.agbridge\nmac_id = m-0001\n")
+    code, out, err = run_agb(print_statedir_argv(config))
+    assert code == 0
+    assert out.decode() == "/shared/.agbridge\n"   # nothing else on stdout
+    assert err == b""                             # and no report either
+
+
+def test_print_statedir_is_refused_when_the_file_carries_no_statedir(run_agb,
+                                                                     tmp_path):
+    """Non-zero must mean *no own statedir*, and stdout must stay empty: the
+    installer reads it as `statedir=$(…) || statedir=""` and would otherwise
+    adopt an error message as a path."""
+    config = write_config(tmp_path / "cfg" / "config", "mac_id = m-0001\n")
+    code, out, err = run_agb(print_statedir_argv(config))
+    assert code != 0
+    assert out == b""
+    assert b"statedir" in err
+
+
+def test_print_statedir_is_refused_when_the_config_does_not_exist(run_agb,
+                                                                  tmp_path):
+    missing = tmp_path / "cfg" / "config"
+    code, out, err = run_agb(print_statedir_argv(missing))
+    assert code != 0
+    assert out == b""
+    assert b"does not exist" in err
+
+
+def test_print_statedir_answers_the_named_file_never_the_default_one(
+        run_agb, instance_config, agb):
+    """Both files present, holding **different** statedirs, so the answer
+    cannot be right by coincidence.
+
+    This is the whole point of the flag: `install_config_values`' own
+    precedence ends `or agb.statedir()`, which reads the *default-path* config
+    -- so an instance with no statedir of its own would silently be told to use
+    another cluster's directory, and exit 0 saying so.
+    """
+    instance_config(None, "statedir = /shared/DEFAULT\n")
+    named = instance_config("hostb", "statedir = /shared/HOSTB\n")
+    assert agb.read_config(agb.config_path())["statedir"] == "/shared/DEFAULT"
+
+    code, out, _err = run_agb(print_statedir_argv(named))
+    assert code == 0
+    assert out.decode() == "/shared/HOSTB\n"
+
+    # ... and the fallback really is reachable, so the assertion above is not
+    # asserting the absence of something that could never have happened: the
+    # ordinary write path, on an instance with no statedir of its own, does
+    # report the default config's.
+    empty = instance_config("hostc", "mac_id = m-0001\n")
+    code, out, _err = run_agb(print_statedir_argv(empty))
+    assert code != 0 and out == b""
+    code, out, _err = run_agb(["install-config", "--config", str(empty),
+                               "--dry-run"])
+    assert code == 0
+    assert "set:      statedir = /shared/DEFAULT" in out.decode()
+
+
+def test_print_statedir_answers_a_config_that_has_no_mac_id(run_agb, tmp_path):
+    """The measured regression behind the placement: run below
+    `install_config_values` and this file raises MAC_ID_MISSING_NOTE instead of
+    answering, so `install.sh` would demand `--statedir` for a config that
+    carries one."""
+    config = write_config(tmp_path / "cfg" / "config",
+                          "statedir = /shared/.agbridge\n")
+    code, out, _err = run_agb(print_statedir_argv(config))
+    assert code == 0
+    assert out.decode() == "/shared/.agbridge\n"
+
+
+@pytest.mark.parametrize("text,answers", [
+    ("statedir = /shared/.agbridge\nmac_id = m-0001\n", True),
+    ("mac_id = m-0001\n", False),
+])
+def test_print_statedir_leaves_the_config_byte_identical(run_agb, tmp_path,
+                                                         text, answers):
+    """**Without** `--dry-run`, in both the answering and the raising case.
+
+    The flag is read-only by construction, not by remembering to pass a flag:
+    measured, a version that emitted after `write_settings` left a
+    statedir-less config *rewritten with the default config's statedir* while
+    exiting non-zero -- the failure the flag exists to prevent, caused by the
+    flag.
+    """
+    config = write_config(tmp_path / "cfg" / "config", text)
+    before = read_bytes(config)
+    code, _out, _err = run_agb(print_statedir_argv(config))
+    assert (code == 0) is answers
+    assert read_bytes(config) == before
+    assert os.listdir(os.path.dirname(config)) == ["config"]   # no backup
+
+
+def test_the_two_print_flags_are_refused_together(install_config, agb):
+    """One stdout, two unlabelled answers: a caller reading "the line" would
+    get the other one's and could not tell."""
+    with pytest.raises(agb.AgbError) as excinfo:
+        install_config("--print-mac-id", "--print-statedir")
+    assert "--print-statedir" in str(excinfo.value)
+    assert "--print-mac-id" in str(excinfo.value)
+
+
+def config_option_names(ops):
+    """Every option name `parse_config_args` knows, from its own tables.
+
+    Enumerated rather than written out: `CONFIG_VALUE_ARGS` has seven entries
+    and a hand-kept list silently misses `--agb-remote-path`, `--remote-python`
+    and `--jump-host` -- and misses whatever is added next.
+    """
+    return sorted(list(ops.CONFIG_VALUE_ARGS) + list(ops.CONFIG_FLAGS)
+                  + [ops.CONFIG_HOST_ARG])
+
+
+def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
+                                                              tmp_path):
+    """Allowed set: `--config` and `--dry-run`. Everything else is refused
+    rather than ignored -- measured, `--statedir /new --feed-host zzz
+    --print-statedir` printed the *old* value, exited 0 and wrote nothing.
+    "You asked me to write and I silently did not" is the same family as
+    "'I could not answer' is not 'the answer is nothing'".
+    """
+    names = config_option_names(ops)
+    assert len(names) >= 11                     # non-vacuity: the tables ran
+    for expected in ("--agb-remote-path", "--remote-python", "--jump-host",
+                     "--host", "--generate-mac-id"):
+        assert expected in names                # the ones a hand list misses
+
+    config = write_config(tmp_path / "cfg" / "config",
+                          "statedir = /shared/.agbridge\n")
+    before = read_bytes(config)
+    allowed = ("--print-statedir", "--config", "--dry-run")
+    refused = []
+    for name in names:
+        # `a=b` satisfies `--host`'s own `<name>=<target>` check too, so every
+        # value-taking flag reaches the refusal rather than an earlier one.
+        extra = [name] if name in ops.CONFIG_FLAGS else [name, "a=b"]
+        argv = ["--config", config, "--print-statedir"] + extra
+        if name in allowed:
+            assert ops.parse_config_args(argv)   # parses, does not raise
+            continue
+        with pytest.raises(agb.AgbError) as excinfo:
+            ops.parse_config_args(argv)
+        assert name in str(excinfo.value)
+        refused.append(name)
+    assert len(refused) == len(names) - len(allowed)
+    assert read_bytes(config) == before          # a refusal writes nothing
+
+
+def test_print_statedir_accepts_config_and_dry_run(run_agb, tmp_path):
+    """The two exemptions, exercised end to end rather than only through the
+    parser: `--config` names *which* file to read (it is exactly what
+    `install.sh` passes) and `--dry-run` is a no-op for a read, so refusing the
+    obvious first guess would only trap the caller."""
+    config = write_config(tmp_path / "cfg" / "config",
+                          "statedir = /shared/.agbridge\n")
+    code, out, _err = run_agb(print_statedir_argv(config, "--dry-run"))
+    assert code == 0
+    assert out.decode() == "/shared/.agbridge\n"
+
+
+# ---------------------------------------------------------------------------
 # install.sh
 # ---------------------------------------------------------------------------
 
