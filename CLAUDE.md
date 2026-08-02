@@ -514,8 +514,9 @@ and the unseen badge cleared when a block is answered.
 
 ⚠️ **`agb`'s budget is measured in CHARACTERS, not bytes** — the guard is
 `len(agb_source) < AGB_PARSE_BUDGET` (`tests/test_mac_split.py`), and `agb` is not pure ASCII. It is
-**103,198 characters** (103,212 *bytes*) against **103,200**, so the real headroom is **2
-characters**, and `wc -c` is the wrong number to compare. This is the single hardest constraint on
+**103,198 characters** (103,212 *bytes*) against **103,200**, and the comparison is a **strict `<`**
+— so the maximum is 103,199 and the real headroom is **one character**. `wc -c` is the wrong number
+to compare, and so is the difference from the budget. This is the single hardest constraint on
 any change to the hot path. Neither 0.5.0 nor the finished-turn banner added anything to it; the
 instances change did — the only part of it in `agb` is `cmd_instances`, a dispatch arm and a `USAGE`
 line, measured at +716 and paid for with the second budget raise. Everything else landed in
