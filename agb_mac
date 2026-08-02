@@ -3359,7 +3359,7 @@ def instance_display_name(label):
 
     `com.agbridge.hostb` -> `hostb`; `com.agbridge` itself -> `(default)`; any
     other label -> the label, because `install.sh mac --label <anything>` puts
-    no shape rule on a label (`install.sh:369`), so `weird.label` is a real
+    no shape rule on a label (`install.sh:426`), so `weird.label` is a real
     install whose only name IS its label.
 
     ⚠️ THE RULE IS SETTLED AND THE AUTHORITY IS `agb-refresh:1207-1219`, which

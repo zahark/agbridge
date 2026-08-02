@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1921 tests, ~70 s)
+python3 -m pytest tests/ -q                                    # full suite (1934 tests, ~70 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -356,7 +356,7 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Four cross-file agreements have no single source of truth, and all fail silently.** `agb` is
+14. **Five cross-file agreements have no single source of truth, and all fail silently.** `agb` is
     Python under a character cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
@@ -385,10 +385,16 @@ These are not style preferences. Each one has a test, and most were re-learned t
       agreement — `bind_label_to_config`'s claimant guard and `_is_agbridge_instance`'s membership
       rule are deliberately different predicates (the second also accepts any plist running
       `<…>/agb bridge`), so a test comparing them for equality would be wrong.
+    - **`install.sh`'s `PRINT_STATEDIR_NONE` is `agb_ops.PRINT_STATEDIR_NONE`** — the exit status
+      `agb install-config --print-statedir` answers for *this file carries no statedir of its own*,
+      as against `1` for *I could not read it*. The installer swallows the first and dies on the
+      second, so a disagreement collapses the two back into one: every unreadable config reported as
+      "carries none to adopt", and the operator sent after `--statedir`. The only one of the five
+      that is a **number**, which is also why it is the easiest to get wrong quietly.
 
     The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
     resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — the
-    third by `tests/test_agb_refresh.py`, and the fourth beside the first two in
+    third by `tests/test_agb_refresh.py`, and the fourth and fifth beside the first two in
     `tests/test_install_pkg.py`.
 
 ## Testing conventions
@@ -543,7 +549,11 @@ untouched: a farm host has one identity, and `agb hook` resolves `agb.config_pat
 invocation. Its transitive cost is that **`--statedir` is now required on a first Mac install too**,
 which is paid for by adopting it on a re-install — `agb install-config --print-statedir`, a pure
 query answering the file's **own** value, handled the instant `parse_config` returns and returning
-there, so non-zero means *no own statedir* and nothing else.
+there. ⚠️ **It has three statuses, not two**: `0` with the value, `PRINT_STATEDIR_NONE` (**4**) for
+*this file carries none*, and `1` for *I could not read it at all*. The installer swallows only the
+middle one. One non-zero for both was the shape shipped first, and it reported an unreadable config
+as "carries none to adopt" — sending the operator after `--statedir`, a flag that was not the
+problem. Invariant 12's rule about "I could not answer", in a fifth place.
 
 ⚠️ **The claim is "no NEW nameless instance is created by default", NOT that symmetry is guaranteed.**
 `install.sh mac --instance X --config $DEFAULT_CONFIG` still writes the unnamed file, because
@@ -583,7 +593,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1921 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1934 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
@@ -696,9 +706,10 @@ release; move the tag with `git tag -f -a` and `git push --force origin v<versio
 the GitHub Release, or say plainly that they are not included.
 
 ⚠️ **A release is not installed by pulling.** The Mac loads `agb_mac`/`agb_ops` from
-`~/.local/lib/agbridge/`, not from the checkout, so `sh install.sh mac …` is required — and existing
-rows keep the `agb pane` code they were *created* with until `agb-refresh` re-mints them. Say this in
-the release notes every time; it is the single most common way a fix appears not to work.
+`~/.local/lib/agbridge/`, not from the checkout, so `sh install.sh mac --instance <name> …` is
+required — and existing rows keep the `agb pane` code they were *created* with until `agb-refresh`
+re-mints them. Say this in the release notes every time; it is the single most common way a fix
+appears not to work.
 
 ## Known gaps
 

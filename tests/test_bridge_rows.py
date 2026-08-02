@@ -3792,7 +3792,7 @@ def test_instances_listing_names_a_custom_label_instance(mac, tmp_path):
     """⚠️ A custom label shows the LABEL, and is not called `(default)`.
 
     `install.sh mac --label <anything>` puts no shape rule on a label
-    (`install.sh:369`), so `weird.label` is a real install with no name but its
+    (`install.sh:426`), so `weird.label` is a real install with no name but its
     label. Both wrong answers are asserted against here, because the listing
     gave one of them and the banner used to give the other: "" (this bug) and
     "(default)" (the banner's, fixed in Task 5 --

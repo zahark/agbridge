@@ -59,7 +59,8 @@ It copies three files, mints a `mac_id`, writes the config, loads the launchd jo
 to `myfarm` to learn its hostname so it can map `host_buildbox01 = myfarm` for you. That mapping is
 what makes rows clickable; `--no-probe` skips it if you would rather set it by hand.
 
-**Copy the `mac_id` it prints.**
+**Copy the `next:` command it prints.** It already carries the `mac_id` *and* the statedir, so Step 4
+is a paste rather than something to assemble.
 
 ⚠️ **`--instance` is required — there is no unnamed install.** The name is yours to choose (letters,
 digits, `-`, `_`); it becomes this install's config directory, launchd label and log directory, and
@@ -83,11 +84,17 @@ statedir: adopted /home/you/.agbridge from …/agbridge/buildbox01/config
 
 ```sh
 cd ~/agbridge
-sh install.sh farm --mac-id <the id from step 3>
+sh install.sh farm --mac-id <the id from step 3> --statedir /home/you/.agbridge
 ```
 
 Run this on **every** host that runs agents. It writes the config and merges four hooks into
 `~/.claude/settings.json`.
+
+> The `next:` line Step 3 printed is this command with both values already filled in — it always
+> carries `--statedir`, because the Mac now always has one to pass on. Pasting it is safer than
+> retyping it: the statedir the farm side writes has to be the one the Mac was given, and a
+> disagreement between the two is silent (the bridge reads an empty directory and reports an empty
+> farm).
 
 > ⚠️ It removes any pre-existing `agr` hooks — they do the same job and both firing doubles the
 > per-tool-call cost. The previous file is copied to `~/.claude/settings.json.agb.bak`.
@@ -177,9 +184,13 @@ hostname repeated on every row. `row_fields`, in the **Mac's** config, picks the
 order:
 
 ```sh
-echo 'row_fields = label,cwd:base,pane' >> ~/.config/agbridge/config
+echo 'row_fields = label,cwd:base,pane' >> ~/.config/agbridge/buildbox01/config
 agb-refresh
 ```
+
+(`buildbox01` is the `--instance` name from Step 3 — substitute yours. Every Mac-side key lives in
+*that instance's* config, and one written into `~/.config/agbridge/config` is read by no bridge at
+all on a Mac installed after 0.6.0.)
 
 ```
 agbridge_dev · dev01-container-xterm-032 · /home/zk/agbridge-public · %15    73 chars
@@ -189,8 +200,8 @@ agbridge_dev · %15                                       row_fields = label,pan
 
 Any of `label`, `host`, `cwd`, `pane`, `beat`, `key`, comma-separated, `cwd:base` for the
 directory's basename alone. A name it does not recognise refuses the **whole** list, keeps the
-default, and says why in `~/Library/Logs/agbridge/bridge.err.log` — so "nothing changed at all" is
-the symptom of a typo, and the log is the only place the reason appears.
+default, and says why in `~/Library/Logs/agbridge/buildbox01/bridge.err.log` — so "nothing changed
+at all" is the symptom of a typo, and the log is the only place the reason appears.
 
 Worth knowing before you drop fields:
 
@@ -383,9 +394,10 @@ tail -30 ~/Library/Logs/agbridge/hostb/bridge.err.log
 launchctl print gui/$(id -u)/com.agbridge.hostb | head
 ```
 
-Note the paths: **this instance's** log and **this instance's** label. The plain
-`~/Library/Logs/agbridge/bridge.err.log` belongs to the first machine and will look perfectly
-healthy while this one is broken.
+Note the paths: **this instance's** log and **this instance's** label. Every instance has its own
+pair, so the first machine's — `~/Library/Logs/agbridge/buildbox01/bridge.err.log` and
+`com.agbridge.buildbox01` — will look perfectly healthy while this one is broken. Reading the wrong
+name here is a diagnosis error, not a typo.
 
 ### Step 5 — Make its rows clickable
 
@@ -459,13 +471,18 @@ The instance whose `statedir` matches the one your agents write to is the one th
 
 ## Troubleshooting
 
+> Paths and labels below carry **`buildbox01`**, the `--instance` name from Step 3 — substitute your
+> own. There is no unnamed Mac install to fall back on, so a command run against
+> `~/.config/agbridge/config` or `com.agbridge` is reading a file and a job that a Mac installed
+> after 0.6.0 does not have.
+
 **A config change did nothing** — no error, no warning, the file plainly says what you wrote. Two
 causes, in the order to check them.
 
 **1. The bridge has not re-read it.** Every Mac-side key is read *once*, when the bridge starts:
 
 ```sh
-ls -lT ~/.config/agbridge/config          # when you edited it
+ls -lT ~/.config/agbridge/buildbox01/config            # when you edited it
 ps -o lstart= -p $(pgrep -f 'agb bridge' | head -1)   # when the bridge started
 ```
 
@@ -488,16 +505,16 @@ you have two bridges rendering the same agents twice, which is its own problem: 
 **No rows at all, and `doctor` says `no beat file at all`** — the bridge is not running. On the Mac:
 
 ```sh
-tail -30 ~/Library/Logs/agbridge/bridge.err.log
-launchctl print gui/$(id -u)/com.agbridge | head
+tail -30 ~/Library/Logs/agbridge/buildbox01/bridge.err.log
+launchctl print gui/$(id -u)/com.agbridge.buildbox01 | head
 ```
 
 Most common cause: `agtermctl` is not on the **launchd job's** `PATH`, which is not your login
 `PATH`. Reinstall with `--launch-path "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"`.
 
 **`doctor` is all `[ok]` but no rows appear** — the Mac and the host disagree about the statedir.
-Compare `agb doctor`'s statedir line against `statedir` in the Mac's `~/.config/agbridge/config`;
-they must be the same path.
+Compare `agb doctor`'s statedir line against `statedir` in the Mac's
+`~/.config/agbridge/buildbox01/config`; they must be the same path.
 
 **Rows gone after closing agterm**, or `error: no such session: <uuid>` in the bridge log — agterm
 has forgotten rows the map still names. On the Mac:
@@ -532,16 +549,20 @@ Rows return on the next snapshot with the same identities.
 
 A reboot needs no re-install and no farm-side command. If the prompt comes back reading `[s] shell`
 rather than `[s] split   [d] drawer`, that is unrelated — the Mac is on a pre-0.3.0 build; run
-`install.sh mac` and then `agb-refresh` again.
+`sh install.sh mac --instance buildbox01 …` (the same flags as Step 3, minus `--statedir`, which is
+adopted) and then `agb-refresh` again. A bare `install.sh mac` exits 1 without installing anything.
 
 **Clicking a row says `Could not resolve hostname`** — the `host_<hostname>` mapping is missing.
 Add it to the Mac's config (takes effect on the next click, no restart):
 
 ```sh
-echo 'host_buildbox01 = myfarm' >> ~/.config/agbridge/config
+echo 'host_buildbox01 = myfarm' >> ~/.config/agbridge/buildbox01/config
 ```
 
-For a host reachable only through another, add `jump_host = myfarm` as well.
+It has to be the config of the instance whose bridge renders that row — `agb pane` reads the
+`host_<name>` table through the `--config` in the row's own command, so a line appended to any other
+file is valid, unread, and reports nothing. For a host reachable only through another, add
+`jump_host = myfarm` to the same file.
 
 **`[enter]` says `open terminal failed: missing or unsuitable terminal: <name>`**, then
 `ssh exited 1 -- nothing was attached`. The ssh worked; **tmux** refused, because that host's

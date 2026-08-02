@@ -1420,8 +1420,20 @@ and` half, `None` — the parameter's default — compares unequal and emits a l
 without `normpath` on both sides, a `$HOME` spelled with a trailing slash makes **every default
 install** start re-minting every row.
 
-Three guards exist because their absence is silent rather than loud:
+Four guards exist because their absence is silent rather than loud:
 
+- **`install.sh mac` refuses an install with no `--instance`.** It is a **hard error and not a
+  warning**, because a warning on a *first* install is exactly the one that gets ignored — and what it
+  warned about does not stay warned about: the nameless config, label and log directory outlive the
+  run that printed it, so the asymmetry becomes permanent on that Mac and only the migration under
+  `CHANGELOG.md`'s *Upgrading from ≤ 0.5.0* removes it.
+
+  The refusal sits at the **top of `role_mac`**, beside the other two required flags, and both halves
+  of where it sits are load-bearing: **before any filesystem mutation** (the first is
+  `mkdir -p "$dest"`), so a refused install copies no code, writes no config and renders no plist;
+  and **before `probe_farmhost`**, so it makes no ssh call either. The probe is what `--instance auto`
+  reads a name out of, so refusing ahead of it is what makes *"no name can be invented"* true rather
+  than merely untested — a refusal cannot have asked a machine what it is called.
 - **`--instance` requires `--statedir`, unless that instance's own config already carries one.**
   Falling back to `agb.statedir()` reads the *default* config, so a new instance would inherit the
   first machine's farm path: ssh to the right machine, read the wrong directory, and `agb feed` would

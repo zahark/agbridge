@@ -3411,6 +3411,21 @@ CONFIG_FLAGS = {
 # out as "'I could not answer' is not 'the answer is nothing'".
 PRINT_STATEDIR_ALLOWED = ("--print-statedir", "--config", "--dry-run")
 
+# ⚠️ **"This file carries none" is an ANSWER, and it gets its own exit status.**
+# A raise would make it exit 1 -- the same status as *cannot read the file*,
+# *not UTF-8* and *unknown option* -- and `install.sh`'s `|| statedir=""` would
+# then read all four as "no own statedir" and tell the operator to pass
+# `--statedir` for a config it could not open. That is the failure invariant 12
+# names ("'I could not answer' is not 'the answer is nothing'"), and it is the
+# same four-status shape `agb-refresh`'s `plist_read_ok` exists for.
+#
+# 4, not 1/2/3: 1 is every `AgbError`, `agb.main` answers an unknown command
+# with 2, and `run_ops` answers a known-but-unbuilt command with 3. So a caller
+# can say "4 means the file has none; anything else non-zero is a different
+# failure and must not be swallowed". The explanation still goes to **stderr**,
+# so a human asking directly is told why rather than met with silence.
+PRINT_STATEDIR_NONE = 4
+
 # `--host <hostname>=<ssh-target>`, repeatable: a record's `host` is a hostname,
 # not an ssh alias, and `agb pane` needs the mapping.
 CONFIG_HOST_ARG = "--host"
@@ -3683,6 +3698,13 @@ def parse_config_args(argv):
         # caller reading "the line" would get the other one's and never know:
         # `install.sh` reads a mac-id here and a statedir there, both with the
         # same `value=$(run_agb …)` idiom.
+        #
+        # ⚠️ Checked here rather than left to the loop below, which WOULD also
+        # catch it (`--print-mac-id` is in `CONFIG_FLAGS` and not in
+        # `PRINT_STATEDIR_ALLOWED`). The duplication buys the message alone:
+        # "both own stdout" is the reason, and the loop's "asks for a write,
+        # which it would not perform" would be a false one. Deleting either of
+        # the two silently changes which explanation a caller gets.
         if opts["print_mac_id"]:
             raise agb.AgbError(
                 "install-config: --print-mac-id and --print-statedir both own "
@@ -3690,16 +3712,14 @@ def parse_config_args(argv):
                 "at a time.")
         # Walked off the parser's own tables rather than a written-out list:
         # a hand-kept list silently misses whatever gets added to them next.
-        for name in sorted(list(CONFIG_VALUE_ARGS) + list(CONFIG_FLAGS)
-                           + [CONFIG_HOST_ARG]):
+        # Over the tables' PAIRS, so the `opts` key comes out of the same table
+        # that supplied the name -- re-deriving it from the name would be a
+        # second copy of a mapping already in hand.
+        for name, key in sorted(list(CONFIG_VALUE_ARGS.items())
+                                + list(CONFIG_FLAGS.items())
+                                + [(CONFIG_HOST_ARG, "hosts")]):
             if name in PRINT_STATEDIR_ALLOWED:
                 continue
-            if name == CONFIG_HOST_ARG:
-                key = "hosts"
-            elif name in CONFIG_FLAGS:
-                key = CONFIG_FLAGS[name]
-            else:
-                key = CONFIG_VALUE_ARGS[name]
             if opts[key]:
                 raise agb.AgbError(
                     "install-config: --print-statedir is a read-only query "
@@ -3726,7 +3746,10 @@ def run_install_config(argv, out=None):
     `--print-statedir` is the same channel for the statedir, and is a **pure
     query**: it answers from the parsed file and returns, having written
     nothing. That is what lets `install.sh mac` adopt an existing instance's
-    statedir instead of re-demanding it on every upgrade.
+    statedir instead of re-demanding it on every upgrade. Its statuses are
+    **0** (answered on stdout), **`PRINT_STATEDIR_NONE`** (this file carries
+    none -- an answer, with the reason on stderr) and **1** (an `AgbError`: the
+    file could not be read at all, which is not the same statement).
     """
     opts = parse_config_args(argv)
     if out is None:
@@ -3746,8 +3769,8 @@ def run_install_config(argv, out=None):
         #    by the flag;
         #  * run it after `install_config_values` and a config carrying a
         #    statedir but no `mac_id` raises MAC_ID_MISSING_NOTE instead of
-        #    answering, so a non-zero exit would stop meaning "no own
-        #    statedir" and `install.sh`'s `|| statedir=""` would demand
+        #    answering, so `PRINT_STATEDIR_NONE` would stop being the only way
+        #    to hear "no own statedir" and `install.sh` would demand
         #    `--statedir` for a file that already carries one.
         #
         # Hence: after the parse, before everything else, and `return`.
@@ -3758,12 +3781,18 @@ def run_install_config(argv, out=None):
         # would silently adopt another's directory and report `exit 0`.
         statedir = existing.get("statedir")
         if not statedir:
-            raise agb.AgbError(
-                "install-config: %s carries no statedir of its own%s. Nothing "
-                "is guessed here: the fallback would be whatever the "
+            # `PRINT_STATEDIR_NONE`, never a raise: everything above this point
+            # -- a file that cannot be read, one that is not UTF-8, an option
+            # this `agb` does not know -- exits 1, and a caller that saw one
+            # status for all of them would report "carries no statedir" for a
+            # config it never managed to open. See the constant.
+            sys.stderr.write(
+                "agb: install-config: %s carries no statedir of its own%s. "
+                "Nothing is guessed here: the fallback would be whatever the "
                 "default-path config says, which is another machine's "
-                "directory." % (path, "" if previous is not None
-                                else " (it does not exist)"))
+                "directory.\n" % (path, "" if previous is not None
+                                  else " (it does not exist)"))
+            return PRINT_STATEDIR_NONE
         sys.stdout.write("%s\n" % (statedir,))
         sys.stdout.flush()
         return 0
