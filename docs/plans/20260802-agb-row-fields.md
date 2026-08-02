@@ -143,19 +143,26 @@ def row_title(session, now=None, prefix="", fields=None):
 
 | field | renders | note |
 |---|---|---|
-| `label` | `agbridge_dev` | ⚠️ **`label or key or "?"`**, the full chain `row_title` uses today (`agb_mac:1550`). Not plain `session["label"]` — see below |
+| `label` | `agbridge_dev` | ⚠️ **`label or key or "?"`**, the full chain `row_title` uses today (`agb_mac:1551`). Not plain `session["label"]` — see below |
 | `host` | `dev01-container-xterm-032` | already domain-stripped by `own_host()` |
 | `cwd` | `/home/zk/agbridge-public` | `cwd:base` → `agbridge-public`. ⚠️ `os.path.basename(v.rstrip("/")) or v` — bare `basename` returns `""` for `/home/zk/` and for `/`, silently vanishing the field |
 | `pane` | `%15` | the only thing separating two agents in one tmux session |
 | `beat` | `12m` | **empty unless late** — see decision 6 |
 | `key` | `a9c35465` | first 8 of a **16**-character key; **not** in the default |
 
+⚠️ **A field whose value is missing or empty is DROPPED from the join, not rendered as an empty
+segment.** Today: `host`/`cwd`/`pane` are appended only `if value` (`agb_mac:1552-1555`) and the beat
+only `if age` (`:1556-1558`); `label` alone is unconditional. This rule is invisible in any test
+whose record has every field populated — which `wire()` does — so an implementation that joins
+unconditionally renders `build · box2 · /shared/work/project · ` with a trailing separator and
+passes anyway. It needs its own record and its own mutation.
+
 ⚠️ **`label` keeps all three fallbacks, and getting this wrong breaks two things at once.** Today's
 line is `parts = [str(session.get("label") or session.get("key") or "?")]`. Rendering only
 `session.get("label")` would make the *default* list drop the leading field on a label-less record —
 `host · cwd · pane` where today it is `<key> · host · cwd · pane` — a silent change to the default
 that a byte-identity test on a *full* record cannot see. And `row_title` coerces a non-dict to `{}`
-(`agb_mac:1548-1549`), where the chain's terminal `"?"` is the only thing standing between the
+(`agb_mac:1549-1550`), where the chain's terminal `"?"` is the only thing standing between the
 caller and a title that is nothing but the prefix.
 
 **The parse contract**, mirroring `config_seconds`:
@@ -163,13 +170,14 @@ caller and a title that is nothing but the prefix.
 | value | result |
 |---|---|
 | absent | default |
-| `` / whitespace | default (absent and configured-to-nothing must stay distinguishable) |
+| `` / whitespace | default. ⚠️ **Not** an empty field list — that would be an empty title. (`config_seconds` distinguishes absent from configured-to-nothing because `off` means `0.0` there; here both mean the default, so there is nothing to distinguish and no licence to invent one) |
 | `label,cwd:base,pane` | those three, in that order |
 | ⚠️ `label, cwd:base, pane` | **the same** — each item is stripped |
 | `LABEL,Cwd:Base` | the same — names and modifiers are case-folded |
 | `label,workspace` | **default** + error naming `workspace` and listing the valid names |
 | `label:base` | **default** + error: `:base` is only defined on `cwd` |
 | `cwd:basename`, `cwd:`, `cwd:base:base` | **default** + error: unknown modifier |
+| ⚠️ `label,cwd:base,pane,` / `label,,pane` / `,` | empty items are **skipped**, not rejected. A trailing comma is the typo everyone makes, and decision 4's bluntness is aimed at a *misspelled* field, not at punctuation that names nothing |
 | duplicate (`label,label`) | accepted — harmless, and refusing it is a rule with no failure behind it |
 
 ⚠️ **Per-item whitespace is the most likely first-use failure, and it is silent.**
@@ -185,16 +193,26 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
 - **`[?]` and `[done]` are prefixes, not fields.** Prepended regardless of `row_fields`, because
   `idle` renders as *no glyph* — without the marker a dead row is pixel-identical to a live idle
   one. A cosmetic setting must not switch off a safety property.
-- ⚠️ **The title can never be empty**, and the reachable way in is not the obvious one. It is not a
-  missing label — the `label` field's own chain ends in `"?"`. It is **`row_fields = beat` on a
-  healthy agent**: a valid, parseable, single-field list whose field renders `""` below `BEAT_LATE`.
+- ⚠️ **The title can never be empty**, and the reachable ways in are not the obvious one. It is not
+  a missing label — the `label` field's own chain ends in `"?"`. It is any single-field list whose
+  field is dropped by the omit-empty rule above, and there are **three** routes, not one:
+  - **`row_fields = beat` on a healthy agent** — `beat_age_text` renders `""` below `BEAT_LATE`;
+  - **`row_fields = pane` on a non-tmux agent** — a plain-ssh or session-leader anchor carries no
+    pane (`agb:549` defaults it to `None`, `agb:613-620` construct both without one), and `pane` is
+    exactly the field this plan's Overview argues people will keep;
+  - `row_fields = cwd` on a record without one.
+
   Two distinct failures follow, and neither is loud:
   - `_title` with no prefix returns `False` (`agb_mac:2338-2341`), so **the rename never happens** —
     agterm keeps its own default name on that row, permanently and silently;
   - `_create_row` sends `session new --name ""`.
 
-  So the join needs its own fallback — label, then key — *on top of* the `label` field's chain,
-  and the two must not be confused: only the join-level one is reachable by config.
+  So the join needs its own fallback — ⚠️ **`label or key or "?"`, the same terminal as the field
+  chain** — *on top of* the `label` field's own. Ending it at `key` contradicts this section three
+  paragraphs up: with a non-dict session coerced to `{}` (`agb_mac:1549-1550`) there is no label and
+  no key either, so `label or key` is `""` and the title is the bare prefix. The two chains are not
+  duplication — the field-level one keeps the default byte-identical on a label-less record, the
+  join-level one catches an empty *list*; only the second is reachable by config.
 
 **Where the pieces go** (`agb_mac` at `ba17783`):
 
@@ -249,14 +267,24 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
 - Modify: `tests/test_bridge_rows.py`
 
 - [ ] add `fields=None` to `row_title` (`agb_mac:1540`), defaulting to `ROW_FIELDS_DEFAULT`
+- [ ] ⚠️ rewrite `row_title`'s **own docstring** (`agb_mac:1541`), which states the fixed format
+      `<label> · <host> · <cwd> · <pane> [· <beat age>]`. It is the docstring of the function this
+      change exists to generalise, and it is the one place a stale claim is most likely to be
+      believed. Say the default, not the only possibility — and ⚠️ do not name all four status
+      words while rewriting it (`test_the_status_vocabulary_has_exactly_one_source` walks docstrings)
 - [ ] render each field per the vocabulary table; `cwd:base` via `os.path.basename`
 - [ ] ⚠️ keep the empty-title fallback: label, then key. Never return just the prefix
 - [ ] ⚠️ **no time calls may enter `row_title`** — `test_the_renderer_never_consults_the_macs_own_clock`
       names it explicitly, and every age here is `feed now - beat`, both server-stamped
 - [ ] pass `self.settings.get("row_fields")` from `_create_row` (`:1870`) and `_title` (`:2336`)
 - [ ] ⚠️ write the test that matters most first: **the default renders byte-identically to today**.
-      Assert the exact string, and do it for **two** records — a full one, *and* one with no label,
-      which is the only way to see the `label`-field chain being shortened
+      Assert the exact string, and do it for **four** records, because each catches a different
+      silent change and `wire()`'s default catches only the first:
+      a full one; one with **no label** (the only way to see the `label`-field chain shortened);
+      one with **`pane=None`** (the only way to see an empty field rendered as an empty segment
+      instead of being dropped — a trailing ` · ` that every all-fields-populated test misses); and
+      one with a **late beat** (the only way a change to `beat`'s place in the default is visible,
+      since `wire()`'s default beat renders `""`)
 - [ ] write tests: each field renders what it claims; order is respected (assert a *reordered* list
       produces a different, specified string — not just that all fields are present)
 - [ ] write tests: `cwd:base` shortens; ⚠️ and does not vanish on a trailing slash (`/home/zk/`) or
@@ -266,9 +294,11 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
       test built on the fixture default proves nothing about truncation
 - [ ] write tests: `beat` renders only past `BEAT_LATE` and is absent below it — ⚠️ under a
       **non-default** list, since the two existing beat tests both run the default
-- [ ] ⚠️ write the empty-title tests, and target the case config can actually reach:
-      `row_fields = beat` on a **healthy** record. With a prefix it must still render
-      `[done] <fallback>`; without one it must render a non-empty body, **not** return `False`
+- [ ] ⚠️ write the empty-title tests against **both** reachable routes, not one:
+      `row_fields = beat` on a **healthy** record, and `row_fields = pane` on a record with
+      `pane=None` (a plain-ssh or session-leader agent, which has no pane at all). With a prefix
+      each must still render `[done] <fallback>`; without one each must render a non-empty body,
+      **not** return `False`
 - [ ] ⚠️ write a test that **`[done]` and `[?]` survive an EMPTY-BODY field list**, not merely a
       short one. `row_fields = key` always renders something, so it proves only that a prefix
       survives a short list — the invariant is about the body being empty
@@ -281,7 +311,9 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
 - [ ] mutation-test, each naming its victim: drop the prefix → the safety test; ignore the field
       order → the order test; let the join-level fallback go → the `beat`-only test; ignore `:base`
       → the basename test; drop `fields=` at `_create_row` → the plumbing test's `--name`
-      assertion; drop it at `_title` → the plumbing test's `rename` assertion
+      assertion; drop it at `_title` → the plumbing test's `rename` assertion; ⚠️ **render an empty
+      field as an empty segment instead of dropping it** → the `pane=None` byte-identity record,
+      which is the only test that can see it
 - [ ] run `python3 -m pytest tests/ -q` — must pass before Task 3
 
 ### Task 3: Wire the config through, and warn on a bad value
@@ -302,14 +334,18 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
       `load_rows(settings["rows"], warn)` already tolerates
 - [ ] add `row_fields` to `agb_ops.CONFIG_KEYS` (`:228`)
 - [ ] add a line to the hand-written config blob in `test_parse_config_reads_the_documented_keys`
-      (`tests/test_core.py:211-212`) — it iterates `CONFIG_KEYS` asserting `key in values`, so
+      (`tests/test_core.py:212-213`) — it iterates `CONFIG_KEYS` asserting `key in values`, so
       **adding** the key without the blob line does go red. It is the *removal* mutation that only
       `test_the_documented_key_list_is_pinned_by_name` catches, so add the key to that hardcoded
       set too
 - [ ] write a test that `render_settings` surfaces the parsed fields, and the default when absent
 - [ ] write a test that a bad value produces a warning through the real channel — not just a
       non-None error in the dict. ⚠️ Assert the warning **reaches the warn callable**, or this
-      proves the parser and not the plumbing
+      proves the parser and not the plumbing. ⚠️ And pass a **tmp config**:
+      `bridge_sink(model, {"config": <tmp>}, warn=collector, config={"row_fields": "label,workspace"})`
+      — with `{}` the settings resolve `rows_path(None)` and `load_rows` opens the developer's real
+      `~/.agbridge/rows`, which `tests/test_bridge_rows.py:12` names as one of the file's three
+      load-bearing seams. All three existing `bridge_sink` call sites obey it
 - [ ] mutation-test: drop the key from `CONFIG_KEYS` → the hardcoded test must fail; swallow the
       warning → the plumbing test must fail
 - [ ] run `python3 -m pytest tests/ -q` — must pass before Task 4
@@ -335,12 +371,15 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
       notification switches"*) — this one **does** need an edit, unlike the last plan's identical-
       looking item. That wording covered `notify_on_completed_after` because it *is* a notification
       switch; `row_fields` is not, so the list no longer describes what moves with an instance
-- [ ] ⚠️ **six places state the title format as fixed**, and none is a config table — so a
+- [ ] ⚠️ **eight places state the title format as fixed**, and none is a config table — so a
       config-table-only pass leaves the docs contradicting the feature, silently, because there is
       no doc-consistency test: `docs/design.md:556` (the design authority's own statement),
-      `docs/cookbook.md:145`, `docs/commands.md:432`, `docs/agtermctl.md:70` and `:113`, and
-      `agb_mac:853` (`format_rows`' docstring, *"what a row **is**"*). Reword each to name the
-      default rather than the only possibility
+      `docs/cookbook.md:145` (and the worked sidebar example at `:123-125`), `docs/commands.md:432`,
+      `docs/agtermctl.md:70` and `:113`, `agb_mac:853` (`format_rows`' docstring, *"what a row
+      **is**"*), `agb_mac:1541` (`row_title`'s own — done in Task 2), and `agb_ops:3848` (the
+      comment above `TITLE_SEP`/`valid_label`). Reword each to name the default rather than the
+      only possibility. ⚠️ The label's ban on ` · ` is unaffected and must stay — it is about the
+      separator, not the field list
 - [ ] ⚠️ document the **cross-restart** effect: the first `[?]` paint after a bridge restart shows
       titles built with the *previous* `row_fields`, because `_title` persists the rendered body and
       `_render_stale` uses it before any record has arrived. Self-heals on the next upsert; worth a
@@ -365,10 +404,15 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
 - [ ] `[done]` and `[?]` appear with any field list, including a single-field one
 - [ ] no title is ever empty
 - [ ] `agb doctor` does not report `row_fields` as an unknown key
-- [ ] `row_fields = beat` on a healthy agent still produces a titled row, not a blank one
+- [ ] `row_fields = beat` on a healthy agent, and `row_fields = pane` on a non-tmux agent, both
+      still produce a titled row rather than a blank one
+- [ ] a record missing a field renders no empty segment and no trailing separator
 - [ ] run the full suite: `python3 -m pytest tests/ -q`
 - [ ] confirm `agb` is untouched: `python3 -c 'print(len(open("agb").read()))'` must print
-      **103198**. ⚠️ The guard counts **characters**, not bytes — `wc -c` is the wrong number
+      **103198**. ⚠️ The guard counts **characters**, not bytes — `wc -c` is the wrong number.
+      ⚠️ And it is `< AGB_PARSE_BUDGET` (103200) with a **strict** `<`, so the true headroom is
+      **1 character**, not 2 — `CLAUDE.md:517` currently says 2 and is off by one. This change
+      must not touch `agb` at all
 
 ### Task 6: [Final] `CLAUDE.md` and close out
 
@@ -441,3 +485,32 @@ documented limit.
 **What review did not find**, recorded because absence is information: every anchor was correct, the
 warn seam was real, the task ordering and scope were sound, and the "ignore the field order"
 mutation *was* killed as specified.
+
+### Pass 2 — eight findings, three gating
+
+All re-verified against source. Pass 1's fixes held: every anchor it introduced was right except two
+off-by-ones, every mutation it listed has a live victim, and its thirteen review-table rows contained
+**one** wrong fact (below). The remaining defects are the same shape as always — a rendering rule the
+plan never stated, which made its own flagship test unable to fail the mutation it exists for.
+
+| Finding | Evidence | Change |
+|---|---|---|
+| ⚠️ **The omit-empty rule was never stated**, so the byte-identity test could not fail "render an empty field as an empty segment" | `agb_mac:1552-1555` appends `host`/`cwd`/`pane` only `if value`; `wire()` populates all of them, so a trailing ` · ` passes every specified test | rule added to the vocabulary table; byte-identity goes from two records to **four** (full, label-less, `pane=None`, late beat), each catching a different silent change; the mutation named |
+| "The empty body is reachable **only** via `row_fields = beat`" was **wrong** | a plain-ssh or session-leader anchor carries no pane (`agb:549`, `:613-620`), so `row_fields = pane` is an equally reachable route — and `pane` is the field the Overview argues people keep | claim corrected; the empty-body test now covers both routes |
+| The join-level fallback stopped at `key`, contradicting the plan's own reasoning three paragraphs above | a non-dict session coerces to `{}` (`agb_mac:1549-1550`), so `label or key` is `""` — the bare prefix the section forbids | spelled `label or key or "?"` in both places, with why the two chains are not duplication |
+| The empty **item** was unspecified | a trailing comma is the typo everyone makes, and decision 4's bluntness argues one way while `if not item: continue` gives the other | contract row: empty items are skipped, not rejected — the bluntness is aimed at a misspelled field, not at punctuation naming nothing |
+| Six "fixed format" doc sites were **eight** | `agb_mac:1541` — `row_title`'s **own** docstring, the function this change generalises — and `agb_ops:3848` | both added; the docstring promoted to a Task 2 item |
+| The warn-plumbing test would open the developer's real rows map | `bridge_sink(model, {}, …)` resolves `rows_path(None)`; `tests/test_bridge_rows.py:12` names that seam as load-bearing and all three existing call sites obey it | the test spec now passes a tmp config |
+| The absent-vs-empty note was copied from `config_seconds`, where it is load-bearing, into a table where both map to the same result | nothing to distinguish here — and read as licence it invents an empty field list, i.e. an empty title | reworded |
+| Two anchors off by one | the label chain is `:1551`; the `CONFIG_KEYS` iteration is `:212-213` | corrected |
+
+**Found in passing, and it is live rather than about this plan:** `CLAUDE.md:517` says `agb` has
+**2** characters of headroom. The guard is `len(agb_source) < AGB_PARSE_BUDGET` with a **strict** `<`
+(`tests/test_mac_split.py:382`), so against 103200 the maximum is 103199 and the true headroom is
+**1**. The review said 2 as well; both are off by one. Fixed separately from this plan.
+
+**What pass 2 did not find**, recorded because absence is information: the feature design, the task
+ordering, the scope, the `bridge` fixture's `settings=` seam, the two-argv observability of one
+upsert, `os.path.basename(v.rstrip("/")) or v` on `/` and on trailing slashes, case-folding safety,
+and every one of the ten listed mutations having a real victim. No existing test asserts a full title
+string, so none breaks.
