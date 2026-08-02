@@ -599,37 +599,85 @@ Needs Task 1. Droppable with it (see *Solution Overview*).
 - Modify: `install.sh`
 - Modify: `tests/test_install_pkg.py`
 
-- [ ] record `config_given` at `:447` (initialised at `:318`, because `set -u`)
-- [ ] move the statedir `die` out of `:446` into `role_mac` per Decision 2; **leave `:438`'s
+- [x] record `config_given` at `:447` (initialised at `:318`, because `set -u`)
+- [x] move the statedir `die` out of `:446` into `role_mac` per Decision 2; **leave `:438`'s
       `[ "$role" = mac ]` check exactly where it is**, and comment that the move is only safe because
       of it
-- [ ] adopt via `--print-statedir` against `$SELF/agb`, **only when `config_given = no`** (Decision 1),
+- [x] adopt via `--print-statedir` against `$SELF/agb`, **only when `config_given = no`** (Decision 1),
       re-running `shell_safe` and `absolute` on the adopted value like `:603` does for the mac-id;
       place the block between the `instance:` banner (`:503`) and the dry/real branch (`:505`)
-- [ ] comment that this is **not** a symmetric mirror of the mac-id adoption: that one deliberately
+- [x] comment that this is **not** a symmetric mirror of the mac-id adoption: that one deliberately
       falls back to `$DEFAULT_CONFIG` because sharing an id is correct, and sharing a statedir is the
       exact failure `:446` exists to prevent
-- [ ] update `usage()`'s `--statedir` entry and the second half of the `--instance` entry (`:77`)
+      — ➕ **OUTPUT ORDERING, the open choice Decision 2 handed the implementer: resolution (1),
+      suppress the adoption's `verify_tree` output** (`verify_tree "$python" "$SELF/agb" >/dev/null`).
+      Chosen over "accept the interleave" because accepting it forfeits the exact adjacency the
+      placement was picked to buy, and over "move the `say`" because the `say` is already as close to
+      the banner as it can get — the interleaving line was the *verify*, not the report. It costs
+      nothing an operator needs: the surviving `verified:` line names the tree being **installed**,
+      which is the claim that line makes, and a failure is still loud because `verify_tree` dies on
+      stderr rather than reporting. ⚠️ The redirection is a *reporting* suppression only, so a future
+      `say` added inside `verify_tree` would be swallowed here — said in the comment. ⚠️ **measured**
+      on a `--dry-run` install with adoption: one `verified:` line, and `statedir: adopted …` sits
+      directly under `instance: …`
+- [x] update `usage()`'s `--statedir` entry and the second half of the `--instance` entry (`:77`)
       with the adoption rule — Task 2 owns the "required" half
-- [ ] ⚠️ fix `_instance_args`' docstring (`tests/test_install_pkg.py:1156-1158`), which says
+- [x] ⚠️ fix `_instance_args`' docstring (`tests/test_install_pkg.py:1156-1158`), which says
       `--statedir` *"is **required** by `--instance`"* — false once this task lands
-- [ ] write tests: statedir adopted from the derived config; still **required** for a new instance;
+      — ➕ and the sentence Task 2 deferred here landed too: `mac_args`' docstring now says its pinned
+      `--config` keeps the adoption from firing, so a test written against it directly is silently on
+      the non-adopting branch
+- [x] write tests: statedir adopted from the derived config; still **required** for a new instance;
       still **required** when the existing config has no statedir key; the adopted value is announced
-- [ ] ⚠️ write the Decision 1 test: `--instance hostb --config <the DEFAULT config>` with no
+      — ➕ `test_an_existing_instance_adopts_the_statedir_from_its_own_config` (non-vacuous by
+      construction: without the adoption that argv is *refused*, so there is no exit-0 run to assert
+      anything about), `test_an_instance_whose_own_config_carries_no_statedir_is_still_refused`, and
+      the existing `…without_a_statedir_is_refused_and_installs_nothing` re-stated as the NEW-instance
+      case with the adoption's companion named in its docstring
+- [x] ⚠️ write the Decision 1 test: `--instance hostb --config <the DEFAULT config>` with no
       `--statedir` is **still refused**, with a default config present that carries one — the measured
       hole. ⚠️ **measured: the existing suite does not cover this** — dropping the `config_given`
       condition leaves the failure set unchanged, so without this test *and* its mutation-check the
       guard ships vacuous
-- [ ] write a test that an adopted statedir is the instance's own, never the default's — both files
+      — ➕ `test_an_instance_pointed_at_another_config_still_needs_a_statedir`, whose second half puts
+      the **same content** at the DERIVED path and asserts it *is* adopted. That is what makes the
+      first half a statement about `--config` having been typed rather than about the file; the
+      plan's warning is confirmed exactly — mutation (c) below fails this test and **only** this test
+- [x] write a test that an adopted statedir is the instance's own, never the default's — both files
       present, different values
-- [ ] write a test that a **refused** install runs no `agb` against `$dest` — the adoption reads
+      — ➕ and a second one the mutation-check turned out to need:
+      `test_a_new_instance_never_inherits_the_default_configs_statedir`. "Both files present" cannot
+      see the symmetric-mirror mistake at all (the loop finds the instance's own first and stops), so
+      the assertable case is a **new** instance with only the default config present. Its non-vacuity
+      is that the *same run* reads that *same file* for the mac-id
+- [x] write a test that a **refused** install runs no `agb` against `$dest` — the adoption reads
       `$SELF/agb`, and a test that let it read a copied tree would assert the wrong file
-- [ ] write `:644`'s successor per Decision 4 — subject: **the hint carries the adopted statedir**,
+      — ➕ spelled as an ORDER assertion (`test_the_statedir_is_adopted_from_the_installers_own_tree`):
+      `$dest/agb` does not exist until the `copied:` line, so `statedir: adopted` appearing *before*
+      it is positive evidence about which file was read, where "`$dest` is absent after a refusal" is
+      only evidence that nothing ran at all. Both are asserted, the second in the refusal tests
+- [x] write `:644`'s successor per Decision 4 — subject: **the hint carries the adopted statedir**,
       via `_instance_args(mac_args, **{"--statedir": None})` against a config seeded at the derived
       path by the `instance_config` fixture. Not "the hint always carries one" — that is `:626`'s
-- [ ] **mutation-check each guard separately**: let a new instance inherit a statedir; let the
+      — ➕ `test_the_printed_farm_command_carries_the_adopted_statedir`; the deletion note left in
+      Task 2 now names it, so neither half of the two-task replacement reads as a bare deletion
+- [x] **mutation-check each guard separately**: let a new instance inherit a statedir; let the
       missing-key case pass; **drop the `config_given` condition**
-- [ ] `sh -n install.sh`; run tests — must pass before Task 4
+      — ➕ all three done, in-memory snapshot restored and sha256-verified, never `git checkout`.
+      Each anchor asserted unique and each mutated file re-read before running, so a no-op mutation
+      cannot read as a pass:
+      (a) fall back to `$DEFAULT_CONFIG` (the symmetric-mirror mistake) → **1 failure**,
+      `test_a_new_instance_never_inherits_the_default_configs_statedir`;
+      (b) delete the `[ -n "$statedir" ] || die` → 4 failures, including
+      `test_an_instance_whose_own_config_carries_no_statedir_is_still_refused`;
+      (c) drop `[ "$config_given" = no ]` → **1 failure**,
+      `test_an_instance_pointed_at_another_config_still_needs_a_statedir`.
+      (a) and (c) each hang on a single named test, which is the plan's measured warning reproduced:
+      neither was covered before this task. ⚠️ The `__pycache__` hazard from Task 1 does **not** apply
+      to these — `install.sh` is re-read by `/bin/sh` every run — but the driver drops the cache
+      anyway, since each run shells out through importlib-loaded siblings
+- [x] `sh -n install.sh`; run tests — must pass before Task 4 — ➕ **re-measured: 1913 baseline →
+      1920** with the 7 new tests; `sh -n install.sh` clean; `git diff -- agb` empty
 
 
 ### Task 4: Verify acceptance criteria

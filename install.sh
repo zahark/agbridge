@@ -75,12 +75,17 @@ mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/<name>/config wit
   --instance <name>          REQUIRED. Every Mac-side instance is named, so
                              `agb instances` can say what exists and no command
                              has to guess which one you meant. Its own config,
-                             label and logs live under <name>. Requires
-                             --statedir; mac only.
+                             label and logs live under <name>. Needs
+                             --statedir the FIRST time; a re-install reads it
+                             back out of that instance's own config. mac only.
                              `auto` reads the name off --feed-host instead
   --feed-host <target>       ssh target of the farm box running `agb feed`  (required)
   --agb-remote-path <path>   absolute path of `agb` on the farm             (required)
-  --statedir <path>          farm-side statedir            (default: agb's own default)
+  --statedir <path>          farm-side statedir. Required for a NEW instance;
+                             adopted from that instance's own config on a
+                             re-install -- but never when --config is also
+                             given, since that file may belong to another
+                             instance and its statedir is another disk
   --remote-python <path>     absolute farm-side interpreter        (default /bin/python3)
   --jump-host <target>       ssh jump host for machine #3
   --host <name>=<target>     ssh target for a record's host; repeatable
@@ -326,6 +331,12 @@ load=yes; hooks=yes; dry=no; probe=yes; bindir=""; wrapper=yes; instance=""
 # `probe_farmhost` reads it before it writes it (the once-only guard), and
 # `set -u` would kill the script on the unset name rather than ask the question.
 farmhost=""
+# Whether `--config` was TYPED, as opposed to derived from `--instance`. Set
+# where the derivation happens, read once in `role_mac` (the statedir
+# adoption). Initialised here for the same reason as `$farmhost`: the farm role
+# never reaches the line that sets it, and under `set -u` an unset name is a
+# dead script rather than a `no`.
+config_given=no
 
 # A value must be PRESENT and NON-EMPTY. ⚠️ The second half is not pedantry:
 # `--config "$cfg"` with `$cfg` unset expands to one empty argument, so the
@@ -450,15 +461,25 @@ if [ -n "$instance" ]; then
     # farm-side reader ever opens and report success, which is the silent
     # no-op class this tool exists to remove.
     [ "$role" = mac ] || die "--instance is for the mac role only: nothing on the farm reads a per-instance config (agb hook and agb status-line resolve ~/.config/agbridge/config and nothing else), so 'install.sh farm --instance $instance' would write a config nothing opens and report success"
-    # And it REQUIRES --statedir. Without one, `agb install-config` falls back
-    # to `agb.statedir()`, which reads the DEFAULT config -- so a second
-    # instance would silently inherit the FIRST machine's farm path: ssh to the
-    # right machine, look at the wrong directory. `agb feed` would then create
-    # that directory over there and report an empty farm for ever. That is the
-    # failure `bridge_settings`' required-statedir rule exists to prevent,
-    # arriving by the one route that rule cannot see.
-    [ -n "$statedir" ] || die "--instance $instance needs --statedir: a second machine shares no disk with the first, and without an explicit statedir this instance would inherit the default config's one -- ssh to the right machine and read the wrong directory, with an empty farm reported for ever"
-    [ -n "$config" ] || config="$DEFAULT_CONFIG_DIR/$instance/config"
+    # ⚠️ The `--statedir` requirement USED to be the next line. It lives in
+    # `role_mac` now, after the adoption that can satisfy it -- and the move is
+    # safe only because of the check immediately above: `--instance` is refused
+    # outright for the farm role, so there is no argv in which a statedir rule
+    # inside `role_mac` fails to run for an instance that has one. Keep that
+    # check HERE. Moving it too would make the requirement mac-only by
+    # accident rather than by construction.
+    #
+    # ⚠️ WHETHER `--config` was TYPED, recorded at the line that erases the
+    # difference: below this point `$config` is one string, and a derived path
+    # and an explicitly-passed one are spelled identically. `role_mac` adopts a
+    # statedir only from the config `--instance` DERIVED, because
+    # `--instance hostb --config <the other cluster's config>` is a legal shape
+    # and adopting through it would hand hostb's bridge the other cluster's
+    # directory -- ssh to the right machine, read the wrong disk, which is the
+    # one failure the statedir rule exists to prevent. This flag is the only
+    # surviving evidence of which of the two `$config` is.
+    if [ -n "$config" ]; then config_given=yes
+    else config="$DEFAULT_CONFIG_DIR/$instance/config"; fi
     [ -n "$logdir" ] || logdir="$DEFAULT_LOGDIR/$instance"
     [ -n "$label" ] || label="$DEFAULT_LABEL.$instance"
 fi
@@ -533,6 +554,69 @@ role_mac() {
     if [ -n "$instance" ]; then
         say "instance: $instance -- label $label, config $config"
     fi
+
+    # ⚠️ HERE -- after the header, before the first filesystem mutation
+    # (`mkdir -p "$dest"` below) -- and NOT beside the `--instance` sugar up
+    # top, where the requirement it satisfies used to live. Two reasons, and
+    # both are hard errors rather than style:
+    #
+    #   * `$installed` does not exist yet up there. It is assigned in the two
+    #     branches below, so under `set -u` naming it earlier aborts the script
+    #     on an unset variable instead of falling back to anything;
+    #   * moving the rule past `installed=` instead would put it after
+    #     `mkdir -p "$dest"`, and a refused install would leave a half-made
+    #     tree behind. Refusals in this script write nothing.
+    #
+    # So it runs against `$SELF/agb` -- the tree this script was invoked from,
+    # proved to exist for all three files before role dispatch, and exactly
+    # what the `--dry-run` branch below already runs. `$python` is resolved
+    # before role dispatch too, so `run_agb` is usable this early.
+    #
+    # ⚠️ NOT a symmetric mirror of the mac-id adoption further down, and the
+    # asymmetry is the point. That one falls back to `$DEFAULT_CONFIG` on
+    # purpose: one Mac has one identity, so sharing an id across instances is
+    # the truth. Sharing a STATEDIR is the precise failure the requirement
+    # below exists to prevent -- two clusters share no disk, so the default
+    # config's path names a directory this instance's farm cannot see, and
+    # `agb feed` would create it over there and report an empty farm for ever.
+    # Hence one candidate here, never a loop, and only when `--config` was not
+    # typed (`$config_given`): an explicit `--config` may name any file at all,
+    # including another instance's, and keeps today's behaviour exactly.
+    #
+    # `if ... then ... fi`, never `[ -n "$statedir" ] && say ...`: a trailing
+    # AND-list that evaluates false takes the whole compound's status, which is
+    # one `set -e` reading away from a silent `exit 1` with no message at all.
+    #
+    # `|| statedir=""` catches a NON-ZERO EXIT, like the mac-id loop: with no
+    # statedir of its own (or no file at all) `--print-statedir` RAISES rather
+    # than answering empty, and an unguarded command substitution under `set -e`
+    # would abort the install of a first instance rather than ask for the flag.
+    # `verify_tree` first for the other half of that: a `$SELF` tree that cannot
+    # run `agb` at all would otherwise read as "this config carries no
+    # statedir", and the operator would be told to pass `--statedir` for an
+    # instance that already records one. Its own output is suppressed because
+    # the `verified:` line below names the tree being INSTALLED, and two of them
+    # -- with the first landing between `instance:` and `statedir:` -- is worse
+    # than none here; a failure is still loud, since `verify_tree` dies on
+    # stderr rather than reporting.
+    if [ -z "$statedir" ] && [ "$config_given" = no ]; then
+        verify_tree "$python" "$SELF/agb" >/dev/null
+        statedir=$(run_agb "$python" "$SELF/agb" install-config \
+                           --config "$config" --print-statedir \
+                       2>/dev/null) || statedir=""
+        if [ -n "$statedir" ]; then
+            # The top-level `shell_safe`/`absolute` pair ran before this value
+            # existed, so it would reach the config and the farm hint unchecked.
+            # Defence in depth -- `check_config_value` vetted it on the way in
+            # -- and exactly why the adopted mac-id is re-checked below.
+            shell_safe "the adopted statedir" "$statedir"
+            absolute   "the adopted statedir" "$statedir"
+            say "statedir: adopted $statedir from $config"
+        fi
+    fi
+    # Moved from the `--instance` sugar block above; see the comment there for
+    # why the move is safe and why `[ "$role" = mac ]` stayed behind.
+    [ -n "$statedir" ] || die "--instance $instance needs --statedir: a second machine shares no disk with the first, and without an explicit statedir this instance would inherit the default config's one -- ssh to the right machine and read the wrong directory, with an empty farm reported for ever. $config carries none to adopt (and with --config given, nothing is adopted at all: that file may belong to another instance)"
 
     if [ "$dry" = yes ]; then
         say "dry run:  would copy $FILES to $dest"

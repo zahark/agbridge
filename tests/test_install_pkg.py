@@ -695,6 +695,14 @@ def mac_args(tmp_path):
     to `com.agbridge.box2` -- and with it the plist FILENAME, which is why a
     handful of tests name `com.agbridge.box2.plist` rather than
     `com.agbridge.plist`.
+
+    ⚠️ And because `--config` is pinned here, it is **never** the path
+    `--instance` would have derived -- so `install.sh`'s statedir adoption
+    cannot fire for this fixture, by design. That is convenient (every test
+    below keeps saying exactly what statedir it means) but it is also a trap:
+    a test written against `mac_args` directly is silently exercising the
+    *non*-adopting branch. The adoption tests go through `_instance_args`,
+    which drops `--config`.
     """
     def build(**over):
         args = {
@@ -884,12 +892,12 @@ def test_the_printed_farm_command_carries_the_statedir_the_mac_recorded(
 # Its own argv, `mac_args(**{"--statedir": None})`, is *refused*, so it cannot
 # be re-pointed either.
 #
-# ⚠️ Its successor lands in the NEXT task, so the replacement spans two: the
-# subject that remains is *the hint carries the ADOPTED statedir* -- a value
-# that never appeared on the argv, which
-# `test_the_printed_farm_command_carries_the_statedir_the_mac_recorded` above
-# cannot distinguish from a forwarded one. Until that lands, the hint's
-# `--statedir` is covered only for values passed explicitly.
+# ⚠️ Its successor landed in the NEXT task, so the replacement spans two:
+# `test_the_printed_farm_command_carries_the_adopted_statedir`, down in the
+# `--instance` section (it needs `_instance_args`). The subject that remains is
+# *the hint carries the ADOPTED statedir* -- a value that never appeared on the
+# argv, which `test_the_printed_farm_command_carries_the_statedir_the_mac_recorded`
+# above cannot distinguish from a forwarded one.
 
 
 FARM_SIDE_OPTIONS = {
@@ -1428,8 +1436,16 @@ def _instance_args(mac_args, name="hostb", **over):
     ⚠️ `--config` and `--log-dir` are dropped, because deriving those two is the
     feature: a test that kept the fixture's pinned values would assert the sugar
     while overriding it. `--launch-agents` and `--statedir` stay pinned -- the
-    first keeps the plist inside the test's tree, the second is *required* by
-    `--instance` and pinning it is what the refusal test removes.
+    first keeps the plist inside the test's tree, the second is what the refusal
+    test removes.
+
+    ⚠️ `--statedir` is **not** unconditionally required by `--instance` any
+    more, and this docstring used to say it was. It is required for a *new*
+    instance; a re-install adopts the value out of that instance's own config.
+    Dropping `--config` is what arms that adoption at all -- `install.sh` reads
+    a statedir back only from the config `--instance` derived, so a test built
+    on `mac_args` directly (whose `--config` is pinned into `tmp_path`) is
+    silently exercising the non-adopting branch.
     """
     args = {"--config": None, "--log-dir": None, "--instance": name}
     args.update(over)
@@ -1592,13 +1608,212 @@ def test_an_instance_without_a_statedir_is_refused_and_installs_nothing(
     rule exists to prevent, arriving by the one route that rule cannot see.
 
     Refused before anything is copied, so a failed install leaves no half-tree.
+
+    ⚠️ This is the NEW-instance case, and it is the one the adoption below
+    cannot rescue: there is no config at the derived path to read a statedir
+    out of, so the flag is the only source there is. Its companion --
+    `test_an_existing_instance_adopts_the_statedir_from_its_own_config` --
+    differs in exactly one thing, the presence of that file.
     """
+    assert not _instance_config_path(fake_home).exists()   # nothing to adopt
     code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
     assert code != 0
     assert "--statedir" in err
+    assert "adopted" not in out
     assert not _instance_config_path(fake_home).exists()
     assert not (tmp_path / "dest").exists()
     assert not (tmp_path / "agents").exists()
+
+
+# ---------------------------------------------------------------------------
+# ...and an EXISTING instance reads it back out of its own config
+#
+# The re-typing hazard is not hypothetical: the owner's own migration put a
+# `feed_host` typo into one instance because every upgrade meant retyping the
+# farm-side flags. `--statedir` is the one of them whose wrong value is silent
+# -- the bridge connects to the right machine and reads the wrong directory --
+# so it is the one worth reading back rather than re-asking for.
+#
+# ⚠️ Adopted ONLY from the config `--instance` derived. `--instance hostb
+# --config <another instance's config>` is a legal shape (documented, not
+# closed), and adopting through it would hand hostb's bridge the other
+# cluster's disk: the precise failure the requirement exists to prevent,
+# arriving by the one route the requirement cannot see.
+# ---------------------------------------------------------------------------
+
+
+def test_an_existing_instance_adopts_the_statedir_from_its_own_config(
+        run_sh, mac_args, instance_config, fake_home, agb):
+    """The ergonomic point of the whole change: a re-install of an instance
+    that already exists does not re-demand the one flag whose wrong value is
+    silent.
+
+    Non-vacuous by construction, and that is why the argv passes no
+    `--statedir` at all: without the adoption this install is *refused* and
+    there is no exit-0 run to assert anything about.
+    """
+    config = instance_config("hostb",
+                             "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code == 0, err
+    # Announced, not silently used: which directory a bridge ends up watching
+    # is exactly what an operator re-running an installer needs told.
+    assert "statedir: adopted /shared/HOSTB from %s" % (config,) in out
+    assert agb.read_config(config)["statedir"] == "/shared/HOSTB"
+
+
+def test_an_instance_whose_own_config_carries_no_statedir_is_still_refused(
+        run_sh, mac_args, instance_config, tmp_path, fake_home):
+    """A config that exists is not a config that answers.
+
+    `--print-statedir` reports the file's **own** value and raises when there
+    is none, rather than falling through to `agb.statedir()` -- which reads the
+    *default-path* config, i.e. the other cluster's directory. So a half-written
+    instance config gets the flag demanded of it, not another machine's disk.
+
+    Its companion is the test above: same argv, same instance, and the only
+    difference is whether that file carries a `statedir` line.
+    """
+    instance_config("hostb", "mac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "--statedir" in err
+    assert "adopted" not in out
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+
+
+def test_a_new_instance_never_inherits_the_default_configs_statedir(
+        run_sh, mac_args, instance_config, tmp_path, fake_home):
+    """⚠️ NOT a mirror of the mac-id adoption, which probes the default config
+    second on purpose.
+
+    One Mac has one identity, so sharing a `mac_id` across instances is the
+    truth; sharing a STATEDIR is the failure -- two clusters share no disk, so
+    the default config's path names a directory this instance's farm cannot
+    see, `agb feed` creates it over there, and the farm reads as empty for
+    ever. So the statedir adoption has exactly one candidate and never a loop.
+
+    The non-vacuity is the second half: the very same run reads that very same
+    file for the mac-id, so "the statedir did not come from it" is a statement
+    about the rule and not about an unreadable file.
+    """
+    instance_config(None, "statedir = /shared/DEFAULT\nmac_id = mac-0001\n")
+    assert not _instance_config_path(fake_home).exists()   # a NEW instance
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "--statedir" in err
+    assert "/shared/DEFAULT" not in out
+    assert not (tmp_path / "dest").exists()
+
+    # Same argv plus the flag: the install succeeds and the mac-id adoption
+    # reaches into that default config, which is what proves it was reachable
+    # and parseable all along.
+    code, out, err = run_sh(_instance_args(mac_args))
+    assert code == 0, err
+    assert "adopted mac-0001 from" in out
+    assert "adopted /shared/DEFAULT" not in out
+
+
+def test_an_instance_pointed_at_another_config_still_needs_a_statedir(
+        run_sh, mac_args, instance_config, tmp_path, fake_home, agb):
+    """⚠️ The measured hole, and the reason the adoption is conditional at all.
+
+    `--instance hostb --config ~/.config/agbridge/config` is legal today and
+    this plan does not close it -- `--instance` only *defaults* `$config`. A
+    naive adoption reads whatever `$config` names, so this argv would report
+    `statedir: adopted /shared/DEFAULT` and exit 0: a bridge to hostb's machine
+    reading the FIRST cluster's directory, which is the exact failure the
+    requirement exists to prevent.
+
+    So the rule is about whether `--config` was **typed**, not about which file
+    it names -- and the second half here is what makes that assertable rather
+    than a coincidence of the fixture.
+    """
+    default = instance_config(
+        None, "statedir = /shared/DEFAULT\nmac_id = mac-0001\n")
+    code, out, err = run_sh(_instance_args(
+        mac_args, **{"--statedir": None, "--config": default}))
+    assert code != 0
+    assert "--statedir" in err
+    assert "adopted" not in out
+    assert "/shared/DEFAULT" not in out
+    assert not (tmp_path / "dest").exists()
+
+    # Non-vacuity, and the whole subject: the SAME content at the DERIVED path
+    # is adopted. Drop the "was --config typed" condition and the first half
+    # above starts succeeding with the other cluster's directory -- which is
+    # what this second half turns into a named failure.
+    instance_config("hostb", "statedir = /shared/DEFAULT\nmac_id = mac-0001\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code == 0, err
+    assert "statedir: adopted /shared/DEFAULT" in out
+
+
+def test_the_adopted_statedir_is_the_instances_own_never_the_defaults(
+        run_sh, mac_args, instance_config, fake_home, agb):
+    """Both files present, holding **different** statedirs, so the answer
+    cannot be right by coincidence -- the shape `install_config_values`' own
+    `or agb.statedir()` fallback would get wrong, and report `exit 0` doing
+    it."""
+    instance_config(None, "statedir = /shared/DEFAULT\nmac_id = mac-0001\n")
+    named = instance_config("hostb",
+                            "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code == 0, err
+    assert "adopted /shared/HOSTB" in out
+    assert "/shared/DEFAULT" not in out
+    assert agb.read_config(named)["statedir"] == "/shared/HOSTB"
+
+
+def test_the_statedir_is_adopted_from_the_installers_own_tree(
+        run_sh, mac_args, instance_config, tmp_path):
+    """⚠️ It reads `$SELF/agb`, never `$dest/agb`.
+
+    A refused install must write nothing, so the read has to happen before the
+    three files are copied -- and `$dest/agb` does not exist until the `copied:`
+    line, so the ORDER of the two lines is the assertion. A test that let the
+    adoption read a copied tree would be asserting the wrong file, and would
+    still pass on every run where the two trees happen to agree.
+
+    The companion for the other direction is
+    `test_an_instance_without_a_statedir_is_refused_and_installs_nothing`,
+    which asserts `$dest` is never created at all when the adoption finds
+    nothing.
+    """
+    instance_config("hostb", "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code == 0, err
+    lines = out.splitlines()
+
+    def first(prefix):
+        hits = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+        assert hits, (prefix, out)
+        return hits[0]
+
+    assert first("statedir: adopted") < first("copied:")
+    assert (tmp_path / "dest" / "agb").exists()      # ...and it really did copy
+
+
+def test_the_printed_farm_command_carries_the_adopted_statedir(
+        run_sh, mac_args, instance_config):
+    """⚠️ The successor to `…omits_the_statedir_when_none_was_given`, deleted
+    with the refusal in the previous task.
+
+    Its subject is NOT "the hint always carries `--statedir`" --
+    `test_the_printed_farm_command_carries_the_statedir_the_mac_recorded`
+    already asserts that, with the flag passed explicitly. This one is about a
+    value that never appeared on the argv at all, which that test cannot tell
+    apart from a forwarded one. It matters because the hint is what gets
+    pasted onto every farm host of the cluster: a hint carrying the wrong
+    statedir installs hooks against a directory the bridge never looks at, and
+    the feed reports an empty farm for ever.
+    """
+    instance_config("hostb", "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code == 0, err
+    argv = _farm_hint(out)
+    assert argv[argv.index("--statedir") + 1] == "/shared/HOSTB"
 
 
 @pytest.mark.parametrize("name", ["../../evil", "a/b", ".hidden", "-x",
