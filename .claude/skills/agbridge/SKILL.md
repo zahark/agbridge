@@ -295,12 +295,14 @@ agb-refresh            # existing rows keep the `agb pane` code they were CREATE
 
 ### Start an agent so it gets a row
 
-A row appears on the first **hook**, not at launch, and click-to-attach needs a **named tmux
-session**:
+`agb-claude` mints the row **before Claude starts**, so it is there immediately — even in a
+directory Claude has not been trusted in, where it sits on the trust prompt and would otherwise
+never fire a hook at all. Click-to-attach needs a **named tmux session**, which is the other half
+of what this wrapper is for:
 
 ```sh
 agb-claude my-task            # starts Claude Code in tmux session "my-task"
-agb-claude -d my-task         # detached, with a greeting so the row appears immediately
+agb-claude -d my-task         # detached; the row is there, no prompt is sent
 agb-claude work -- --resume <id>    # anything after -- goes to claude
 ```
 

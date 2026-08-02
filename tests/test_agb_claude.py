@@ -31,7 +31,14 @@ def wrapper(tmp_path):
         "case \"$1\" in has-session) exit ${AGBC_HAS_SESSION:-1} ;; esac\n"
         "exit 0\n")
     (binder / "claude").write_text("#!/bin/sh\nexit 0\n")
-    for name in ("tmux", "claude"):
+    # An `agb` that records being called. The wrapper must NEVER reach it: the
+    # pre-mint belongs inside the new session, where the pane anchor is right.
+    agb_log = tmp_path / "agb.log"
+    (binder / "agb").write_text(
+        "#!/bin/sh\n"
+        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; }"
+        " >> \"" + str(agb_log) + "\"\nexit 0\n")
+    for name in ("tmux", "claude", "agb"):
         os.chmod(str(binder / name), 0o755)
 
     class Wrapper(object):
@@ -60,6 +67,12 @@ def wrapper(tmp_path):
         def new_session(self):
             return [c for c in self.calls() if "new-session" in c]
 
+        def agb_calls(self):
+            if not agb_log.exists():
+                return []
+            return [line.split("\037")[:-1]
+                    for line in agb_log.read_text().splitlines() if line]
+
     return Wrapper()
 
 
@@ -75,7 +88,13 @@ def test_passthrough_args_come_after_claude_not_before(wrapper, inside):
     """
     wrapper.run(["work", "--", "--resume", "abc123"], inside_tmux=inside)
     argv = wrapper.new_session()[0]
-    assert argv[argv.index("claude") + 1:] == ["--resume", "abc123"]
+    # The command tmux runs is now `sh -c <premint> agb-claude <args...>`, so
+    # the passthrough sits after the inner shell's $0 rather than after the
+    # literal word `claude`. The property is unchanged and is the one that
+    # actually broke once: anything placed BEFORE the command is read by tmux
+    # as its own option or as the thing to run.
+    assert argv[-3:] == ["agb-claude", "--resume", "abc123"]
+    assert argv.index("sh") < argv.index("agb-claude"), argv
 
 
 @pytest.mark.parametrize("inside", [False, True])
@@ -136,15 +155,20 @@ def test_names_tmux_cannot_address_are_rewritten(wrapper):
 # ---------------------------------------------------------------------------
 
 def test_detach_starts_the_session_in_the_background(wrapper):
-    """A row appears on the first HOOK, not at launch, so a detached session
-    with nothing typed into it stays invisible. `-d` hands claude an opening
-    prompt for exactly that reason."""
+    """`-d` returns immediately, and the row no longer waits on a prompt.
+
+    It used to hand claude an opening "hi" purely so a hook would fire and the
+    row would exist. The session's own shell mints the row now, so a detached
+    start spends no turn and no API call unless a greeting was actually asked
+    for -- and, more importantly, a row appears even when claude never gets as
+    far as a hook.
+    """
     code, out, _err = wrapper.run(["-d", "work"])
     assert code == 0
     argv = wrapper.new_session()[0]
     assert "-d" in argv                      # tmux's detach flag
-    assert argv[-1] == "hi"                  # the prompt claude is given
-    assert argv[argv.index("claude") + 1] == "hi"
+    assert argv[-1] == "agb-claude"          # nothing after the inner $0
+    assert "hi" not in argv
     assert "detached" in out
 
 
@@ -184,3 +208,88 @@ def test_greet_needs_a_value(wrapper):
     code, _out, err = wrapper.run(["-d", "work", "--greet"])
     assert code != 0
     assert "needs a value" in err
+
+
+# ---------------------------------------------------------------------------
+# the pre-mint: the row exists before claude does
+# ---------------------------------------------------------------------------
+# ⚠️ Every property below was measured before it was written, and each one is
+# load-bearing in a way that is invisible from reading the line. Getting any of
+# them wrong yields TWO rows instead of one -- a stranded marker plus claude's
+# own -- which is exactly the collision `agb-ralphex` has to use a separate tmux
+# session to avoid.
+
+def _premint(argv):
+    """The inner `sh -c` script tmux is told to run."""
+    for word in argv:
+        if "agb hook" in word:
+            return word
+    return ""
+
+
+@pytest.mark.parametrize("args", [["work"], ["-d", "work"],
+                                  ["work", "--", "--model", "opus"]])
+def test_every_launch_path_mints_the_row_first(wrapper, args):
+    """Three branches start a session -- detached, inside tmux, and plain -- and
+    a pre-mint missing from any one of them is a row that silently never
+    appears on that path."""
+    wrapper.run(args)
+    argv = wrapper.new_session()[0]
+    assert "agb hook" in _premint(argv), argv
+
+
+def test_the_premint_runs_inside_the_new_session(wrapper):
+    """The anchor is (host, tmux server pid, %PANE). Hooking from the CALLER's
+    pane would mint a row for the caller's pane -- a row pointing at the wrong
+    terminal, which is worse than no row at all."""
+    wrapper.run(["work"])
+    argv = wrapper.new_session()[0]
+    # The hook is part of the command tmux is asked to RUN...
+    assert "new-session" in argv
+    assert "agb hook" in _premint(argv)
+    # ...and the wrapper never runs `agb` itself. This is the assertion that
+    # matters: hooking here would be the obvious simplification, it would
+    # appear to work, and every row would point at the terminal you launched
+    # from instead of the one the agent is in.
+    assert wrapper.agb_calls() == [], wrapper.agb_calls()
+
+
+def test_the_premint_carries_its_own_pid_so_claude_adopts_the_row(wrapper):
+    """`exec` preserves BOTH pid and starttime, so the identity the shell
+    records IS claude's a moment later, and `bind_key` adopts rather than
+    minting a second key.
+
+    Two ways to get this wrong, both of which produce a stranded row: drop the
+    `exec` (claude becomes a child with a different pid), or drop
+    `AGB_AGENT_PID=$$` (the walk finds no agent, the entry is written with no
+    pid, and nothing but `agb prune` can ever remove it if claude fails to
+    start).
+    """
+    wrapper.run(["work"])
+    script = _premint(wrapper.new_session()[0])
+    assert "AGB_AGENT_PID=$$" in script, script
+    assert "exec claude" in script, script
+
+
+def test_the_premint_state_is_completed_not_active(wrapper):
+    """A session sitting at an empty prompt is waiting for you, which is what
+    the `completed` glyph means. `active` would claim it is working and blink a
+    transition that never happened.
+
+    It also raises no banner: the finished-turn banner measures from a
+    preceding `active`, and a freshly minted key has none.
+    """
+    wrapper.run(["work"])
+    script = _premint(wrapper.new_session()[0])
+    assert "hook completed" in script, script
+    assert "hook active" not in script, script
+
+
+def test_a_broken_agb_costs_a_row_and_never_a_claude(wrapper):
+    """Best-effort by construction. `;` rather than `&&`, so a missing or
+    failing `agb` still reaches `exec claude` -- the wrapper's job is to start
+    an agent, and a sidebar row is not worth refusing to."""
+    wrapper.run(["work"])
+    script = _premint(wrapper.new_session()[0])
+    assert "&&" not in script, script
+    assert script.index("agb hook") < script.index("exec claude")

@@ -1057,27 +1057,46 @@ tmux session**, which is what makes the resulting row attachable.
 | Argument | Default | Meaning |
 |---|---|---|
 | `name` | the current directory's name | tmux session name. `.`, `:` and spaces become `-`, because tmux cannot address them as a target |
-| `-d`, `--detach` | off | start it in the background and return immediately, with the row already showing |
-| `--greet <text>` | `hi` | the opening prompt `-d` gives Claude. Refused without `-d`, where it would be silently ignored |
+| `-d`, `--detach` | off | start it in the background and return immediately. The row is there either way |
+| `--greet <text>` | none | an opening prompt for `-d` to send. **Not sent by default** — the row no longer needs one. Refused without `-d`, where it would be silently ignored |
 | `--` | — | everything after it is passed to `claude` untouched. **Required for anything starting with `-`**: `agb-claude --resume <id>` is refused, `agb-claude work -- --resume <id>` is not |
 
-### `-d`, and why it needs a greeting
+### The row is minted before Claude starts
 
-A row appears on the first **hook**, not at launch, so a session started and left alone writes
-nothing and stays invisible. `-d` therefore hands Claude an opening prompt — answering it fires
-`UserPromptSubmit`, which mints the key and creates the row. The prompt goes **last**, because
-`claude [options] [prompt]`.
+A hook is what mints a key, so a row used to appear only once somebody typed — and in a directory
+Claude has not been trusted in, *never*, because it stops on *"Is this a project you trust?"* and
+submits nothing. So the session's own shell hooks first and then `exec`s Claude:
 
 ```sh
-agb-claude -d api-refactor                    # row appears, nothing to detach from
-agb-claude -d api-refactor --greet "ready?"
+tmux new-session … sh -c 'AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"' …
 ```
 
-⚠️ **It does not work in a directory Claude has not been trusted in yet.** Claude stops on *"Is this
-a project you trust?"* and waits, so nothing is submitted and no row appears. That prompt is
-deliberately **not** answered for you — it is a security decision belonging to the human, and a
-wrapper that clicked through it would be doing what this tool exists to stop. Attach once
-(`tmux attach -t <name>`), answer it, and `-d` works there from then on.
+Three properties make that produce **one** row rather than two, and each was measured rather than
+reasoned about:
+
+| | |
+|---|---|
+| it runs **inside** the new session | the anchor is `(host, tmux-server-pid, %PANE)`. Hooking from the caller's pane would mint a row pointing at the wrong terminal — which is worse than no row, and looks like it works |
+| `exec` preserves **pid and starttime** | so the identity the shell records *is* Claude's a moment later, `bind_key` finds a matching record and **adopts** the key instead of minting a second one |
+| it records a real pid | a pid-less entry also adopts — *"absence of evidence must never re-mint"* — but nothing except `agb prune` could remove it if Claude never started at all |
+
+**`completed`, not `active`**: a session sitting at an empty prompt is waiting for you, which is
+what that glyph means. `active` would claim it is working and blink a transition that never
+happened. It raises no banner — the finished-turn banner measures from a preceding `active`, and a
+fresh key has none.
+
+Best-effort by construction: `;` rather than `&&`, stderr discarded. A missing or broken `agb`
+costs a row, never a Claude.
+
+```sh
+agb-claude -d api-refactor                    # row appears; no prompt is sent
+agb-claude -d api-refactor --greet "ready?"   # …unless you ask for one
+```
+
+⚠️ The trust prompt is still **not** answered for you — that is a security decision belonging to the
+human, and a wrapper that clicked through it would be doing what this tool exists to stop. What
+changed is only that the row now exists while it waits, so you can see the session and click into
+it. Attach (`tmux attach -t <name>`), answer it, and the agent takes over its own row.
 
 Re-running with the same name **attaches** to the existing session rather than starting a second
 agent in it, matched exactly (`-t "=name"`), so `agb-claude api` will not attach to `api-refactor`.

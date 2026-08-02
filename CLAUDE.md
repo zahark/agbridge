@@ -34,6 +34,15 @@ Plus **`agb-claude`**, a standalone POSIX-sh script that is not part of `agb` at
 Claude Code in a named tmux session. It exists because the session name is resolved once, at an
 agent's first hook, so it has to be set before the agent starts.
 
+It also **mints the row before Claude runs** — the session's shell hooks, then `exec`s Claude —
+which is worth understanding because the same trick is available anywhere. ⚠️ **`exec` preserves pid
+*and* starttime**, so the identity the shell records *is* the agent's a moment later and `bind_key`
+**adopts** the key rather than minting a second one. Get any of three things wrong and you get two
+rows instead of one: hook outside the new pane (wrong anchor), drop the `exec` (different pid), or
+drop `AGB_AGENT_PID=$$` (a pid-less entry, which adopts but is then reapable only by `agb prune`).
+The state is `completed` — a session at an empty prompt is waiting for you — and it raises no
+banner, because the finished-turn banner measures from a preceding `active`.
+
 And **`agb-ralphex`**, the same idea for a *supervisor* rather than an agent. ralphex runs a fresh
 Claude per task, and a key is minted per **agent**, so ten tasks are ten rows with the same label and
 a banner apiece. This gives the plan its own row — `agb hook active` before, `agb hook completed`
