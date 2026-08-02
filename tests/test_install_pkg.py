@@ -695,6 +695,71 @@ def test_print_statedir_accepts_config_and_dry_run(run_agb, config_path):
     assert out.decode() == "/shared/.agbridge\n"
 
 
+# A locale the machine does not have falls back to `C`, so the `C` arm is not
+# redundant with the third: it is the one that bites everywhere. Same three
+# names as the two sibling guards (`tests/test_bridge_rows.py`,
+# `tests/test_agb_refresh.py`) on purpose -- three copies of one rule that
+# should move together.
+NON_ASCII_LOCALES = ["C", "POSIX", "en_US.ISO-8859-1"]
+
+
+@pytest.mark.parametrize("locale", NON_ASCII_LOCALES)
+def test_print_statedir_answers_in_bytes_whatever_the_locale_says(run_agb,
+                                                                  config_path,
+                                                                  locale):
+    """⚠️ The answer is UTF-8 **bytes** on `sys.stdout.buffer`, never
+    `sys.stdout.write` -- the third value in this tool to owe that rule, after
+    `agb instances --arg` (contract 1) and for the same reason.
+
+    `-E` ignores `PYTHON*` and does not touch `LC_ALL`, so the locale picks
+    stdout's encoding. Measured on the 3.6.8 floor with `sys.stdout.write`:
+    under `LC_ALL=C` a non-ASCII statedir raised `UnicodeEncodeError` and the
+    command exited **1** -- the status that means *I could not read the file at
+    all*, for a file it read perfectly, which `install.sh` turns into
+    `die "could not read <config> ... unreadable, or not UTF-8"`. Under
+    ISO-8859-1 it was worse because it SUCCEEDED: exit 0 with the path
+    transcoded to one byte where the file holds two, a value naming nowhere.
+
+    `install.sh` would not have installed that second value -- `shell_safe`'s
+    allowlist is ASCII -- but that guard lives in another file and is about
+    remote shells, not encodings; this is a documented query whose own failure
+    message tells the operator to run it by hand.
+    """
+    statedir = "/farm/café/agb"
+    assert statedir.encode("utf-8") != statedir.encode("latin-1")  # non-vacuity
+    config = config_path("statedir = %s\nmac_id = m-0001\n" % (statedir,))
+    env = {"LC_ALL": locale, "LANG": locale}
+    code, out, err = run_agb(print_statedir_argv(config), env=env)
+    assert (code, out, err) == (0, statedir.encode("utf-8") + b"\n", b""), locale
+
+
+@pytest.mark.parametrize("locale", NON_ASCII_LOCALES)
+def test_the_carries_none_status_survives_a_path_the_locale_cannot_spell(
+        run_agb, tmp_path, ops, locale):
+    """⚠️ ...and the PROSE deliberately did **not** move to bytes with it.
+
+    The rule above is about a machine-readable *value* that becomes a
+    filesystem path. The `PRINT_STATEDIR_NONE` message is not one: it goes to
+    the injected `out` seam (stderr by default) that every other line of
+    `run_install_config` reports through, `install.sh` discards it with
+    `2>/dev/null`, and the answer it carries is the exit **status**, not its
+    text. `sys.stderr`'s default error handler is `backslashreplace`, so it
+    cannot raise and cannot degrade a `PRINT_STATEDIR_NONE` into a `1`; encoding
+    it strictly onto stdout instead is the *wrong* fix for the sibling above,
+    and this is what would catch it -- stdout must stay empty even when the
+    only thing there is to say contains a character this locale has no byte for.
+    """
+    home = tmp_path / "café"                 # non-ASCII in the PATH itself
+    os.makedirs(str(home))
+    config = home / "config"
+    with open(str(config), "w") as handle:
+        handle.write("mac_id = m-0001\n")         # ...and no statedir
+    env = {"LC_ALL": locale, "LANG": locale}
+    code, out, err = run_agb(print_statedir_argv(config), env=env)
+    assert (code, out) == (ops.PRINT_STATEDIR_NONE, b""), locale
+    assert b"carries no statedir" in err, locale
+
+
 # ---------------------------------------------------------------------------
 # install.sh
 # ---------------------------------------------------------------------------

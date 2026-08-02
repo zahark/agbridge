@@ -639,11 +639,12 @@ copied to `config.agb.bak`, and a run that would change nothing writes neither.
 mac-id adoption uses `--print-mac-id`: a second reader of the `key = value` format is a second reader
 that drifts from the first.
 
-It is **not** `--print-mac-id` with a different noun, and three properties keep it honest:
+It is **not** `--print-mac-id` with a different noun, and four properties keep it honest:
 
 | | why |
 |---|---|
 | it prints the file's **own** value, never the fallback | `--statedir`'s ordinary resolution ends at the *default-path* config. Reporting that for an instance file that carries nothing is the exact answer `install.sh` must not get — it names another machine's directory, on a disk this instance's farm cannot see |
+| the value leaves as **UTF-8 bytes**, so the locale cannot touch it | `-E` does not touch `LC_ALL`, and a statedir is a filesystem path with no ASCII guarantee. Through a text stream a non-ASCII one exited **1** under `LC_ALL=C` — the status meaning *I could not read the file*, for a file read perfectly — and exited **0** under ISO-8859-1 with the path *transcoded*, naming nowhere. Same rule, and same reason, as `agb instances --plist … --arg`. (`--print-mac-id` needs no such care: `valid_mac_id` refuses anything outside an ASCII alphabet.) The **prose** on stderr stays text on purpose — it carries no value a caller parses, and stderr's `backslashreplace` means it can neither raise nor change the status |
 | **"carries none" has its own exit status, and is not "I could not read it"** | it is handled the instant the config has been parsed and **returns** there, so no later failure can be mistaken for that answer. Run any further on and a file with a `statedir` but no `mac_id` would raise about the *mac-id*, and the installer would then demand `--statedir` for a file that carries one |
 | it **writes nothing**, with or without `--dry-run` | the query returns before the merge and the write. Bolted onto the tail instead, a statedir-less config would be *rewritten with the default config's statedir* on the way to the error — the failure the flag exists to prevent, caused by the flag |
 

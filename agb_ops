@@ -3747,10 +3747,11 @@ def run_install_config(argv, out=None):
     query**: it answers from the parsed file and returns, having written
     nothing. That is what lets `install.sh mac` adopt an existing instance's
     statedir instead of re-demanding it on every upgrade. Its statuses are
-    **0** (answered on stdout), **`PRINT_STATEDIR_NONE`** (this file carries
-    none -- an answer, with the reason on `out`, i.e. stderr by default) and
-    **1** (an `AgbError`: the file could not be read at all, which is not the
-    same statement).
+    **0** (answered on stdout, as UTF-8 **bytes** -- see the branch below, the
+    locale can otherwise change both the value and the status),
+    **`PRINT_STATEDIR_NONE`** (this file carries none -- an answer, with the
+    reason on `out`, i.e. stderr by default) and **1** (an `AgbError`: the file
+    could not be read at all, which is not the same statement).
     """
     opts = parse_config_args(argv)
     if out is None:
@@ -3804,8 +3805,46 @@ def run_install_config(argv, out=None):
                                   else " (it does not exist)"))
             out.flush()
             return PRINT_STATEDIR_NONE
-        sys.stdout.write("%s\n" % (statedir,))
-        sys.stdout.flush()
+        # ⚠️ UTF-8 BYTES on `sys.stdout.buffer`, never `sys.stdout.write`, and
+        # for the reason spelled out in `agb_mac.run_instances`' docstring:
+        # `-E` ignores `PYTHON*` but does not touch `LC_ALL`, so the locale
+        # still picks stdout's encoding. Measured on the 3.6.8 floor, against a
+        # config carrying `statedir = /farm/café/agb`:
+        #
+        #   * `LC_ALL=C` -- `UnicodeEncodeError`, a traceback, empty stdout and
+        #     exit **1**. That is the status meaning *I could not read the file
+        #     at all*, for a file that was read perfectly, and `install.sh`
+        #     turns it into `die "could not read $config -- unreadable, or not
+        #     UTF-8"`, which is simply false. The 0/`PRINT_STATEDIR_NONE`/1
+        #     contract is the whole point of this branch and a text stream can
+        #     break it from the outside.
+        #   * an ISO-8859-1 locale -- **exit 0**, with the path transcoded to
+        #     one byte where the file holds two: a value that names nowhere,
+        #     handed back with no error anywhere.
+        #
+        # `install.sh` does not currently install that second value -- its
+        # `shell_safe "the adopted statedir"` allowlist is pure ASCII, so the
+        # transcoded bytes die there -- but the guard that saves it is in
+        # ANOTHER FILE and is about remote shells, not about encodings. This
+        # command is documented, and `install.sh`'s own failure message tells
+        # the operator to run it by hand; a machine-readable answer may not
+        # depend on a different file's allowlist to be right.
+        #
+        # ⚠️ `--print-mac-id` below stays `sys.stdout.write` on purpose, and is
+        # not the same case: `resolve_mac_id` refuses anything `valid_mac_id`
+        # rejects, and `_MAC_ID_SAFE` is an ASCII alphabet -- so that value
+        # cannot be non-ASCII by construction. A statedir is an arbitrary
+        # filesystem path with no such alphabet.
+        #
+        # The PROSE above is deliberately still text on `out` (stderr): it is
+        # the injected seam every other line of this function reports through,
+        # it carries no value a caller parses -- the answer there is the exit
+        # STATUS -- and `sys.stderr`'s default error handler is
+        # `backslashreplace`, so it cannot raise and cannot degrade a 4 into a
+        # 1. stdout's is `strict`, which is exactly why the value may not go
+        # that way. Both halves are pinned by three-locale tests.
+        sys.stdout.buffer.write(statedir.encode("utf-8") + b"\n")
+        sys.stdout.buffer.flush()
         return 0
     values, source = install_config_values(opts, existing, path)
     merged = merge_config_text(text, values, CONFIG_HEADER)

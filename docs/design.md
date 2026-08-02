@@ -1907,10 +1907,24 @@ too, so a non-ASCII config path — ordinary on a Mac, where the filesystem is U
 `UnicodeEncodeError` under `LC_ALL=C` (loud, and read as "no config") and, worse, *succeeds* under an
 ISO-8859-1 locale, handing back a transcoded path that names nothing, carried on into the banner, the
 `pgrep` pattern and `forget-rows` with no error anywhere. The awk passed bytes through untouched and
-`run_instances` has to as well. **No other code in `agb`/`agb_mac`/`agb_ops` writes to
-`stdout.buffer`**, so this will not happen by accident — which is exactly why the rule is stated in
-`run_instances`' own docstring, where the next person to touch it will read it. Three locales
-(`C`, `POSIX`, `en_US.ISO-8859-1`) pin it, on both sides of the shell boundary.
+`run_instances` has to as well. The rule is stated in `run_instances`' own docstring, where the next
+person to touch it will read it, and three locales (`C`, `POSIX`, `en_US.ISO-8859-1`) pin it on both
+sides of the shell boundary.
+
+⚠️ **It generalises, and this file used to say it did not.** *"No other code in
+`agb`/`agb_mac`/`agb_ops` writes to `stdout.buffer`, so this will not happen by accident"* was true
+when written and is **withdrawn**: it read as a property of the codebase when it was only a count of
+one, and the second such value arrived without anyone rereading this paragraph.
+`agb_ops.run_install_config`'s **`--print-statedir`** shipped through `sys.stdout.write` and had both
+halves of the same bug — under `LC_ALL=C` a non-ASCII statedir exited **1**, the status reserved for
+*I could not read the file at all*, for a file read perfectly; under ISO-8859-1 it exited **0** with
+the path transcoded. It writes `stdout.buffer` now, with its own three-locale guard. The rule to
+carry forward is the one the count was standing in for: **a value a caller parses leaves as UTF-8
+bytes; prose for a human stays text on the injected `out` seam** — where `sys.stderr`'s default
+`backslashreplace` handler means it can neither raise nor change an exit status, which stdout's
+`strict` most certainly can. `--print-mac-id` is the deliberate exception and is safe for a reason
+that does not generalise either: `valid_mac_id` refuses anything outside an ASCII alphabet, so that
+value cannot be non-ASCII at all.
 
 ⚠️ **Too TIGHT is not the safe side here, which is why the reader is a real parser and not a boundary
 drawn to what `install.sh` happens to write.** Missing a real `ProgramArguments` demotes that plist

@@ -34,10 +34,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   because a warning on a *first* install gets ignored, and the asymmetry it warned about is then
   permanent on that Mac.
 
-  **`install.sh farm` is untouched and still takes no `--instance`** — and no `--statedir` either. A
+  **`install.sh farm` is untouched: it takes no `--instance`, and does not *require* `--statedir`.** A
   farm host has exactly one identity: `agb hook` and `agb status-line` resolve
   `~/.config/agbridge/config` on every invocation, so a named farm config is a file nothing opens.
   Both halves of that asymmetry come from the one fact.
+
+  ⚠️ **"Does not require" is not "does not take" — keep the `--statedir` the Mac prints.** The farm
+  role still accepts `--statedir` and forwards it to both `install-config` and `install-hooks`, and
+  the `install.sh farm …` line the Mac hands you now carries it *always* (it used to be dropped when
+  the Mac had none, which is no longer a state that exists). Paste that line as printed. Dropping the
+  flag is not an upgrade shortcut: the farm falls back to its own default and writes hooks against a
+  statedir the Mac's bridge never reads, and the feed then reports an empty farm for ever — the
+  symptom that made the printed line unconditional in the first place.
 
   ⚠️ **The `--statedir` refusal has three wordings, because it now serves three different runs.** It
   was written for "a second instance without `--statedir`", and mandating `--instance` turned it into
