@@ -2109,6 +2109,77 @@ def test_install_sh_farm_still_installs_with_no_instance(run_sh, tmp_path, agb):
     assert agb.read_config(str(tmp_path / "config"))["mac_id"] == "mac-0001"
 
 
+def test_the_installed_tree_still_reads_a_plist_it_can_no_longer_write(
+        run_sh, mac_args, tmp_path, fake_home):
+    """⚠️ CREATABILITY is not REACHABILITY, asserted rather than assumed.
+
+    The three tests above say no *new* nameless instance can be made. The
+    paragraph introducing them says the legacy readers all stay, because a
+    plist on disk outlives the installer that wrote it -- and that half had no
+    test, which is how a later "cleanup" retires a branch this change never
+    retired.
+
+    So: the nameless plist is rendered from `dist/com.agbridge.plist`, the file
+    `install.sh` itself renders and the only shape that certainly exists on a
+    Mac installed before this change; and it is read back by the `agb` the
+    installer has *just installed*, not by the checkout. Both halves matter --
+    a constant here would drift from the template, and the checkout would not
+    be the tree an upgraded Mac actually runs.
+
+    `com.agbridge` is the label whose name column is `(default)`, and it is the
+    one the derivation gets wrong by answering "": the default label does not
+    merely start with the prefix, it IS the prefix. That was a live bug once
+    (`test_instances_listing_names_the_default_instance`), found by running the
+    listing on the owner's real Mac.
+    """
+    code, _out, err = run_sh(mac_args())
+    assert code == 0, err
+
+    legacy_dir = tmp_path / "legacy-agents"
+    legacy_dir.mkdir()
+    default_config = _sh_default_config(INSTALL_SH, fake_home)
+    with open(PLIST_TEMPLATE) as handle:
+        rendered = handle.read()
+    for holder, value in (("@LABEL@", "com.agbridge"),
+                          ("@PYTHON@", sys.executable),
+                          ("@AGB@", str(tmp_path / "dest" / "agb")),
+                          ("@CONFIG@", default_config),
+                          ("@PATH@", "/usr/bin:/bin"),
+                          ("@LOGDIR@", str(tmp_path / "logs"))):
+        rendered = rendered.replace(holder, value)
+    # Non-vacuity: an unrendered placeholder would leave a plist whose argv is
+    # not this argv, and the installer refuses such a file for the same reason.
+    assert "@" not in rendered.split("<plist")[1]
+    legacy_plist = legacy_dir / "com.agbridge.plist"
+    with open(str(legacy_plist), "wb") as handle:
+        handle.write(rendered.encode("utf-8"))
+    assert plistlib.loads(read_bytes(legacy_plist))["Label"] == "com.agbridge"
+
+    def instances(args):
+        proc = subprocess.Popen(
+            [sys.executable, "-S", "-E", str(tmp_path / "dest" / "agb"),
+             "instances", "--launch-agents", str(legacy_dir)] + args,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = conftest.communicate(proc)
+        assert proc.returncode == 0, err
+        return out.decode("utf-8")
+
+    # The listing: `(default)` in the NAME column, not a blank one, and the
+    # config the legacy job actually runs on. `split()` rather than `in`,
+    # because a blank name column still contains the label and the path.
+    assert [line.split() for line in instances([]).splitlines() if line.strip()
+            ] == [["(default)", "com.agbridge", default_config]]
+    # ...and `--labels`, which is what the sweeps consume: an instance missing
+    # from this list is one a bare `agb-refresh`/`agb close-done` cannot visit.
+    assert instances(["--labels"]).split() == ["com.agbridge"]
+
+    # The other half of the claim, and the reason this test is here rather than
+    # beside the listing's own tests: that filename is one no install in this
+    # suite can now produce.
+    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+    assert (tmp_path / "agents" / MAC_PLIST).exists()
+
+
 def test_an_install_is_the_plist_it_always_was_plus_the_config_flag(
         run_sh, mac_args, tmp_path, fake_home):
     """The upgrade claim, stated key by key.
