@@ -8,6 +8,8 @@
 # *before* starting the agent is the whole trick, and forgetting is easy, so
 # this wraps it.
 #
+# It also mints the row itself, before Claude starts -- see PREMINT below.
+#
 #   agb-claude                  # session named after the current directory
 #   agb-claude api-refactor     # session named explicitly
 #   agb-claude -d api-refactor  # start it detached, with a row already showing
@@ -27,10 +29,10 @@ usage: agb-claude [-d] [name] [-- <claude args>...]
   name           tmux session name (default: the current directory's name)
   --             everything after this is passed to `claude`
 
-  -d, --detach   start it in the background and return immediately. Claude is
-                 given an opening prompt so a hook fires and the row appears
-                 without you having to type in the session and detach again.
-  --greet <text> what to say (default: "hi"). Only with -d.
+  -d, --detach   start it in the background and return immediately. The row
+                 appears either way -- it is minted before Claude starts.
+  --greet <text> send an opening prompt. Only with -d, and NOT sent by
+                 default: the row no longer needs one to exist.
 
   -h, --help     this message
 
@@ -46,7 +48,38 @@ sanitize() {
     printf '%s' "$1" | tr ' .:' '---' | tr -cd 'A-Za-z0-9_-' | cut -c1-60
 }
 
-name=""; detach=no; greet="hi"
+# ⚠️ PREMINT -- the row is minted BEFORE Claude, by the session's own shell.
+#
+# A row used to appear only when Claude first fired a hook, which meant it did
+# not appear at all until somebody typed. Worse, in a directory Claude has not
+# been trusted in it stops on "Is this a project you trust?" and waits: no
+# prompt is submitted, no hook fires, and the row never exists -- the case this
+# script's own comment below warns about.
+#
+# So the session's shell hooks first, then `exec`s Claude. Three things make
+# that produce ONE row rather than two, and all three were measured:
+#
+#   * it runs INSIDE the new session, because the anchor is (host, tmux server
+#     pid, %PANE) -- hooking from the caller's pane would mint a row for the
+#     caller's pane;
+#   * `exec` preserves BOTH pid and starttime, so the identity the shell
+#     records IS Claude's identity a moment later. `bind_key` finds a matching
+#     record and adopts the key instead of minting a second one;
+#   * recording a real pid (rather than none) keeps the entry reapable by proof
+#     of death. A pid-less entry also adopts -- "absence of evidence must never
+#     re-mint" -- but nothing except `agb prune` could ever remove it if Claude
+#     failed to start at all.
+#
+# `completed` rather than `active`: the session exists and is waiting for you,
+# which is what that glyph means. `active` would claim it is working and blink
+# a transition that did not happen. It raises no banner -- the finished-turn
+# banner needs a preceding `active` to measure from, and a fresh key has none.
+#
+# Best-effort by construction: `;` not `&&`, and stderr discarded, so a missing
+# or broken `agb` costs a row and never a Claude.
+PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"'
+
+name=""; detach=no; greet=""
 while [ $# -gt 0 ]; do
     case $1 in
         -h|--help) usage; exit 0 ;;
@@ -60,7 +93,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ "$detach" = yes ] || [ "$greet" = "hi" ] \
+[ "$detach" = yes ] || [ -z "$greet" ] \
     || die "--greet only means something with -d: without it you are about to type in the session anyway"
 
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
@@ -81,11 +114,20 @@ if [ "$detach" = yes ]; then
         say "agb-claude: attach with  tmux attach -t $name"
         exit 0
     fi
-    # The prompt goes LAST: `claude [options] [prompt]`.
-    tmux new-session -d -s "$name" -c "$(pwd)" claude "$@" "$greet"
-    say "agb-claude: started '$name' detached, greeting: $greet"
-    say "agb-claude: the row appears once that prompt is answered; attach from"
-    say "            agterm, or with  tmux attach -t $name"
+    # The prompt goes LAST: `claude [options] [prompt]`. It is only passed when
+    # asked for now -- the row no longer depends on it, so a detached start
+    # costs no turn and no API call unless you actually wanted to say something.
+    if [ -n "$greet" ]; then
+        tmux new-session -d -s "$name" -c "$(pwd)" \
+            sh -c "$PREMINT" agb-claude "$@" "$greet"
+        say "agb-claude: started '$name' detached, greeting: $greet"
+    else
+        tmux new-session -d -s "$name" -c "$(pwd)" \
+            sh -c "$PREMINT" agb-claude "$@"
+        say "agb-claude: started '$name' detached"
+    fi
+    say "agb-claude: the row is there now; attach from agterm, or with"
+    say "            tmux attach -t $name"
     # ⚠️ In a directory Claude has not been trusted in before, it stops on
     # "Is this a project you trust?" and waits -- so nothing is submitted, no
     # hook fires and no row appears. That prompt is deliberately NOT answered
@@ -105,7 +147,7 @@ if [ -n "${TMUX:-}" ]; then
         exec tmux switch-client -t "=$name"
     fi
     say "agb-claude: creating '$name' as a sibling session (you are inside tmux)"
-    tmux new-session -d -s "$name" -c "$(pwd)" claude "$@"
+    tmux new-session -d -s "$name" -c "$(pwd)" sh -c "$PREMINT" agb-claude "$@"
     exec tmux switch-client -t "=$name"
 fi
 
@@ -116,4 +158,4 @@ if tmux has-session -t "=$name" 2>/dev/null; then
 fi
 
 say "agb-claude: starting claude in tmux session '$name'"
-exec tmux new-session -s "$name" -c "$(pwd)" claude "$@"
+exec tmux new-session -s "$name" -c "$(pwd)" sh -c "$PREMINT" agb-claude "$@"

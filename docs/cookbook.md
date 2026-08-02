@@ -114,7 +114,7 @@ agb-claude api-refactor       # new named session, or re-attach if it exists
 agb-claude                    # named after the current directory
 agb-claude docs -- --model opus   # everything after `--` goes to claude
 agb-claude work -- --resume <session-id>   # options need the `--`
-agb-claude -d review          # start it in the background; the row appears on its own
+agb-claude -d review          # background; the row is minted before Claude even starts
 ```
 
 Your sidebar then reads something like:

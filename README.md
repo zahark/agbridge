@@ -151,7 +151,7 @@ agb doctor          # probes, not existence checks — see below
 | `agb install-hooks` | cluster | merge the four Claude Code hooks idempotently |
 | `agb install-config` | both | write/merge `~/.config/agbridge/config` |
 | `agb version` | both | load-bearing: both installers probe with it |
-| `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable. `-d` starts it in the background with the row already showing |
+| `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable — and mints the row **before Claude starts**, so it exists even while Claude sits on a trust prompt. `-d` starts it in the background |
 | `agb-ralphex <plan>` | cluster | helper: runs [ralphex](https://github.com/umputun/ralphex) under **one** row for the whole plan, so the Mac banners once when it finishes rather than once per task |
 | `agb-host-line` | cluster | helper: prints the `host_<name>` line a new cluster host needs, **and** a Mac-side command that appends it to the config of the instance actually watching this statedir — not blindly the default one |
 | `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows — a close, a reset, a reinstall, **a Mac reboot**, or an upgrade of the Mac's files |

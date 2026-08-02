@@ -6,6 +6,44 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
+## Unreleased
+
+### Changed
+
+- **`agb-claude` mints the row before Claude starts.** A hook is what mints a key, so a row used to
+  appear only once somebody typed — and in a directory Claude has not been trusted in, *never*: it
+  stops on *"Is this a project you trust?"* and submits nothing, so no hook fires and no row is ever
+  created. The script's own comment warned about that and could not do anything about it.
+
+  The session's shell now hooks first and then `exec`s Claude. Three properties make that produce
+  **one** row rather than two, and each was measured rather than reasoned about:
+
+  - it runs **inside** the new session, because the anchor is `(host, tmux-server-pid, %PANE)` —
+    hooking from the caller's pane would mint a row pointing at the wrong terminal, which looks like
+    it works and is worse than no row;
+  - **`exec` preserves pid *and* starttime**, so the identity the shell records *is* Claude's a
+    moment later: `bind_key` finds a matching record and **adopts** the key instead of minting a
+    second one;
+  - it records a real pid. A pid-less entry adopts too — *"absence of evidence must never re-mint"* —
+    but nothing except `agb prune` could remove it if Claude never started.
+
+  The state is **`completed`**, not `active`: a session at an empty prompt is waiting for you, which
+  is what that glyph means, where `active` would claim it is working and blink a transition that
+  never happened. It raises no banner, since the finished-turn banner measures from a preceding
+  `active` and a fresh key has none — verified against the bridge, not assumed.
+
+  Best-effort by construction (`;` not `&&`, stderr discarded): a missing or broken `agb` costs a
+  row, never a Claude.
+
+- ⚠️ **`agb-claude -d` no longer sends `hi` by default.** The greeting existed *only* to make a row
+  appear, and the row no longer needs it — so a detached start costs no turn and no API call.
+  `--greet <text>` still sends one when you actually want the session warmed up or a first
+  instruction delivered. Anyone relying on `-d` producing a first turn will notice; anyone relying
+  on it producing a *row* will not.
+
+  This is the one thing here that could surprise: the row for a detached session now shows
+  `completed` from the start rather than briefly going `active` while "hi" is answered.
+
 ## 0.6.0 — 2026-08-01
 
 > **Two breaking changes**, both in the same direction: a command with no instance flag used to act
