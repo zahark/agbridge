@@ -49,8 +49,10 @@ cd ~ && git clone https://github.com/zahark/agbridge.git
 ```sh
 cd ~/agbridge
 sh install.sh mac \
+    --instance buildbox01 \
+    --statedir /home/you/.agbridge \
     --feed-host myfarm \
-    --agb-remote-path ~/agbridge/agb        # the path from Step 1, absolute
+    --agb-remote-path /home/you/agbridge/agb    # the path from Step 1, absolute
 ```
 
 It copies three files, mints a `mac_id`, writes the config, loads the launchd job — and ssh's once
@@ -58,6 +60,24 @@ to `myfarm` to learn its hostname so it can map `host_buildbox01 = myfarm` for y
 what makes rows clickable; `--no-probe` skips it if you would rather set it by hand.
 
 **Copy the `mac_id` it prints.**
+
+⚠️ **`--instance` is required — there is no unnamed install.** The name is yours to choose (letters,
+digits, `-`, `_`); it becomes this install's config directory, launchd label and log directory, and
+it is what `agb instances` lists and what `agb-refresh --instance …` takes. `--instance auto` reads it
+off `--feed-host` instead, using the same ssh the mapping above needs, and prints what it decided.
+A nameless `sh install.sh mac …` is **refused and writes nothing** — every Mac-side instance is named
+so that no command has to guess which one you meant.
+
+⚠️ **`--statedir` is required the first time**, and it is the **shared directory from *Before you
+start*, spelled absolutely as it exists on the Linux host**. A `~` is expanded by the *Mac's* shell,
+and the Mac's home is not the path the feed will be given. Re-running this later to pick up new code
+does **not** need the flag again — the installer reads it back out of this instance's own config and
+says so:
+
+```
+instance: buildbox01 -- label com.agbridge.buildbox01, config …/agbridge/buildbox01/config
+statedir: adopted /home/you/.agbridge from …/agbridge/buildbox01/config
+```
 
 ## Step 4 — Install on the Linux host
 
@@ -287,6 +307,12 @@ without it the instance would inherit the *first* cluster's path: ssh to the rig
 wrong directory, then create it and report an empty farm for ever. Spell it as it exists **on that
 machine**, absolutely: a `~` is expanded by the Mac's shell, and the Mac's home is not the path the
 feed will be given.
+
+Required the **first** time only. Re-run this later to pick up new code and the flag can be dropped:
+the installer reads the value back out of this instance's own config and prints
+`statedir: adopted … from …` under the `instance:` banner. ⚠️ **Unless you also pass `--config`** — an
+explicit `--config` may name any file at all, including another instance's, so nothing is adopted
+through it and `--statedir` is demanded exactly as on a first install.
 
 What the installer writes, all of it new:
 
