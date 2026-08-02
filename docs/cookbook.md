@@ -142,14 +142,48 @@ Which to reach for: `s` when you want to watch the agent **while** you type — 
 output that provoked it. `d` for a look-and-leave: `git log`, `ls`, checking a path. The drawer
 cannot show you both at once, and the split cannot give the agent its full width back.
 
-Rows are titled `label · host · cwd · pane` by default, where the label is the tmux session name
-(`row_fields` in the Mac's config picks the fields and their order). To change it
-afterwards, on the host:
+Rows are titled `label · host · cwd · pane` by default, where the label is the tmux session name.
+To change the label afterwards, on the host:
 
 ```sh
 agb rename a-better-name          # the agent you are sitting in
 agb rename b7ed a-better-name     # another row, by key prefix
 ```
+
+### Shortening the rows
+
+That default runs to about 70 characters, and on a single-host setup roughly a third of it is the
+hostname repeated on every row. `row_fields`, in the **Mac's** config, picks the fields and their
+order:
+
+```sh
+echo 'row_fields = label,cwd:base,pane' >> ~/.config/agbridge/config
+agb-refresh
+```
+
+```
+agbridge_dev · dev01-container-xterm-032 · /home/user/agbridge-public · %15    73 chars
+agbridge_dev · agbridge-public · %15                                        36
+agbridge_dev · %15                                       row_fields = label,pane
+```
+
+Any of `label`, `host`, `cwd`, `pane`, `beat`, `key`, comma-separated, `cwd:base` for the
+directory's basename alone. A name it does not recognise refuses the **whole** list, keeps the
+default, and says why in `~/Library/Logs/agbridge/bridge.err.log` — so "nothing changed at all" is
+the symptom of a typo, and the log is the only place the reason appears.
+
+Worth knowing before you drop fields:
+
+- **`host` is safe to drop only while you have one machine.** Add a second and two agents with the
+  same label render identical rows.
+- **`beat` costs nothing to keep.** It renders only when an agent has gone quiet, and it is the only
+  place agbridge tells you *how* quiet — it refuses to turn an age into a status, so the number in
+  the title is what it offers instead.
+- **`pane` is what separates two agents in one tmux session.** They share label, host, cwd and tmux;
+  the pane id is the difference.
+
+⚠️ **`agb-refresh` is not optional.** Every Mac-side key is read once, when the bridge starts. Edit
+the file and nothing happens, with no error — see *Troubleshooting* if that catches you.
 
 `agb list` shows every session and its key; `agb rename` with no arguments prints the same table
 alongside the usage.
@@ -362,6 +396,25 @@ echo 'workspace = hostb' >> ~/.config/agbridge/hostb/config
 
 New rows land there, and one you drag elsewhere stays where you put it.
 
+`row_fields` is per instance in the same way, and can differ between them — dropping `host` is safe
+on a machine whose rows are all yours, and a bad idea on one that carries several:
+
+```sh
+echo 'row_fields = label,cwd:base,pane' >> ~/.config/agbridge/hostb/config
+agb-refresh --instance hostb
+```
+
+⚠️ **Put it in the config whose `statedir` holds the rows you are looking at** — which is not
+necessarily the default one. This is easy to get wrong and reads as "the feature does not work":
+the key lands in a config that is perfectly valid, the bridge that owns your rows never sees it, and
+nothing anywhere reports a problem. One command answers it:
+
+```sh
+grep -H 'statedir\|row_fields' ~/.config/agbridge/config ~/.config/agbridge/*/config
+```
+
+The instance whose `statedir` matches the one your agents write to is the one that renders them.
+
 ### Living with more than one
 
 | | |
@@ -373,11 +426,38 @@ New rows land there, and one you drag elsewhere stays where you put it.
 | **upgrades: install once, refresh each** | `sh install.sh mac …` updates the shared code, but a running bridge keeps the copy it started with. One bare `agb-refresh` now bounces them all |
 | **`agb doctor` on the Mac reads the default config only** | it has no `--config`, so it always describes the unnamed instance — and on a Mac where every instance is named, that config does not exist at all. Diagnose an instance from *its* machine (`agb doctor` there) and from its own log |
 | **rows are per instance** | the maps never merge; refreshing *one* never moves the other's rows. What changed is that the bare commands visit all of them |
+| **so is every Mac-side key** | `workspace`, `row_fields` and the notification switches are read from *that instance's* config. A key in the wrong one is not an error — it is a valid setting on a bridge that renders different rows, and nothing reports it. Match on `statedir`, not on which config you happened to open |
 | **around four machines this stops being pleasant** | four launchd jobs, four ssh connections, four logs. It is a deliberate ceiling — see [`design.md`](design.md) §5 for the alternative that was rejected and why |
 
 ---
 
 ## Troubleshooting
+
+**A config change did nothing** — no error, no warning, the file plainly says what you wrote. Two
+causes, in the order to check them.
+
+**1. The bridge has not re-read it.** Every Mac-side key is read *once*, when the bridge starts:
+
+```sh
+ls -lT ~/.config/agbridge/config          # when you edited it
+ps -o lstart= -p $(pgrep -f 'agb bridge' | head -1)   # when the bridge started
+```
+
+If the bridge is older than the file, that is the whole answer — `agb-refresh`. ⚠️ And check the
+pid actually changed: with several instances, a bare `agb-refresh` sweeps them all, but
+`--instance <name>` bounces exactly one and reports success either way.
+
+**2. It is in the wrong instance's config.** The one that matters is the one whose `statedir` holds
+the rows you are watching, which is not necessarily the default:
+
+```sh
+grep -H 'statedir\|feed_host' ~/.config/agbridge/config ~/.config/agbridge/*/config
+```
+
+A key in the wrong file is not an error. It is a valid setting on a bridge that renders *different*
+rows — everything looks right and nothing changes. ⚠️ If two instances name the **same** statedir,
+you have two bridges rendering the same agents twice, which is its own problem: see
+[`README.md`](../README.md)'s configuration table.
 
 **No rows at all, and `doctor` says `no beat file at all`** — the bridge is not running. On the Mac:
 
