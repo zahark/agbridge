@@ -50,8 +50,23 @@ import conftest
 
 HOST = "box2"
 
+# What `mac_args` derives, spelled once. `install.sh mac` requires `--instance`,
+# the fixture names it `HOST`, and `$label` defaults to `$DEFAULT_LABEL.$instance`
+# -- so the launchd label, and with it the plist FILENAME, follow the fixture
+# rather than being constants of the tool. Every test that names the rendered
+# plist is naming this, and a test still spelling `com.agbridge.plist` is naming
+# a file no successful install can now produce.
+MAC_LABEL = "com.agbridge." + HOST
+MAC_PLIST = MAC_LABEL + ".plist"
+
 INSTALL_SH = os.path.join(conftest.REPO_ROOT, "install.sh")
 REFRESH_SH = os.path.join(conftest.REPO_ROOT, "agb-refresh")
+# ⚠️ The template's FILENAME is not a claim about which instance it renders.
+# Its placeholders include `@LABEL@` and `@CONFIG@`, so one file renders every
+# instance's plist -- `com.agbridge.plist` is only what the first one happened
+# to be called. This constant, and the two shape oracles in
+# `tests/test_agb_refresh.py` that pin a fixture's argv against it, deliberately
+# keep pointing here even though no install now writes a file by that name.
 PLIST_TEMPLATE = os.path.join(conftest.REPO_ROOT, "dist", "com.agbridge.plist")
 DIST_FILES = ("agb", "agb_mac", "agb_ops")
 
@@ -666,7 +681,21 @@ def run_sh(tmp_path, fake_home):
 
 @pytest.fixture
 def mac_args(tmp_path):
-    """The Mac role, with every path that could escape the test pinned down."""
+    """The Mac role, with every path that could escape the test pinned down.
+
+    ⚠️ **A default test install is a NAMED one.** `install.sh mac` refuses to
+    run without `--instance`, so there is no nameless shape left for a fixture
+    to state -- the name is not decoration here, it is what makes the argv legal
+    at all. `HOST` is the fixture's own `--feed-host`, so this reads as "what
+    `--instance auto` would have named it" rather than as an arbitrary token.
+
+    `--instance` only *defaults* `$config`, `$logdir` and `$label`, each
+    `[ -n ... ] ||`, so the pinned `--config` and `--log-dir` still win and test
+    isolation is unchanged. The one derived value that moves is the **label**,
+    to `com.agbridge.box2` -- and with it the plist FILENAME, which is why a
+    handful of tests name `com.agbridge.box2.plist` rather than
+    `com.agbridge.plist`.
+    """
     def build(**over):
         args = {
             "--dest": str(tmp_path / "dest"),
@@ -675,6 +704,7 @@ def mac_args(tmp_path):
             "--log-dir": str(tmp_path / "logs"),
             "--statedir": str(tmp_path / "state"),
             "--feed-host": "box2",
+            "--instance": HOST,
             "--agb-remote-path": "/opt/agbridge/agb",
             "--python": sys.executable,
         }
@@ -794,11 +824,23 @@ def test_install_sh_mac_writes_the_config_with_a_generated_mac_id(
 def test_install_sh_mac_defaults_the_config_to_the_users_own_dotfile(
         run_sh, mac_args, fake_home, agb):
     """The default path is exercised (under a faked `$HOME`) rather than only
-    the `--config` seam, because the default is what the user gets."""
+    the `--config` seam, because the default is what the user gets.
+
+    ⚠️ The property survives; the path it names does not. "The user's own
+    dotfile" for the mac role is now `~/.config/agbridge/<name>/config` -- with
+    `--instance` required, `$config` defaults through the instance convention
+    (`install.sh`'s `[ -n "$config" ] || config="$DEFAULT_CONFIG_DIR/$instance/
+    config"`) and never through `$DEFAULT_CONFIG`. What is still being asserted
+    is that an install with no `--config` at all writes a real, readable config
+    where the operator will look for it.
+    """
     code, out, err = run_sh(mac_args(**{"--config": None}))
     assert code == 0, err
-    path = os.path.join(str(fake_home), ".config", "agbridge", "config")
+    path = os.path.join(str(fake_home), ".config", "agbridge", HOST, "config")
     assert agb.valid_mac_id(agb.read_config(path)["mac_id"])
+    # ...and not at the old nameless path, which no install creates any more.
+    assert not os.path.exists(
+        os.path.join(str(fake_home), ".config", "agbridge", "config"))
 
 
 def test_install_sh_mac_prints_the_farm_command_including_the_mac_id(
@@ -829,14 +871,25 @@ def test_the_printed_farm_command_carries_the_statedir_the_mac_recorded(
     assert hint and "--statedir %s" % (sd,) in hint[0]
 
 
-def test_the_printed_farm_command_omits_the_statedir_when_none_was_given(
-        run_sh, mac_args):
-    """The flag is forwarded, not invented: with no `--statedir` both halves
-    fall through to `agb.statedir()`'s own resolution, which is one rule."""
-    code, out, err = run_sh(mac_args(**{"--statedir": None}))
-    assert code == 0, err
-    hint = [l for l in out.splitlines() if "install.sh farm" in l]
-    assert hint and "--statedir" not in hint[0]
+# ⚠️ `test_the_printed_farm_command_omits_the_statedir_when_none_was_given`
+# stood here, and it is DELETED rather than inverted -- deliberately, and this
+# note is the reason so the deletion is not read as a violation of the house
+# rule that a withdrawn claim keeps its reasoning.
+#
+# It asserted that the printed `install.sh farm ...` hint drops `--statedir`
+# when none was given, "the flag is forwarded, not invented". That shape no
+# longer exists: `--instance` is required for the mac role, `--instance`
+# requires `--statedir`, so every argv that reaches the hint carries one and
+# `install.sh`'s conditional around it is dead code (it is now unconditional).
+# Its own argv, `mac_args(**{"--statedir": None})`, is *refused*, so it cannot
+# be re-pointed either.
+#
+# ⚠️ Its successor lands in the NEXT task, so the replacement spans two: the
+# subject that remains is *the hint carries the ADOPTED statedir* -- a value
+# that never appeared on the argv, which
+# `test_the_printed_farm_command_carries_the_statedir_the_mac_recorded` above
+# cannot distinguish from a forwarded one. Until that lands, the hint's
+# `--statedir` is covered only for values passed explicitly.
 
 
 FARM_SIDE_OPTIONS = {
@@ -954,6 +1007,34 @@ def test_install_sh_farm_writes_the_config_and_the_hooks(run_sh, tmp_path,
     command = hooks["Stop"][0]["hooks"][0]["command"]
     assert command.startswith("AGB_STATEDIR=")
     assert sd in command and "-S -E" in command
+
+
+def test_install_sh_farm_defaults_the_config_to_the_users_own_dotfile(
+        run_sh, tmp_path, fake_home, agb):
+    """⚠️ The one RUNTIME exercise left of `install.sh`'s
+    `[ -n "$config" ] || config="$DEFAULT_CONFIG"`.
+
+    Measured while making `--instance` mandatory: replacing that line with a
+    `die` caused **zero** failures in the whole suite. Every mac test derives
+    its config from `--instance` now, and every farm test pinned `--config` --
+    so a line deciding where a real install writes was left covered only by the
+    *string* comparison in
+    `test_the_default_config_path_is_spelled_the_same_in_all_three_places`,
+    which cannot tell a live default from a dead one.
+
+    The farm role is where the fall-through still lives: a farm host has exactly
+    one identity, takes no instance sugar, and `agb hook` resolves
+    `agb.config_path()` on every invocation -- so this path is not a leftover,
+    it is the only one those hooks will ever read.
+    """
+    code, out, err = run_sh(["farm", "--mac-id", "mac-0001",
+                             "--statedir", str(tmp_path / "state"),
+                             "--settings", str(tmp_path / "settings.json"),
+                             "--python", sys.executable])
+    assert code == 0, err
+    path = fake_home / ".config" / "agbridge" / "config"
+    assert agb.read_config(str(path))["mac_id"] == "mac-0001"
+    assert agb.config_path() == str(path)      # ...and it is agb's own default
 
 
 def test_install_sh_farm_refuses_without_a_mac_id(run_sh, tmp_path):
@@ -1115,7 +1196,7 @@ def test_the_rendered_plist_names_the_installed_agb(run_sh, mac_args,
                                                     tmp_path):
     code, out, err = run_sh(mac_args())
     assert code == 0, err
-    plist = tmp_path / "agents" / "com.agbridge.plist"
+    plist = tmp_path / "agents" / MAC_PLIST
     with open(str(plist), "rb") as handle:
         raw = handle.read()
     parsed = plistlib.loads(raw)
@@ -1123,7 +1204,7 @@ def test_the_rendered_plist_names_the_installed_agb(run_sh, mac_args,
         sys.executable, "-S", "-E", str(tmp_path / "dest" / "agb"), "bridge",
         "--config", str(tmp_path / "cfg" / "config")]
     assert parsed["StandardOutPath"].startswith(str(tmp_path / "logs"))
-    assert parsed["Label"] == "com.agbridge"
+    assert parsed["Label"] == MAC_LABEL
     assert b"@" not in raw.split(b"<plist")[1]     # no placeholder survived
     assert (tmp_path / "logs").is_dir()
 
@@ -1141,7 +1222,7 @@ def test_a_dest_containing_a_double_hyphen_still_renders_valid_xml(
     dest = tmp_path / "my--tools" / "agbridge"
     code, out, err = run_sh(mac_args(**{"--dest": str(dest)}))
     assert code == 0, err
-    plist = tmp_path / "agents" / "com.agbridge.plist"
+    plist = tmp_path / "agents" / MAC_PLIST
     with open(str(plist), "rb") as handle:
         raw = handle.read()
     parsed = plistlib.loads(raw)          # raises on invalid XML
@@ -1170,7 +1251,7 @@ def test_a_log_dir_containing_a_sed_metacharacter_survives_rendering(
     logdir = tmp_path / "logs&more"
     code, out, err = run_sh(mac_args(**{"--log-dir": str(logdir)}))
     assert code == 0, err
-    with open(str(tmp_path / "agents" / "com.agbridge.plist"), "rb") as handle:
+    with open(str(tmp_path / "agents" / MAC_PLIST), "rb") as handle:
         parsed = plistlib.loads(handle.read())
     assert parsed["StandardOutPath"] == str(logdir / "bridge.log")
     assert parsed["StandardErrorPath"] == str(logdir / "bridge.err.log")
@@ -1196,7 +1277,11 @@ def test_a_template_with_an_unfillable_placeholder_installs_nothing(
 
     assert code != 0
     assert "placeholder" in err
-    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+    # ⚠️ The name the fixture now renders. Spelled `com.agbridge.plist` this
+    # assertion kept passing and stopped asserting: no successful `mac_args()`
+    # install can produce that file any more, so it would have held nothing up
+    # while the `*.tmp.*` companion carried the test alone.
+    assert not (tmp_path / "agents" / MAC_PLIST).exists()
     assert list((tmp_path / "agents").glob("*.tmp.*")) == []
 
 
@@ -1224,7 +1309,8 @@ def test_a_plist_plutil_rejects_installs_nothing(run_sh, mac_args, tmp_path,
     code, out, err = run_sh(mac_args())
     assert code != 0
     assert "not a valid plist" in err
-    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+    # The name the fixture renders -- see the note in the test above.
+    assert not (tmp_path / "agents" / MAC_PLIST).exists()
     assert list((tmp_path / "agents").glob("*.tmp.*")) == []
 
 
@@ -1266,7 +1352,7 @@ def test_install_sh_loads_the_plist_through_launchctl(run_sh, mac_args,
     assert code == 0, err
     calls = stub_bin.calls("launchctl")
     assert [call[0] for call in calls] == ["bootout", "bootstrap"]
-    plist = str(tmp_path / "agents" / "com.agbridge.plist")
+    plist = str(tmp_path / "agents" / MAC_PLIST)
     assert calls[1][-1] == plist
     assert "bootstrapped" in out
 
@@ -1307,7 +1393,7 @@ def test_a_missing_launchctl_writes_the_plist_and_says_so(run_sh, mac_args,
     code, out, err = run_sh(argv)
     assert code == 0, err
     assert "launchctl not found" in out
-    assert (tmp_path / "agents" / "com.agbridge.plist").exists()
+    assert (tmp_path / "agents" / MAC_PLIST).exists()
 
 
 def test_a_launchctl_that_can_load_nothing_at_all_is_fatal(run_sh, mac_args,
@@ -1360,6 +1446,30 @@ def _instance_config_path(fake_home, name="hostb"):
     return fake_home / ".config" / "agbridge" / name / "config"
 
 
+def _seed_default_config(run_agb, fake_home):
+    """A real config at the DEFAULT (nameless) path, and the id in it.
+
+    ⚠️ `install.sh` cannot be the seeder any more. These tests used to write it
+    with `run_sh(mac_args(**{"--config": None}))`, i.e. through the installer --
+    and with `--instance` required there is no installer argv that creates a
+    nameless instance at all. The file still has to exist, because
+    `install.sh`'s mac-id adoption probes `$DEFAULT_CONFIG` second and a Mac
+    upgraded from 0.5.0 really does have one.
+
+    `agb install-config` is not a weaker substitute for the installer here, it
+    is the SAME WRITER: `role_mac` shells out to exactly this command for every
+    config it writes, so what lands is the shape the adoption reads on a real
+    Mac rather than a hand-rolled look-alike.
+    """
+    path = str(fake_home / ".config" / "agbridge" / "config")
+    code, out, err = run_agb(["install-config", "--config", path,
+                              "--generate-mac-id", "--print-mac-id"])
+    assert code == 0, err
+    mac_id = out.decode().strip()
+    assert mac_id
+    return path, mac_id
+
+
 def test_an_instance_install_agrees_about_its_label_config_and_logs(
         run_sh, mac_args, tmp_path, fake_home, stub_bin, agb):
     """One flag, and the label, the config and the logs all follow it.
@@ -1387,10 +1497,16 @@ def test_an_instance_install_agrees_about_its_label_config_and_logs(
     assert agb.read_config(str(config))["statedir"] == str(tmp_path / "state")
     assert "instance: hostb" in out
 
-    # Non-vacuity, and the isolation claim: the DEFAULT instance was not
-    # written -- no config beside it, no plist, no log directory.
-    assert not (fake_home / ".config" / "agbridge" / "config").exists()
-    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+    # Non-vacuity, and the isolation claim -- ⚠️ RE-ANCHORED, not re-pointed.
+    # It used to say "the DEFAULT instance was not written", which was the
+    # isolation an instance install needed when a nameless install was the
+    # ordinary case. `install.sh mac` refuses one now, so that claim is about a
+    # file nothing can create and would pass with the sugar deleted. The
+    # assertable version names the OTHER instance: `mac_args` carries
+    # `--instance box2` and `_instance_args` overrides it, so `com.agbridge.box2`
+    # is exactly what appears if that override ever stops taking effect.
+    assert not (tmp_path / "agents" / MAC_PLIST).exists()
+    assert not _instance_config_path(fake_home, HOST).exists()
     assert (fake_home / "Library" / "Logs" / "agbridge" / "hostb").is_dir()
 
 
@@ -1424,7 +1540,7 @@ def test_an_explicit_flag_still_beats_the_instance_sugar(run_sh, mac_args,
 
 
 def test_an_instance_adopts_the_macs_existing_mac_id(run_sh, mac_args,
-                                                     fake_home, agb):
+                                                     run_agb, fake_home, agb):
     """Decision 4. The id names THIS MAC, not this connection.
 
     Each instance's bridge writes `bridge/<mac-id>.beat` inside its OWN
@@ -1433,16 +1549,18 @@ def test_an_instance_adopts_the_macs_existing_mac_id(run_sh, mac_args,
     `agb status-line` reading `bridge:DOWN` until every farm host there was
     re-installed with the new id, which is the exact failure `install.sh` prints
     the id to prevent.
+
+    ⚠️ The seed is `agb install-config`, not the installer: `install.sh mac`
+    requires `--instance` and so can no longer write a nameless config at all.
+    See `_seed_default_config` -- the writer is the same one `role_mac` calls.
     """
-    code, out, err = run_sh(mac_args(**{"--config": None}))     # the default
-    assert code == 0, err
-    default = agb.read_config(str(fake_home / ".config" / "agbridge" / "config"))
+    _path, seeded = _seed_default_config(run_agb, fake_home)
 
     code, out, err = run_sh(_instance_args(mac_args))
     assert code == 0, err
     assert agb.read_config(str(_instance_config_path(fake_home)))["mac_id"] \
-        == default["mac_id"]
-    assert "adopted %s" % (default["mac_id"],) in out
+        == seeded
+    assert "adopted %s" % (seeded,) in out
 
 
 def test_the_first_instance_on_a_mac_with_no_default_config_still_mints_one(
@@ -1619,16 +1737,19 @@ def test_an_instance_install_bounces_only_its_own_launchd_job(
     assert calls[0][1].endswith("/com.agbridge.hostb")
     assert calls[1][-1] == str(tmp_path / "agents"
                                / "com.agbridge.hostb.plist")
-    # Non-vacuity, and the failure itself: the default job's label is not what
-    # was bounced, and its plist is not what was bootstrapped.
-    assert not any(arg.endswith("/com.agbridge") for call in calls
+    # Non-vacuity, and the failure itself: the OTHER instance's label is not
+    # what was bounced, and its plist is not what was bootstrapped. Re-anchored
+    # from `com.agbridge` -- with a nameless install refused there is no default
+    # job left to name, and `mac_args`' own `--instance box2` is the job an
+    # install of `hostb` must not take out.
+    assert not any(arg.endswith("/" + MAC_LABEL) for call in calls
                    for arg in call)
-    assert not any(arg.endswith("/com.agbridge.plist") for call in calls
+    assert not any(arg.endswith("/" + MAC_PLIST) for call in calls
                    for arg in call)
 
 
 def test_reinstalling_an_instance_keeps_the_mac_id_it_already_has(
-        run_sh, mac_args, fake_home, agb):
+        run_sh, mac_args, run_agb, fake_home, agb):
     """⚠️ Adoption fires on EVERY `--instance` run without `--mac-id`, which
     means on a routine upgrade -- and `resolve_mac_id` gives `given` priority
     over `existing`.
@@ -1638,14 +1759,22 @@ def test_reinstalling_an_instance_keeps_the_mac_id_it_already_has(
     `bridge/<old-id>.beat`, so `agb status-line` reads `bridge:DOWN` for ever
     and `agb doctor` reports no beat -- out of an install that was asked to
     change nothing.
+
+    ⚠️ This is the load-bearing pin of the "own config FIRST, the default one
+    only after" ordering, and it is worth keeping straight against the statedir
+    adoption that imitates its shape: the mac-id deliberately falls back to
+    `$DEFAULT_CONFIG` (sharing an id across instances is the TRUTH -- one Mac,
+    one id), while a statedir must never be adopted from another instance's
+    file, because sharing a statedir is precisely the failure `--instance`
+    refuses to install without. Same loop, opposite second step.
+
+    ⚠️ The default config is seeded by `agb install-config`, not by the
+    installer -- `install.sh mac` no longer writes a nameless one.
     """
     code, out, err = run_sh(_instance_args(mac_args,
                                            **{"--mac-id": "mac-b0b0"}))
     assert code == 0, err
-    code, out, err = run_sh(mac_args(**{"--config": None}))     # the default
-    assert code == 0, err
-    default = agb.read_config(
-        str(fake_home / ".config" / "agbridge" / "config"))["mac_id"]
+    _path, default = _seed_default_config(run_agb, fake_home)
     assert default != "mac-b0b0", "the two configs must disagree to test this"
 
     code, out, err = run_sh(_instance_args(mac_args))           # the upgrade
@@ -1678,23 +1807,118 @@ def test_the_farm_role_refuses_the_instance_sugar(run_sh, tmp_path):
     assert not (tmp_path / "settings.json").exists()
 
 
-def test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag(
+# ---------------------------------------------------------------------------
+# and now the name is REQUIRED: no nameless instance can be created
+# ---------------------------------------------------------------------------
+#
+# Every Mac-side command stopped privileging the unnamed instance one release
+# ago -- a bare `agb-refresh` and a bare `agb close-done` sweep all of them, a
+# bare `agb forget-rows` is refused, `agb instances` lists what exists. But
+# `install.sh mac` with no `--instance` still CREATED a nameless one, so the
+# symmetry was a convention rather than a guarantee. These three close that.
+#
+# ⚠️ What they do NOT claim: that a nameless instance is unreachable. A plist on
+# disk outlives the installer that wrote it, so every legacy reader stays --
+# `agb_mac.instance_display_name`'s `(default)` spelling, `bind_label_to_config`'s
+# "no --config implies the default config" branch, `_is_agbridge_instance`'s
+# label-space clause. What changed is CREATABILITY, and not even that airtight:
+# `--instance X --config <the default path>` still writes the nameless config,
+# which is exactly what
+# `test_what_a_default_install_renders_leaves_the_bridge_where_it_was` relies on.
+
+def test_a_nameless_mac_install_is_refused_and_writes_nothing(
+        run_sh, mac_args, tmp_path, fake_home, stub_bin):
+    """⚠️ The point of the change.
+
+    A hard error and not a warning: a warning on a FIRST install gets ignored,
+    and the asymmetry it warned about is then permanent on that Mac -- every
+    Mac-side command guessing which instance was meant, and `agb instances`
+    unable to say what exists.
+
+    ⚠️ Asserted as ABSENCE, not as an exit code. A refusal that exits non-zero
+    after copying three files, writing a config and rendering a plist has still
+    installed something, and a half-tree is the state nothing can diagnose
+    later. So: every path this argv names, plus a `launchctl` stub that must
+    record no call at all.
+    """
+    stub_bin.install("launchctl")
+    argv = [a for a in mac_args(**{"--instance": None}) if a != "--no-load"]
+    code, out, err = run_sh(argv)
+    assert code != 0
+    assert "--instance" in err
+    assert "--instance auto" in err            # ...and the one-word fix
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+    assert not (tmp_path / "cfg" / "config").exists()
+    assert not (tmp_path / "logs").exists()
+    assert list(fake_home.rglob("config")) == []
+    assert stub_bin.calls("launchctl") == []
+
+
+def test_both_ways_of_naming_an_instance_satisfy_the_requirement(
+        run_sh, mac_args, stub_bin, fake_home):
+    """The refusal names two fixes, and one that named a fix nobody could use
+    would be worse than one that named none.
+
+    Both spellings in one test so the pair cannot drift: an explicit
+    `--instance <name>`, and `--instance auto` reading the name off
+    `--feed-host`. Asserted through the CONFIG each run wrote, because the
+    config directory is what the name actually decides -- two runs, two
+    directories, and the nameless one created by neither.
+    """
+    _ssh_answering(stub_bin, "hostb01")
+    code, out, err = run_sh(_instance_args(mac_args, name="named"))
+    assert code == 0, err
+    assert _instance_config_path(fake_home, "named").exists()
+
+    code, out, err = run_sh(_auto_args(mac_args))
+    assert code == 0, err
+    assert _instance_config_path(fake_home, "hostb01").exists()
+
+    assert not (fake_home / ".config" / "agbridge" / "config").exists()
+
+
+def test_install_sh_farm_still_installs_with_no_instance(run_sh, tmp_path, agb):
+    """⚠️ The requirement belongs to the MAC role alone, and the asymmetry is
+    the design rather than an omission.
+
+    A farm host has exactly one identity: `agb hook` and `agb status-line`
+    resolve `agb.config_path()` -- the default path -- on every invocation, so a
+    named farm config is a file nothing opens. That is why `--instance` is
+    *refused* for the farm role, and requiring one there would refuse every farm
+    install in existence to buy nothing.
+    """
+    code, out, err = run_sh(_farm(tmp_path))
+    assert code == 0, err
+    assert "--instance" not in err
+    assert agb.read_config(str(tmp_path / "config"))["mac_id"] == "mac-0001"
+
+
+def test_an_install_is_the_plist_it_always_was_plus_the_config_flag(
         run_sh, mac_args, tmp_path, fake_home):
     """The upgrade claim, stated key by key.
 
-    The config flag renders for EVERY install, the default one included
-    (decision 5: the installer gets one path, not a conditional exercised only
-    on the second machine) -- so the guarantee for an existing install is not
-    "no change" but "this change and no other".
+    The config flag renders for EVERY install (decision 5: the installer gets
+    one path, not a conditional exercised only on the second machine) -- so the
+    guarantee for an existing install is not "no change" but "this change and no
+    other".
+
+    ⚠️ Was `..._a_default_install_...`, and the inversion is the reasoning, not
+    the paths. It asserted `"instance:" not in out` as the *definition* of a
+    default install: no banner meant the nameless instance, and that was the one
+    shape this test was about. There is no such shape any more -- `--instance`
+    is required -- so the banner is printed on every run, and asserting its
+    absence would be asserting a state the installer cannot reach. The plist
+    filename, the rendered `--config` and the `Label` all move with it, because
+    all three follow the name.
     """
     code, out, err = run_sh(mac_args(**{"--config": None}))
     assert code == 0, err
-    parsed = plistlib.loads(
-        read_bytes(tmp_path / "agents" / "com.agbridge.plist"))
+    parsed = plistlib.loads(read_bytes(tmp_path / "agents" / MAC_PLIST))
     assert parsed["ProgramArguments"] == [
         sys.executable, "-S", "-E", str(tmp_path / "dest" / "agb"), "bridge",
-        "--config", str(fake_home / ".config" / "agbridge" / "config")]
-    assert parsed["Label"] == "com.agbridge"
+        "--config", str(_instance_config_path(fake_home, HOST))]
+    assert parsed["Label"] == MAC_LABEL
     assert parsed["StandardOutPath"] == str(tmp_path / "logs" / "bridge.log")
     assert parsed["StandardErrorPath"] == str(tmp_path / "logs"
                                               / "bridge.err.log")
@@ -1704,7 +1928,7 @@ def test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag(
     assert parsed["ProcessType"] == "Background"
     assert parsed["WorkingDirectory"] == "/tmp"
     assert parsed["EnvironmentVariables"]["PATH"].startswith("/opt/homebrew")
-    assert "instance:" not in out
+    assert "instance: %s" % (HOST,) in out
 
 
 def test_what_a_default_install_renders_leaves_the_bridge_where_it_was(
@@ -1721,12 +1945,29 @@ def test_what_a_default_install_renders_leaves_the_bridge_where_it_was(
     `--config` on every row of every default install, re-minting commands that
     were fine beside rows agterm is still showing. So the value is taken from
     the RENDERED plist rather than rebuilt here, and run through both.
+
+    ⚠️ The default config is reached by NAMING it, not by omitting `--instance`.
+    `install.sh mac --instance X --config <the default path>` is still legal --
+    `--instance` only *defaults* `$config`, it does not own it -- so this
+    coverage is recoverable, and is recovered here rather than given up.
+    Dropping the test would have surrendered the only END-TO-END exercise of
+    invariant 14's first cross-file agreement (`install.sh`'s `DEFAULT_CONFIG`
+    against `agb.config_path()`); the string comparison in
+    `test_the_default_config_path_is_spelled_the_same_in_all_three_places`
+    cannot see what the bridge then does with the value.
     """
-    code, _out, err = run_sh(mac_args(**{"--config": None}))
+    # ⚠️ Taken from `install.sh`'s OWN `DEFAULT_CONFIG`, not rebuilt out of
+    # `fake_home` here. Rebuilt, the test would compare its own spelling of the
+    # default against `agb.config_path()` and the installer's would drop out of
+    # the loop entirely -- which is the half of invariant 14 this test exists
+    # for, and it would go quiet without failing.
+    default_config = _sh_default_config(INSTALL_SH, fake_home)
+    code, _out, err = run_sh(mac_args(**{"--config": default_config}))
     assert code == 0, err
     rendered = plistlib.loads(
-        read_bytes(tmp_path / "agents" / "com.agbridge.plist")
+        read_bytes(tmp_path / "agents" / MAC_PLIST)
     )["ProgramArguments"][-1]
+    assert rendered == default_config
 
     settings = mac.render_settings(mac.parse_bridge_args(["--config",
                                                           rendered]))
@@ -2167,9 +2408,12 @@ def test_instance_auto_names_the_instance_after_the_machine(
     # banner that printed it would name nothing.
     assert "instance: auto -> hostb01" in out
 
-    # Non-vacuity, and the isolation claim: the DEFAULT instance is untouched.
-    assert not (fake_home / ".config" / "agbridge" / "config").exists()
-    assert not (tmp_path / "agents" / "com.agbridge.plist").exists()
+    # Non-vacuity, and the isolation claim -- re-anchored on the OTHER instance
+    # for the reason given in `test_an_instance_install_agrees_about_its_label
+    # _config_and_logs`: there is no default install to be isolated from any
+    # more, and `mac_args`' `--instance box2` is what `auto` had to override.
+    assert not _instance_config_path(fake_home, HOST).exists()
+    assert not (tmp_path / "agents" / MAC_PLIST).exists()
 
 
 def test_instance_auto_asks_the_machine_once_and_both_readers_use_the_answer(
@@ -2269,32 +2513,52 @@ def test_instance_auto_is_refused_on_the_farm_role(run_sh, tmp_path, stub_bin):
     assert stub_bin.calls("ssh") == []
 
 
-def test_an_absent_instance_is_the_default_one_even_when_the_probe_answers(
+def test_an_absent_instance_never_reaches_the_probe_that_could_name_it(
         run_sh, mac_args, stub_bin, tmp_path, fake_home, agb):
-    """⚠️ Why `auto` is a WORD and not the default, pinned.
+    """⚠️ Why `auto` is a WORD, restated for a mandatory `--instance`.
 
-    Re-running `install.sh mac` with the original flags is the documented
-    upgrade path. If an absent `--instance` meant "name it after whatever the
-    feed host calls itself", every upgrade would mint a new instance beside the
-    old one -- new config, new launchd job, new rows map, and every row
-    duplicated in the sidebar.
+    This was `test_an_absent_instance_is_the_default_one_even_when_the_probe
+    _answers`, and its subject -- an absent `--instance` meaning the default
+    instance -- was deleted outright: the mac role refuses a nameless install.
+    The rule it protected survives and is what is asserted here. A name is never
+    DERIVED from a machine nobody asked about, so an install that omits
+    `--instance` cannot quietly become `hostb01` (a new config, a new launchd
+    job, a new rows map, every row duplicated) on the strength of an answer the
+    operator never saw.
 
-    So: probe on, a hostname that would make a perfectly good instance name, and
-    the install still lands on the DEFAULT paths. Breaking `auto` open (making
-    the derivation unconditional) fails here and nowhere else.
+    ⚠️ And the assertable form is stronger than "refused even when the probe
+    answers": measured, the refusal at the top of `role_mac` fires *before*
+    `probe_farmhost`, so the ssh is never made at all. There is no answer to
+    ignore -- which is why the old non-vacuity line (`assert "hostb01" in out`)
+    cannot come along, and why its replacement is a companion run rather than an
+    assertion about this one.
     """
     _ssh_answering(stub_bin, "hostb01")
-    code, out, err = run_sh(_probing_args(mac_args))
-    assert code == 0, err
-    # The probe DID answer -- otherwise this passes for the wrong reason.
-    assert "hostb01" in out
-    values = agb.read_config(str(tmp_path / "cfg" / "config"))
-    assert values["host_hostb01"] == "box2"
-    # ...and none of it became an instance.
-    assert "instance:" not in out
+    code, out, err = run_sh(_probing_args(mac_args, **{"--instance": None,
+                                                       "--config": None,
+                                                       "--log-dir": None}))
+    assert code != 0
+    assert "--instance" in err
+    # The probe was never consulted, so no name could have been invented.
+    assert stub_bin.calls("ssh") == []
+    # Nothing was written -- not the derivable name, and not the nameless
+    # instance it used to fall through to.
     assert not _instance_config_path(fake_home, "hostb01").exists()
-    assert not (tmp_path / "agents" / "com.agbridge.hostb01.plist").exists()
-    assert (tmp_path / "agents" / "com.agbridge.plist").exists()
+    assert not (tmp_path / "dest").exists()
+    assert not (tmp_path / "agents").exists()
+    assert list(fake_home.rglob("config")) == []
+
+    # ⚠️ The companion, differing only in the variable under test: the same argv
+    # WITH `--instance auto` does reach the probe and does install. Without it
+    # the assertions above would hold just as well against a stub that cannot
+    # answer, an installer that never probes on any path, or a `--no-probe` that
+    # slipped back into the argv.
+    code, out, err = run_sh(_auto_args(mac_args))
+    assert code == 0, err
+    assert len(stub_bin.calls("ssh")) == 1
+    assert "instance: auto -> hostb01" in out
+    assert agb.read_config(
+        str(_instance_config_path(fake_home, "hostb01")))["mac_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -2388,25 +2652,46 @@ def _sh_assignment(script, name):
     raise AssertionError("%s not assigned in %s" % (name, script))
 
 
+def _sh_default_config(script, home):
+    """`$DEFAULT_CONFIG` as that script spells it, resolved against `home`.
+
+    `"$DEFAULT_CONFIG_DIR/config"` -> the real path. Shared with
+    `test_what_a_default_install_renders_leaves_the_bridge_where_it_was`, which
+    has to *pass the installer its own spelling* rather than rebuild one.
+    """
+    spelled = _sh_assignment(script, "DEFAULT_CONFIG").strip('"')
+    resolved = spelled.replace(
+        "$DEFAULT_CONFIG_DIR",
+        _sh_assignment(script, "DEFAULT_CONFIG_DIR").strip('"'))
+    return resolved.replace("$HOME", str(home))
+
+
 def test_the_default_config_path_is_spelled_the_same_in_all_three_places(agb):
     """⚠️ `agb.config_path()`, `install.sh` and `agb-refresh` each spell it
     independently, and a disagreement is invisible at install time.
 
     `pane_argv` emits `--config` only when the path differs from
     `agb.config_path()`, so an installer that spelled the default even slightly
-    differently would make **every default install** re-mint **every row** --
-    and the install itself would report success. `agb-refresh`'s copy decides
+    differently would make **every install that names it** re-mint **every row**
+    -- and the install itself would report success. `agb-refresh`'s copy decides
     which map a plain refresh repairs.
+
+    ⚠️ `install.sh`'s RUNTIME use of `DEFAULT_CONFIG` narrowed with this change,
+    and the difference is worth stating rather than discovering. The mac role
+    can no longer fall through to it (`--instance` is required, and `$config`
+    then comes from the instance convention), so the fall-through line survives
+    for the `farm` role -- kept exercised by
+    `test_install_sh_farm_defaults_the_config_to_the_users_own_dotfile`, which
+    passes no `--config` at all. The value is still reached END TO END on the
+    mac side too, by being *named*:
+    `test_what_a_default_install_renders_leaves_the_bridge_where_it_was` feeds
+    this very spelling to the installer and reads it back out of the plist. So
+    this test remains the string guard, and is not the only guard.
     """
     expected = agb.config_path()
     home = agb.home_dir()
     for script in (INSTALL_SH, REFRESH_SH):
-        spelled = _sh_assignment(script, "DEFAULT_CONFIG")
-        # `"$DEFAULT_CONFIG_DIR/config"` -> the resolved path.
-        resolved = spelled.strip('"').replace(
-            "$DEFAULT_CONFIG_DIR",
-            _sh_assignment(script, "DEFAULT_CONFIG_DIR").strip('"'))
-        assert resolved.replace("$HOME", home) == expected, script
+        assert _sh_default_config(script, home) == expected, script
 
 
 def test_the_two_instance_name_validators_accept_exactly_the_same_names():

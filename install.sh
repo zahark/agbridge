@@ -65,25 +65,29 @@ say() { printf '%s\n' "$*"; }
 
 usage() {
     cat >&2 <<'EOF'
-usage: install.sh mac  --feed-host <ssh-target> --agb-remote-path <farm path> [options]
+usage: install.sh mac  --instance <name> --feed-host <ssh-target>
+                       --agb-remote-path <farm path> [options]
        install.sh farm --mac-id <id> [options]
 
-mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/config with a
-       freshly minted mac_id, render the launchd plist and load it.
+mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/<name>/config with
+       a freshly minted mac_id, render the launchd plist and load it.
 
+  --instance <name>          REQUIRED. Every Mac-side instance is named, so
+                             `agb instances` can say what exists and no command
+                             has to guess which one you meant. Its own config,
+                             label and logs live under <name>. Requires
+                             --statedir; mac only.
+                             `auto` reads the name off --feed-host instead
   --feed-host <target>       ssh target of the farm box running `agb feed`  (required)
   --agb-remote-path <path>   absolute path of `agb` on the farm             (required)
   --statedir <path>          farm-side statedir            (default: agb's own default)
-  --instance <name>          a SECOND machine: its own config, label and logs
-                             under <name>. Requires --statedir; mac only.
-                             `auto` reads the name off --feed-host instead
   --remote-python <path>     absolute farm-side interpreter        (default /bin/python3)
   --jump-host <target>       ssh jump host for machine #3
   --host <name>=<target>     ssh target for a record's host; repeatable
   --mac-id <id>              adopt an existing mac-id instead of minting one
   --dest <dir>               where the three files go       (default ~/.local/lib/agbridge)
   --python <path>            absolute interpreter to run the bridge with
-  --config <path>            config file                (default ~/.config/agbridge/config)
+  --config <path>            config file      (default ~/.config/agbridge/<name>/config)
   --launch-agents <dir>      (default ~/Library/LaunchAgents)
   --log-dir <dir>            (default ~/Library/Logs/agbridge)
   --launch-path <PATH>       PATH given to the launchd job
@@ -397,13 +401,23 @@ absolute "the interpreter" "$python"
 # installer already ssh's for. Resolved HERE, before the paths below, because
 # the name is what decides all three of them.
 #
-# ⚠️ OPT-IN, and it can never become the default. Re-running `install.sh mac`
-# with the original flags is the documented upgrade path, so an ABSENT
-# `--instance` has to keep meaning the default instance. If it meant "name it
+# ⚠️ OPT-IN, and it can never become the default. If `--instance` meant "name it
 # after whatever the feed host calls itself", every upgrade of an existing
 # install would mint a NEW instance beside it -- new config, new launchd job,
 # new rows map, and every row duplicated in the sidebar. Typing the word is the
-# whole difference between those two.
+# whole difference between those two, and that still holds: a bare
+# `install.sh mac` is REFUSED (see role_mac), never auto-named.
+#
+# ⚠️ WITHDRAWN, and kept because a withdrawn reason that is deleted gets
+# re-proposed. Two clauses of the paragraph above used to read: "Re-running
+# `install.sh mac` with the original flags is the documented upgrade path, so an
+# ABSENT `--instance` has to keep meaning the default instance." Both are now
+# false. `--instance` is REQUIRED for the mac role, so an absent one means
+# nothing at all -- it is an error -- and a legacy NAMELESS install therefore has
+# no in-place upgrade path: re-running it with the original flags is refused, and
+# adopting the old file with `--config <the default path>` still demands
+# `--statedir`. The rule they were protecting (never DERIVE a name nobody typed)
+# survives above; what died is the fall-back they derived it from.
 #
 # ⚠️ And a failure here is a REFUSAL, never a fall-back to the default instance.
 # That fall-back is the accident this feature exists to avoid: the run would
@@ -479,6 +493,24 @@ if [ -n "$jumphost" ]; then shell_safe "--jump-host" "$jumphost"; fi
 # ---------------------------------------------------------------------------
 
 role_mac() {
+    # ⚠️ HERE, beside the other two requirements, and BEFORE any filesystem
+    # mutation (the first is `mkdir -p "$dest"` below), so a refusal installs
+    # nothing rather than leaving a half-copied tree. It is also before
+    # `probe_farmhost`, so a refused install makes no ssh call either: the probe
+    # is never consulted, which is what makes "no name can be invented" true
+    # rather than merely untested.
+    #
+    # The mac role and NOT the farm role: a farm host has exactly one identity,
+    # and `agb hook` resolves `agb.config_path()` -- the default path -- on every
+    # invocation, so a named farm config is a file nothing opens. That is the
+    # same reason `--instance` is refused for the farm role above; here the
+    # asymmetry runs the other way, and both halves of it come from the one fact.
+    #
+    # A hard error and not a warning: a warning on a first install gets ignored,
+    # and the asymmetry it warned about then becomes permanent on that Mac.
+    # Single-quoted, because a double-quoted `agb instances` is command
+    # substitution and `die` would RUN it.
+    [ -n "$instance" ] || die 'mac: --instance is required. Every Mac-side instance is named, so `agb instances` can say what exists and no command has to guess which one you meant. Pass --instance <name>, or --instance auto to name it after --feed-host.'
     [ -n "$feedhost" ] || die "mac: --feed-host is required (the bridge cannot invent the ssh target, and one that silently never connects is the failure this tool exists to remove)"
     [ -n "$remotepath" ] || die "mac: --agb-remote-path is required: the absolute path of agb ON THE FARM, e.g. /opt/agbridge/agb"
     shell_safe "--feed-host" "$feedhost"
@@ -721,8 +753,23 @@ role_mac() {
     #     where reaching one spoke from another does need the hub -- and
     #     `prune_jump_host` drops it whenever it names this host or the target,
     #     which is every case in the Mac -> box #2 -> #3 topology.
-    set -- sh "$remotedir/install.sh" farm --mac-id "$macid"
-    if [ -n "$statedir" ]; then set -- "$@" --statedir "$statedir"; fi
+    #
+    # ⚠️ `--statedir` is UNCONDITIONAL here, and the conditional it replaced was
+    # dead code the moment `--instance` became required: every mac install now
+    # has an instance, and `[ -n "$statedir" ] || die` above already refuses an
+    # instance without a statedir -- so nothing reaching this line can have an
+    # empty one. The farm role never builds this hint.
+    #
+    # ⚠️ The `install-config` argv above spells the same `if [ -n "$statedir" ]`
+    # and is dead by exactly the same argument. It is left conditional
+    # DELIBERATELY, so the inconsistency is a decision rather than an oversight:
+    # nothing tests it, whereas this line's conditionality was the subject of a
+    # named test, and a conditional that is asserted has to be either kept or
+    # replaced rather than quietly left to rot. (`role_farm`'s two are a
+    # different case again -- the farm role does not require `--statedir`, so
+    # theirs are live and correctly stay conditional.)
+    set -- sh "$remotedir/install.sh" farm --mac-id "$macid" \
+           --statedir "$statedir"
     if [ -n "$remotepython" ]; then set -- "$@" --python "$remotepython"; fi
     if [ -n "$jumphost" ]; then set -- "$@" --jump-host "$jumphost"; fi
     for h in $hosts; do set -- "$@" --host "$h"; done
