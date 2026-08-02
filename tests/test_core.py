@@ -206,6 +206,7 @@ def test_parse_config_reads_the_documented_keys(agb, ops):
         "notify_on_blocked = 1\n"
         "notify_on_new_row = 1\n"
         "notify_on_completed_after = 300\n"
+        "row_fields = label,cwd:base,pane\n"
         "host_machine3 = m3.example.com\n"
     )
     assert malformed == []
@@ -231,6 +232,7 @@ def test_the_documented_key_list_is_pinned_by_name(ops):
         "statedir", "mac_id", "feed_host", "agb_remote_path", "remote_python",
         "jump_host", "workspace",
         "notify_on_blocked", "notify_on_new_row", "notify_on_completed_after",
+        "row_fields",
     }
     assert ops.CONFIG_KEY_PREFIXES == ("host_",)
 

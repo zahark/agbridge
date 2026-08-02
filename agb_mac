@@ -2472,6 +2472,7 @@ def render_settings(opts, config=None):
     path = opts.get("config")
     if config is None:
         config = agb.read_config(path)
+    row_fields, row_fields_error = parse_row_fields(config, "row_fields")
     return {
         "rows": opts.get("rows") or rows_path(path),
         "placements": placements_path(path),
@@ -2494,6 +2495,11 @@ def render_settings(opts, config=None):
         # a second read is how one process came to hold two of them.
         "notify_completed_after": config_seconds(
             config, "notify_on_completed_after", COMPLETED_AFTER),
+        # The PARSED (name, modifier) list, not the raw string -- `row_title`
+        # iterates it. The error rides alongside because this function has no
+        # warn channel; `bridge_sink` has one and reports it.
+        "row_fields": row_fields,
+        "row_fields_error": row_fields_error,
     }
 
 
@@ -2630,6 +2636,12 @@ def bridge_sink(model, opts, warn=None, config=None, run=None):
     if opts.get("no_agterm"):
         return (bridge_report, None)
     settings = render_settings(opts, config)
+    # Once, here: this is `render_settings`' only production caller and its own
+    # only caller is `run_bridge`, so "warn once" is structural rather than a
+    # rule somebody has to keep. Guarded because `warn` is optional and three
+    # existing call sites pass nothing.
+    if settings.get("row_fields_error") and warn:
+        warn(settings["row_fields_error"])
     rows = load_rows(settings["rows"], warn)
     renderer = RowRenderer(model, rows, run=run, warn=warn, settings=settings)
     return (OpTee([bridge_report, renderer]), renderer)

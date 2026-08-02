@@ -1443,3 +1443,46 @@ def test_the_truncation_line_is_stamped(mac, tmp_path):
     finally:
         os.close(fd)
     assert "1970-01-01T00:00:00.000Z" in path.read_text()
+
+
+def test_row_fields_reaches_the_renderer_as_a_parsed_list(mac, config_file,
+                                                          fake_home):
+    """The one line joining the config key to `row_title`.
+
+    ⚠️ The **parsed** `(name, modifier)` pairs, not the raw string: `row_title`
+    iterates it, and handing it a string would make it iterate characters while
+    every plumbing assertion still passed.
+    """
+    config_file("")
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["row_fields"] == mac.ROW_FIELDS_DEFAULT
+    assert settings["row_fields_error"] is None
+
+    config_file("row_fields = label, cwd:base, pane\n")
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["row_fields"] == (("label", ""), ("cwd", "base"),
+                                      ("pane", ""))
+    assert settings["row_fields_error"] is None
+
+
+def test_a_bad_row_fields_falls_back_and_the_warning_reaches_the_channel(
+        mac, config_file, fake_home, tmp_path):
+    """⚠️ Asserted through `bridge_sink`, not off the settings dict: a non-None
+    error in a dict proves the parser, not the plumbing. The bridge is the only
+    place that can tell you, since `agb doctor` validates key names and not
+    values -- and it runs on the farm, while this is a Mac-side key.
+
+    ⚠️ A tmp config, not `{}`: with no `--config` the settings resolve
+    `rows_path(None)` and `load_rows` opens the developer's real
+    `~/.agbridge/rows`, which this suite treats as a load-bearing seam.
+    """
+    path = str(tmp_path / "config")
+    with open(path, "w") as handle:
+        handle.write("row_fields = label,workspace\n")
+    warnings = []
+    sink, renderer = mac.bridge_sink(mac.BridgeModel(), {"config": path},
+                                     warn=warnings.append)
+    assert renderer is not None
+    assert len(warnings) == 1, warnings
+    assert "workspace" in warnings[0]
+    assert renderer.settings["row_fields"] == mac.ROW_FIELDS_DEFAULT
