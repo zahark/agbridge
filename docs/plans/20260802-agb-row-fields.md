@@ -43,8 +43,10 @@ The default is byte-identical to today, so this is invisible to anyone who does 
 - **Related constants**: `TITLE_SEP` (`:1345`), `TITLE_STALE`/`TITLE_DONE` (`:1346-1347`),
   `BEAT_LATE = agb.BEAT_INTERVAL * 2 = 30.0` (`:1454`), `beat_age_text` (`:1528`).
 - **The config pattern to copy** is `config_seconds` (`agb_mac:2474`) beside `config_flag`: never
-  raises, absent and configured-to-nothing stay distinguishable, one line in `render_settings`
-  (`:2401`).
+  raises, one line in `render_settings` (`:2401`). ⚠️ **Take its `(config, key)` signature too**, not
+  a bare `text`: both siblings do their own `(config or {}).get(key)`, so "absent" is handled inside
+  rather than becoming a `None` the caller must remember to guard — and `text.strip()` on `None`
+  raises `AttributeError` on the render path, which this plan forbids and no test would have named.
 - **The agterm `--name` is uncapped** — the full string goes over and agterm clips it visually.
   That stays true; a width cap is out of scope. (`clean_row_title` at `agb_mac:837` caps the
   *persisted* title at `ROW_TITLE_MAX = 512`, which no real title approaches.)
@@ -103,7 +105,7 @@ ROW_FIELDS = ("label", "host", "cwd", "pane", "beat", "key")
 ROW_FIELDS_DEFAULT = (("label", ""), ("host", ""), ("cwd", ""),
                       ("pane", ""), ("beat", ""))
 
-def parse_row_fields(text):
+def parse_row_fields(config, key):
     """(fields, error). `error` is None, or a message naming the offender."""
     ...        # -> ROW_FIELDS_DEFAULT on absent/empty/invalid
 
@@ -134,8 +136,13 @@ def row_title(session, now=None, prefix="", fields=None):
    *"read by name -- never listed"*), so a truncated key answers `STATE_GONE`. An earlier draft
    claimed both, which would have propagated into the docs.
 6. **`beat` is droppable but pointless to drop**: `beat_age_text` returns `""` below `BEAT_LATE`
-   (30 s), so it costs no width on a healthy agent and dropping it only loses a warning. Say so in
-   the docs rather than special-casing it.
+   (30 s), so it costs no width on a healthy agent. ⚠️ **But "only loses a warning" understates it,
+   and the design says why.** `docs/design.md:278` — *"Beat age is therefore surfaced in the row
+   title and never converted into a state"* — makes the title the design's **compensation for
+   invariant 1**: agbridge refuses to turn an age into a status, and the age in the title is what it
+   offers instead. `row_fields = label,pane` removes that surface entirely, so the sidebar keeps its
+   refusal to guess without the number that made the refusal tolerable. Still allowed — it is the
+   user's sidebar — but the docs must say what is being given up, not call it a warning.
 
 ## Technical Details
 
@@ -174,6 +181,9 @@ caller and a title that is nothing but the prefix.
 | `label,cwd:base,pane` | those three, in that order |
 | ⚠️ `label, cwd:base, pane` | **the same** — each item is stripped |
 | `LABEL,Cwd:Base` | the same — names and modifiers are case-folded |
+| ⚠️ `cwd: base` / `cwd : base` | **the same** — the strip is per **component**, not per item |
+| ⚠️ `label, ,pane` | `label,pane` — an item is stripped **first**, then skipped if empty |
+| ⚠️ `:base` / `:` | **default** + error: the field name is empty. Not an unknown field named `''`, which would print a message with no offender in it |
 | `label,workspace` | **default** + error naming `workspace` and listing the valid names |
 | `label:base` | **default** + error: `:base` is only defined on `cwd` |
 | `cwd:basename`, `cwd:`, `cwd:base:base` | **default** + error: unknown modifier |
@@ -193,11 +203,21 @@ like `label,workspace`. A value that names no field gives the user nothing they 
 decision 4's case rather than the trailing-comma one. This also makes the `is None`-versus-`or`
 question moot, because `[]` never reaches `row_title`.
 
-⚠️ **Per-item whitespace is the most likely first-use failure, and it is silent.**
-`agb.parse_config` strips the whole *value*, not the items — verified: `row_fields = label, cwd:base,
-pane` arrives as `'label, cwd:base, pane'`. Without a per-item strip, `" cwd:base"` is an unknown
-field, decision 4 rejects the **whole list**, and the user's first attempt renders the default with
-only a line in a log they are not watching. Writing a comma list with spaces is what everybody does.
+⚠️ **Whitespace is the most likely first-use failure, it is silent, and the strip must be
+per-COMPONENT rather than per-item.** `agb.parse_config` strips the whole *value* only — verified:
+`row_fields = label, cwd:base, pane` arrives as `'label, cwd:base, pane'`. Two granularities are
+possible and they disagree on real input:
+
+| written | per-item strip | per-component strip |
+|---|---|---|
+| `label, cwd:base, pane` | works | works |
+| ⚠️ `cwd: base` | modifier is `" base"` → unknown → **whole list rejected** | works |
+| ⚠️ `cwd : base` | name is `"cwd "` → unknown → **whole list rejected** | works |
+
+Both are the same typo one character apart, and **no test distinguishes them unless the contract
+says which** — `label, cwd:base, pane` passes under either. So: split the item on `,`, split each
+item on `:`, and strip **both halves**. Then apply the empty-item skip, in that order: strip first,
+*then* skip, or `label, ,pane` rejects the whole list on a stray space.
 
 ⚠️ **It must never raise.** This runs on the render path, where an exception wedges a paint.
 
@@ -273,13 +293,20 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
       an example could accidentally list them
 - [ ] write a table-driven test for `parse_row_fields` covering **every row** of the contract table:
       absent, empty, whitespace, valid list, order preserved, `cwd:base`, ⚠️ **per-item whitespace**
-      (`label, cwd:base, pane`), case-folding, `:base` elsewhere refused, unknown *modifier*
-      refused (`cwd:basename`, `cwd:`, `cwd:base:base`), unknown field refused, duplicates accepted
+      (`label, cwd:base, pane`), ⚠️ **whitespace around the `:`** (`cwd: base`, `cwd : base` — the
+      cases that divide per-item from per-component stripping), ⚠️ **`label, ,pane`** (strip before
+      the empty check), case-folding, `:base` elsewhere refused, unknown *modifier* refused
+      (`cwd:basename`, `cwd:`, `cwd:base:base`), ⚠️ **empty field name** (`:base`, `:`), unknown
+      field refused, duplicates accepted — ⚠️ and a duplicate with *different* modifiers
+      (`cwd,cwd:base`) renders both, in position, since the pair is the identity
 - [ ] write a test that the error message **names the offending field** and lists the valid ones —
       a warning that says only "bad row_fields" makes the user diff their config by hand
 - [ ] mutation-test: accept an unknown field instead of rejecting → the contract table's
       `label,workspace` case must fail
 - [ ] mutation-test: drop the per-item strip → the `label, cwd:base, pane` case must fail
+- [ ] ⚠️ mutation-test: strip the **item** but not its components → `cwd: base` must fail. Without
+      this case the two granularities are indistinguishable and the choice is accidental
+- [ ] mutation-test: check-empty before stripping → `label, ,pane` must fail
 - [ ] run `python3 -m pytest tests/ -q` — must pass before Task 2
 
 ### Task 2: `row_title` renders the chosen fields
@@ -395,10 +422,20 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
 - Modify: `CHANGELOG.md`
 
 - [ ] `README.md` config table — one row, naming the default and the six field names
-- [ ] `docs/commands.md` — a section beside the row-title description: the vocabulary table, the
-      `:base` modifier, the whole-list rejection and why, and ⚠️ that `beat` costs no width below
-      30 s so dropping it only loses a warning
-- [ ] `docs/design.md` config table — one row
+- [ ] `docs/commands.md` — ⚠️ under **`## agb bridge`**, where every other bridge key lives
+      (`:110`, `:142`, `:176`) and where `:126`'s "takes effect only after `agb-refresh`" statement
+      already sits. The only row-title description (`:432`) is under `## agb rename`, a *farm*
+      command, so documenting a bridge key there would put it on the wrong side of the wire. The
+      section carries: the vocabulary table, the
+      `:base` modifier, the whole-list rejection and why, ⚠️ that an **inline `#` is not a comment**
+      (`agb:105` honours `#` only as the first character of a line, so `row_fields = label,pane #
+      short` makes `pane # short` an unknown field and rejects the whole list — `row_fields` is the
+      first key whose value anyone will want to annotate), and what dropping `beat` actually costs
+      (decision 6)
+- [ ] `docs/design.md` config table — one row. ⚠️ It has a **`Default if unset`** column README's
+      lacks, so that row is four columns. `docs/design.md:1313` already states the rule this task is
+      obeying — *"A key added here belongs in all four places at once"*, added in 0.6.0 after exactly
+      this failure — so cite it rather than carrying a private list
 - [ ] ⚠️ `docs/design.md:1365`, the §5 per-instance row (*"`statedir`, `feed_host`, `mac_id`, the
       notification switches"*) — this one **does** need an edit, unlike the last plan's identical-
       looking item. That wording covered `notify_on_completed_after` because it *is* a notification
@@ -406,18 +443,28 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
 - [ ] ⚠️ **nine places state the title format as fixed**, and none is a config table — so a
       config-table-only pass leaves the docs contradicting the feature, silently, because there is
       no doc-consistency test: `docs/design.md:556` (the design authority's own statement),
-      `docs/cookbook.md:145` (and the worked sidebar example at `:123-125`), `docs/commands.md:432`,
+      `docs/cookbook.md:145`, `docs/commands.md:432`,
       `docs/agtermctl.md:70` and `:113`, `agb_mac:853` (`format_rows`' docstring, *"what a row
       **is**"*), `agb_mac:1541` (`row_title`'s own — done in Task 2), `agb_ops:3848` (the
       comment above `TITLE_SEP`/`valid_label`), and ⚠️ **`docs/agtermctl.md:87-89`** — prose
       *between* the two sites already listed from that file, enumerating "label, host, cwd, pane and
       the beat age". `docs/agtermctl.md` is what `CLAUDE.md` names as the agterm contract record, so
       a stale enumeration there is the one most likely to be believed. Only the enumeration needs
-      softening; its actual claim (`--name` receives the title, not the label) stays true. Reword each to name the default rather than the
+      softening; its actual claim (`--name` receives the title, not the label) stays true.
+- [ ] ⚠️ **two further design-authority sites claim the beat age *is* in the title**, and they are a
+      different kind of statement from the format enumerations above: `docs/design.md:278` (*"surfaced
+      in the row title and never converted into a state"*) and `:227-228` (*"the bridge can put 4m in
+      the row title … Note *title*, not *state*"*), plus the comment at `agb_mac:112-118`. These are
+      invariant 1's stated compensation, not cosmetics — soften to "by default" and reconcile with
+      decision 6. ⚠️ `agb_mac:2259` (*"a healthy row's title carries no age at all"*) stays **true**
+      and needs no edit Reword each to name the default rather than the
       only possibility. ⚠️ The label's ban on ` · ` is unaffected and must stay — it is about the
       separator, not the field list. Three further sites print `build · box2 · /shared/x · %24` as
       an **example** rather than a format claim and need no edit: `docs/design.md:526`, `:535` and
-      `agb_mac:2323` — noted so the next reader does not re-derive them
+      `agb_mac:2323`. ⚠️ A fourth **must not** be edited: `docs/agtermctl.md:369` prints a title
+      inside *captured* agterm event JSON, which is evidence rather than documentation. The fixture
+      titles in `tests/test_bridge_rows.py` (`:1513`, `:1520`, `:1577`, `:2507-2508`) are the same
+      class — noted so the next reader does not re-derive any of them
 - [ ] ⚠️ document the **cross-restart** effect: the first `[?]` paint after a bridge restart shows
       titles built with the *previous* `row_fields`, because `_title` persists the rendered body and
       `_render_stale` uses it before any record has arrived. Self-heals on the next upsert; worth a
@@ -446,6 +493,7 @@ only a line in a log they are not watching. Writing a comma list with spaces is 
       still produce a titled row rather than a blank one
 - [ ] a record missing a field renders no empty segment and no trailing separator
 - [ ] `row_fields = ,` renders the default and logs a warning — it never yields an empty list
+- [ ] `row_fields = cwd: base` works rather than silently falling back to the default
 - [ ] run the full suite: `python3 -m pytest tests/ -q`
 - [ ] confirm `agb` is untouched: `python3 -c 'print(len(open("agb").read()))'` must print
       **103198**. ⚠️ The guard counts **characters**, not bytes — `wc -c` is the wrong number.
@@ -581,3 +629,47 @@ cases and Task 4's doc sites, not at the design.
 the empty-title argument three. That is prose duplication to maintain rather than a guard — but in a
 plan whose whole history is tests that could not fail, restating the rule where each test needs it
 is the cheaper error.
+
+### Pass 4 — narrow, and the narrowing was right
+
+Scoped deliberately to the two places pass 3 predicted the remaining risk: **the parse contract** and
+**Task 4's doc sites**. Eleven findings, one gating — and it sat exactly where pass 3 said it would.
+
+⚠️ **The gating one: strip granularity was undecided, and the two readings disagree on real input.**
+
+| written | per-**item** strip | per-**component** strip |
+|---|---|---|
+| `label, cwd:base, pane` | works | works |
+| `cwd: base` | modifier `" base"` → **whole list rejected** | works |
+| `cwd : base` | name `"cwd "` → **whole list rejected** | works |
+
+The plan said only *"each item is stripped"*, and its one whitespace test case passes under **both**
+— so the choice would have been made by accident in the implementation, and a user typing a space
+after the colon would get a silently-default sidebar. Now specified as per-component, with the two
+cases and their own mutation. Same for ordering: strip **then** skip, or `label, ,pane` rejects
+everything over a stray space.
+
+| Finding | Change |
+|---|---|
+| ⚠️ strip granularity undecided (gating) | per-component, both cases tested, own mutation |
+| strip-vs-empty-check ordering undecided | strip first, then skip; `label, ,pane` tested |
+| `:base` / `:` (empty field name) unspecified | contract row, with the error naming the empty name rather than an unknown field `''` |
+| `parse_row_fields(text)` does not mirror `config_seconds` | signature is `(config, key)` like both siblings, so "absent" is handled inside instead of becoming an `AttributeError` on the render path |
+| duplicates with different modifiers (`cwd,cwd:base`) unspecified | both render, in position — the `(name, modifier)` pair is the identity |
+| an inline `#` is not a comment | documented: `row_fields` is the first key whose value anyone will want to annotate, and annotating it rejects the whole list |
+| ⚠️ **two design-authority sites say the beat age *is* in the title** | `docs/design.md:278`/`:227-228` call it invariant 1's **compensation** — agbridge refuses to turn an age into a status, and the title is what it offers instead. Decision 6's *"only loses a warning"* understated it; both now say what dropping `beat` gives up |
+| a fourth "do not edit" example | `docs/agtermctl.md:369` is *captured* agterm JSON — evidence, not documentation. Same class as the test fixtures |
+| `docs/cookbook.md:123-125` was classified both ways | it is an example; classified once |
+| the commands.md section was aimed at `## agb rename`, a **farm** command | moved to `## agb bridge`, where every other bridge key and the `agb-refresh` caveat already live |
+| the four-places rule was being re-derived | `docs/design.md:1313` already states it; cite it |
+
+**Part B came back clean**: all nine doc sites exist and say what the plan claims, the three
+"examples" were correctly classified, and an independent sweep of every `.md`, script and test found
+no *format-claim* site the plan had missed — only the two beat-age claims above, which are a
+different kind of statement.
+
+**Four passes: 13, 8, 8, 11 findings; gating 3, 3, 1, 1.** The feature design has never once been at
+fault. Every defect has been in a test specification, a parse contract, or a doc enumeration — and
+each pass found its predecessor's work rather than the original. The narrow fourth pass had the best
+hit rate per token of any of them, which is the argument for scoping the next one too, if there is a
+next one.
