@@ -1594,7 +1594,7 @@ def row_title(session, now=None, prefix="", fields=None):
             value = session.get(name)
             value = str(value) if value else ""
             if value and name == "cwd" and mod == "base":
-                # `rstrip` first: bare `basename` is "" for `/home/user/` and for
+                # `rstrip` first: bare `basename` is "" for `/home/me/` and for
                 # `/`, which would vanish the field rather than shorten it.
                 value = os.path.basename(value.rstrip("/")) or value
         if value:

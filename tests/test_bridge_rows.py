@@ -4530,8 +4530,8 @@ def test_cwd_base_does_not_vanish_on_a_trailing_slash_or_root(mac):
     """Bare `os.path.basename` is "" for both, which would drop the field
     rather than shorten it -- and on a one-field list, empty the title."""
     spec = (("cwd", "base"),)
-    assert _title_of(mac, dict(wire("a" * 16), cwd="/home/user/")) == "zk" or True
-    assert _title_of(mac, dict(wire("a" * 16), cwd="/home/user/"), spec) == "zk"
+    assert _title_of(mac, dict(wire("a" * 16), cwd="/home/me/")) == "me" or True
+    assert _title_of(mac, dict(wire("a" * 16), cwd="/home/me/"), spec) == "me"
     assert _title_of(mac, dict(wire("a" * 16), cwd="/"), spec) == "/"
     assert _title_of(mac, dict(wire("a" * 16), cwd="work/project/"),
                      spec) == "project"

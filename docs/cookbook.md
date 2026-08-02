@@ -193,7 +193,7 @@ agb-refresh
 all on a Mac installed after 0.6.0.)
 
 ```
-agbridge_dev · dev01-container-xterm-032 · /home/user/agbridge-public · %15    73 chars
+agbridge_dev · dev01-container-xterm-032 · /home/me/agbridge-public · %15    73 chars
 agbridge_dev · agbridge-public · %15                                        36
 agbridge_dev · %15                                       row_fields = label,pane
 ```
