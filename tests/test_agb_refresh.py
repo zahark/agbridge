@@ -261,7 +261,7 @@ def refresh(tmp_path):
             `--instance <name> --config <elsewhere>` leaves behind.
 
             ⚠️ The value is XML-ESCAPED here, exactly as `install.sh`'s `rep()`
-            escapes it (`xml_escape`, install.sh:348) -- so a test names the
+            escapes it (`xml_escape`, install.sh:354) -- so a test names the
             real path and this renders what the installer would have written.
             Without it a test for `&` in a config path would have to spell
             `&amp;` itself, which asserts on a plist nobody could have produced
@@ -564,7 +564,7 @@ def test_an_explicit_config_still_beats_the_instance_sugar(refresh):
     """The mirror of the `--label` test above, and it needs its own.
 
     `--instance` fills in a config only when none was given, exactly as
-    `install.sh` does it (install.sh:534) -- so an install whose config lives
+    `install.sh` does it (install.sh:540-541) -- so an install whose config lives
     somewhere the convention does not name can still be repaired by naming both.
     Made unconditional, the sugar would silently redirect the forget to a path
     that may not even exist, and `forget-rows` answers "the map is already
@@ -2383,8 +2383,47 @@ def test_an_unreadable_plist_is_not_a_guess_about_which_map_to_repair(
     assert rc != 0, out
     assert "could not be read as a plist" in err, err
     assert "--config" in err, err
+    # WHOSE plist, as a whole phrase. `${instance:+instance $instance }` left a
+    # hole in this sentence on every run that did not type a name; the named
+    # half is pinned here and the nameless half in the test below.
+    assert "which config instance hostb uses" in err, err
     # It did not guess, and it did not bounce anything while guessing.
     assert refresh.config("hostb") not in out, out
+    assert refresh.calls() == [], refresh.calls()
+
+
+def test_an_unreadable_legacy_plist_is_told_to_migrate_not_to_re_render(
+        refresh, tmp_path):
+    """⚠️ The same refusal, for the one label `install.sh mac` can no longer write.
+
+    A pre-0.6.0 Mac's only plist is `com.agbridge.plist`, and it reaches this
+    code through the sweep: `agb instances --labels` lists `com.agbridge` (the
+    filename is in the label space) and the child is handed `--label
+    com.agbridge`. The named branch's advice -- *re-run `install.sh mac
+    --instance <name>` to render the plist again* -- is the opposite of a repair
+    there. `--instance` is required now, so that command renders
+    `com.agbridge.<name>.plist` and MINTS A SECOND INSTANCE beside the file
+    sitting here unreadable; it cannot re-render this one at all.
+
+    `start_label` and the "no --config in $plist" note both carve the default
+    label out for exactly this reason and this die did not, which is the shape
+    of every miss in this area: one rule applied in two of the three places that
+    owe it.
+    """
+    body = "<plist version=\"1.0\"><dict><key>ProgramArguments</key><arr"
+    with pytest.raises(Exception):                     # really is unloadable
+        plistlib.loads(body.encode())
+    agents = tmp_path / "Library" / "LaunchAgents"
+    (agents / "com.agbridge.plist").write_text(body)
+    rc, out, err = refresh.run(["--label", "com.agbridge"])
+    assert rc != 0, out
+    assert "could not be read as a plist" in err, err
+    assert "--config" in err, err                 # the flag that settles it
+    assert "which config this job uses" in err, err   # ...and no hole in it
+    # The carve-out itself: a migration, never a re-render.
+    assert "MINT A SECOND INSTANCE" in err, err
+    assert "Upgrading from <= 0.5.0" in err, err
+    assert "render the plist again" not in err, err
     assert refresh.calls() == [], refresh.calls()
 
 
@@ -4362,7 +4401,7 @@ def test_a_custom_label_instance_is_not_reported_as_the_default_one(refresh):
     so it may not call a custom-label instance "(default)".
 
     `install.sh mac --label <anything>` puts no shape rule on a label
-    (`install.sh:426`), so `weird.label` is a real install and the sweep is
+    (`install.sh:432`), so `weird.label` is a real install and the sweep is
     required to visit it. The name shown is read back out of the label, and the
     fall-through used to answer "(default)" for every label outside the
     `com.agbridge` space -- so a bare run reported TWO default instances, one of

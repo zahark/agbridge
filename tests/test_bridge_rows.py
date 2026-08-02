@@ -3758,7 +3758,7 @@ def test_instances_listing_names_the_default_instance(mac, tmp_path):
     instance printed a row starting with two spaces. The name was derived by
     stripping the `com.agbridge.` prefix and answering "" when the label did
     not start with it -- and the default label never does, because it IS the
-    prefix. `agb-refresh:1207-1219` had already settled this for the banner.
+    prefix. `agb-refresh:1251-1263` had already settled this for the banner.
     """
     agents = tmp_path / "agents"
     agents.mkdir()
@@ -3792,7 +3792,7 @@ def test_instances_listing_names_a_custom_label_instance(mac, tmp_path):
     """⚠️ A custom label shows the LABEL, and is not called `(default)`.
 
     `install.sh mac --label <anything>` puts no shape rule on a label
-    (`install.sh:426`), so `weird.label` is a real install with no name but its
+    (`install.sh:432`), so `weird.label` is a real install with no name but its
     label. Both wrong answers are asserted against here, because the listing
     gave one of them and the banner used to give the other: "" (this bug) and
     "(default)" (the banner's, fixed in Task 5 --

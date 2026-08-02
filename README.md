@@ -94,11 +94,16 @@ same line minus that flag.
 `~/.claude/settings.json`:
 
 ```sh
-sh install.sh farm --mac-id <the id the mac role printed>
+sh install.sh farm --mac-id <the id the mac role printed> --statedir /home/you/.agbridge
 ```
 
 This side is **not** a no-op even when the binary is on a shared mount: the hooks and the
 config are per-host.
+
+⚠️ **Keep the `--statedir` the Mac step was given.** The `next:` line step 1 prints is this command
+with both values already filled in — paste it rather than retyping it. The two sides have to name the
+same directory, and a disagreement is silent: the agents write to one, the bridge reads the other,
+and the sidebar shows an empty farm with nothing logged anywhere.
 
 > Before either installer rewrites a file it copies the previous contents to `<path>.agb.bak`,
 > preserving the mode. A file it cannot parse is never rewritten at all.
@@ -304,7 +309,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1941 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 1944 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -316,7 +321,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1941 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1944 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:

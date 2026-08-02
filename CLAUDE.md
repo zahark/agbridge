@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1941 tests, ~70 s)
+python3 -m pytest tests/ -q                                    # full suite (1944 tests, ~70 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -455,6 +455,20 @@ And the general form, which is the one worth carrying: **a test asserting that n
 a companion that differs only in the variable under test.** Otherwise it passes against a feature
 that can never fire, for any reason at all.
 
+⚠️ **A cache or memo needs a test where the KEY differs, not only one where the hit is counted.**
+`install.sh`'s `verify_tree` memo is keyed on `"$vpython $vagb"`, and its only test was a
+`--dry-run`, where both callers ask about the same tree — so re-keying it on `"$vpython"` alone left
+the whole suite green while a *real* install stopped proving `$dest/agb` at all and printed
+`verified: … at <dest>/agb` anyway. The same shape as "assert the collection is non-empty": a test
+that exercises one value of the key is a test the key does not appear in.
+
+⚠️ **And reading a constant out of the implementation turns a loop into a tautology.** A table-driven
+refusal test whose allowed set is `ops.PRINT_STATEDIR_ALLOWED` asserts that whatever the parser
+permits, parses — so *widening* the constant is what the test was for and is exactly what it stops
+seeing. Reading the constant is still right for the loop (a hand-kept copy drifts from the parser's
+own tables instead); the fix is to assert **both**, with an equality against a literal set beside it.
+Two opposite failure modes, and trading one for the other reads as a cleanup.
+
 **Always pass `timeout=` to `communicate()`.** `conftest.communicate()` wraps this. Without it a
 regression that wedges a subprocess hangs the suite instead of failing it.
 
@@ -601,7 +615,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1941 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1944 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

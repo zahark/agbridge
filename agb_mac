@@ -3359,10 +3359,10 @@ def instance_display_name(label):
 
     `com.agbridge.hostb` -> `hostb`; `com.agbridge` itself -> `(default)`; any
     other label -> the label, because `install.sh mac --label <anything>` puts
-    no shape rule on a label (`install.sh:426`), so `weird.label` is a real
+    no shape rule on a label (`install.sh:432`), so `weird.label` is a real
     install whose only name IS its label.
 
-    ⚠️ THE RULE IS SETTLED AND THE AUTHORITY IS `agb-refresh:1207-1219`, which
+    ⚠️ THE RULE IS SETTLED AND THE AUTHORITY IS `agb-refresh:1251-1263`, which
     states it at length. It is here in a second language because neither file
     can import the other, and both of its wrong answers say something FALSE in
     the one column whose entire job is to say which instance a line is about:

@@ -85,7 +85,7 @@ EOF
 }
 
 # The same rule, and the same words, as `install.sh`'s `instance_ok`
-# (install.sh:171): a name is a launchd label component, a plist FILENAME, a log
+# (install.sh:189): a name is a launchd label component, a plist FILENAME, a log
 # directory and a config DIRECTORY, so `.` and `/` are refused outright -- there
 # is no spelling of a `..` segment or a leading dot. The two validators have to
 # agree, because a name this one accepts and the installer refuses names a plist
@@ -1154,7 +1154,7 @@ plist="$agentsdir/$label.plist"
 uid=$(id -u)
 
 # WHICH CONFIG. An explicit `--config` wins, exactly as it does in `install.sh`
-# (install.sh:534) -- but with none given, ASK THE PLIST rather than rebuild the
+# (install.sh:540-541) -- but with none given, ASK THE PLIST rather than rebuild the
 # path by convention.
 #
 # ⚠️ `--instance hostb` does NOT imply `<config dir>/hostb/config`.
@@ -1201,8 +1201,33 @@ if [ -z "$config" ]; then
     if [ -n "$plistconfig" ]; then
         config=$plistconfig
     elif [ "$plistsaid" = no ] && [ -e "$plist" ]; then
+        # WHOSE plist, spelled as a whole phrase. `${instance:+instance $instance }`
+        # alone left a hole in the sentence -- "which config uses" -- on every
+        # run that did not type a name, which is most of them: the label can
+        # arrive from `--label`, from `bind_label_to_config`, or from the sweep.
+        whose="this job"
+        if [ -n "$instance" ]; then whose="instance $instance"; fi
+        # ⚠️ TWO REPAIRS, because `install.sh mac` cannot re-render a NAMELESS
+        # plist any more. The bare `com.agbridge` label is a legacy install, and
+        # it reaches here through the sweep, which visits every plist in
+        # `$agentsdir` including a 0.5.0-era one. Telling its operator to re-run
+        # the installer is the opposite of a repair: `--instance` is required
+        # now, so the re-run MINTS A SECOND INSTANCE beside it -- its own config,
+        # label and rows map, and every row duplicated -- and it renders
+        # `com.agbridge.<name>.plist`, never the file that is sitting here
+        # unreadable. Same carve-out as `start_label` and the "no --config in
+        # $plist" note, which is the whole of this rule in the other two places
+        # it is owed.
+        if [ "$label" = "$DEFAULT_LABEL" ]; then
+            die "$plist exists but could not be read as a plist.
+       It is the only record of which config $whose uses, so this run
+       cannot tell which map to repair -- pass --config <path> to say.
+       install.sh mac cannot re-render it: that is a legacy nameless install,
+       --instance is required now, and a re-run would MINT A SECOND INSTANCE
+       beside it. Migrate it to a name -- CHANGELOG.md, 'Upgrading from <= 0.5.0'."
+        fi
         die "$plist exists but could not be read as a plist.
-       It is the only record of which config ${instance:+instance $instance }uses, so this run
+       It is the only record of which config $whose uses, so this run
        cannot tell which map to repair -- pass --config <path> to say, or
        re-run install.sh mac --instance <name> to render the plist again
        (--instance is required, and a bare mac install is refused)."

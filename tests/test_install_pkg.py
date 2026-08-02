@@ -643,6 +643,18 @@ def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
     allowed = ops.PRINT_STATEDIR_ALLOWED
     assert set(allowed) <= set(names)            # non-vacuity: same vocabulary
     assert "--print-statedir" in allowed and len(allowed) < len(names)
+    # ⚠️ AND THE LITERAL, which is the half reading the constant cannot be.
+    # Read alone, `allowed` turns the loop below into "whatever the parser
+    # permits, parses" -- measured: appending `--feed-host` and
+    # `--generate-mac-id` to `PRINT_STATEDIR_ALLOWED` widens this query back
+    # into a silent write and the whole suite still passes. A hand-written
+    # tuple alone has the opposite failure, drifting from the parser's tables
+    # with nothing to say so. Both are asserted, and they are different
+    # properties: the literal pins WHICH names may ever be exempt, the constant
+    # is what the loop exercises, and this equality is what stops the two
+    # diverging. Widening the query is therefore a deliberate edit here, in a
+    # test whose docstring says why the set is small.
+    assert set(allowed) == set(["--print-statedir", "--config", "--dry-run"])
     refused = []
     for name in names:
         # `a=b` satisfies `--host`'s own `<name>=<target>` check too, so every
@@ -2048,6 +2060,29 @@ def test_the_statedir_is_adopted_from_the_installers_own_tree(
     assert lines[first("statedir: adopted") - 1].startswith("instance:")
 
 
+def _recording_python(stub_bin):
+    """A `--python` that records every argv and then really runs it.
+
+    The proofs `verify_tree` performs are invisible in the output (the
+    adoption's report is suppressed, and the memo re-reports the same sentence
+    either way), so both memo tests below count `agb version` calls instead --
+    it is run by nothing else, and its argv names the tree it was asked about.
+    """
+    log = stub_bin.install("python3", body=(
+        "#!/bin/sh\n"
+        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; } "
+        ">> \"" + str(stub_bin.path / "python3.log") + "\"\n"
+        "exec " + sys.executable + " \"$@\"\n"))
+    assert not log.exists()                      # nothing has run it yet
+    return str(stub_bin.path / "python3")
+
+
+def _version_probes(stub_bin):
+    """The tree each `agb version` call named: `<python> -S -E <agb> version`."""
+    return [call[-2] for call in stub_bin.calls("python3")
+            if call[-1] == "version"]
+
+
 def test_a_dry_run_verifies_the_installer_tree_once_not_twice(
         run_sh, mac_args, instance_config, stub_bin):
     """⚠️ Two callers, one tree, and `verify_tree` is three interpreter starts.
@@ -2065,27 +2100,25 @@ def test_a_dry_run_verifies_the_installer_tree_once_not_twice(
     version` is run by nothing else, so counting it counts the proofs.
 
     Non-vacuous in the other direction too: the `verified:` line must still be
-    there, and the answer in it must be real.
+    there, and the answer in it must be real. ⚠️ And the companion below is
+    what makes this test's *key* meaningful: both callers here ask about the
+    same tree, so this one cannot see what the memo is keyed on.
     """
-    log = stub_bin.install("python3", body=(
-        "#!/bin/sh\n"
-        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; } "
-        ">> \"" + str(stub_bin.path / "python3.log") + "\"\n"
-        "exec " + sys.executable + " \"$@\"\n"))
-    assert not log.exists()                      # nothing has run it yet
+    python = _recording_python(stub_bin)
 
     instance_config("hostb", "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
     code, out, err = run_sh(
         _instance_args(mac_args, **{"--statedir": None,
-                                    "--python": str(stub_bin.path / "python3")})
+                                    "--python": python})
         + ["--dry-run"])
     assert code == 0, err
     assert "statedir: adopted /shared/HOSTB" in out
     assert out.count("verified:") == 1, out
     assert "verified: agb " in out               # a real answer, not an echo
 
-    versions = [c for c in stub_bin.calls("python3") if c[-1] == "version"]
-    assert len(versions) == 1, stub_bin.calls("python3")
+    probes = _version_probes(stub_bin)
+    assert probes == [os.path.realpath(
+        os.path.join(conftest.REPO_ROOT, "agb"))], probes
 
     # ⚠️ AND THE TEXT, not only the count. The single `verified:` line above is
     # the MEMO's -- the first call's report is suppressed -- so if the hit path
@@ -2099,6 +2132,54 @@ def test_a_dry_run_verifies_the_installer_tree_once_not_twice(
                    if l.startswith("verified:")]
     assert len(fresh_lines) == 1, fresh_out       # non-vacuity: it really ran
     assert memo_lines == fresh_lines, (memo_lines, fresh_lines)
+
+
+def test_a_real_install_proves_the_tree_it_installed_not_only_the_installers(
+        run_sh, mac_args, instance_config, stub_bin, tmp_path):
+    """⚠️ THE MEMO IS KEYED ON THE TREE, and the `--dry-run` test cannot say so.
+
+    Both of that test's callers ask about `$SELF/agb`, so a memo keyed on the
+    interpreter alone answers it identically -- measured: re-key `verify_tree`
+    on `"$vpython"` and every test in this suite passes. A REAL adopting
+    install is the shape that separates the two keys. Two DIFFERENT trees are
+    asked about: the adoption proves `$SELF/agb` before it trusts a statedir
+    out of it, and the copy then proves `$dest/agb`, which is the file this
+    installer just wrote and the one every later `agb` invocation will load.
+
+    Mis-keyed, the second call is a memo hit: zero interpreters started against
+    `$dest/agb`, and `verified: agb <v> at <dest>/agb, with agb_mac and agb_ops
+    beside it` printed anyway. That line is `verify_tree`'s whole claim -- "this
+    script copies all three and then RUNS the installed tree through all three
+    of them" -- reduced to a sentence, and the failure it exists to catch (a
+    copy that landed short or broken) comes back at the first `agb bridge`
+    instead of at install time.
+
+    So the count is asserted as **one probe per distinct tree**, attributed by
+    the argv rather than merely counted: a count alone would also pass if both
+    probes named the same file.
+    """
+    python = _recording_python(stub_bin)
+
+    instance_config("hostb", "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args,
+                                           **{"--statedir": None,
+                                              "--python": python}))
+    assert code == 0, err
+    assert "statedir: adopted /shared/HOSTB" in out    # the adoption really ran
+    installed = str(tmp_path / "dest" / "agb")
+    assert os.path.exists(installed)                   # ...and the copy landed
+
+    probes = _version_probes(stub_bin)
+    assert sorted(probes) == sorted(
+        [os.path.realpath(os.path.join(conftest.REPO_ROOT, "agb")),
+         installed]), probes
+
+    # Non-vacuity, and the half that makes the mis-key a printed lie rather
+    # than only a missing proof: exactly one `verified:` line is printed (the
+    # adoption's is suppressed), and it names the INSTALLED tree.
+    verified = [l for l in out.splitlines() if l.startswith("verified:")]
+    assert len(verified) == 1, out
+    assert installed in verified[0], verified
 
 
 def test_a_tree_that_cannot_run_agb_says_so_rather_than_demanding_a_statedir(
@@ -3527,3 +3608,103 @@ def test_the_launch_agents_dir_and_label_prefix_are_spelled_the_same_everywhere(
         assert agents == expected_dir, (script, agents, expected_dir)
         label = _sh_assignment(script, "DEFAULT_LABEL").strip('"')
         assert label == expected_label, (script, label, expected_label)
+
+
+# ⚠️ EVERY `install.sh:<line>` CITATION IN THE TREE, AND WHAT THE CITED LINE MUST
+# SAY. Comments in `agb-refresh`, `agb_mac` and two test files point at
+# `install.sh` by line number, and those numbers have drifted twice inside one
+# branch: a reader following one lands in the middle of an unrelated block and
+# concludes the rule moved or was dropped. Nothing noticed, because a stale
+# number is still a number.
+#
+# The entry is keyed on a PHRASE from the citation's own comment rather than on
+# the number, so correcting a number cannot silently re-point the entry that
+# checks it. `expect` is what the cited line (or any line of a cited range) must
+# contain -- chosen as the thing the sentence is actually about, so the guard
+# fails when the code moves rather than when the file merely grows.
+#
+# ⚠️ The same drift exists for `agb-refresh:<line>` and `agb_mac:<line>`
+# citations; they are not pinned here because two of them were already wrong
+# before this table existed and re-anchoring them is a separate reading job.
+# Adding rows for them is the way to cover them, not a second table.
+INSTALL_SH_CITATIONS = (
+    ("agb-refresh", "derives its own from", 'DEFAULT_CONFIG_DIR="'),
+    ("agb-refresh", "a name is a launchd label component", "instance_ok() {"),
+    ("agb-refresh", "ASK THE PLIST rather than rebuild",
+     'config="$DEFAULT_CONFIG_DIR/$instance/config"'),
+    ("agb_mac", "no shape rule on a label", "--label)"),
+    ("tests/test_agb_refresh.py", "escapes it (`xml_escape`", "xml_escape() {"),
+    ("tests/test_agb_refresh.py", "`install.sh` does it",
+     'config="$DEFAULT_CONFIG_DIR/$instance/config"'),
+    ("tests/test_agb_refresh.py",
+     "so `weird.label` is a real install and the sweep is", "--label)"),
+    ("tests/test_bridge_rows.py",
+     "so `weird.label` is a real install with no name but its", "--label)"),
+)
+
+# Spelled apart from the literal so this file does not cite itself into its own
+# scan. `install.sh` followed by a colon and a line number, optionally a range.
+_CITATION_RE = re.compile(r"install\.sh" + ":" + r"(\d+)(?:-(\d+))?")
+
+# How far from the anchor phrase the citation may sit. Every real one is on the
+# same line; the window is a little slack for a rewrap, not a search.
+_CITATION_WINDOW = 200
+
+
+def _repo_text(relative):
+    with open(os.path.join(conftest.REPO_ROOT, relative)) as handle:
+        return handle.read()
+
+
+def test_every_install_sh_line_citation_points_at_what_it_claims():
+    """⚠️ A cross-file line number is a claim, and nothing checked it.
+
+    Four of these were stale at once after a refactor moved `install.sh` by six
+    lines: `instance_ok` cited at 171 when it was at 189, `xml_escape` at 348
+    when it was at 354, the `--label` arm at 426 when it was at 432. Each was
+    found by a human reading the file, which is the expensive way.
+
+    Two properties, and they are different: every citation in the table lands on
+    a line that still says what the citing comment says it says, AND every
+    citation *in the tree* is in the table -- so a new one added without a row
+    here fails rather than joining the drift unnoticed.
+    """
+    install_lines = _repo_text("install.sh").split("\n")
+    assert len(install_lines) > 500                # non-vacuity: it really read
+
+    seen = 0
+    for relative, anchor, expect in INSTALL_SH_CITATIONS:
+        text = _repo_text(relative)
+        assert text.count(anchor) == 1, (relative, anchor, text.count(anchor))
+        at = text.index(anchor)
+        window = text[max(0, at - _CITATION_WINDOW):at + _CITATION_WINDOW]
+        found = _CITATION_RE.findall(window)
+        assert len(found) == 1, (relative, anchor, found)
+        first, last = found[0]
+        lines = install_lines[int(first) - 1:int(last or first)]
+        assert lines, (relative, anchor, first, last)
+        assert any(expect in line for line in lines), \
+            (relative, anchor, first, last, lines)
+        seen += 1
+    assert seen == len(INSTALL_SH_CITATIONS)
+
+    # ...and nothing cites `install.sh` from outside the table. `docs/plans/` is
+    # skipped: those are dated records of what was true when they were written
+    # and are deliberately not re-anchored.
+    total = 0
+    for root, dirs, files in os.walk(conftest.REPO_ROOT):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+        if os.path.relpath(root, conftest.REPO_ROOT).startswith(
+                os.path.join("docs", "plans")):
+            continue
+        for name in files:
+            path = os.path.join(root, name)
+            try:
+                with open(path, "rb") as handle:
+                    body = handle.read().decode("utf-8")
+            except (UnicodeDecodeError, IOError, OSError):
+                continue
+            if os.path.samefile(path, os.path.abspath(__file__)):
+                continue          # this file's own table and regex, not a cite
+            total += len(_CITATION_RE.findall(body))
+    assert total == len(INSTALL_SH_CITATIONS), total

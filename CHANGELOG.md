@@ -83,12 +83,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   message that used to say *"re-run `install.sh mac`"* now says `--instance <name>` — and for the
   bare `com.agbridge` job that advice would be actively wrong, because a re-run does not repair it:
   it **mints a second instance beside it**, with its own config, label and rows map, and every row
-  duplicated in the sidebar. Both places that can name that job — `start_label`'s *"could not start"*
-  warning and the sweep's *"no bridge was started again for:"* summary — now branch on the label:
-  a named instance is told to re-run with **its own name**, filled in rather than left as a
-  placeholder, and the nameless one is pointed at the migration under *Upgrading from ≤ 0.5.0*. The
-  sweep is where this turns up, because it visits every plist in `~/Library/LaunchAgents`, a
-  0.5.0-era one included.
+  duplicated in the sidebar. All three places that can name that job — `start_label`'s *"could not
+  start"* warning, the sweep's *"no bridge was started again for:"* summary, and the refusal you get
+  when that job's plist is **there but unreadable** — now branch on the label: a named instance is
+  told to re-run with **its own name**, filled in rather than left as a placeholder, and the nameless
+  one is pointed at the migration under *Upgrading from ≤ 0.5.0*. The sweep is where this turns up,
+  because it visits every plist in `~/Library/LaunchAgents`, a 0.5.0-era one included.
+
+  ⚠️ The third one was missed on the first pass and is worth naming, because the rule is only ever
+  broken this way: two of the three sites got the carve-out and the third got the mechanical
+  `--instance <name>` insertion, so the one message that names a file *it cannot re-render* was the
+  one still offering to re-render it. That refusal also said "which config uses" — with a hole where
+  the instance name goes — on every run that did not type one.
 
 ### Added
 
