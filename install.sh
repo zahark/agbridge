@@ -8,9 +8,9 @@
 # The mac line used to be spelled without `--instance`, and that command now
 # exits 1 and installs nothing: every Mac-side instance is named, so `agb
 # instances` can say what exists and no command has to guess which one was
-# meant. `--statedir` comes with it -- a first install has no config to read it
-# back out of -- and a RE-install may drop it, since the installer adopts the
-# value out of that instance's own config.
+# meant. `--statedir` comes with it, because a first install has no config to
+# read it back out of; exactly when a RE-install may drop it is stated once, in
+# `usage()`'s `--statedir` entry, carve-out included.
 #
 # ---------------------------------------------------------------------------
 # Why there are two roles
@@ -86,8 +86,8 @@ usage: install.sh mac  --instance <name> --statedir <farm path>
                        [options]
        install.sh farm --mac-id <id> [options]
 
-       --statedir is required the FIRST time an instance is installed; a
-       re-install reads it back out of that instance's own config.
+       --statedir comes with --instance; when a re-install may drop it is
+       stated once, under --statedir below.
 
 mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/<name>/config with
        a freshly minted mac_id, render the launchd plist and load it.
@@ -95,17 +95,19 @@ mac -- copy agb, agb_mac and agb_ops, write ~/.config/agbridge/<name>/config wit
   --instance <name>          REQUIRED. Every Mac-side instance is named, so
                              `agb instances` can say what exists and no command
                              has to guess which one you meant. Its own config,
-                             label and logs live under <name>. Needs
-                             --statedir the FIRST time; a re-install reads it
-                             back out of that instance's own config. mac only.
+                             label and logs live under <name>. Comes with
+                             --statedir -- see that entry for when. mac only.
                              `auto` reads the name off --feed-host instead
   --feed-host <target>       ssh target of the farm box running `agb feed`  (required)
   --agb-remote-path <path>   absolute path of `agb` on the farm             (required)
-  --statedir <path>          farm-side statedir. Required for a NEW instance;
-                             adopted from that instance's own config on a
-                             re-install -- but never when --config is also
-                             given, since that file may belong to another
-                             instance and its statedir is another disk
+  --statedir <path>          farm-side statedir, and THE statement of this rule
+                             (the two mentions above point here, because three
+                             copies of it had already drifted apart): required
+                             for a NEW instance; adopted from that instance's
+                             own config on a re-install -- but never when
+                             --config is also given, since that file may belong
+                             to another instance and its statedir is another
+                             disk
   --remote-python <path>     absolute farm-side interpreter        (default /bin/python3)
   --jump-host <target>       ssh jump host for machine #3
   --host <name>=<target>     ssh target for a record's host; repeatable
@@ -320,29 +322,33 @@ verified_answer=""
 # adoption's own report is suppressed (see role_mac). The two are the same
 # claim only because nothing can change the file mid-run; `$installed` after
 # the copy is a DIFFERENT tree and is genuinely proved again.
+#
+# ⚠️ ONE `say`, OUTSIDE the memo branch, because the hit path and the miss path
+# make the SAME claim -- and a second copy of the sentence is a second thing to
+# keep in step. The memo test can only count `verified:` lines (the adoption's
+# report is suppressed either way, so the count cannot see the memo at all), so
+# a divergence between two spellings would be invisible to it.
 verify_tree() {
     vpython=$1
     vagb=$2
-    if [ "$verified_tree" = "$vpython $vagb" ]; then
-        say "verified: $verified_answer at $vagb, with agb_mac and agb_ops beside it"
-        return 0
+    if [ "$verified_tree" != "$vpython $vagb" ]; then
+        answer=$(run_agb "$vpython" "$vagb" version) \
+            || die "cannot run $vagb with $vpython"
+        case "$answer" in
+            "agb "*) ;;
+            *) die "$vagb version answered '$answer', not 'agb <version>'" ;;
+        esac
+        run_agb "$vpython" "$vagb" status-line \
+                --statedir "$(dirname "$vagb")/.install-probe" --mac-id probe \
+                >/dev/null \
+            || die "the tree at $(dirname "$vagb") cannot run 'agb status-line': agb_ops is missing or broken beside agb"
+        run_agb "$vpython" "$vagb" bridge --from-stdin --no-agterm \
+                --feed-host probe --mac-id probe </dev/null >/dev/null \
+            || die "the tree at $(dirname "$vagb") cannot run 'agb bridge': agb_mac is missing or broken beside agb"
+        verified_tree="$vpython $vagb"
+        verified_answer=$answer
     fi
-    answer=$(run_agb "$vpython" "$vagb" version) \
-        || die "cannot run $vagb with $vpython"
-    case "$answer" in
-        "agb "*) ;;
-        *) die "$vagb version answered '$answer', not 'agb <version>'" ;;
-    esac
-    run_agb "$vpython" "$vagb" status-line \
-            --statedir "$(dirname "$vagb")/.install-probe" --mac-id probe \
-            >/dev/null \
-        || die "the tree at $(dirname "$vagb") cannot run 'agb status-line': agb_ops is missing or broken beside agb"
-    run_agb "$vpython" "$vagb" bridge --from-stdin --no-agterm \
-            --feed-host probe --mac-id probe </dev/null >/dev/null \
-        || die "the tree at $(dirname "$vagb") cannot run 'agb bridge': agb_mac is missing or broken beside agb"
-    verified_tree="$vpython $vagb"
-    verified_answer=$answer
-    say "verified: $answer at $vagb, with agb_mac and agb_ops beside it"
+    say "verified: $verified_answer at $vagb, with agb_mac and agb_ops beside it"
 }
 
 xml_escape() {

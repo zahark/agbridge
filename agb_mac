@@ -3377,10 +3377,19 @@ def instance_display_name(label):
         real Mac therefore printed a nameless row for the default instance,
         under a named one that looked fine.
 
-    Applied in exactly ONE place on each side now -- the shell's `case` block
-    and this function -- and kept in step by a differential test that RUNS that
-    block's own text rather than re-spelling it
+    Applied in exactly ONE place on each side for DISPLAY -- the shell's banner
+    `case` block and this function -- and kept in step by a differential test
+    that RUNS that block's own text rather than re-spelling it
     (`test_the_listing_names_an_instance_the_way_the_banner_does`).
+
+    ⚠️ `agb-refresh`'s `start_label` derives a name from a label too, and it is
+    deliberately NOT this rule: it is building the `--instance <name>` an
+    operator should re-run, so the one case where the two part company is the
+    custom label. `weird.label` is the right thing to *show* and the wrong thing
+    to *type* -- `--instance weird.label` derives another config and another
+    label, i.e. a second instance -- so that branch prints a placeholder instead
+    of a name. Advice is not display; the comment there says so and
+    `test_the_restart_advice_never_offers_a_custom_label_as_a_name` holds it up.
     """
     pfx = INSTANCES_LABEL_PREFIX + "."
     if label.startswith(pfx):

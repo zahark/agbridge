@@ -4483,6 +4483,43 @@ def test_the_legacy_nameless_job_is_not_told_to_re_run_the_installer(refresh):
     assert "swept:    2 instances" in out, out
 
 
+def test_the_restart_advice_never_offers_a_custom_label_as_a_name(refresh):
+    """⚠️ The banner's name and the restart advice's name are TWO answers, and
+    this is the one label where they differ.
+
+    `agb-refresh` derives a name from a label twice: `$shown`, for the
+    `instance:` banner (the rule `agb_mac.instance_display_name` mirrors), and
+    `start_label`'s own, for the `install.sh mac --instance <...>` it tells the
+    operator to run. They agree everywhere except a custom label, where the
+    banner shows `weird.label` -- the only name such an install has -- and the
+    advice must NOT, because `--instance weird.label` derives
+    `~/.config/agbridge/weird.label/config` and the label
+    `com.agbridge.weird.label`: a command that installs a second instance
+    instead of repairing this one. So the advice prints a placeholder there.
+
+    Reusing `$shown` (it is in scope) would be the tidier-looking spelling and
+    is exactly the mistake this pins. Non-vacuity comes from the same run: the
+    named instance beside it still gets its real name, so a failure here is a
+    branch that moved rather than the name having been dropped everywhere.
+    """
+    other = str(refresh.config("weird"))
+    refresh.write_plist("com.agbridge.hostb", instance="hostb")
+    refresh.write_plist("weird.label", config=other)
+    rc, out, _err = refresh.run(lc_fail="bootstrap load")
+    assert rc != 0, out
+
+    # The banner names it by the only name it has...
+    assert "instance: weird.label -- label weird.label" in out, out
+    # ...and the advice offers the placeholder instead of that name.
+    assert ("could not start weird.label -- run install.sh mac "
+            "--instance <name> again") in out, out
+    assert "--instance weird.label" not in out, out
+    # Non-vacuity: a `com.agbridge.<name>` label in the SAME sweep does get its
+    # name typed out, so the placeholder above is this branch and not the rule.
+    assert ("could not start com.agbridge.hostb -- run install.sh mac "
+            "--instance hostb again") in out, out
+
+
 def test_a_failed_bootout_is_not_a_failure_and_the_sweep_carries_on(refresh):
     """The stop phase is allowed to fail: "not running" is a fine state.
 

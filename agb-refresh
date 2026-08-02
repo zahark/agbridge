@@ -1761,6 +1761,18 @@ start_label() {
     # 0.5.0-era one. The name is `$instance` when it was typed, else the label's
     # own suffix; a custom label carries no name at all, so that case keeps the
     # placeholder rather than inventing one.
+    #
+    # ⚠️ AND THAT LAST CASE IS WHY THIS IS NOT `$shown`, the banner's answer,
+    # which is in scope right here and agrees on every other label. `$shown`
+    # answers `weird.label` for a custom-label install -- correct as a NAME to
+    # display, and false as the value after `--instance`, which would derive
+    # `~/.config/agbridge/weird.label/config` and the label
+    # `com.agbridge.weird.label`: a command that installs a SECOND instance
+    # rather than repairing this one. Display and advice are two questions, so
+    # the rule is applied twice on purpose; `agb_mac.instance_display_name`
+    # says the same from the other side, and
+    # `test_the_restart_advice_never_offers_a_custom_label_as_a_name` pins the
+    # divergence so a future edit cannot collapse the two by accident.
     if [ "$label" = "$DEFAULT_LABEL" ]; then
         say "WARNING:  could not start $label -- it is a legacy nameless install,"
         say "          so re-running install.sh mac would MINT A SECOND INSTANCE"
