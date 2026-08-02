@@ -502,8 +502,9 @@ plist_read_ok() {
        agb-refresh asks agb_mac.parse_bridge_args what each launchd job was
        started with, and step 2 below runs agb forget-rows, which loads the same
        file -- so this tree cannot do either. Pass --agb <path to the installed
-       agb>, or re-run install.sh mac to put agb, agb_mac and agb_ops back
-       together."
+       agb>, or re-run install.sh mac --instance <name> to put agb, agb_mac and
+       agb_ops back together (--instance is required, and a bare mac install is
+       refused)."
     die "cannot read a plist: $python -S -E $agb instances exited $1 reading $2.
        That is the READER failing, not the plist -- and the reader is two files
        now, so this names both rather than guessing: either $python is not a
@@ -909,8 +910,10 @@ if [ "$probeanswer" != instances-ok ]; then
        agb instances (0.5.0 and earlier) and answers unknown command -- which is
        empty stdout, exactly like a plist that names no config, so the two
        cannot be told apart later.
-       Pass --python <absolute path to python3>, or re-run install.sh mac to
-       install a current agb, agb_mac and agb_ops together."
+       Pass --python <absolute path to python3>, or re-run
+       install.sh mac --instance <name> to install a current agb, agb_mac and
+       agb_ops together (--instance is required, and a bare mac install is
+       refused)."
 fi
 
 # HOW THIS SCRIPT NAMES ITSELF FOR THE RE-EXEC BELOW. `$0` is whatever the
@@ -1082,7 +1085,8 @@ EOF
         if [ -n "$sweepdown" ]; then
             say "WARNING:  no bridge was started again for:${sweepdown}."
             say "          Every instance is meant to end this run with its"
-            say "          bridge back up -- re-run install.sh mac for those."
+            say "          bridge back up -- re-run install.sh mac --instance"
+            say "          <name> for those, one per label above."
             sweeprc=1
         fi
         if [ -n "$keys" ]; then
@@ -1186,7 +1190,8 @@ if [ -z "$config" ]; then
         die "$plist exists but could not be read as a plist.
        It is the only record of which config ${instance:+instance $instance }uses, so this run
        cannot tell which map to repair -- pass --config <path> to say, or
-       re-run install.sh mac to render the plist again."
+       re-run install.sh mac --instance <name> to render the plist again
+       (--instance is required, and a bare mac install is refused)."
     elif [ -n "$instance" ]; then
         config="$DEFAULT_CONFIG_DIR/$instance/config"
     else
@@ -1732,7 +1737,7 @@ start_label() {
         say "started:  $label (legacy load -w)"
         return 0
     fi
-    say "WARNING:  could not start $label -- run install.sh mac again"
+    say "WARNING:  could not start $label -- run install.sh mac --instance <name> again"
     return 1
 }
 
@@ -1786,11 +1791,24 @@ if command -v launchctl >/dev/null 2>&1; then
         # somebody acts on.
         say "note:     $plist could not be read, so the wait below matches ANY"
         say "          bridge on this Mac. That file is also the record of which"
-        say "          config this job uses -- check it, or re-run install.sh mac."
+        say "          config this job uses -- check it, or re-run"
+        say "          install.sh mac --instance <name>."
     else
+        # ⚠️ THE ADVICE HERE IS A MIGRATION, NOT A RE-RENDER, and that is the
+        # one place the mandatory `--instance` changes what an operator should
+        # be told. A plist with no `--config` predates the flag, i.e. it is a
+        # nameless install -- and `install.sh mac` refuses a nameless install
+        # now, so the obvious repair (re-run it with the original flags) does
+        # not repair this job at all: it MINTS A SECOND INSTANCE beside it, with
+        # its own config, label and rows map, and every row duplicated. There is
+        # no in-place upgrade for such a job; giving it a name is the only route
+        # forward, and the ordered steps for that live in the changelog.
         say "note:     no --config in $plist, so the wait below matches ANY"
-        say "          bridge on this Mac. Re-run install.sh mac to render a"
-        say "          plist that carries it."
+        say "          bridge on this Mac. That plist predates the flag, and"
+        say "          install.sh mac cannot re-render it in place: --instance"
+        say "          is required now, so a re-run would MINT A NEW INSTANCE"
+        say "          beside this one. Migrate it to a name instead --"
+        say "          CHANGELOG.md, 'Upgrading from <= 0.5.0'."
     fi
     pgrep=$(command -v pgrep 2>/dev/null || :)
     # Armed HERE, one statement before the job goes down, and cleared once it is

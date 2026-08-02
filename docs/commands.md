@@ -610,7 +610,7 @@ would change nothing writes neither.
 ```
 agb install-config [--config P] [--statedir P] [--mac-id ID] [--feed-host H] [--agb-remote-path P]
                    [--remote-python P] [--jump-host H] [--host <name>=<target>]…
-                   [--generate-mac-id] [--print-mac-id] [--dry-run]
+                   [--generate-mac-id] [--print-mac-id] [--print-statedir] [--dry-run]
 ```
 
 | Flag | Default | Meaning |
@@ -625,6 +625,7 @@ agb install-config [--config P] [--statedir P] [--mac-id ID] [--feed-host H] [--
 | `--host <name>=<target>` | none | writes `host_<name> = <target>`. Repeatable |
 | `--generate-mac-id` | off | mint one (`<short-host>-<16 hex>`) **only if the file has none**. The Mac's flag: the farm refuses to invent an id, because a second one would name a beat file nothing writes and `status-line` would read `bridge:DOWN` for ever |
 | `--print-mac-id` | off | put the mac-id alone on **stdout** and the report on stderr, so `install.sh` can read it back without re-implementing `key = value` in shell |
+| `--print-statedir` | off | put **that file's own** `statedir` alone on stdout, and **write nothing at all**. Exits non-zero when the file has none, or is not there |
 | `--dry-run` | off | print the full report and write nothing |
 
 With no `--mac-id`, no id in the file and no `--generate-mac-id`, the command **fails** and explains
@@ -632,23 +633,75 @@ why. The merge preserves comments, layout and keys this tool does not know; the 
 write is re-parsed and refused if it would not read back as the values reported. The previous file is
 copied to `config.agb.bak`, and a run that would change nothing writes neither.
 
-## `install.sh mac --instance <name>` — Mac, a second machine
+### `--print-statedir` — a read-only query, and why that is a rule rather than an accident
+
+`install.sh mac` reads it to adopt an existing instance's statedir (below), for the same reason the
+mac-id adoption uses `--print-mac-id`: a second reader of the `key = value` format is a second reader
+that drifts from the first.
+
+It is **not** `--print-mac-id` with a different noun, and three properties keep it honest:
+
+| | why |
+|---|---|
+| it prints the file's **own** value, never the fallback | `--statedir`'s ordinary resolution ends at the *default-path* config. Reporting that for an instance file that carries nothing is the exact answer `install.sh` must not get — it names another machine's directory, on a disk this instance's farm cannot see |
+| **non-zero means "no own statedir", and nothing else** | it is handled the instant the config has been parsed and **returns** there, so no later failure can be mistaken for that answer. Run any further on and a file with a `statedir` but no `mac_id` would raise about the *mac-id*, and the installer's `\|\| statedir=""` idiom would then demand `--statedir` for a file that carries one |
+| it **writes nothing**, with or without `--dry-run` | the query returns before the merge and the write. Bolted onto the tail instead, a statedir-less config would be *rewritten with the default config's statedir* on the way to the error — the failure the flag exists to prevent, caused by the flag |
+
+**It refuses company.** Only `--config` and `--dry-run` may accompany it — `--config` because it names
+*which* file to read, `--dry-run` because it is a no-op for a query and refusing the obvious first
+guess would be unkind. Every other option asks for a write this command will not perform, and
+"you asked me to write and I silently did not" is the class of failure this project keeps removing.
+`--print-mac-id` and `--print-statedir` together are refused too: both own stdout, and neither answer
+says which one it is.
+
+```console
+$ agb install-config --config ~/.config/agbridge/hostb/config --print-statedir
+/home/you/.agbridge
+```
+
+## `install.sh mac --instance <name>` — Mac, every install
 
 ```
 sh install.sh mac --instance <name> --statedir <path> --feed-host <target> \
                   --agb-remote-path <farm path> [the usual options]
 ```
 
+⚠️ **`--instance` is REQUIRED, and a nameless `install.sh mac` is refused.** Every Mac-side instance
+is named, so `agb instances` can say what exists and no command has to guess which one you meant.
+Pass `--instance <name>`, or `--instance auto` to name it after `--feed-host`.
+
+The refusal fires at the top of the `mac` role — **before any file is written and before the probe
+ssh** — so nothing is installed, nothing is copied, and no name can be invented from a machine that
+was never asked. It is a hard error rather than a warning because a warning on a *first* install gets
+ignored, and the asymmetry it warned about then becomes permanent on that Mac.
+
+**`install.sh farm` is unaffected and takes no `--instance` at all.** A farm host has exactly one
+identity: `agb hook` and `agb status-line` resolve `agb.config_path()` — the default path — on every
+invocation, so a named farm config is a file nothing opens. Both halves of that asymmetry come from
+the one fact.
+
 A **machine that shares no disk with the first** needs its own statedir, so it needs its own feed and
 its own bridge. `--instance` is that install: an independent launchd job whose rows appear in the
 same agterm sidebar. It is **sugar over three flags that already existed**, and passing any of them
 explicitly wins over the sugar:
 
-| | default install | `--instance hostb` |
+| | without `--instance` | `--instance hostb` |
 |---|---|---|
-| `--config` | `~/.config/agbridge/config` | `~/.config/agbridge/hostb/config` |
-| `--label` | `com.agbridge` | `com.agbridge.hostb` |
-| `--log-dir` | `~/Library/Logs/agbridge` | `~/Library/Logs/agbridge/hostb` |
+| `--config` | *refused* — was `~/.config/agbridge/config` | `~/.config/agbridge/hostb/config` |
+| `--label` | *refused* — was `com.agbridge` | `com.agbridge.hostb` |
+| `--log-dir` | *refused* — was `~/Library/Logs/agbridge` | `~/Library/Logs/agbridge/hostb` |
+
+⚠️ **The left column is what a pre-0.6.0 Mac still has on disk, not something you can still create.**
+Refusing to *create* a nameless instance does not remove the ones already installed: a plist on disk
+outlives the installer that wrote it, so `agb instances` still lists such a job as `(default)`,
+`agb-refresh` still claims and sweeps it, and every legacy reader stays. What changed is
+**creatability**, not reachability.
+
+⚠️ And creatability is not airtight: `install.sh mac --instance hostb --config ~/.config/agbridge/config`
+still writes the unnamed config, because `--instance` only *defaults* `--config` rather than owning
+it. Refusing that would forbid a legitimate shape — adopting an existing file under a name — to
+prevent a deliberate act, so it is documented rather than closed. It is also exactly why the statedir
+adoption below refuses to fire through that route.
 
 Everything else the Mac side owns — the `rows` bijection, the `placements` file, the `host_<name>`
 table — lives beside that config and therefore moves with it. There is no fourth path to pass and
@@ -668,11 +721,54 @@ cluster still watches `bridge/<old-id>.beat`, so `agb status-line` reads `bridge
 `agb doctor` reports no beat, out of an install that changed nothing anybody asked to change. If
 neither config has one, a fresh id is minted.
 
-Three refusals, each because the alternative is silent:
+### `--statedir` is required once, then adopted
+
+A **new** instance must be told its statedir. A **re-install** of one that already exists reads the
+value back out of that instance's own config, so a routine upgrade is the original command minus the
+flag:
+
+```console
+$ sh install.sh mac --instance hostb --feed-host hostb-alias --agb-remote-path /opt/agbridge/agb
+agb install (mac) -- from /Users/you/agbridge
+python:   /usr/bin/python3
+instance: hostb -- label com.agbridge.hostb, config /Users/you/.config/agbridge/hostb/config
+statedir: adopted /home/you/.agbridge from /Users/you/.config/agbridge/hostb/config
+```
+
+The `statedir:` line sits directly under the `instance:` banner on purpose — the two read as one
+statement about one instance, and a statedir named before any instance has been printed names
+nothing. It is read back through `agb install-config --print-statedir`, never by parsing
+`key = value` in shell, for the reason `install.sh` gives at its own parse site: a second reader of
+this format is a second reader that drifts.
+
+⚠️ **It adopts only from the config `--instance` DERIVED, never when `--config` was given.** With an
+explicit `--config`, `--statedir` is still required exactly as before. This is the one rule that
+looks like an inconsistency and is not:
+
+```sh
+install.sh mac --instance hostb --config ~/.config/agbridge/config \
+               --feed-host boxb --agb-remote-path /opt/agbridge/agb    # no --statedir
+#   still refused, and deliberately
+```
+
+`--config` may name *any* file — the default one, another instance's — and adopting a statedir out of
+it is precisely the failure the requirement exists to prevent: a bridge to `boxb` reading the other
+cluster's directory, arriving through the one route the guard cannot see. `$config` is "this
+instance's own" by convention only, never by construction, and the flag having been typed is the only
+surviving evidence of which of the two it is. A small ergonomic loss for a shape nobody uses, and the
+difference between a guard and a hole.
+
+⚠️ **It is deliberately NOT a mirror of the `mac_id` adoption above.** That one falls back to the
+default config on purpose, because one Mac has one identity and sharing an id across instances is the
+truth. Sharing a *statedir* is the exact failure being refused — two clusters share no disk. So the
+statedir adoption has **one** candidate and never a loop.
+
+Four refusals, each because the alternative is silent:
 
 | Refused | Why |
 |---|---|
-| `--instance` without `--statedir` | it would fall back to the **default** config's statedir: ssh to the right machine, read the wrong directory, then create it and report an empty farm for ever |
+| `install.sh mac` with no `--instance` | the nameless instance it used to create is the asymmetry every other Mac-side command spent a release removing; nothing is written and the probe is never asked |
+| a **new** instance without `--statedir` | it would fall back to the **default** config's statedir: ssh to the right machine, read the wrong directory, then create it and report an empty farm for ever. A re-install adopts it instead (above); an explicit `--config` still requires it |
 | `install.sh farm --instance <name>` | nothing on the farm reads a per-instance config — `agb hook` and `agb status-line` resolve `~/.config/agbridge/config` and nothing else — so it would write a config no one opens and report success |
 | a name with `/`, `.`, a leading `-`, or empty | it becomes a launchd label component, a plist *filename*, a log directory **and** a config directory. Letters, digits, `-` and `_` only; the general `shell_safe` check permits `.` and `/`, so `--instance ../../evil` would otherwise pass |
 
@@ -695,11 +791,18 @@ instance: hostb01 -- label com.agbridge.hostb01, config …/agbridge/hostb01/con
 answered — so there is no second round trip, and no way for a box that renamed itself between two
 calls to produce a config whose mapping does not match its own directory.
 
-⚠️ **It is a word you type, and it can never be the default.** Re-running `install.sh mac` with the
-original flags is how you pick up new code, so an **absent** `--instance` has to keep meaning the
-default instance. If it meant "name it after whatever the feed host calls itself", every upgrade of
-an existing install would mint a *new* instance beside it — new config, new launchd job, new rows
-map, and every row duplicated in the sidebar.
+⚠️ **It is a word you type, and it can never be the default.** If an absent `--instance` meant "name
+it after whatever the feed host calls itself", every upgrade of an existing install would mint a
+*new* instance beside it — new config, new launchd job, new rows map, and every row duplicated in the
+sidebar. An absent `--instance` is **refused** instead: no name is invented, and the probe is never
+even asked.
+
+> ⚠️ **Withdrawn, and kept here because a reason that is deleted gets re-proposed.** This used to
+> continue *"re-running `install.sh mac` with the original flags is how you pick up new code, so an
+> absent `--instance` has to keep meaning the default instance."* The premise stands and the
+> conclusion no longer does — the upgrade path is now re-running it **with the same `--instance`**,
+> which is a word you already typed once. What survives untouched is the OPT-IN half above: auto
+> naming is something you ask for, never something a bare install falls into.
 
 ⚠️ **Every failure is a refusal, and nothing is written.** Falling back to the default instance is
 precisely the accident this avoids: that run would rewrite the first machine's `feed_host` and

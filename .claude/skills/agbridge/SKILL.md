@@ -93,9 +93,11 @@ its own bridge. That is an **instance**: an independent launchd job whose rows l
 sidebar. Nothing on the existing machines changes.
 
 ```sh
-# on the Mac. --statedir is REQUIRED with --instance, and it is the NEW
-# machine's own path -- absolute, and never spelled with a `~` the Mac would
-# expand against its own home. `--instance auto` names it after the machine.
+# on the Mac. --instance is REQUIRED on every mac install; `auto` names it
+# after the machine. --statedir is REQUIRED for a NEW instance (adopted from
+# its own config on a re-install), and it is the NEW machine's own path --
+# absolute, and never spelled with a `~` the Mac would expand against its own
+# home.
 sh install.sh mac --instance hostb \
     --statedir /home/you/.agbridge \
     --feed-host hostb-alias \
@@ -173,14 +175,26 @@ Also worth knowing:
 - **`--instance auto` names it after the machine**, reusing the hostname the installer already ssh's
   for the `host_<name>` mapping — one ssh, two readers. It prints `instance: auto -> hostb01 (read
   back from <alias>)`, and *that* is the name `agb-refresh --instance …` wants afterwards. It is a
-  word you type on purpose: an **absent** `--instance` still means the default instance, because
-  re-running `install.sh mac` is the upgrade path and auto-naming by default would mint a new
-  instance on every upgrade. Any failure — unreachable machine, no `--feed-host`, `--no-probe`, a
-  hostname that is not a usable label name — is a **refusal with nothing written**, never a
-  fall-back to the default instance, which would repoint the machine you already have.
-- **`--instance` without `--statedir` is refused**, and `install.sh farm --instance …` too — the
-  first would silently inherit the other cluster's directory, the second writes a config nothing on
-  the farm reads. Names are letters, digits, `-`, `_`; it is a label, a filename and two directories.
+  word you type on purpose and never something a bare install falls into: auto-naming by default
+  would mint a new instance on every upgrade. Any failure — unreachable machine, no `--feed-host`,
+  `--no-probe`, a hostname that is not a usable label name — is a **refusal with nothing written**,
+  never a fall-back to the default instance, which would repoint the machine you already have.
+- **`--instance` is REQUIRED for every `install.sh mac`**, not just this recipe — a nameless install
+  is refused, before anything is written and before the probe ssh. `install.sh farm --instance …` is
+  refused the other way, because nothing on the farm reads a per-instance config. Names are letters,
+  digits, `-`, `_`; it is a label, a filename and two directories.
+- **`--statedir` is required for a NEW instance and adopted on a re-install** — read back out of that
+  instance's own config, printed as `statedir: adopted … from …` under the `instance:` banner. ⚠️ It
+  adopts only from the config `--instance` **derived**: pass `--config` explicitly and `--statedir` is
+  demanded exactly as on a first install, because that flag may name any file at all (the default
+  one, another instance's) and adopting a statedir out of it is the precise failure the requirement
+  exists to prevent.
+- **Refusing to *create* a nameless instance does not remove one already installed.** A pre-0.6.0 Mac
+  still has its unnamed default; `agb instances` lists it as `(default)`, `agb-refresh` still claims
+  and sweeps it, and every legacy reader stays — a plist on disk outlives the installer that wrote
+  it. ⚠️ **But it has no in-place upgrade**: `--instance` is mandatory, and adopting the old file with
+  `--config ~/.config/agbridge/config` re-demands `--statedir`. Give it a name instead — the steps
+  are in `CHANGELOG.md`, *Upgrading from ≤ 0.5.0*.
 - **`agb-refresh --config <path>` is equivalent when you have the path but not the name** — it is
   what the bridge's own `no such session` hint prints, since a config path is all a bridge knows
   about itself. It looks the path up in the plists and bounces the job that holds its **map**, so the
@@ -229,8 +243,10 @@ Works, and needs **no cluster-side change**. Each Mac mints its own `mac_id`, wr
 `bridge/<mac-id>.beat`, and keeps its **own** `rows` map — rows are per-Mac, not shared.
 
 ```sh
-# on the second Mac only
-sh install.sh mac --feed-host <cluster host> --agb-remote-path <path to agb on the cluster> \
+# on the second Mac only. --instance is required here as on any Mac install;
+# the name is local to this Mac and need not match the first one's.
+sh install.sh mac --instance <name> \
+                  --feed-host <cluster host> --agb-remote-path <path to agb on the cluster> \
                   --statedir <shared path>
 ```
 
@@ -290,9 +306,13 @@ restarts itself (`RunAtLoad`). Only agterm loses its sessions, so: **open agterm
 checkout:
 
 ```sh
-sh install.sh mac …    # same flags as the original install; idempotent
-agb-refresh            # existing rows keep the `agb pane` code they were CREATED with
+sh install.sh mac --instance <name> …   # same flags as the original install; idempotent
+agb-refresh                             # existing rows keep the `agb pane` code they were CREATED with
 ```
+
+`--instance` is required, so an upgrade names the instance it upgrades — one run per instance.
+`--statedir` can be dropped: it is adopted from that instance's own config (but not if you also pass
+`--config`, which is refused without one).
 
 ### Start an agent so it gets a row
 

@@ -75,13 +75,20 @@ ten minutes. The rest of this section is the reference.
 writes the config, renders and loads the launchd job:
 
 ```sh
-sh install.sh mac \
+sh install.sh mac --instance box2 \
     --feed-host box2.example.com \
-    --agb-remote-path /opt/agbridge/agb
+    --agb-remote-path /opt/agbridge/agb \
+    --statedir /home/you/.agbridge
 ```
 
 It prints the minted `mac_id` and the exact farm-side command to run next. Add `--farm
 <ssh-target>` to run that step over `ssh` immediately instead of printing it.
+
+**`--instance` is required — there is no unnamed install**, so `agb instances` can always say what
+exists and no command has to guess which one you meant. `--instance auto` names it after
+`--feed-host`, using the ssh the installer makes anyway. **`--statedir` is required the first time**
+and adopted from that instance's own config afterwards, so re-running this to pick up new code is the
+same line minus that flag.
 
 **2. On every cluster host that runs agents** — writes the config and merges the four hooks into
 `~/.claude/settings.json`:
@@ -116,10 +123,17 @@ refuses a bare run and asks for `--all`, because nothing restarts the bridges af
 instances` lists what you have. The remaining limitations of running several are in
 [`docs/design.md`](docs/design.md) §5.
 
-⚠️ **Symmetry is a convention, not yet a guarantee.** `install.sh mac` without `--instance` still
-creates a *nameless* instance, so a Mac can still have one unnamed default alongside named ones. The
-commands no longer privilege it — but making the installer refuse an unnamed install is a separate
-change that has not landed.
+⚠️ **No *new* nameless instance is created, which is a smaller claim than symmetry.** `install.sh mac`
+now refuses an install with no `--instance`, so nothing you run mints an unnamed default any more.
+Two things it does not claim: a Mac installed before this still has its nameless instance, and every
+reader that finds one stays (a plist on disk outlives the installer that wrote it); and
+`install.sh mac --instance X --config ~/.config/agbridge/config` still writes the unnamed config,
+because `--instance` only *defaults* `--config` rather than owning it. Creatability changed,
+reachability did not.
+
+⚠️ **A legacy unnamed install therefore has no in-place upgrade.** `--instance` is mandatory, and
+adopting the old file with `--config <the default path>` re-demands `--statedir`. Give it a name
+instead — the steps are in [`CHANGELOG.md`](CHANGELOG.md), *Upgrading from ≤ 0.5.0*.
 
 Both roles write an `agb` wrapper into `~/.local/bin` (`--bin-dir` to change it, `--no-wrapper` to
 skip). It exists because `agb` is deliberately **not executable and has no shebang** — a hook must
@@ -287,7 +301,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1877 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 1921 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -299,7 +313,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1877 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1921 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:

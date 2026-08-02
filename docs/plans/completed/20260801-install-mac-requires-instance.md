@@ -758,12 +758,12 @@ Mac. **Nothing below was skipped.**
 **Files:** `docs/commands.md`, `docs/cookbook.md`, `README.md`,
 `.claude/skills/agbridge/SKILL.md`, `docs/design.md`, `agb-refresh`, `CLAUDE.md`, `CHANGELOG.md`
 
-- [ ] `docs/commands.md`: the `install.sh mac --instance` section — the refusal, and the adoption rule
+- [x] `docs/commands.md`: the `install.sh mac --instance` section — the refusal, and the adoption rule
       with its "derived config only" reasoning; document `agb install-config --print-statedir` beside
       `--print-mac-id`, including that it is a **read-only query**
-- [ ] `docs/cookbook.md`: the first-install recipe (`:51`) and the no-shared-disk recipe both gain
+- [x] `docs/cookbook.md`: the first-install recipe (`:51`) and the no-shared-disk recipe both gain
       `--instance`; grep for every `install.sh mac` without it
-- [ ] ⚠️ `docs/design.md` §5: **amend the first of the "Three guards"** — intro `:1407`, bullet `:1409`
+- [x] ⚠️ `docs/design.md` §5: **amend the first of the "Three guards"** — intro `:1407`, bullet `:1409`
       at `b393d8e` (this file drifted +5; anchor on the text *"Three guards exist"*), which states
       flatly *"`--instance` requires `--statedir`"* — now conditional. Check the §5 table just above
       it — all three rows (config, launchd label, **log dir**) — whose "default" column is no longer
@@ -771,39 +771,76 @@ Mac. **Nothing below was skipped.**
       created by default**, not that symmetry is guaranteed (`--config $DEFAULT_CONFIG` still reaches
       it). Say plainly that the legacy readers stay, with why: a plist on disk outlives the installer
       that wrote it
-- [ ] ⚠️ `agb-refresh`: **operator-facing** messages tell users to re-run `install.sh mac` with no
+      — ➕ the §5 table's header is now `without --instance` / `--instance hostb`, with a ⚠️ under it
+      saying the left column is what a **pre-0.6.0** Mac has on disk rather than something a run can
+      still produce, and naming the four legacy readers that stay. The first guard now reads
+      *"requires `--statedir`, unless that instance's own config already carries one"*, with the
+      `config_given` condition and the not-a-mirror-of-`mac_id` note as its two sub-paragraphs
+- [x] ⚠️ `agb-refresh`: **operator-facing** messages tell users to re-run `install.sh mac` with no
       instance — `:505`, `:912`, `:1085`, `:1189`, `:1510`, `:1735`, `:1789`, `:1792`. That advice is
       now a refusal. Leave the *comment* mentions alone (`:610`, `:781`, `:836`, `:1007`, `:1143`,
       `:1212`, `:1273`, `:1549`, `:1572`, `:1589`) — they describe legacy installs and stay accurate.
       ⚠️ No test pins that prose (`tests/test_agb_refresh.py:3678` only asserts the substring
       `"install.sh mac"`, which survives any rewrite), so this is a read-every-one item
-- [ ] `README.md`: install examples; test count in **both** places (`:290` and `:302` at `b393d8e`,
+      — ➕ **7 of the 8 rewritten, all re-anchored by content** (the file had moved +5). `:505`,
+      `:912`, `:1085`, `:1189`, `:1735`, `:1789` gained `--instance <name>`; `:1792` — the plist
+      with **no `--config`**, i.e. a legacy nameless install — got the real rewrite, because a
+      re-run there does not repair that job, it **mints a second instance beside it**. Its comment
+      says so. ⚠️ **`:1510` was read and deliberately LEFT**: it is not advice, it is a causal list
+      (`install.sh mac --no-load` ... *all leave one* untagged bridge) and it stays accurate for
+      exactly the legacy installs it describes -- adding `--instance` there would narrow a true
+      claim into a false one. All ten comment mentions untouched. ⚠️ **Four assertions pin this
+      prose, not the one the plan named**: `install.sh mac` (`:3678`), `no --config in` (`:1439`,
+      `:1963`), `could not be read, so the wait below matches ANY` (`:2425`) and
+      `could not start com.agbridge.hostb` / `no bridge was started again for: ...` (`:4442`) --
+      every one preserved verbatim; `sh -n agb-refresh` clean
+- [x] `README.md`: install examples; test count in **both** places (`:290` and `:302` at `b393d8e`,
       both stale at 1877 — **re-measure**, do not copy a number from this plan)
-- [ ] `SKILL.md`: the install recipes and the refusals list
-- [ ] `CLAUDE.md`: correct the test count in **both** places (`:8` and `:549` at `b393d8e`, both now
+      — ➕ ⚠️ **re-measured 1921**, not the plan's 1900 nor the file's 1877. Both README places and
+      both CLAUDE.md places updated. The install example gained `--instance` **and `--statedir`**:
+      the transitive cost, measured live rather than inferred -- a FIRST Mac install now needs a
+      statedir too, since every install is an instance install
+- [x] `SKILL.md`: the install recipes and the refusals list
+- [x] `CLAUDE.md`: correct the test count in **both** places (`:8` and `:549` at `b393d8e`, both now
       1900 — **re-measure**); invariant 12 or 14 only if something structural changed
-- [ ] ⚠️ `CHANGELOG.md`: **`## Unreleased` already exists** (`:9`, carrying the `agb-claude` entry from
+- [x] ⚠️ `CHANGELOG.md`: **`## Unreleased` already exists** (`:9`, carrying the `agb-claude` entry from
       `ba17783`) — add to it, do not create a second heading. Name the breaking change, point at the
       existing *Upgrading from ≤ 0.5.0* steps (`:489` at `b393d8e`; this file drifted +49) for anyone with an unnamed instance, and say
       what this does **not** do
-- [ ] ⚠️ and name the consequence the plan currently only implies: **a legacy unnamed install has no
+- [x] ⚠️ and name the consequence the plan currently only implies: **a legacy unnamed install has no
       in-place upgrade at all.** `--instance` is mandatory, and adopting the old file via
       `--config <the default path>` re-demands `--statedir` (Decision 1). That is the symptom line an
       operator needs, not a footnote under *Still open*
-- [ ] ⚠️ **`VERSION` is NOT bumped by this plan.** It lives at `agb:24` — the only place it lives —
+- [x] ⚠️ **`VERSION` is NOT bumped by this plan.** It lives at `agb:24` — the only place it lives —
       and this plan's own constraint is that `agb` is not touched. A breaking CLI change does argue
       0.7.0, but "bump only, no tag, no release" already means the number decides nothing until a
       release does. So: the change lands under `## Unreleased` at 0.6.0, and the *release* that ships
       it picks the number. Record that here so nobody reads the omission as an oversight
-- [ ] ⚠️ run the identifier sweep before committing:
+- [x] ⚠️ run the identifier sweep before committing:
       `git ls-files -z | xargs -0 grep -nEi 'nvidia|<your hosts>|<your user>|/home/<you>/'` — it
       caught three leaks during the parent plan, two of them written *while documenting the first*
-- [ ] ⚠️ **gate this task too**: `sh -n install.sh && sh -n agb-refresh`; full suite. This is the task
+      — ➕ run, and **nothing this task wrote** matches (the same pattern over `git diff`: clean).
+      ⚠️ It did surface **pre-existing** leaks from the `row_fields` commits (`b2f4bf4`, `75ab873`),
+      confirmed by `git log -S`: a real internal hostname `dev01-container-xterm-032`
+      (`docs/cookbook.md` and a completed plan), `/home/user/...` paths, and the internal project
+      names `data_pipeline_v2` / `api_gateway_svc` / `api_tests` -- across `CHANGELOG.md`,
+      `docs/commands.md`, `docs/cookbook.md`, `docs/agtermctl.md`, `agb_mac`,
+      `tests/test_bridge_rows.py` and `docs/plans/completed/20260802-agb-row-fields.md`.
+      **Reported, not fixed**: they predate this plan, span files it does not own, and the cookbook
+      ones sit inside character-count worked examples a rename would falsify. Wants its own commit
+- [x] ⚠️ **gate this task too**: `sh -n install.sh && sh -n agb-refresh`; full suite. This is the task
       that rewrites eight `agb-refresh` messages in a POSIX-sh file, and it is the only one with no
       gate after it. `tests/test_agb_refresh.py:3678` asserts the substring `"install.sh mac"` — a
       rewrite phrasing it as "re-run the mac installer" **fails** that test, with nothing else to
       catch it
-- [ ] move this plan to `docs/plans/completed/`
+      — ➕ `sh -n install.sh` and `sh -n agb-refresh` both clean; **1921 passed**, unchanged from the
+      Task 4 baseline, which is the expected result for a documentation-only task; `git diff -- agb`
+      empty
+- [x] move this plan to `docs/plans/completed/`
+      — ➕ `git mv`, so history follows. ⚠️ The progress log was copied to
+      `docs/plans/completed/20260801-install-mac-requires-instance-progress.txt` as asked -- but
+      note this **establishes** that convention rather than following it: no other plan in
+      `docs/plans/completed/` has a progress file beside it
 
 ## Post-Completion
 

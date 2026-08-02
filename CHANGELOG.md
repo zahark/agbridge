@@ -8,6 +8,60 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ## Unreleased
 
+> ⚠️ **One breaking change**: the Mac installer refuses an install that does not name its instance.
+> Read *Installing after this change* below before upgrading a Mac — and read it **first** if that
+> Mac still has an unnamed default instance, because that one has no in-place upgrade at all.
+
+### Changed, and it is a breaking change
+
+- **`sh install.sh mac --feed-host … --agb-remote-path …` now exits 1 and installs nothing.** The
+  command in the README, in the cookbook and in your shell history is refused: `--instance <name>`
+  is required, and so is `--statedir` the first time you name an instance. Nothing is copied, no
+  config is written, no plist is rendered, and the probe ssh is never made — the refusal is the first
+  thing the `mac` role does.
+
+  ```console
+  $ sh install.sh mac --feed-host myfarm --agb-remote-path /opt/agbridge/agb
+  install.sh: mac: --instance is required. Every Mac-side instance is named, so `agb instances`
+  can say what exists and no command has to guess which one you meant. Pass --instance <name>,
+  or --instance auto to name it after --feed-host.
+  ```
+
+  0.6.0 removed the unnamed instance's *privilege* from every Mac-side command — a bare
+  `agb-refresh` and a bare `agb close-done` sweep all instances, a bare `agb forget-rows` is refused,
+  `agb instances` lists what exists. But the installer still **created** a nameless one, so symmetry
+  was a convention that any first install could break. It is a hard error rather than a warning
+  because a warning on a *first* install gets ignored, and the asymmetry it warned about is then
+  permanent on that Mac.
+
+  **`install.sh farm` is untouched and still takes no `--instance`.** A farm host has exactly one
+  identity: `agb hook` and `agb status-line` resolve `~/.config/agbridge/config` on every invocation,
+  so a named farm config is a file nothing opens. Both halves of that asymmetry come from the one
+  fact.
+
+- **`--statedir` is adopted on a re-install, so an upgrade is the original command minus that flag.**
+  The transitive cost of the above is that every Mac install now needs a statedir, including the
+  first — and re-typing a path on every routine upgrade is exactly how a wrong value gets copied
+  forward. On this project's own Mac a `feed_host` copied that way was wrong and dormant in a config
+  for hours. So a re-install reads the value back out of the config `--instance` derived and says so:
+
+  ```
+  instance: hostb -- label com.agbridge.hostb, config /Users/you/.config/agbridge/hostb/config
+  statedir: adopted /home/you/.agbridge from /Users/you/.config/agbridge/hostb/config
+  ```
+
+  ⚠️ **It adopts only from the config `--instance` DERIVED, never through an explicit `--config`.**
+  That flag may name any file at all — the default one, another instance's — and adopting a statedir
+  out of it is precisely the failure the requirement exists to prevent: a bridge to the new machine
+  reading the *other* cluster's directory, arriving by the one route the guard cannot see. So
+  `install.sh mac --instance hostb --config <anywhere>` still demands `--statedir`, exactly as
+  before. A small ergonomic loss for a shape nobody uses, and the difference between a guard and a
+  hole.
+
+  ⚠️ **Not a mirror of the `mac_id` adoption**, which probes this instance's config and *then* the
+  default one. One Mac has one identity, so sharing an id across instances is the truth; sharing a
+  statedir is the failure being refused. One candidate here, never a loop.
+
 ### Added
 
 - **`row_fields` — you choose what a row shows.** Titles were `label · host · cwd · pane · beat`,
@@ -57,6 +111,28 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
   Like every bridge-side key it is read once at startup, so `agb-refresh` after editing.
 
+- **`agb install-config --print-statedir`** — puts that config's **own** `statedir` alone on stdout
+  and writes nothing at all, exiting non-zero when the file carries none. It is what the adoption
+  above reads, for the same reason the mac-id adoption uses `--print-mac-id`: a second reader of the
+  `key = value` format in shell is a second reader that drifts from the first.
+
+  Three properties are load-bearing and each was measured against a version that lacked it:
+
+  - it prints the file's **own** value, never `agb.statedir()`'s fallback — which ends at the
+    *default-path* config, i.e. the exact answer the installer must not get;
+  - **non-zero means "no own statedir" and nothing else.** It is handled the instant the config has
+    been parsed and returns there. Run any further on and a config with a `statedir` but no `mac_id`
+    raises about the *mac-id*, and the installer would then demand `--statedir` for a file that
+    carries one;
+  - it **writes nothing**, with or without `--dry-run`. Bolted onto the tail beside `--print-mac-id`
+    instead, a statedir-less config was measured to be *rewritten with the default config's
+    statedir* on the way to the error — the failure the flag exists to prevent, caused by the flag.
+
+  It refuses company: only `--config` and `--dry-run` may accompany it. Everything else asks for a
+  write it will not perform, and "you asked me to write and I silently did not" is the class of
+  failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
+  stdout, and neither answer says which one it is.
+
 ### Changed
 
 - **`agb-claude` mints the row before Claude starts.** A hook is what mints a key, so a row used to
@@ -92,6 +168,56 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
   This is the one thing here that could surprise: the row for a detached session now shows
   `completed` from the start rather than briefly going `active` while "hi" is answered.
+
+### Installing after this change
+
+**If your Mac's instances are already named** — every `install.sh mac` since 0.5.0 that passed
+`--instance` — this is one edit to a command you re-run rarely: keep `--instance`, drop `--statedir`.
+
+⚠️ **If your Mac still has the unnamed default instance, it has NO in-place upgrade.** There is no
+flag combination that re-renders that job where it stands: `--instance` is mandatory, and adopting
+the old file with `--config ~/.config/agbridge/config` re-demands `--statedir` by the rule above.
+Give it a name instead — the ordered steps are under **[*Upgrading from ≤ 0.5.0*](#upgrading-from--050)**
+in 0.6.0, and they were written for exactly this migration: boot the job out and *wait*, move
+`config`/`rows`/`placements` into `~/.config/agbridge/<name>/`, re-run the installer with every
+mandatory flag, read the `probed:` line rather than trusting the alias you copied, delete the old
+plist, and re-mint the rows with `agb-refresh --instance <name>`.
+
+Those steps still work as written. One clause in them has softened: step 3 says *"`--instance`
+requires `--statedir`"*, and because step 2 has already moved the old config to the derived path, the
+re-run in step 3 would now **adopt** the statedir out of it. Passing the flag anyway is correct and
+is what the step shows — spelling it out is how you find out that the value in the file is the one
+you meant, which is the same reason step 3 tells you to read `probed:` instead of trusting the alias.
+
+**As always, a release is not installed by pulling.** The Mac loads `agb_mac`/`agb_ops` from
+`~/.local/lib/agbridge/`, so `sh install.sh mac --instance <name> …` is required, and existing rows
+keep the `agb pane` code they were *created* with until `agb-refresh` re-mints them.
+
+### What this deliberately does not do
+
+- **No legacy code path was deleted, and none should be.** Those paths read plists that **already
+  exist on disk**, and refusing to create new ones removes none of the old ones — a plist on disk
+  outlives the installer that wrote it. So `agb instances` still prints `(default)`,
+  `bind_label_to_config` still treats a plist with no `--config` as naming the default config,
+  `_is_agbridge_instance` still accepts the bare label, and `doctor`/`status-line`/`prune --via-ssh`
+  still resolve `~/.config/agbridge/config` unconditionally. **Creatability changed; reachability did
+  not.** Said here so that nobody later "cleans up" one of those branches believing this change
+  retired it.
+- **Symmetry is still not guaranteed.** `install.sh mac --instance hostb --config
+  ~/.config/agbridge/config` writes the unnamed config, because `--instance` only *defaults*
+  `--config` rather than owning it. Closing that would mean refusing a `--config` that resolves to
+  the default path, which forbids a legitimate shape (adopting an existing file under a name) to
+  prevent a deliberate act. Documented rather than closed — and it is exactly why the statedir
+  adoption refuses to fire through that route.
+- **`VERSION` is not bumped.** It lives at `agb:24`, the only place it lives, and this change was
+  built under a hard constraint that `agb` is not touched — it has **one character** of headroom
+  against `AGB_PARSE_BUDGET`, and `--print-statedir` landed entirely in `agb_ops`. A breaking CLI
+  change does argue 0.7.0; the number decides nothing until a release does, so this sits under
+  `## Unreleased` at 0.6.0 and the release that ships it picks the number. Recorded so the omission
+  is not read as an oversight.
+- **`dist/com.agbridge.plist` was not renamed.** Only the filename misleads — its `@LABEL@`
+  placeholder means it already renders every instance's plist, named ones included. Cosmetic, and
+  out of scope.
 
 ## 0.6.0 — 2026-08-01
 

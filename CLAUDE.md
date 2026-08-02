@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1900 tests, ~65 s)
+python3 -m pytest tests/ -q                                    # full suite (1921 tests, ~70 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -415,6 +415,22 @@ exits, reaps, then verifies the pid is actually free.
 review round in this repo's history found guards that passed vacuously; running the suite green
 proves the tests ran, not that they hold anything up.
 
+⚠️ **Two ways a mutation-check reports a false pass, both found while mutating `agb_ops`:**
+
+- **Delete `__pycache__/agb_ops*.pyc` after writing mutated source.** The siblings are loaded *by
+  path* through `importlib`, which unlike `agb`-as-`__main__` **does** cache bytecode — validated on
+  (source mtime in **whole seconds**, source size). A mutation that only *moves* text is
+  size-identical, and a rewrite inside the same second reuses the stale `.pyc`, so the test runs
+  against the **unmutated** implementation and the check reads as a pass. It said so only by flipping
+  between runs.
+- **A mutation that MOVES a guard needs both edits.** Adding it at the new site without deleting it
+  from the old one leaves the original firing, so the "mutation" is a no-op — and a no-op is
+  indistinguishable from a guard nothing covers. Assert the anchor is unique and re-read the mutated
+  file before running.
+
+Restore from an **in-memory snapshot** and verify by `sha256`, never `git checkout` — a checkout of
+uncommitted code silently reports deleted-implementation runs as passes. Commit before mutating.
+
 ⚠️ **Three harness facts make a renderer test vacuous, and none is obvious from reading it.** All
 three cost a review round on the finished-turn banner:
 
@@ -519,11 +535,32 @@ exit 2 and empty stdout, byte-identical to "this plist says nothing". `docs/desi
 authority; limitation 1 is fixed **by the default** rather than by the banner, and limitation 6 is
 mitigated (the maps stay per-instance; only the commands visit all of them).
 
-⚠️ **Symmetry is a convention, not a guarantee, and will be until a follow-up lands.**
-`install.sh mac` can still create a *nameless* instance — mandating `--instance` reaches 24+ test
-functions through `test_install_pkg.py`'s `mac_args` fixture, changes what `dist/com.agbridge.plist`
-stands for, and forces a transitive `--statedir` decision on every Mac install *and upgrade*. Split
-out deliberately; the plan is `docs/plans/20260801-install-mac-requires-instance.md`.
+Also unreleased, and the follow-up that closed the asymmetry above: **`install.sh mac` refuses an
+install with no `--instance`.** The refusal sits at the top of `role_mac`, before any filesystem
+mutation *and* before `probe_farmhost`, so a refused install writes nothing and makes no ssh call —
+which is what makes "no name can be invented" true rather than merely untested. `install.sh farm` is
+untouched: a farm host has one identity, and `agb hook` resolves `agb.config_path()` on every
+invocation. Its transitive cost is that **`--statedir` is now required on a first Mac install too**,
+which is paid for by adopting it on a re-install — `agb install-config --print-statedir`, a pure
+query answering the file's **own** value, handled the instant `parse_config` returns and returning
+there, so non-zero means *no own statedir* and nothing else.
+
+⚠️ **The claim is "no NEW nameless instance is created by default", NOT that symmetry is guaranteed.**
+`install.sh mac --instance X --config $DEFAULT_CONFIG` still writes the unnamed file, because
+`--instance` only *defaults* `--config`; refusing that would forbid a legitimate shape to prevent a
+deliberate act. And **no legacy code path was deleted** — `instance_display_name`'s `(default)`,
+`bind_label_to_config`'s no-`--config` branch, `_is_agbridge_instance`'s label-space clause all read
+plists that already exist. A plist on disk outlives the installer that wrote it: **creatability**
+changed, reachability did not. ⚠️ The operator-visible consequence, which is the line that matters:
+**a legacy unnamed install has no in-place upgrade at all** — `--instance` is mandatory, and adopting
+the old file via `--config <the default path>` re-demands `--statedir`. Give it a name (`CHANGELOG.md`,
+*Upgrading from ≤ 0.5.0*).
+
+⚠️ **`VERSION` was deliberately NOT bumped by that change.** It lives at `agb:24`, the only place, and
+the plan's own constraint was that `agb` is not touched (1 character of headroom). A breaking CLI
+change does argue 0.7.0 — but the number decides nothing until a release does, so the entry sits under
+`## Unreleased` at 0.6.0 and the release that ships it picks the number. Recorded so the omission does
+not read as an oversight.
 
 Before it, **a banner when a long-running agent finishes** (`notify_on_completed_after`, on by
 default at 300 s). The threshold is the feature — `completed` fires once per *turn*, so ungated it
@@ -546,7 +583,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1900 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1921 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
