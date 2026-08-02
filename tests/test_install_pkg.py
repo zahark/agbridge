@@ -455,47 +455,73 @@ def test_print_mac_id_puts_only_the_id_on_stdout(run_agb, tmp_path, agb):
 # --print-statedir: the same channel, but a *pure query*
 #
 # `install.sh mac --instance <name>` reads it to adopt an existing instance's
-# statedir instead of re-demanding `--statedir` on every upgrade, with the
-# `|| statedir=""` idiom the mac-id loop already uses -- so a non-zero exit has
-# to mean "this file carries no statedir of its own" and nothing else, and the
-# run has to write nothing at all.
+# statedir instead of re-demanding `--statedir` on every upgrade, and the run
+# has to write nothing at all.
+#
+# ⚠️ **Three statuses, not two**, and this comment used to claim two: 0 with the
+# value on stdout, `PRINT_STATEDIR_NONE` for "this file carries none of its
+# own", and 1 for "I could not read it" -- unreadable, not UTF-8, an option this
+# `agb` does not know. The installer swallows only the middle one. Folding it
+# into "non-zero" reported an unreadable config as *carries none to adopt* and
+# sent the operator after `--statedir`, a flag that was not the problem: the
+# same "'I could not answer' is not 'the answer is nothing'" this project keeps
+# paying for.
 # ---------------------------------------------------------------------------
-
-def write_config(path, text):
-    """Seed a config file, creating its directory."""
-    parent = os.path.dirname(str(path))
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent)
-    with open(str(path), "w") as handle:
-        handle.write(text)
-    return str(path)
-
 
 def print_statedir_argv(config, *extra):
     return ["install-config", "--config", str(config),
             "--print-statedir"] + list(extra)
 
 
-def test_print_statedir_puts_only_the_files_own_statedir_on_stdout(run_agb,
-                                                                   tmp_path):
-    config = write_config(tmp_path / "cfg" / "config",
-                          "statedir = /shared/.agbridge\nmac_id = m-0001\n")
+def test_print_statedir_puts_only_the_files_own_statedir_on_stdout(
+        run_agb, config_path):
+    config = config_path("statedir = /shared/.agbridge\nmac_id = m-0001\n")
     code, out, err = run_agb(print_statedir_argv(config))
     assert code == 0
     assert out.decode() == "/shared/.agbridge\n"   # nothing else on stdout
     assert err == b""                             # and no report either
 
 
-def test_print_statedir_is_refused_when_the_file_carries_no_statedir(run_agb,
-                                                                     tmp_path):
+def test_print_statedir_is_refused_when_the_file_carries_no_statedir(
+        run_agb, config_path, ops):
     """Non-zero must mean *no own statedir*, and stdout must stay empty: the
-    installer reads it as `statedir=$(…) || statedir=""` and would otherwise
-    adopt an error message as a path."""
-    config = write_config(tmp_path / "cfg" / "config", "mac_id = m-0001\n")
+    installer would otherwise adopt an error message as a path.
+
+    The status is `PRINT_STATEDIR_NONE` **exactly**, not merely non-zero -- see
+    the test below for the half that distinction buys.
+    """
+    config = config_path("mac_id = m-0001\n")
     code, out, err = run_agb(print_statedir_argv(config))
-    assert code != 0
+    assert code == ops.PRINT_STATEDIR_NONE
     assert out == b""
     assert b"statedir" in err
+
+
+def test_a_file_that_cannot_be_read_is_not_the_same_answer_as_carrying_none(
+        run_agb, config_path, ops):
+    """⚠️ The two must not share a status, and they did.
+
+    `install.sh` swallows *no own statedir* -- that is an answer, and the flag
+    it asks for next is the right one. It must NOT swallow "I could not read
+    that file": measured, a config the installer could not read was reported as
+    `carries none to adopt` and the operator was sent after `--statedir`, which
+    would then have installed the instance against a config nothing can read.
+    Same shape as `agb-refresh`'s four-status `plist_read_ok` rule, and the same
+    reason.
+
+    Not-UTF-8 rather than `chmod 000`, deliberately: a suite that happens to run
+    as root reads a mode-000 file perfectly well, and a guard that quietly stops
+    firing is worse than one that was never written.
+    """
+    config = config_path("")
+    with open(str(config), "wb") as handle:
+        handle.write(b"statedir = /shared/\xff\xfe\n")
+    code, out, err = run_agb(print_statedir_argv(config))
+    assert code != 0
+    assert code != ops.PRINT_STATEDIR_NONE     # ...and this is the whole point
+    assert out == b""
+    assert b"UTF-8" in err
+    assert str(config).encode() in err         # it names the file it could not read
 
 
 def test_print_statedir_is_refused_when_the_config_does_not_exist(run_agb,
@@ -538,13 +564,13 @@ def test_print_statedir_answers_the_named_file_never_the_default_one(
     assert "set:      statedir = /shared/DEFAULT" in out.decode()
 
 
-def test_print_statedir_answers_a_config_that_has_no_mac_id(run_agb, tmp_path):
+def test_print_statedir_answers_a_config_that_has_no_mac_id(run_agb,
+                                                             config_path):
     """The measured regression behind the placement: run below
     `install_config_values` and this file raises MAC_ID_MISSING_NOTE instead of
     answering, so `install.sh` would demand `--statedir` for a config that
     carries one."""
-    config = write_config(tmp_path / "cfg" / "config",
-                          "statedir = /shared/.agbridge\n")
+    config = config_path("statedir = /shared/.agbridge\n")
     code, out, _err = run_agb(print_statedir_argv(config))
     assert code == 0
     assert out.decode() == "/shared/.agbridge\n"
@@ -554,9 +580,10 @@ def test_print_statedir_answers_a_config_that_has_no_mac_id(run_agb, tmp_path):
     ("statedir = /shared/.agbridge\nmac_id = m-0001\n", True),
     ("mac_id = m-0001\n", False),
 ])
-def test_print_statedir_leaves_the_config_byte_identical(run_agb, tmp_path,
+def test_print_statedir_leaves_the_config_byte_identical(run_agb, config_path,
                                                          text, answers):
-    """**Without** `--dry-run`, in both the answering and the raising case.
+    """**Without** `--dry-run`, in both the answering and the "carries none"
+    case.
 
     The flag is read-only by construction, not by remembering to pass a flag:
     measured, a version that emitted after `write_settings` left a
@@ -564,7 +591,7 @@ def test_print_statedir_leaves_the_config_byte_identical(run_agb, tmp_path,
     exiting non-zero -- the failure the flag exists to prevent, caused by the
     flag.
     """
-    config = write_config(tmp_path / "cfg" / "config", text)
+    config = config_path(text)
     before = read_bytes(config)
     code, _out, _err = run_agb(print_statedir_argv(config))
     assert (code == 0) is answers
@@ -593,7 +620,7 @@ def config_option_names(ops):
 
 
 def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
-                                                              tmp_path):
+                                                              config_path):
     """Allowed set: `--config` and `--dry-run`. Everything else is refused
     rather than ignored -- measured, `--statedir /new --feed-host zzz
     --print-statedir` printed the *old* value, exited 0 and wrote nothing.
@@ -606,8 +633,7 @@ def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
                      "--host", "--generate-mac-id"):
         assert expected in names                # the ones a hand list misses
 
-    config = write_config(tmp_path / "cfg" / "config",
-                          "statedir = /shared/.agbridge\n")
+    config = config_path("statedir = /shared/.agbridge\n")
     before = read_bytes(config)
     allowed = ("--print-statedir", "--config", "--dry-run")
     refused = []
@@ -615,7 +641,7 @@ def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
         # `a=b` satisfies `--host`'s own `<name>=<target>` check too, so every
         # value-taking flag reaches the refusal rather than an earlier one.
         extra = [name] if name in ops.CONFIG_FLAGS else [name, "a=b"]
-        argv = ["--config", config, "--print-statedir"] + extra
+        argv = ["--config", str(config), "--print-statedir"] + extra
         if name in allowed:
             assert ops.parse_config_args(argv)   # parses, does not raise
             continue
@@ -624,16 +650,39 @@ def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
         assert name in str(excinfo.value)
         refused.append(name)
     assert len(refused) == len(names) - len(allowed)
-    assert read_bytes(config) == before          # a refusal writes nothing
+    # ⚠️ This one is about the PARSER and cannot say more: it never opens a
+    # file, so "a refusal writes nothing" is trivially true here. The
+    # behavioural half is the test below, which runs the command.
+    assert read_bytes(config) == before
 
 
-def test_print_statedir_accepts_config_and_dry_run(run_agb, tmp_path):
+def test_a_refused_print_statedir_really_does_write_nothing(run_agb,
+                                                            config_path):
+    """⚠️ The companion the parser test above cannot be.
+
+    `ops.parse_config_args(argv)` raises before anything is opened, so its
+    `read_bytes(config) == before` assertion holds with the whole write path
+    deleted -- it reads as end-to-end coverage of a claim nothing exercises.
+    This runs the real command, with the option that measured worst: a
+    `--statedir` beside `--print-statedir` used to print the *old* value, exit 0
+    and write nothing, which is "you asked me to write and I silently did not".
+    """
+    config = config_path("statedir = /shared/OLD\nmac_id = m-0001\n")
+    before = read_bytes(config)
+    code, out, err = run_agb(print_statedir_argv(config, "--statedir", "/new"))
+    assert code != 0
+    assert out == b""                             # not the old value either
+    assert b"--statedir" in err
+    assert read_bytes(config) == before
+    assert os.listdir(os.path.dirname(config)) == ["config"]   # and no backup
+
+
+def test_print_statedir_accepts_config_and_dry_run(run_agb, config_path):
     """The two exemptions, exercised end to end rather than only through the
     parser: `--config` names *which* file to read (it is exactly what
     `install.sh` passes) and `--dry-run` is a no-op for a read, so refusing the
     obvious first guess would only trap the caller."""
-    config = write_config(tmp_path / "cfg" / "config",
-                          "statedir = /shared/.agbridge\n")
+    config = config_path("statedir = /shared/.agbridge\n")
     code, out, _err = run_agb(print_statedir_argv(config, "--dry-run"))
     assert code == 0
     assert out.decode() == "/shared/.agbridge\n"
@@ -1513,16 +1562,20 @@ def test_an_instance_install_agrees_about_its_label_config_and_logs(
     assert agb.read_config(str(config))["statedir"] == str(tmp_path / "state")
     assert "instance: hostb" in out
 
-    # Non-vacuity, and the isolation claim -- ⚠️ RE-ANCHORED, not re-pointed.
-    # It used to say "the DEFAULT instance was not written", which was the
-    # isolation an instance install needed when a nameless install was the
-    # ordinary case. `install.sh mac` refuses one now, so that claim is about a
-    # file nothing can create and would pass with the sugar deleted. The
-    # assertable version names the OTHER instance: `mac_args` carries
-    # `--instance box2` and `_instance_args` overrides it, so `com.agbridge.box2`
-    # is exactly what appears if that override ever stops taking effect.
-    assert not (tmp_path / "agents" / MAC_PLIST).exists()
-    assert not _instance_config_path(fake_home, HOST).exists()
+    # Non-vacuity, and the isolation claim -- ⚠️ RE-ANCHORED TWICE, and the
+    # second time as a COUNT rather than a name. It used to say "the DEFAULT
+    # instance was not written", which was the isolation an instance install
+    # needed when a nameless install was the ordinary case; `install.sh mac`
+    # refuses one now, so that claim was about a file nothing can create. But
+    # naming the OTHER instance (`com.agbridge.box2`, the fixture's own token)
+    # is barely stronger: the positive assertions above already exclude it, so
+    # mutating the label derivation fails `Label ==` first and the negative one
+    # never speaks. What actually holds anything up is "these are the ONLY two
+    # things written", which catches a stray write of any shape -- including
+    # the nameless one, and including a name nobody predicted.
+    assert [str(p) for p in fake_home.rglob("config")] == [str(config)]
+    assert os.listdir(str(tmp_path / "agents")) == ["com.agbridge.hostb.plist"]
+    assert not (tmp_path / "agents" / MAC_PLIST).exists()   # spelled out too
     assert (fake_home / "Library" / "Logs" / "agbridge" / "hostb").is_dir()
 
 
@@ -1766,6 +1819,125 @@ def test_the_adopted_statedir_is_the_instances_own_never_the_defaults(
     assert agb.read_config(named)["statedir"] == "/shared/HOSTB"
 
 
+def test_an_explicit_statedir_beats_the_adoption(run_sh, mac_args,
+                                                 instance_config, tmp_path,
+                                                 fake_home, agb):
+    """⚠️ The adoption is a fall-back, and MOVING an instance's statedir is the
+    most plausible reason anyone re-installs one.
+
+    The guard is `[ -z "$statedir" ] && [ "$config_given" = no ]`, and only its
+    second half was pinned. With the first half gone the flag is silently
+    discarded: the config keeps the OLD directory, and the printed
+    `install.sh farm …` hint tells the operator to install the farm side
+    against the old one too -- "ssh to the right machine, read the wrong disk",
+    arriving out of the very feature that exists to prevent it.
+
+    So three assertions, not one: what was written, that nothing was announced
+    as adopted, and what the hint carries. The hint is the half that reaches
+    another machine.
+    """
+    config = instance_config("hostb",
+                             "statedir = /shared/OLD\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args))   # --statedir is pinned
+    assert code == 0, err
+    new = str(tmp_path / "state")
+    assert agb.read_config(config)["statedir"] == new
+    assert "statedir: adopted" not in out      # not `"adopted"`: the mac-id is
+    assert "/shared/OLD" not in out
+    argv = _farm_hint(out)
+    assert argv[argv.index("--statedir") + 1] == new
+
+
+@pytest.mark.parametrize("value,message", [
+    ("relative/dir", "absolute path"),
+    ("/shared/has space", "would not survive a remote shell"),
+])
+def test_an_adopted_statedir_is_re_checked_before_anything_is_written(
+        run_sh, mac_args, instance_config, tmp_path, value, message):
+    """⚠️ Defence in depth that is not redundant, and it is about WHEN.
+
+    The top-level `shell_safe`/`absolute` pair runs long before this value
+    exists, so an adopted one would reach the config and the farm hint
+    unchecked. `agb install-config` does refuse it eventually -- but that is
+    after `mkdir -p "$dest"` and the three-file copy, so the tree is half made
+    when the refusal arrives. Measured with the two lines deleted: `$dest`
+    contained `agb`, `agb_mac`, `agb_ops` and `agb-refresh`.
+
+    A config carrying either value is not exotic: hand-edited, or copied from
+    another Mac where the path was right.
+    """
+    instance_config("hostb", "statedir = %s\nmac_id = mac-b0b0\n" % (value,))
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "the adopted statedir" in err        # named as adopted, not as a flag
+    assert message in err
+    assert not (tmp_path / "dest").exists()     # refusals write nothing
+    assert not (tmp_path / "agents").exists()
+
+
+def test_a_config_that_cannot_be_read_is_not_reported_as_carrying_none(
+        run_sh, mac_args, instance_config, tmp_path, fake_home):
+    """⚠️ Four different failures used to arrive as one sentence.
+
+    `statedir=$(… --print-statedir) || statedir=""` swallowed *no statedir
+    key*, *no file*, *file unreadable* and *file not UTF-8* alike, and the
+    refusal below then told the operator that `<config>` "carries none to
+    adopt" -- misdirecting them to `--statedir`, which would have installed
+    this instance against a config nothing here can read. The query answers
+    `PRINT_STATEDIR_NONE` for the first two and 1 for the rest, and only the
+    first is swallowed.
+
+    Not-UTF-8 rather than `chmod 000`: a suite running as root reads a mode-000
+    file, and a guard that quietly stops firing is worse than none.
+    """
+    config = instance_config("hostb", "")
+    with open(config, "wb") as handle:
+        handle.write(b"statedir = /shared/\xff\xfe\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "could not read %s" % (config,) in err
+    assert "carries none" not in err            # the misdirection itself
+    assert not (tmp_path / "dest").exists()
+
+
+def test_the_statedir_refusal_says_why_THIS_run_needs_the_flag(
+        run_sh, mac_args, instance_config, tmp_path, fake_home):
+    """⚠️ One message served three runs and was false in two of them.
+
+    It was written for "a SECOND instance without `--statedir`". Making
+    `--instance` mandatory turned it into the message every FIRST install gets,
+    where "a second machine shares no disk with the first" describes a first
+    machine that does not exist; and it claimed "<config> carries none to
+    adopt" even when `--config` was typed and that file plainly carried one.
+    The reason is what tells the operator what to DO -- pass the flag, fix the
+    file, or drop `--config` -- so the three runs get three reasons.
+    """
+    # (1) a brand-new instance: there is no file to have read anything out of.
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "NEW instance" in err
+    assert "does not exist yet" in err
+
+    # (2) the file is there and says nothing about a statedir.
+    instance_config("hostb", "mac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}))
+    assert code != 0
+    assert "carries no statedir of its own" in err
+    assert "NEW instance" not in err
+
+    # (3) `--config` was typed, and the reason is that -- not the file, which
+    # here carries a perfectly good statedir the installer still will not take.
+    other = instance_config(None, "statedir = /shared/DEFAULT\nmac_id = m-1\n")
+    code, out, err = run_sh(_instance_args(
+        mac_args, **{"--statedir": None, "--config": other}))
+    assert code != 0
+    assert "nothing is adopted when --config is given" in err
+    assert "carries no statedir of its own" not in err
+    assert "/shared/DEFAULT" not in err          # and it did not go reading it
+
+    assert not (tmp_path / "dest").exists()      # none of the three wrote
+
+
 def test_the_statedir_is_adopted_from_the_installers_own_tree(
         run_sh, mac_args, instance_config, tmp_path):
     """⚠️ It reads `$SELF/agb`, never `$dest/agb`.
@@ -1793,6 +1965,87 @@ def test_the_statedir_is_adopted_from_the_installers_own_tree(
 
     assert first("statedir: adopted") < first("copied:")
     assert (tmp_path / "dest" / "agb").exists()      # ...and it really did copy
+
+    # ⚠️ AND THE OUTPUT SHAPE THE PLACEMENT WAS CHOSEN TO BUY, which was a
+    # decision with nothing holding it up. The adoption proves `$SELF/agb`
+    # before trusting an answer out of it, and its own `verified:` report is
+    # suppressed so that `statedir: adopted …` sits directly under `instance:
+    # …` -- one statement about one instance. Unpinned, the `>/dev/null` comes
+    # off in the next edit and a `verified:` line lands between the two.
+    assert out.count("verified:") == 1
+    assert lines[first("statedir: adopted") - 1].startswith("instance:")
+
+
+def test_a_dry_run_verifies_the_installer_tree_once_not_twice(
+        run_sh, mac_args, instance_config, stub_bin):
+    """⚠️ Two callers, one tree, and `verify_tree` is three interpreter starts.
+
+    On a `--dry-run` adopting install both the adoption and the dry branch
+    prove `$SELF/agb` -- the same file, in the same run, which nothing can
+    change in between. The second call re-reports the first one's answer
+    instead of launching six interpreters to say one thing.
+
+    ⚠️ Counted through a recording `--python`, because the OUTPUT cannot see
+    this: the adoption's report is suppressed either way, so `verified:` appears
+    once whether the work was done twice or not. A test asserting the line
+    count passes with the memo deleted -- measured -- which is exactly the
+    "assert something that cannot fail" trap this file keeps finding. `agb
+    version` is run by nothing else, so counting it counts the proofs.
+
+    Non-vacuous in the other direction too: the `verified:` line must still be
+    there, and the answer in it must be real.
+    """
+    log = stub_bin.install("python3", body=(
+        "#!/bin/sh\n"
+        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; } "
+        ">> \"" + str(stub_bin.path / "python3.log") + "\"\n"
+        "exec " + sys.executable + " \"$@\"\n"))
+    assert not log.exists()                      # nothing has run it yet
+
+    instance_config("hostb", "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(
+        _instance_args(mac_args, **{"--statedir": None,
+                                    "--python": str(stub_bin.path / "python3")})
+        + ["--dry-run"])
+    assert code == 0, err
+    assert "statedir: adopted /shared/HOSTB" in out
+    assert out.count("verified:") == 1, out
+    assert "verified: agb " in out               # a real answer, not an echo
+
+    versions = [c for c in stub_bin.calls("python3") if c[-1] == "version"]
+    assert len(versions) == 1, stub_bin.calls("python3")
+
+
+def test_a_tree_that_cannot_run_agb_says_so_rather_than_demanding_a_statedir(
+        run_sh, mac_args, instance_config, tmp_path, fake_home):
+    """⚠️ Why the adoption proves the tree BEFORE it reads an answer out of it.
+
+    `--print-statedir` is run through `$SELF/agb`, and a `$SELF` tree that
+    cannot run `agb` at all answers non-zero for a reason that has nothing to
+    do with this config. Without the proof the operator is told to pass
+    `--statedir` for an instance whose config already records one -- and the
+    statedir refusal fires *before* the `verified:` line further down, so the
+    real problem never gets named at all.
+
+    `agb_ops` is the file broken here, not `agb_mac`: `install-config` needs
+    `agb_ops`, so a broken `agb_mac` fails the *later* verify with the same
+    message and the test would pass with this proof deleted.
+    """
+    tree = tmp_path / "broken"
+    tree.mkdir()
+    shutil.copy(INSTALL_SH, str(tree / "install.sh"))
+    for name in DIST_FILES:
+        shutil.copy(os.path.join(conftest.REPO_ROOT, name), str(tree / name))
+    with open(str(tree / "agb_ops"), "w") as handle:
+        handle.write("this is not python(\n")
+
+    instance_config("hostb", "statedir = /shared/HOSTB\nmac_id = mac-b0b0\n")
+    code, out, err = run_sh(_instance_args(mac_args, **{"--statedir": None}),
+                            script=str(tree / "install.sh"))
+    assert code != 0
+    assert "agb_ops" in err, err          # the real problem, named
+    assert "--statedir" not in err        # ...and not the flag that is not it
+    assert not (tmp_path / "dest").exists()
 
 
 def test_the_printed_farm_command_carries_the_adopted_statedir(
@@ -2062,6 +2315,14 @@ def test_a_nameless_mac_install_is_refused_and_writes_nothing(
     assert code != 0
     assert "--instance" in err
     assert "--instance auto" in err            # ...and the one-word fix
+    # ⚠️ THE BACKTICKS SURVIVED, and this is the only thing that can catch it.
+    # The message names `agb instances`, so the `die` argument is SINGLE-quoted:
+    # in double quotes those backticks are command substitution and `die` would
+    # RUN `agb instances` -- off `$PATH`, during a refusal, with the output
+    # spliced into the middle of the sentence. Both assertions above sit
+    # outside the backticks and survive the mangling intact, which is how the
+    # mistake reaches a green suite.
+    assert "`agb instances` can say what exists" in err
     assert not (tmp_path / "dest").exists()
     assert not (tmp_path / "agents").exists()
     assert not (tmp_path / "cfg" / "config").exists()
@@ -2090,6 +2351,13 @@ def test_both_ways_of_naming_an_instance_satisfy_the_requirement(
     assert code == 0, err
     assert _instance_config_path(fake_home, "hostb01").exists()
 
+    # ⚠️ A COUNT, not a name. "the nameless config was not written" names the
+    # one path the fixture's own overrides already exclude, so it went quiet
+    # the moment no install could produce it. Two runs must leave exactly two
+    # configs, and any third -- whatever it is called -- is the failure.
+    assert sorted(str(p) for p in fake_home.rglob("config")) == sorted([
+        str(_instance_config_path(fake_home, "named")),
+        str(_instance_config_path(fake_home, "hostb01"))])
     assert not (fake_home / ".config" / "agbridge" / "config").exists()
 
 
@@ -2106,6 +2374,28 @@ def test_install_sh_farm_still_installs_with_no_instance(run_sh, tmp_path, agb):
     code, out, err = run_sh(_farm(tmp_path))
     assert code == 0, err
     assert "--instance" not in err
+    assert agb.read_config(str(tmp_path / "config"))["mac_id"] == "mac-0001"
+
+
+def test_install_sh_farm_still_installs_with_no_statedir_either(
+        run_sh, tmp_path, agb):
+    """⚠️ The transitive half of the same asymmetry, and the one property the
+    statedir move could have broken.
+
+    `--statedir` is now required for every *mac* install, and the rule that
+    says so lives inside `role_mac`. The farm role has always been allowed to
+    go without -- `agb hook` resolves the statedir through `$AGB_STATEDIR`, the
+    config, then agb's own default -- and `role_farm`'s two
+    `if [ -n "$statedir" ]` conditionals are live for exactly that reason,
+    which is what the comment at the mac hint asserts and nothing tested.
+    Structurally safe (the `die` is lexically inside `role_mac`), and that is
+    an argument, not a test.
+    """
+    args = _farm(tmp_path, **{"--statedir": None})
+    assert "--statedir" not in args              # non-vacuity: it really is out
+    code, out, err = run_sh(args)
+    assert code == 0, err
+    assert "--statedir" not in err
     assert agb.read_config(str(tmp_path / "config"))["mac_id"] == "mac-0001"
 
 
@@ -2322,6 +2612,18 @@ def test_no_role_and_the_help_flags_print_usage_and_exit_two(run_sh, argv):
     assert code == 2, (out, err)
     assert "usage: install.sh mac" in err
     assert "install.sh farm" in err
+    # ⚠️ THE SYNOPSIS LINE, not the file. Nothing else tests `usage()`'s prose,
+    # and the `--instance` refusal tells the operator to read a synopsis -- one
+    # still showing the command it now refuses sends them back into the same
+    # wall. A bare `"--instance <name>" in err` is NOT this assertion: the
+    # option table below spells the same words, so deleting the flag from the
+    # synopsis leaves it green (measured).
+    synopsis = [l for l in err.splitlines()
+                if l.startswith("usage: install.sh mac")]
+    assert len(synopsis) == 1, err
+    assert "--instance <name>" in synopsis[0]
+    # ...and `--statedir`, which became required for a FIRST mac install too.
+    assert "--statedir" in synopsis[0]
 
 
 @pytest.mark.parametrize("argv", [["mac", "-h"], ["farm", "--help"]])
@@ -2671,6 +2973,31 @@ def _auto_args(mac_args, **over):
     return _probing_args(mac_args, **args)
 
 
+def test_a_feed_host_that_is_an_ssh_option_is_refused_before_auto_probes(
+        run_sh, mac_args, stub_bin, tmp_path, fake_home):
+    """⚠️ ORDER, and `--instance auto` is what made it matter.
+
+    `shell_safe "--feed-host"` used to run inside `role_mac`, while the `auto`
+    block above it already calls `probe_farmhost` -- an
+    `ssh "$feedhost" 'hostname -s'`. So the value reached ssh's own option
+    parser before the check that exists to keep it out of there:
+    `--feed-host -oProxyCommand=…` is the shape, and every character of it is
+    inside `shell_safe`'s allowed set except the leading dash it refuses.
+
+    Making `--instance` mandatory promoted `auto` from a rarity to a primary
+    path, which is why the ordering stopped being academic. The assertion is
+    that **no ssh happened at all** -- an exit code alone cannot tell a refusal
+    before the connection from one after it.
+    """
+    _ssh_answering(stub_bin, "hostb01")
+    code, out, err = run_sh(_auto_args(
+        mac_args, **{"--feed-host": "-oProxyCommand=/tmp/x"}))
+    assert code != 0
+    assert "must not start with '-'" in err
+    assert stub_bin.calls("ssh") == []
+    assert list(fake_home.rglob("config")) == []
+
+
 def test_instance_auto_names_the_instance_after_the_machine(
         run_sh, mac_args, stub_bin, tmp_path, fake_home, agb):
     """The name, and everything it decides, come off the machine.
@@ -2852,7 +3179,12 @@ def test_an_absent_instance_never_reaches_the_probe_that_could_name_it(
 # ---------------------------------------------------------------------------
 
 def _farm(tmp_path, **over):
-    """The farm role with every path pinned inside tmp_path."""
+    """The farm role with every path pinned inside tmp_path.
+
+    `None` drops a flag, the same spelling `mac_args` uses -- the farm role
+    genuinely takes some of these optionally (`--statedir` above all), and a
+    helper that could only ever ADD flags cannot state that.
+    """
     args = {"--mac-id": "mac-0001",
             "--config": str(tmp_path / "config"),
             "--statedir": str(tmp_path / "state"),
@@ -2861,6 +3193,8 @@ def _farm(tmp_path, **over):
     args.update(over)
     argv = ["farm"]
     for name, value in sorted(args.items()):
+        if value is None:
+            continue
         argv.extend([name, value])
     return argv
 
@@ -2978,6 +3312,28 @@ def test_the_default_config_path_is_spelled_the_same_in_all_three_places(agb):
     home = agb.home_dir()
     for script in (INSTALL_SH, REFRESH_SH):
         assert _sh_default_config(script, home) == expected, script
+
+
+def test_the_print_statedir_none_status_is_the_same_number_in_both_files(ops):
+    """⚠️ A cross-file agreement with a NUMBER in it (invariant 14).
+
+    `agb install-config --print-statedir` answers `PRINT_STATEDIR_NONE` for
+    "this file carries no statedir of its own" and 1 for "I could not read it
+    at all", and `install.sh` swallows only the first. It cannot import
+    `agb_ops`, so it spells the number itself -- and a disagreement is silent
+    in the worst direction: every unreadable config would be reported as
+    *carries none to adopt* and the operator sent after `--statedir`, which is
+    the exact misdirection the two statuses were separated to remove.
+
+    Compared as the value, not as the text: what matters is the number the two
+    sides act on.
+    """
+    spelled = _sh_assignment(INSTALL_SH, "PRINT_STATEDIR_NONE").strip('"')
+    assert int(spelled) == ops.PRINT_STATEDIR_NONE
+    # ...and it is not one of the statuses that already mean something else:
+    # 1 is every AgbError, 2 is `agb`'s unknown-command answer, 3 is
+    # `run_ops`' known-but-unbuilt one.
+    assert ops.PRINT_STATEDIR_NONE not in (0, 1, 2, 3)
 
 
 def test_the_two_instance_name_validators_accept_exactly_the_same_names():

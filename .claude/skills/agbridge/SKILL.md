@@ -25,9 +25,11 @@ Mac:          agb bridge -> owns key -> agterm row, calls agtermctl
 Mac:          agb pane   -> what a row runs when you click it
 ```
 
-That whole column is **one instance**. A machine that shares no disk with the first gets its own
-statedir, feed and bridge — a second launchd job, rendering into the same sidebar — so read every
-path below as "the default instance's", and see *Add a machine that shares no disk* for the rest.
+That whole column is **one instance**, and on the Mac every instance is **named**: `install.sh mac`
+requires `--instance <name>` and refuses an install without one. A machine that shares no disk with
+the first gets another instance — its own statedir, feed and bridge, a second launchd job, rendering
+into the same sidebar. So read every Mac path below as `~/.config/agbridge/<name>/…`, and see *Add a
+machine that shares no disk* for the rest.
 
 Two facts explain most confusion:
 
@@ -43,16 +45,21 @@ Two facts explain most confusion:
 | | path |
 |---|---|
 | shared statedir (cluster) | `~/.agbridge` by default, or `statedir` in the config |
-| config (both sides) | `~/.config/agbridge/config` |
-| Mac: key → row map | `~/.config/agbridge/rows` |
-| Mac: remembered workspaces | `~/.config/agbridge/placements` |
-| Mac: installed code | `~/.local/lib/agbridge/{agb,agb_mac,agb_ops,agb-refresh}` |
-| Mac: bridge log | `~/Library/Logs/agbridge/bridge.err.log` |
+| cluster: config | `~/.config/agbridge/config` |
+| Mac: config | `~/.config/agbridge/<name>/config` — `<name>` is that install's `--instance` |
+| Mac: key → row map | `~/.config/agbridge/<name>/rows` |
+| Mac: remembered workspaces | `~/.config/agbridge/<name>/placements` |
+| Mac: installed code | `~/.local/lib/agbridge/{agb,agb_mac,agb_ops,agb-refresh}` — **shared**: one install, N configurations |
+| Mac: bridge log | `~/Library/Logs/agbridge/<name>/bridge.err.log` |
 | cluster: breadcrumbs | `<statedir>/err/<host>.<key>.log` |
 
-On the Mac those are the **default instance's** paths. A second machine that shares no disk gets its
-own instance, and the config, the rows map, the placements file and the log all move under its name
-— see *Add a machine that shares no disk* below.
+⚠️ **The Mac's paths are per instance, and there is no unnamed one to fall back on.** Everything the
+Mac side owns derives from the config's *directory*, so `<name>` is the whole of the isolation and
+`agb instances` is what says which names this Mac actually has. The bare `~/.config/agbridge/config`
+and `~/Library/Logs/agbridge/bridge.err.log` are the **cluster's** config and a **pre-0.6.0 Mac's**
+files: still read by every legacy reader — a plist on disk outlives the installer that wrote it — but
+not a shape a new install can produce. Reaching for them on a Mac installed since is how a diagnosis
+goes quietly wrong: the file is absent or belongs to nobody, and nothing reports it.
 
 ## First move for any problem
 
@@ -79,11 +86,17 @@ Then on the **Mac**, so click-to-attach can reach it — a record's `host` is a 
 alias:
 
 ```sh
-echo 'host_newbox01 = newbox-ssh-alias' >> ~/.config/agbridge/config
+echo 'host_newbox01 = newbox-ssh-alias' >> ~/.config/agbridge/<name>/config
 ```
 
+⚠️ **`<name>` is the instance whose bridge renders those rows** — the one whose `statedir` is the
+shared directory this host writes into (`agb instances` lists them; `grep -H statedir
+~/.config/agbridge/*/config` picks it). `agb pane` resolves the table through the `--config` in the
+row's own command, so a line appended to any other file is valid, unread, and reports nothing.
+
 Takes effect on the next click; no restart. If the host is only reachable through another, set
-`jump_host` too. Rows appear on their own once an agent runs there — nothing needs registering.
+`jump_host` in the same file. Rows appear on their own once an agent runs there — nothing needs
+registering.
 
 ### Add a machine that shares no disk (a second instance)
 
@@ -126,7 +139,7 @@ echo 'workspace = hostb' >> ~/.config/agbridge/hostb/config   # nothing else gro
 `--instance <name>` is sugar over `--config`, `--label` and `--log-dir`. **Everything else follows
 the config path**, because it is all derived from that file's directory:
 
-| | default | `--instance hostb` |
+| | without `--instance` | `--instance hostb` |
 |---|---|---|
 | config | `~/.config/agbridge/config` | `~/.config/agbridge/hostb/config` |
 | rows map | `~/.config/agbridge/rows` | `~/.config/agbridge/hostb/rows` |
@@ -136,6 +149,12 @@ the config path**, because it is all derived from that file's directory:
 | logs | `~/Library/Logs/agbridge/` | `~/Library/Logs/agbridge/hostb/` |
 | the three code files, `~/.local/bin` | **shared** | **shared** — one install, N configurations |
 | `mac_id` | minted | **adopted** — this instance's own config first, then the default's, minted only if neither has one; it names the Mac, not the connection |
+
+⚠️ **The left column is what a pre-0.6.0 Mac still has on disk, not something you can still create.**
+Refusing to *create* a nameless instance does not remove the ones already installed: a plist on disk
+outlives the installer that wrote it, so `agb instances` still lists such a job as `(default)`,
+`agb-refresh` still claims and sweeps it, and every legacy reader stays. What changed is
+**creatability**, not reachability.
 
 Everyday operation:
 
@@ -285,7 +304,7 @@ Then on the Mac: delete the `host_<name>` line from the config, and `agb close-d
 | `agb forget-rows` refuses to run and names `--all` | a bare run would forget every row of every instance, and nothing restarts the bridges afterwards | `--all` to mean it, `--key <key>` for one row wherever it lives, or `--config <path>` for one instance |
 | every row duplicated right after upgrading to 0.5.0, on an install made with `install.sh mac --config <path>` and no `--instance` | the plist used to ignore that flag and now carries it, so the bridge looks for its map beside *that* config and mints everything again | `agb forget-rows --rows ~/.config/agbridge/rows` clears the orphans (it closes each as it forgets it); moving `rows` and `placements` beside the config before reinstalling avoids it. `--rows` **narrows** the run to that one map, which is why this recipe needs no `--all` |
 | no glyph at all | `idle` renders as nothing — a `[?]` or `[done]` row, or a row not yet painted | check the title prefix |
-| a row never updates | it may be an orphan not in the map | compare `cat ~/.config/agbridge/rows` against the sidebar |
+| a row never updates | it may be an orphan not in the map | compare `cat ~/.config/agbridge/<name>/rows` against the sidebar — the map of the instance that renders it, not the default one |
 | a Mac-side config change did nothing — `row_fields`, `workspace`, a notify key | ⚠️ two causes: the bridge reads its config **once at startup**, or the key is in the **wrong instance's** config — the one that matters is whose `statedir` holds those rows, not necessarily the default | `agb-refresh` (check the pid changed); and `grep -H 'statedir' ~/.config/agbridge/config ~/.config/agbridge/*/config` to find the right file. Neither failure reports anything |
 | a config change seems to be ignored — a new `workspace`, or `notify_on_*` that never fires | the bridge reads its config **once, at startup**; the file changed, the running process did not. No error is printed | `agb-refresh`, which bounces every instance (or `--instance <name>` for one). ⚠️ Check `pgrep -f 'agb bridge'` shows a **different** pid afterwards — on a *narrowed* run, naming the wrong instance bounces the wrong one and still reports success |
 | `[enter]` prints `open terminal failed: missing or unsuitable terminal: <name>` then `ssh exited 1 -- nothing was attached` | the ssh worked; **tmux** refused. That host has no terminfo entry for agterm's terminal, and `ssh -t` carries `TERM` across (agbridge never sets it). Ghostty, Kitty and WezTerm all ship their own; a cluster box has none | from a local shell **inside agterm** — not a row's `[s]`/`[d]`, which ssh to the agent's host — run `infocmp -x "$TERM" \| ssh <target> -- tic -x -`. `"$TERM"`, never a typed name: agterm's differs from your login shell's. Writes `~/.terminfo` remotely, no root. `older tic versions may treat the description field as an alias` is a warning, not a failure. Verify with `ssh <target> "infocmp -1 $TERM" >/dev/null 2>&1 && echo INSTALLED` — redirects **outside** the quotes, since a farm login shell is often tcsh and answers `Ambiguous output redirect.` to `2>&1`. Fixes that host only — repeat per machine. Details and fallbacks in [`docs/cookbook.md`](../../../docs/cookbook.md) |
@@ -377,9 +396,10 @@ other.
 
 ## Config keys
 
-`key = value`, never read on the hot path. `~/.config/agbridge/config` for the default instance;
-`~/.config/agbridge/<name>/config` (or whatever `install.sh mac --instance <name> --config <path>`
-was told) for any other, and the Mac-side keys below are **per instance**.
+`key = value`, never read on the hot path. On the Mac it is `~/.config/agbridge/<name>/config` for
+**every** instance (or whatever `install.sh mac --instance <name> --config <path>` was told), and the
+Mac-side keys below are **per instance**. The bare `~/.config/agbridge/config` is the **cluster**
+side's config — and on a Mac, only one installed before `--instance` became mandatory.
 
 | key | side | meaning |
 |---|---|---|

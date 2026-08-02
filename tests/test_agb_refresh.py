@@ -261,7 +261,7 @@ def refresh(tmp_path):
             `--instance <name> --config <elsewhere>` leaves behind.
 
             ⚠️ The value is XML-ESCAPED here, exactly as `install.sh`'s `rep()`
-            escapes it (`xml_escape`, install.sh:258) -- so a test names the
+            escapes it (`xml_escape`, install.sh:348) -- so a test names the
             real path and this renders what the installer would have written.
             Without it a test for `&` in a config path would have to spell
             `&amp;` itself, which asserts on a plist nobody could have produced
@@ -564,7 +564,7 @@ def test_an_explicit_config_still_beats_the_instance_sugar(refresh):
     """The mirror of the `--label` test above, and it needs its own.
 
     `--instance` fills in a config only when none was given, exactly as
-    `install.sh` does it (install.sh:355) -- so an install whose config lives
+    `install.sh` does it (install.sh:534) -- so an install whose config lives
     somewhere the convention does not name can still be repaired by naming both.
     Made unconditional, the sugar would silently redirect the forget to a path
     that may not even exist, and `forget-rows` answers "the map is already
@@ -4362,7 +4362,7 @@ def test_a_custom_label_instance_is_not_reported_as_the_default_one(refresh):
     so it may not call a custom-label instance "(default)".
 
     `install.sh mac --label <anything>` puts no shape rule on a label
-    (`install.sh:369`), so `weird.label` is a real install and the sweep is
+    (`install.sh:426`), so `weird.label` is a real install and the sweep is
     required to visit it. The name shown is read back out of the label, and the
     fall-through used to answer "(default)" for every label outside the
     `com.agbridge` space -- so a bare run reported TWO default instances, one of
@@ -4441,8 +4441,45 @@ def test_an_instance_left_without_a_bridge_fails_the_sweep(refresh):
     assert rc != 0, out
     assert "could not start com.agbridge.hostb" in out, out
     assert "no bridge was started again for: com.agbridge.hostb" in out, out
+    # ...and the advice NAMES the instance rather than printing a placeholder,
+    # which it can, because a `com.agbridge.<name>` label carries the name.
+    assert "install.sh mac --instance hostb again" in out, out
     # The other instance was swept and IS up, so this is not "the sweep broke".
     assert "started:  com.agbridge" in out, out
+    assert "swept:    2 instances" in out, out
+
+
+def test_the_legacy_nameless_job_is_not_told_to_re_run_the_installer(refresh):
+    """⚠️ "Run `install.sh mac --instance <name>` again" is a REPAIR for a named
+    job and a DUPLICATION for this one.
+
+    `install.sh mac` requires `--instance` now, so re-running it against a
+    0.5.0-era nameless install does not re-render that job: it mints a SECOND
+    instance beside it, with its own config, label and rows map, and every row
+    duplicated in the sidebar. The plist reader already says exactly this for a
+    job with no `--config`; these two sites had the mechanical
+    `--instance <name>` inserted instead, and the sweep is where they fire,
+    because it visits every plist in `$agentsdir` -- a legacy one included.
+
+    The named instance in the same sweep is the non-vacuity: it still gets the
+    re-run advice, so this is a branch on the label rather than the advice
+    having been deleted.
+    """
+    _two_instances(refresh)
+    # `com.agbridge.plist` is not a substring of `com.agbridge.hostb.plist`, so
+    # this fails the DEFAULT job's restart and only that one.
+    rc, out, _err = refresh.run(lc_fail="bootstrap load",
+                                lc_fail_match="com.agbridge.plist")
+    assert rc != 0, out
+    assert "could not start com.agbridge -- it is a legacy nameless" in out, out
+    assert "MINT A SECOND INSTANCE" in out, out
+    assert "Upgrading from <= 0.5.0" in out, out
+    # The sweep's own summary carries the same carve-out, because it gives the
+    # advice once for a list of labels rather than once per label.
+    assert "no bridge was started again for: com.agbridge" in out, out
+    assert "NOT com.agbridge, though" in out, out
+    # Non-vacuity: hostb was swept, started, and is not what this is about.
+    assert "started:  com.agbridge.hostb" in out, out
     assert "swept:    2 instances" in out, out
 
 

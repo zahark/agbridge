@@ -625,7 +625,7 @@ agb install-config [--config P] [--statedir P] [--mac-id ID] [--feed-host H] [--
 | `--host <name>=<target>` | none | writes `host_<name> = <target>`. Repeatable |
 | `--generate-mac-id` | off | mint one (`<short-host>-<16 hex>`) **only if the file has none**. The Mac's flag: the farm refuses to invent an id, because a second one would name a beat file nothing writes and `status-line` would read `bridge:DOWN` for ever |
 | `--print-mac-id` | off | put the mac-id alone on **stdout** and the report on stderr, so `install.sh` can read it back without re-implementing `key = value` in shell |
-| `--print-statedir` | off | put **that file's own** `statedir` alone on stdout, and **write nothing at all**. Exits non-zero when the file has none, or is not there |
+| `--print-statedir` | off | put **that file's own** `statedir` alone on stdout, and **write nothing at all**. Exits **4** when the file carries none (or is not there) and **1** when it could not be read — see below, the difference is the point |
 | `--dry-run` | off | print the full report and write nothing |
 
 With no `--mac-id`, no id in the file and no `--generate-mac-id`, the command **fails** and explains
@@ -644,7 +644,7 @@ It is **not** `--print-mac-id` with a different noun, and three properties keep 
 | | why |
 |---|---|
 | it prints the file's **own** value, never the fallback | `--statedir`'s ordinary resolution ends at the *default-path* config. Reporting that for an instance file that carries nothing is the exact answer `install.sh` must not get — it names another machine's directory, on a disk this instance's farm cannot see |
-| **non-zero means "no own statedir", and nothing else** | it is handled the instant the config has been parsed and **returns** there, so no later failure can be mistaken for that answer. Run any further on and a file with a `statedir` but no `mac_id` would raise about the *mac-id*, and the installer's `\|\| statedir=""` idiom would then demand `--statedir` for a file that carries one |
+| **"carries none" has its own exit status, and is not "I could not read it"** | it is handled the instant the config has been parsed and **returns** there, so no later failure can be mistaken for that answer. Run any further on and a file with a `statedir` but no `mac_id` would raise about the *mac-id*, and the installer would then demand `--statedir` for a file that carries one |
 | it **writes nothing**, with or without `--dry-run` | the query returns before the merge and the write. Bolted onto the tail instead, a statedir-less config would be *rewritten with the default config's statedir* on the way to the error — the failure the flag exists to prevent, caused by the flag |
 
 **It refuses company.** Only `--config` and `--dry-run` may accompany it — `--config` because it names
@@ -658,6 +658,22 @@ says which one it is.
 $ agb install-config --config ~/.config/agbridge/hostb/config --print-statedir
 /home/you/.agbridge
 ```
+
+**Three statuses, and the third one is why there are three.**
+
+| exit | means | what `install.sh` does |
+|---|---|---|
+| `0` | the value is on stdout | adopts it |
+| `4` | that file carries none of its own — including *it is not there*, which is what a first install looks like | falls through to requiring `--statedir` |
+| `1` | **it could not be read**: unreadable, not UTF-8, or an option this `agb` does not know | **fatal**, naming the file and the query |
+
+The last row is a distinction, not a formality. With one non-zero status for everything,
+`install.sh` reported a config it could not open as *carries none to adopt* and sent the operator
+after `--statedir` — a flag that was not the problem, and one that would have installed the instance
+against a config nothing there can read. That is the same *"'I could not answer' is not 'the answer
+is nothing'"* that `agb-refresh`'s four-status plist reader exists for. `4` rather than `2` or `3`
+because `agb` already answers an unknown command with `2` and a known-but-unbuilt one with `3`;
+`install.sh` spells the number itself (it cannot import `agb_ops`) and a test compares the two.
 
 ## `install.sh mac --instance <name>` — Mac, every install
 
@@ -768,7 +784,7 @@ Four refusals, each because the alternative is silent:
 | Refused | Why |
 |---|---|
 | `install.sh mac` with no `--instance` | the nameless instance it used to create is the asymmetry every other Mac-side command spent a release removing; nothing is written and the probe is never asked |
-| a **new** instance without `--statedir` | it would fall back to the **default** config's statedir: ssh to the right machine, read the wrong directory, then create it and report an empty farm for ever. A re-install adopts it instead (above); an explicit `--config` still requires it |
+| a **new** instance without `--statedir` | it would fall back to the **default** config's statedir: ssh to the right machine, read the wrong directory, then create it and report an empty farm for ever. A re-install adopts it instead (above); an explicit `--config` still requires it. The refusal has **three wordings** — a new instance, a config that carries no statedir, and `--config` having been typed — because the reason is what says whether to pass the flag, fix the file or drop the flag |
 | `install.sh farm --instance <name>` | nothing on the farm reads a per-instance config — `agb hook` and `agb status-line` resolve `~/.config/agbridge/config` and nothing else — so it would write a config no one opens and report success |
 | a name with `/`, `.`, a leading `-`, or empty | it becomes a launchd label component, a plist *filename*, a log directory **and** a config directory. Letters, digits, `-` and `_` only; the general `shell_safe` check permits `.` and `/`, so `--instance ../../evil` would otherwise pass |
 

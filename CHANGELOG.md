@@ -34,10 +34,19 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   because a warning on a *first* install gets ignored, and the asymmetry it warned about is then
   permanent on that Mac.
 
-  **`install.sh farm` is untouched and still takes no `--instance`.** A farm host has exactly one
-  identity: `agb hook` and `agb status-line` resolve `~/.config/agbridge/config` on every invocation,
-  so a named farm config is a file nothing opens. Both halves of that asymmetry come from the one
-  fact.
+  **`install.sh farm` is untouched and still takes no `--instance`** — and no `--statedir` either. A
+  farm host has exactly one identity: `agb hook` and `agb status-line` resolve
+  `~/.config/agbridge/config` on every invocation, so a named farm config is a file nothing opens.
+  Both halves of that asymmetry come from the one fact.
+
+  ⚠️ **The `--statedir` refusal has three wordings, because it now serves three different runs.** It
+  was written for "a second instance without `--statedir`", and mandating `--instance` turned it into
+  the message every *first* install gets — where "a second machine shares no disk with the first"
+  describes a first machine that does not exist, and "`<config>` carries none to adopt" is plainly
+  wrong when `--config` was typed and that file carries one. So: a **new** instance is told there is
+  no config to read one out of, a config that **carries none** is named as such, and a typed
+  `--config` is told that *that* is the reason. The reason is what says whether to pass the flag, fix
+  the file, or drop `--config`.
 
 - **`--statedir` is adopted on a re-install, so an upgrade is the original command minus that flag.**
   The transitive cost of the above is that every Mac install now needs a statedir, including the
@@ -61,6 +70,17 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   ⚠️ **Not a mirror of the `mac_id` adoption**, which probes this instance's config and *then* the
   default one. One Mac has one identity, so sharing an id across instances is the truth; sharing a
   statedir is the failure being refused. One candidate here, never a loop.
+
+- **`agb-refresh` no longer tells a legacy nameless job to re-run the installer.** Every operator
+  message that used to say *"re-run `install.sh mac`"* now says `--instance <name>` — and for the
+  bare `com.agbridge` job that advice would be actively wrong, because a re-run does not repair it:
+  it **mints a second instance beside it**, with its own config, label and rows map, and every row
+  duplicated in the sidebar. Both places that can name that job — `start_label`'s *"could not start"*
+  warning and the sweep's *"no bridge was started again for:"* summary — now branch on the label:
+  a named instance is told to re-run with **its own name**, filled in rather than left as a
+  placeholder, and the nameless one is pointed at the migration under *Upgrading from ≤ 0.5.0*. The
+  sweep is where this turns up, because it visits every plist in `~/Library/LaunchAgents`, a
+  0.5.0-era one included.
 
 ### Added
 
@@ -112,18 +132,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Like every bridge-side key it is read once at startup, so `agb-refresh` after editing.
 
 - **`agb install-config --print-statedir`** — puts that config's **own** `statedir` alone on stdout
-  and writes nothing at all, exiting non-zero when the file carries none. It is what the adoption
-  above reads, for the same reason the mac-id adoption uses `--print-mac-id`: a second reader of the
-  `key = value` format in shell is a second reader that drifts from the first.
+  and writes nothing at all. It is what the adoption above reads, for the same reason the mac-id
+  adoption uses `--print-mac-id`: a second reader of the `key = value` format in shell is a second
+  reader that drifts from the first.
 
   Three properties are load-bearing and each was measured against a version that lacked it:
 
   - it prints the file's **own** value, never `agb.statedir()`'s fallback — which ends at the
     *default-path* config, i.e. the exact answer the installer must not get;
-  - **non-zero means "no own statedir" and nothing else.** It is handled the instant the config has
-    been parsed and returns there. Run any further on and a config with a `statedir` but no `mac_id`
-    raises about the *mac-id*, and the installer would then demand `--statedir` for a file that
-    carries one;
+  - **"this file carries none" has its own exit status — `4` — and is not the same answer as "I
+    could not read it", which is `1`.** The value is handled the instant the config has been parsed
+    and returns there, so no later failure can arrive wearing that status. One non-zero for both was
+    measured to matter: a config the installer could not read (mode 000, not UTF-8) was reported as
+    *carries none to adopt* and the operator sent after `--statedir`, a flag that was not the
+    problem and that would have installed the instance against a config nothing there can read.
+    `install.sh` swallows `4` and treats anything else as fatal, naming the file. Same shape, and
+    the same reason, as `agb-refresh`'s four-status plist reader;
   - it **writes nothing**, with or without `--dry-run`. Bolted onto the tail beside `--print-mac-id`
     instead, a statedir-less config was measured to be *rewritten with the default config's
     statedir* on the way to the error — the failure the flag exists to prevent, caused by the flag.
@@ -675,12 +699,15 @@ named, and giving them a `--config` is deliberately not part of this change.
   others should still be refreshed and the broken one's job **restarted anyway**. Both are covered by
   named tests against stub `launchctl`/`pgrep`/`ps`, which is not the same as watching a real job
   come back.
-- **Symmetry is a convention, not a guarantee.** `install.sh mac` can still create a *nameless*
-  instance. Mandating `--instance` was split into a follow-up plan rather than bundled here: it does
-  not fix the stated problem — the sweeps do — and it reaches 24+ test functions through the
-  installer suite's `mac_args` fixture, changes what `dist/com.agbridge.plist` stands for, and forces
-  a transitive `--statedir` decision on every Mac install *and upgrade*. Until it lands, an unnamed
-  default instance remains creatable; it simply is not privileged any more.
+- ~~**Symmetry is a convention, not a guarantee.**~~ **Landed** — see *Unreleased*, *Changed, and it
+  is a breaking change*. The rest of this bullet is the 0.6.0-era record of why it was deferred, kept
+  because the cost it names is what the follow-up then paid: as of 0.6.0, `install.sh mac` could
+  still create a *nameless* instance. Mandating `--instance` was split into a follow-up plan rather
+  than bundled here: it does not fix the stated problem — the sweeps do — and it reaches 24+ test
+  functions through the installer suite's `mac_args` fixture, changes what
+  `dist/com.agbridge.plist` stands for, and forces a transitive `--statedir` decision on every Mac
+  install *and upgrade*. Until it lands, an unnamed default instance remains creatable; it simply is
+  not privileged any more.
 
 ## 0.5.0 — 2026-08-01
 

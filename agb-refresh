@@ -38,7 +38,7 @@ DEFAULT_LABEL="com.agbridge"
 DEFAULT_AGENTS="$HOME/Library/LaunchAgents"
 DEFAULT_AGB="$HOME/.local/lib/agbridge/agb"
 # One directory, two spellings of what lives in it -- the same pair install.sh
-# derives its own from (install.sh:53-57): the default instance's config is the
+# derives its own from (install.sh:61-65): the default instance's config is the
 # file, a named instance's is a subdirectory of the same place.
 #
 # ⚠️ Unlike `$rows` and `$python` below, `$config` is NEVER left empty as the
@@ -85,7 +85,7 @@ EOF
 }
 
 # The same rule, and the same words, as `install.sh`'s `instance_ok`
-# (install.sh:150): a name is a launchd label component, a plist FILENAME, a log
+# (install.sh:171): a name is a launchd label component, a plist FILENAME, a log
 # directory and a config DIRECTORY, so `.` and `/` are refused outright -- there
 # is no spelling of a `..` segment or a leading dot. The two validators have to
 # agree, because a name this one accepts and the installer refuses names a plist
@@ -1087,6 +1087,20 @@ EOF
             say "          Every instance is meant to end this run with its"
             say "          bridge back up -- re-run install.sh mac --instance"
             say "          <name> for those, one per label above."
+            # ⚠️ EXCEPT the bare default label, and the sweep is exactly where
+            # it turns up: it visits every plist in `$agentsdir`, a 0.5.0-era
+            # nameless one included. `install.sh mac` requires `--instance`, so
+            # the advice above would mint a SECOND instance beside that job
+            # rather than repair it. `start_label` says the same thing for the
+            # single-instance run; this is the sweep's copy, because the list
+            # here is labels and the advice above is given once for all of them.
+            case " $sweepdown " in
+                *" $DEFAULT_LABEL "*)
+                    say "          NOT $DEFAULT_LABEL, though: that one is a legacy"
+                    say "          nameless install and a re-run would mint a second"
+                    say "          instance beside it. Migrate it to a name --"
+                    say "          CHANGELOG.md, 'Upgrading from <= 0.5.0'." ;;
+            esac
             sweeprc=1
         fi
         if [ -n "$keys" ]; then
@@ -1140,7 +1154,7 @@ plist="$agentsdir/$label.plist"
 uid=$(id -u)
 
 # WHICH CONFIG. An explicit `--config` wins, exactly as it does in `install.sh`
-# (install.sh:355) -- but with none given, ASK THE PLIST rather than rebuild the
+# (install.sh:534) -- but with none given, ASK THE PLIST rather than rebuild the
 # path by convention.
 #
 # ⚠️ `--instance hostb` does NOT imply `<config dir>/hostb/config`.
@@ -1737,7 +1751,31 @@ start_label() {
         say "started:  $label (legacy load -w)"
         return 0
     fi
-    say "WARNING:  could not start $label -- run install.sh mac --instance <name> again"
+    # ⚠️ THE ADVICE BRANCHES ON THE LABEL, and it has to. `install.sh mac`
+    # requires `--instance` now, so "run it again" is the repair for a NAMED
+    # job and the opposite of a repair for the bare `com.agbridge` one: that is
+    # a legacy nameless install, and a re-run MINTS A SECOND INSTANCE beside it
+    # -- its own config, label and rows map, and every row duplicated. Same
+    # reasoning as the "no --config in $plist" note above, and it reaches here
+    # through the sweep, which visits every plist in `$agentsdir` including a
+    # 0.5.0-era one. The name is `$instance` when it was typed, else the label's
+    # own suffix; a custom label carries no name at all, so that case keeps the
+    # placeholder rather than inventing one.
+    if [ "$label" = "$DEFAULT_LABEL" ]; then
+        say "WARNING:  could not start $label -- it is a legacy nameless install,"
+        say "          so re-running install.sh mac would MINT A SECOND INSTANCE"
+        say "          beside it rather than repair it (--instance is required"
+        say "          now). Load $plist by hand, or migrate it to a name --"
+        say "          CHANGELOG.md, 'Upgrading from <= 0.5.0'."
+        return 1
+    fi
+    sl_name=$instance
+    if [ -z "$sl_name" ]; then
+        case $label in
+            "$DEFAULT_LABEL".*) sl_name=${label#"$DEFAULT_LABEL".} ;;
+        esac
+    fi
+    say "WARNING:  could not start $label -- run install.sh mac --instance ${sl_name:-<name>} again"
     return 1
 }
 

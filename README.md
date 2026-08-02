@@ -174,9 +174,12 @@ Full flag reference: [`docs/commands.md`](docs/commands.md).
 
 ## Configuration
 
-`~/.config/agbridge/config`, `key = value`, read lazily and **never on the hot path**. On the Mac
-that is the *default* path: `--config <path>` (or `--instance <name>`, which spells
-`~/.config/agbridge/<name>/config`) points the bridge at another one, and the `rows` map, the
+`key = value`, read lazily and **never on the hot path**. On the **Mac** the file is
+`~/.config/agbridge/<name>/config`, one per instance, because `install.sh mac` requires
+`--instance <name>` — `--config <path>` overrides where it lands. On a **cluster host** it is the
+bare `~/.config/agbridge/config`: a farm host has one identity, and `agb hook` resolves that path on
+every invocation. (A Mac installed before `--instance` became mandatory also has the bare path, and
+every reader still finds it — what changed is creatability, not reachability.) The `rows` map, the
 `placements` file and this table's `host_<name>` keys all live beside whichever config is in use.
 
 | Key | Used by | Meaning |
@@ -301,7 +304,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1921 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 1934 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -313,7 +316,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1921 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 1934 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:
