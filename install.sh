@@ -696,8 +696,14 @@ role_mac() {
     # the `verified:` line below names the tree being INSTALLED, and two of them
     # -- with the first landing between `instance:` and `statedir:` -- is worse
     # than none here; a failure is still loud, since `verify_tree` dies on
-    # stderr rather than reporting. The second call re-reports from the memo
-    # rather than re-running three interpreters (see `verify_tree`).
+    # stderr rather than reporting.
+    #
+    # ⚠️ The memo below saves the second call only on a `--dry-run`, and the
+    # comment here used to claim it always did. The memo is keyed on the TREE:
+    # a dry run's second caller names this same `$SELF/agb` and re-reports the
+    # answer, while a REAL install's names `$dest/agb` -- a different tree,
+    # which is genuinely proved again, because that is the file being installed
+    # and a copy that landed broken has to be caught HERE (see `verify_tree`).
     if [ -z "$statedir" ] && [ "$config_given" = no ]; then
         verify_tree "$python" "$SELF/agb" >/dev/null
         adopt_rc=0

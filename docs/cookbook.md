@@ -273,8 +273,8 @@ ls -l ~/.agb-probe                    # on the new one
 ```
 
 Found it? Then this is not a no-shared-disk machine at all, and you want the much shorter recipe:
-`install.sh farm --mac-id <the id>` over there and nothing on the Mac — the bridge you already have
-picks its agents up on the next snapshot.
+`install.sh farm --mac-id <the id> --statedir <the same one>` over there and nothing on the Mac — the
+bridge you already have picks its agents up on the next snapshot.
 
 ### Step 1 — Get the code onto the new machine
 
