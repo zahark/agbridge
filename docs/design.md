@@ -275,7 +275,10 @@ any host without a running `feed` (machine #3 always; box #2 whenever the bridge
 beat source is hooks, so a `blocked` agent waiting on you emits nothing and would be repainted at
 the 10-minute mark while it is perfectly alive.
 
-Beat age is therefore **surfaced in the row title and never converted into a state** (§3). The cost
+Beat age is therefore **surfaced in the row title and never converted into a state** (§3). ⚠️ That
+is what `row_fields` is dropping if it drops `beat`: not a decoration but this invariant's
+compensation, so a sidebar configured without it keeps the refusal to guess and loses the number
+offered in its place. The cost
 is that entries on a quiet host have no automatic terminal state; that debt is paid by `prune`,
 below.
 
@@ -553,7 +556,8 @@ finding #3: under `agr`, agents launched inside the VNC desktop got no binding a
 
 ### The title carries what the vocabulary cannot
 
-`<label> · <host> · <cwd> · <pane> [· <beat age>]`, with a prefix of `[?]` or `[done]` when either
+`<label> · <host> · <cwd> · <pane> [· <beat age>]` **by default** — `row_fields` chooses which of
+those render and in what order — with a prefix of `[?]` or `[done]` when either
 applies.
 
 The beat age appears **only once the beat is late** (≥ 2 × 15 s), bucketed. A beat is refreshed
@@ -1303,6 +1307,7 @@ everything else the Mac side owns moves with it (see *One Mac, several instances
 | `notify_on_blocked` | `bridge` | desktop banner on a transition into `blocked`, and the `session seen` that clears the badge when it ends. One key governs both halves — *unwind what you did* | on |
 | `notify_on_new_row` | `bridge` | desktop banner when a key arrives with no row. Silent for `NEW_ROW_QUIET` after a connection's first batch, or a refresh banners every row at once | on |
 | `notify_on_completed_after` | `bridge` | desktop banner when a turn **that ran at least this many seconds** finishes. The number is the switch; `0`/`off`/`no`/`false`/negative disables it. A threshold rather than a flag because `completed` fires once per *turn*, so ungated it announces every reply | `300` (5 min) |
+| `row_fields` | `bridge` | which fields a row title shows and in what order; `cwd:base` shortens the directory. An unknown name refuses the whole list | `label,host,cwd,pane,beat` |
 | `host_<name> = <ssh-target>` | `pane`, `prune --via-ssh` | a record's `host` is a hostname, not an ssh alias | the hostname, used as the ssh target |
 
 ⚠️ The four rows above `host_<name>` were **missing from this table** until 0.6.0 — `workspace` since
@@ -1362,7 +1367,7 @@ rendering into the same sidebar.
 | the row bijection | `dirname(<config>)/rows` (`agb_mac.rows_path`) |
 | remembered workspaces | `dirname(<config>)/placements` (`agb_mac.placements_path`) |
 | `host_<name>` → ssh target | keys *inside* that config |
-| `statedir`, `feed_host`, `mac_id`, the notification switches | the same |
+| `statedir`, `feed_host`, `mac_id`, the notification switches, `row_fields` | the same |
 
 So `agb bridge --config <path>` is the whole of the isolation, and there is no second thing to get
 right. `install.sh mac --instance <name>` is sugar over three flags that already existed:

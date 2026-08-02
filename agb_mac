@@ -850,7 +850,7 @@ def format_rows(entries):
     is what lets the reader discard it instead of half-believing it.
 
     The title is the fourth field and the reason the format has a version. It is
-    what a row **is** -- `label · host · cwd · pane` -- and `self.seen` cannot
+    what a row **is** -- `label · host · cwd · pane` by default -- and `self.seen` cannot
     supply it after a restart, so without it the first snapshot after every
     launchd start re-titles finished rows to their raw hex key.
     """

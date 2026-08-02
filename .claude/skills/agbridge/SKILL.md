@@ -370,6 +370,7 @@ was told) for any other, and the Mac-side keys below are **per instance**.
 | `workspace` | Mac | agterm workspace for new rows, by name |
 | `notify_on_blocked`, `notify_on_new_row` | Mac | `0`/`no`/`off`/`false` to disable |
 | `notify_on_completed_after` | Mac | seconds a turn must run before finishing is announced; default `300`, and `0`/`off`/`no`/`false`/negative disables |
+| `row_fields` | Mac | which fields a row title shows, in order: `label`/`host`/`cwd`/`pane`/`beat`/`key`, comma-separated, `cwd:base` for the basename. Default `label,host,cwd,pane,beat` |
 | `host_<hostname> = <ssh target>` | Mac | a record's host is a hostname, not an alias |
 
 ⚠️ **A bridge-side key needs `agb-refresh` before it means anything.** The bridge reads its config

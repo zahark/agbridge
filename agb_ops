@@ -3845,7 +3845,8 @@ RENAME_USAGE = """usage: agb rename <label>                 # the row this termi
 
 RENAME_VALUE_ARGS = {"--statedir": "statedir", "--host": "host"}
 
-# The title is `label · host · cwd · pane`, joined by this. A label carrying it
+# The title is `label · host · cwd · pane` by default, joined by this -- `row_fields` picks the
+# fields, but never the separator. A label carrying it
 # would read as two fields and there would be no way to tell which.
 TITLE_SEP = "\u00b7"
 

@@ -142,7 +142,8 @@ Which to reach for: `s` when you want to watch the agent **while** you type — 
 output that provoked it. `d` for a look-and-leave: `git log`, `ls`, checking a path. The drawer
 cannot show you both at once, and the split cannot give the agent its full width back.
 
-Rows are titled `label · host · cwd · pane`, where the label is the tmux session name. To change it
+Rows are titled `label · host · cwd · pane` by default, where the label is the tmux session name
+(`row_fields` in the Mac's config picks the fields and their order). To change it
 afterwards, on the host:
 
 ```sh
