@@ -482,20 +482,20 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
 
 ### Task 5: Verify acceptance criteria
 
-- [ ] the default field list renders byte-identically to today
-- [ ] `row_fields = label,cwd:base,pane` renders `agbridge_dev · agbridge-public · %15`
-- [ ] a reordered list renders in the order written
-- [ ] an unknown field leaves the sidebar exactly as it was **and** logs a warning naming it
-- [ ] `[done]` and `[?]` appear with any field list, including a single-field one
-- [ ] no title is ever empty
-- [ ] `agb doctor` does not report `row_fields` as an unknown key
-- [ ] `row_fields = beat` on a healthy agent, and `row_fields = pane` on a non-tmux agent, both
+- [x] the default field list renders byte-identically to today
+- [x] `row_fields = label,cwd:base,pane` renders `agbridge_dev · agbridge-public · %15`
+- [x] a reordered list renders in the order written
+- [x] an unknown field leaves the sidebar exactly as it was **and** logs a warning naming it
+- [x] `[done]` and `[?]` appear with any field list, including a single-field one
+- [x] no title is ever empty
+- [x] `agb doctor` does not report `row_fields` as an unknown key
+- [x] `row_fields = beat` on a healthy agent, and `row_fields = pane` on a non-tmux agent, both
       still produce a titled row rather than a blank one
-- [ ] a record missing a field renders no empty segment and no trailing separator
-- [ ] `row_fields = ,` renders the default and logs a warning — it never yields an empty list
-- [ ] `row_fields = cwd: base` works rather than silently falling back to the default
-- [ ] run the full suite: `python3 -m pytest tests/ -q`
-- [ ] confirm `agb` is untouched: `python3 -c 'print(len(open("agb").read()))'` must print
+- [x] a record missing a field renders no empty segment and no trailing separator
+- [x] `row_fields = ,` renders the default and logs a warning — it never yields an empty list
+- [x] `row_fields = cwd: base` works rather than silently falling back to the default
+- [x] run the full suite: `python3 -m pytest tests/ -q`
+- [x] confirm `agb` is untouched: `python3 -c 'print(len(open("agb").read()))'` must print
       **103198**. ⚠️ The guard counts **characters**, not bytes — `wc -c` is the wrong number.
       ⚠️ And it is `< AGB_PARSE_BUDGET` (103200) with a **strict** `<`, so the true headroom is
       **1 character**. (`CLAUDE.md` said 2 and was corrected in `714fa1a`.) This change must not
@@ -507,12 +507,12 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
 - Modify: `CLAUDE.md`
 - Modify: `docs/plans/completed/` (move this file)
 
-- [ ] `CLAUDE.md` — note that the row title is now composed from a configurable field list, and
+- [x] `CLAUDE.md` — note that the row title is now composed from a configurable field list, and
       that the `[?]`/`[done]` prefixes are deliberately **outside** it
-- [ ] re-measure and write the test count the suite actually reports. ⚠️ Do not copy 1884 from this
+- [x] re-measure and write the test count the suite actually reports. ⚠️ Do not copy 1884 from this
       plan; these tasks add roughly twenty
-- [ ] leave `agb:24` `VERSION` alone — the release is not part of this change
-- [ ] move this plan to `docs/plans/completed/`
+- [x] leave `agb:24` `VERSION` alone — the release is not part of this change
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1877 tests, ~73 s)
+python3 -m pytest tests/ -q                                    # full suite (1900 tests, ~65 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -132,6 +132,29 @@ duration spanning the removal.
 
 `agb pane` adds two more calls from `agb_ops` — `session split` / `session scratch` plus
 `session type` — which is why there are **three** doors to `agtermctl` rather than one.
+
+### A row's title is composed, not fixed
+
+`row_fields` (Mac side, per instance) names which of `label`/`host`/`cwd`/`pane`/`beat`/`key` render
+and in what order, `cwd:base` shortening the directory. Default `label,host,cwd,pane,beat` — today's
+title exactly. ⚠️ **Three things the config deliberately cannot reach**, each with its own test:
+
+- **`[?]` and `[done]` are prefixes, not fields.** `idle` renders as *no glyph*, so without the
+  marker a dead row is pixel-identical to a live idle one. A cosmetic key must not disable a safety
+  property.
+- **The title is never empty.** A field list that renders nothing is reachable — `row_fields = beat`
+  on a healthy agent, `pane` on an agent not in tmux — and an empty body makes `_title` skip the
+  rename entirely, leaving agterm's own name on the row. There are **two** fallback chains and they
+  are not duplication: `label` itself is `label or key or "?"` (keeping the default byte-identical on
+  a record with no label), and the *join* falls back the same way.
+- **A field with no value is dropped, not rendered as an empty segment.** Invisible in any test whose
+  record has every field populated, which `wire()`'s does.
+
+⚠️ **The parser is where four review passes found their defects**, never the feature: the strip is
+per *component* (`cwd: base` must work), empty items are skipped *after* stripping, and it never
+returns an empty list — `row_fields = ,` reduces to nothing and would otherwise render an empty
+title. An unknown field refuses the **whole** list, which is the only failure mode a user can
+actually notice.
 
 ### The status vocabulary is closed
 
@@ -523,7 +546,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1877 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1900 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
