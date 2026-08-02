@@ -635,7 +635,14 @@ def test_print_statedir_refuses_every_option_that_would_write(ops, agb,
 
     config = config_path("statedir = /shared/.agbridge\n")
     before = read_bytes(config)
-    allowed = ("--print-statedir", "--config", "--dry-run")
+    # ⚠️ The allowed set is READ from the parser, for the same reason the option
+    # names above are: a hand-written tuple here would be a second copy of
+    # `PRINT_STATEDIR_ALLOWED` inside the test whose own docstring argues
+    # against hand-kept lists, and widening the real one would make this test
+    # fail rather than check the widening.
+    allowed = ops.PRINT_STATEDIR_ALLOWED
+    assert set(allowed) <= set(names)            # non-vacuity: same vocabulary
+    assert "--print-statedir" in allowed and len(allowed) < len(names)
     refused = []
     for name in names:
         # `a=b` satisfies `--host`'s own `<name>=<target>` check too, so every
@@ -2014,6 +2021,19 @@ def test_a_dry_run_verifies_the_installer_tree_once_not_twice(
 
     versions = [c for c in stub_bin.calls("python3") if c[-1] == "version"]
     assert len(versions) == 1, stub_bin.calls("python3")
+
+    # ⚠️ AND THE TEXT, not only the count. The single `verified:` line above is
+    # the MEMO's -- the first call's report is suppressed -- so if the hit path
+    # spelled the sentence itself the two spellings could drift with nothing
+    # here to notice: a count is one either way. Compared against the line a run
+    # with no memo hit prints, which is the same claim about the same file.
+    fresh_code, fresh_out, fresh_err = run_sh(mac_args() + ["--dry-run"])
+    assert fresh_code == 0, fresh_err
+    memo_lines = [l for l in out.splitlines() if l.startswith("verified:")]
+    fresh_lines = [l for l in fresh_out.splitlines()
+                   if l.startswith("verified:")]
+    assert len(fresh_lines) == 1, fresh_out       # non-vacuity: it really ran
+    assert memo_lines == fresh_lines, (memo_lines, fresh_lines)
 
 
 def test_a_tree_that_cannot_run_agb_says_so_rather_than_demanding_a_statedir(

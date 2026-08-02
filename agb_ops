@@ -3748,12 +3748,22 @@ def run_install_config(argv, out=None):
     nothing. That is what lets `install.sh mac` adopt an existing instance's
     statedir instead of re-demanding it on every upgrade. Its statuses are
     **0** (answered on stdout), **`PRINT_STATEDIR_NONE`** (this file carries
-    none -- an answer, with the reason on stderr) and **1** (an `AgbError`: the
-    file could not be read at all, which is not the same statement).
+    none -- an answer, with the reason on `out`, i.e. stderr by default) and
+    **1** (an `AgbError`: the file could not be read at all, which is not the
+    same statement).
     """
     opts = parse_config_args(argv)
     if out is None:
-        out = sys.stderr if opts["print_mac_id"] else sys.stdout
+        # EITHER `--print-*` flag makes stdout the machine-readable channel, so
+        # the prose moves to stderr -- including `--print-statedir`'s
+        # explanation of the `PRINT_STATEDIR_NONE` answer, which is prose about
+        # a query and not the query's answer. Writing that one straight to
+        # `sys.stderr` instead would leave this function with two doors for
+        # human output, one of them past the seam a caller injects `out`
+        # through, so an injected `out` would silently miss the only line that
+        # branch prints.
+        out = (sys.stderr if opts["print_mac_id"] or opts["print_statedir"]
+               else sys.stdout)
     path = opts["config"] or agb.config_path()
     text, previous = read_config_text(path)
     existing, _malformed = agb.parse_config(text)
@@ -3786,12 +3796,13 @@ def run_install_config(argv, out=None):
             # this `agb` does not know -- exits 1, and a caller that saw one
             # status for all of them would report "carries no statedir" for a
             # config it never managed to open. See the constant.
-            sys.stderr.write(
+            out.write(
                 "agb: install-config: %s carries no statedir of its own%s. "
                 "Nothing is guessed here: the fallback would be whatever the "
                 "default-path config says, which is another machine's "
                 "directory.\n" % (path, "" if previous is not None
                                   else " (it does not exist)"))
+            out.flush()
             return PRINT_STATEDIR_NONE
         sys.stdout.write("%s\n" % (statedir,))
         sys.stdout.flush()
