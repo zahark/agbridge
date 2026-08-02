@@ -139,6 +139,44 @@ agent that merely stayed blocked would be announced again after every hiccup. Th
 changes only when the **agent's** state does, so it is one banner per block regardless of the
 network. A test asserts exactly this, and the wrong gate fails five of them.
 
+### What a row's title shows
+
+`row_fields` picks the fields and their order. Default `label,host,cwd,pane,beat` — exactly the
+title agbridge has always rendered, so this is invisible until you set it.
+
+```ini
+row_fields = label,cwd:base,pane      # agbridge_dev · agbridge-public · %15
+```
+
+| field | renders | note |
+|---|---|---|
+| `label` | `agbridge_dev` | the tmux session name, or what `agb rename` set. Falls back to the key, then `?` |
+| `host` | `buildbox01` | the short hostname. **Constant on a single-host setup**, where it is the largest thing on the line and says nothing |
+| `cwd` | `/home/you/project` | `cwd:base` renders `project` alone — the only modifier, and only on `cwd` |
+| `pane` | `%15` | ⚠️ two agents in two panes of one tmux session share label, host, cwd **and** tmux. This is the only thing telling their rows apart, and it is last in the default — so it is the first thing agterm clips |
+| `beat` | `12m` | how long since the agent last wrote. **Empty unless it is late**, so dropping it saves no width |
+| `key` | `a9c35465` | the 8 characters `agb rename` takes. Not in the default |
+
+**An unknown field refuses the whole list**, falls back to the default, and logs why. Blunt on
+purpose: dropping only the bad field leaves you with most of what you asked for, and a *missing*
+field is exactly what goes unnoticed — whereas "I edited it, restarted, and nothing changed" is
+unmissable. ⚠️ The bridge log is the **only** place that reason appears: `agb doctor` validates key
+*names*, not values, and it runs on the cluster while this is a Mac-side key.
+
+Whitespace is fine (`label, cwd:base, pane`, and even `cwd: base`); empty items are skipped, so a
+trailing comma is harmless. ⚠️ **An inline `#` is not a comment** — `#` starts one only at the
+beginning of a line, so `row_fields = label,pane # short` makes `pane # short` an unknown field and
+refuses the list.
+
+⚠️ **Dropping `beat` costs more than it looks.** `docs/design.md` calls the age in the title the
+compensation for the first invariant: agbridge refuses to turn an age into a *status*, and the
+number is what it offers instead. A sidebar without it keeps the refusal and loses the answer.
+
+⚠️ **Like every bridge-side key, it is read once at startup** — `agb-refresh` (or
+`agb-refresh --instance <name>`) after editing, or nothing changes and nothing says so. And the
+first `[?]` paint after a restart shows titles built with the *previous* list, because the rendered
+body is persisted in the rows map; the next update from the agent corrects it.
+
 ### The finished-turn banner
 
 On a transition into **`completed`** — the `Stop` hook — the bridge sends
@@ -429,7 +467,8 @@ agb rename <key> <label>           # any row; <key> may be a unique prefix
 agb rename <key> <label> [--host <host>] [--statedir <path>]
 ```
 
-Sets the **label** a row is titled from (`label · host · cwd · pane`).
+Sets the **label** a row is titled from (`label · host · cwd · pane` by default; `row_fields`
+chooses the fields).
 
 `agb list` prints the keys; `agb rename` with no arguments prints it too, alongside the usage.
 Keys are 16 random hex characters, so there are two ways not to type one: **omit it** and the row

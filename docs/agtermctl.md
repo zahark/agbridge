@@ -85,7 +85,8 @@ Two flags there are not decoration:
 Two things about that invocation are easy to get wrong:
 
 - **`--name` receives the full row title, not the label.** It is the same `row_title()` string a
-  later `session rename` receives — label, host, cwd, pane and the beat age, joined by ` · `, with
+  later `session rename` receives — by default label, host, cwd, pane and the beat age, joined by
+  ` · ` (`row_fields` picks them), with
   the `[?]`/`[done]` prefix when one applies. A row is titled correctly from the moment it exists,
   so a bridge that dies before its first rename still leaves a legible sidebar.
 - **The command begins with an absolute interpreter and `-S -E`**, always. `agb` has no shebang and
@@ -110,7 +111,7 @@ matters more than any other (see *Fallbacks*):
 
 | Rendering | Title form |
 |---|---|
-| normal | `<label> · <host> · <cwd> · <pane> · <beat-age>` |
+| normal | `<label> · <host> · <cwd> · <pane> · <beat-age>` — the **default** field list; `row_fields` chooses |
 | feed dead (amendment 2) | `[?] ` prefix |
 | `remove` received | `[done] ` prefix |
 

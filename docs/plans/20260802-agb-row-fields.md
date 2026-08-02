@@ -421,8 +421,8 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
 - Modify: `.claude/skills/agbridge/SKILL.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] `README.md` config table — one row, naming the default and the six field names
-- [ ] `docs/commands.md` — ⚠️ under **`## agb bridge`**, where every other bridge key lives
+- [x] `README.md` config table — one row, naming the default and the six field names
+- [x] `docs/commands.md` — ⚠️ under **`## agb bridge`**, where every other bridge key lives
       (`:110`, `:142`, `:176`) and where `:126`'s "takes effect only after `agb-refresh`" statement
       already sits. The only row-title description (`:432`) is under `## agb rename`, a *farm*
       command, so documenting a bridge key there would put it on the wrong side of the wire. The
@@ -432,15 +432,15 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       short` makes `pane # short` an unknown field and rejects the whole list — `row_fields` is the
       first key whose value anyone will want to annotate), and what dropping `beat` actually costs
       (decision 6)
-- [ ] `docs/design.md` config table — one row. ⚠️ It has a **`Default if unset`** column README's
+- [x] `docs/design.md` config table — one row. ⚠️ It has a **`Default if unset`** column README's
       lacks, so that row is four columns. `docs/design.md:1313` already states the rule this task is
       obeying — *"A key added here belongs in all four places at once"*, added in 0.6.0 after exactly
       this failure — so cite it rather than carrying a private list
-- [ ] ⚠️ `docs/design.md:1365`, the §5 per-instance row (*"`statedir`, `feed_host`, `mac_id`, the
+- [x] ⚠️ `docs/design.md:1365`, the §5 per-instance row (*"`statedir`, `feed_host`, `mac_id`, the
       notification switches"*) — this one **does** need an edit, unlike the last plan's identical-
       looking item. That wording covered `notify_on_completed_after` because it *is* a notification
       switch; `row_fields` is not, so the list no longer describes what moves with an instance
-- [ ] ⚠️ **nine places state the title format as fixed**, and none is a config table — so a
+- [x] ⚠️ **nine places state the title format as fixed**, and none is a config table — so a
       config-table-only pass leaves the docs contradicting the feature, silently, because there is
       no doc-consistency test: `docs/design.md:556` (the design authority's own statement),
       `docs/cookbook.md:145`, `docs/commands.md:432`,
@@ -451,7 +451,7 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       the beat age". `docs/agtermctl.md` is what `CLAUDE.md` names as the agterm contract record, so
       a stale enumeration there is the one most likely to be believed. Only the enumeration needs
       softening; its actual claim (`--name` receives the title, not the label) stays true.
-- [ ] ⚠️ **two further design-authority sites claim the beat age *is* in the title**, and they are a
+- [x] ⚠️ **two further design-authority sites claim the beat age *is* in the title**, and they are a
       different kind of statement from the format enumerations above: `docs/design.md:278` (*"surfaced
       in the row title and never converted into a state"*) and `:227-228` (*"the bridge can put 4m in
       the row title … Note *title*, not *state*"*), plus the comment at `agb_mac:112-118`. These are
@@ -465,20 +465,20 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       inside *captured* agterm event JSON, which is evidence rather than documentation. The fixture
       titles in `tests/test_bridge_rows.py` (`:1513`, `:1520`, `:1577`, `:2507-2508`) are the same
       class — noted so the next reader does not re-derive any of them
-- [ ] ⚠️ document the **cross-restart** effect: the first `[?]` paint after a bridge restart shows
+- [x] ⚠️ document the **cross-restart** effect: the first `[?]` paint after a bridge restart shows
       titles built with the *previous* `row_fields`, because `_title` persists the rendered body and
       `_render_stale` uses it before any record has arrived. Self-heals on the next upsert; worth a
       sentence so it is not reported as a bug
-- [ ] `.claude/skills/agbridge/SKILL.md` config table
-- [ ] ⚠️ `CHANGELOG.md` — **append to the existing `## Unreleased`** (`:9`). Do not create a second
+- [x] `.claude/skills/agbridge/SKILL.md` config table
+- [x] ⚠️ `CHANGELOG.md` — **append to the existing `## Unreleased`** (`:9`). Do not create a second
       heading. ⚠️ It currently carries `### Changed` (`:11`) and no `### Added`; a new key is an
       addition, so that sub-heading has to be created inside the existing section. The entry says
       *why*: the measured 35% of a line spent on a constant host, and that
       `pane` — the disambiguator — is what agterm clips first
-- [ ] record the rejected alternatives in the entry (automatic elision, format templates), so they
+- [x] record the rejected alternatives in the entry (automatic elision, format templates), so they
       are not re-proposed
-- [ ] ⚠️ state that, like every bridge-side key, it needs `agb-refresh` to take effect
-- [ ] no tests (documentation only); run the suite anyway to confirm nothing regressed
+- [x] ⚠️ state that, like every bridge-side key, it needs `agb-refresh` to take effect
+- [x] no tests (documentation only); run the suite anyway to confirm nothing regressed
 
 ### Task 5: Verify acceptance criteria
 

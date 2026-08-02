@@ -8,6 +8,55 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ## Unreleased
 
+### Added
+
+- **`row_fields` — you choose what a row shows.** Titles were `label · host · cwd · pane · beat`,
+  fixed, and on a real four-row sidebar that ran **69–77 characters**. The measurements say why:
+
+  - the **host is identical on every row** on a single-host setup — 25 of ~72 characters, **35% of
+    the line carrying no information**;
+  - **`cwd` largely repeats the label** — one row read `data_pipeline_v2 · … · /home/user/data_pipeline_v2`,
+    the same word twice;
+  - ⚠️ **`pane` is last and it is the disambiguator.** Two agents in two panes of one tmux session
+    share label, host, cwd *and* tmux, so `%15` is the only thing separating their rows — and being
+    last, it is the first thing agterm clips. Arguably a design bug rather than a preference.
+
+  ```ini
+  row_fields = label,cwd:base,pane      # agbridge_dev · agbridge-public · %15   (36 chars, was 73)
+  ```
+
+  Any of `label`, `host`, `cwd`, `pane`, `beat`, `key`, in the order you write them, with
+  `cwd:base` for the directory's basename. `key` is new — the 8 characters `agb rename` takes.
+  **Default `label,host,cwd,pane,beat`, byte-identical to before**, so this is invisible until you
+  set it.
+
+  **An unknown field refuses the whole list** and logs why, rather than dropping just that field:
+  a missing field is exactly what goes unnoticed, while "I edited it, restarted, and nothing
+  changed" is unmissable. ⚠️ The bridge log is the only place the reason appears — `agb doctor`
+  checks key *names*, not values, and it runs on the cluster while this is a Mac-side key.
+
+  **What it cannot do**, deliberately: switch off the `[?]` and `[done]` prefixes. `idle` renders
+  as *no glyph*, so without the marker a dead row is pixel-identical to a live idle one — a
+  cosmetic setting must not be able to disable a safety property. And a field list that renders
+  nothing (`row_fields = beat` on a healthy agent, or `pane` on an agent not in tmux) falls back to
+  the label rather than producing an empty title, which `_title` would turn into no rename at all,
+  leaving agterm's own name on the row.
+
+  ⚠️ **Dropping `beat` costs more than it looks.** `docs/design.md` calls the age in the title the
+  compensation for the first invariant — agbridge refuses to convert an age into a *status*, and
+  the number is what it offers instead. A sidebar without it keeps the refusal and loses the
+  answer. Allowed, now said out loud.
+
+  **Rejected, recorded so they are not re-proposed.** *Automatic elision* — drop any field
+  identical across all rows, so `host` vanishes with one host — needs no config and does the right
+  thing unprompted, but makes a title a function of **global** state: starting an agent on a second
+  host would silently rewrite every existing row's title, and it defeats the suppress-if-unchanged
+  memory that compares against the last string sent for *that* key. A *format template*
+  (`{label} · {cwd|base}`) needs placeholder parsing and has no way to report a broken template
+  except a blank sidebar.
+
+  Like every bridge-side key it is read once at startup, so `agb-refresh` after editing.
+
 ### Changed
 
 - **`agb-claude` mints the row before Claude starts.** A hook is what mints a key, so a row used to
