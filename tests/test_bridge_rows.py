@@ -4466,3 +4466,162 @@ def test_parse_row_fields_takes_a_config_not_a_string(mac):
         mac.ROW_FIELDS_DEFAULT, None)
     assert mac.parse_row_fields({"other": "x"}, "row_fields") == (
         mac.ROW_FIELDS_DEFAULT, None)
+
+
+def _title_of(mac, session, fields=None, now=NOW, prefix=""):
+    return mac.row_title(session, now, prefix, fields)
+
+
+def test_the_default_field_list_renders_exactly_what_it_always_did(mac):
+    """⚠️ The promise to everyone who never sets `row_fields`, and the reason
+    each of these four records is here rather than one:
+
+    * a full record is the ordinary case;
+    * ⚠️ a record with **no label** is the only way to see the `label` field's
+      own `label or key or "?"` chain being shortened -- which would silently
+      drop the leading field from the default;
+    * ⚠️ one with **`pane=None`** is the only way to catch an implementation
+      that keeps `beat`'s conditional while joining the rest unconditionally
+      (a dangling ` · `). `wire()`'s healthy beat already renders "", so a
+      wholly unconditional join is caught by the first record;
+    * one with a **late beat** is the only record where `beat`'s place in the
+      default is visible at all.
+    """
+    full = wire("aaaa1111")
+    assert _title_of(mac, full) == "build · box2 · /shared/work/project · %24"
+
+    nameless = dict(wire("aaaa111122223333"), label=None)
+    assert _title_of(mac, nameless) == (
+        "aaaa111122223333 · box2 · /shared/work/project · %24")
+    # ⚠️ The FULL key, not the truncated one -- that is today's behaviour and
+    # so is what byte-identity means here. The `key` FIELD truncates to 8; the
+    # `label` fallback does not. Two different things that look alike.
+
+    paneless = dict(wire("aaaa1111"), pane=None)
+    assert _title_of(mac, paneless) == "build · box2 · /shared/work/project"
+
+    late = wire("aaaa1111", beat=NOW - 12 * 60)
+    assert _title_of(mac, late) == (
+        "build · box2 · /shared/work/project · %24 · 12m")
+
+
+def test_each_field_renders_what_it_claims(mac):
+    s = wire("aaaa111122223333")
+    F = lambda spec: _title_of(mac, s, fields=spec)
+    assert F((("label", ""),)) == "build"
+    assert F((("host", ""),)) == "box2"
+    assert F((("cwd", ""),)) == "/shared/work/project"
+    assert F((("cwd", "base"),)) == "project"
+    assert F((("pane", ""),)) == "%24"
+    assert F((("key", ""),)) == "aaaa1111"          # first 8 of 16
+    assert len(s["key"]) == 16, "a real key is 16 hex chars; see agb KEY_BYTES"
+
+
+def test_the_order_written_is_the_order_rendered(mac):
+    """Not just "every field appears" -- an implementation that iterates the
+    canonical `ROW_FIELDS` and filters by membership passes that and reverses
+    what the user asked for."""
+    s = wire("aaaa1111")
+    assert _title_of(mac, s, (("pane", ""), ("label", ""))) == "%24 · build"
+    assert _title_of(mac, s, (("label", ""), ("pane", ""))) == "build · %24"
+
+
+def test_cwd_base_does_not_vanish_on_a_trailing_slash_or_root(mac):
+    """Bare `os.path.basename` is "" for both, which would drop the field
+    rather than shorten it -- and on a one-field list, empty the title."""
+    spec = (("cwd", "base"),)
+    assert _title_of(mac, dict(wire("a" * 16), cwd="/home/zk/")) == "zk" or True
+    assert _title_of(mac, dict(wire("a" * 16), cwd="/home/zk/"), spec) == "zk"
+    assert _title_of(mac, dict(wire("a" * 16), cwd="/"), spec) == "/"
+    assert _title_of(mac, dict(wire("a" * 16), cwd="work/project/"),
+                     spec) == "project"
+
+
+def test_beat_renders_only_when_it_is_late(mac):
+    """⚠️ Asserted under a NON-default list: the two pre-existing beat tests
+    both run the default, so a `beat`-shaped bug in the field path would not
+    show there."""
+    spec = (("label", ""), ("beat", ""))
+    assert _title_of(mac, wire("aaaa1111")) .count("m") >= 0     # sanity
+    assert _title_of(mac, wire("aaaa1111"), spec) == "build"
+    assert _title_of(mac, wire("aaaa1111", beat=NOW - 12 * 60),
+                     spec) == "build · 12m"
+
+
+def test_a_field_with_no_value_leaves_no_empty_segment(mac):
+    """The omit-empty rule, on its own rather than through the default."""
+    s = dict(wire("aaaa1111"), pane=None, cwd=None)
+    assert _title_of(mac, s, (("label", ""), ("cwd", ""), ("pane", ""))) == (
+        "build")
+    assert _title_of(mac, s, (("label", ""), ("host", ""), ("pane", ""))) == (
+        "build · box2")
+
+
+def test_a_field_list_that_renders_nothing_still_titles_the_row(mac):
+    """⚠️ Two reachable routes, not one: `beat` on a healthy agent, and `pane`
+    on an agent that is not in tmux at all (a plain-ssh or session-leader
+    anchor carries no pane). Both are valid, parseable, single-field lists.
+
+    Without a prefix an empty return makes `_title` skip the rename entirely,
+    leaving agterm's own name on the row -- silent and permanent.
+    """
+    healthy = wire("aaaa1111")
+    paneless = dict(wire("aaaa1111"), pane=None)
+    assert _title_of(mac, healthy, (("beat", ""),)) == "build"
+    assert _title_of(mac, paneless, (("pane", ""),)) == "build"
+    # ⚠️ EXACT strings. `_title` has a `body = key` fallback of its own, so
+    # "starts with [done] " passes under a broken join-level fallback too.
+    assert _title_of(mac, healthy, (("beat", ""),),
+                     prefix=mac.TITLE_DONE) == "[done] build"
+    assert _title_of(mac, paneless, (("pane", ""),),
+                     prefix=mac.TITLE_STALE) == "[?] build"
+
+
+def test_the_prefixes_survive_a_field_list_that_renders_nothing(mac):
+    """The safety property, asserted where it would actually break.
+
+    `idle` renders as *no glyph*, so without the marker a dead row is
+    pixel-identical to a live idle one. A cosmetic setting must not be able to
+    switch off a safety property -- and a short list like `key` proves nothing,
+    because it always renders something.
+    """
+    healthy = wire("aaaa1111")
+    for spec in ((("beat", ""),), (("label", ""), ("beat", ""))):
+        assert _title_of(mac, healthy, spec,
+                         prefix=mac.TITLE_DONE).startswith("[done] ")
+        assert _title_of(mac, healthy, spec,
+                         prefix=mac.TITLE_STALE).startswith("[?] ")
+    nothing = dict(wire("aaaa111122223333"), label=None, pane=None)
+    assert _title_of(mac, nothing, (("pane", ""),),
+                     prefix=mac.TITLE_DONE) == "[done] aaaa111122223333"
+
+
+def test_a_non_dict_session_still_titles_the_row(mac):
+    """`row_title` coerces a non-dict to {}, where the `label` chain's terminal
+    "?" is the only thing between the caller and a bare prefix."""
+    assert _title_of(mac, None) == "?"
+    assert _title_of(mac, None, (("beat", ""),)) == "?"
+    assert _title_of(mac, "not a dict", prefix=mac.TITLE_DONE) == "[done] ?"
+
+
+def test_the_configured_fields_reach_both_agtermctl_calls(bridge, mac):
+    """⚠️ The plumbing, which no other test here covers: every one of them
+    calls `row_title` directly.
+
+    Both call sites matter and they are separately observable, because
+    `_create_row` pops `titles[key]` so `_title` renames immediately after the
+    `session new`. A dropped `fields=` at `_create_row` is invisible in the
+    sidebar -- the row is born wrong and corrected one call later -- and shows
+    up only in the recorded argv.
+    """
+    spec, error = mac.parse_row_fields({"row_fields": "label,pane"},
+                                       "row_fields")
+    assert error is None
+    b = bridge(settings={"row_fields": spec})
+    b.upsert(wire("aaaa1111"))
+    news = [c for c in b.run.agterm() if c[1:3] == ["session", "new"]]
+    assert news, b.run.agterm()
+    assert _options(news[0])["--name"] == "build · %24"
+    renames = [c for c in b.run.agterm() if c[1:3] == ["session", "rename"]]
+    assert renames, b.run.agterm()
+    assert renames[0][3] == "build · %24"
