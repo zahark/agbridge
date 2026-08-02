@@ -476,14 +476,14 @@ by itself and the suite is green — which was **not** true of revision 4's spli
 
 *The installer:*
 
-- [ ] add the refusal at the top of `role_mac`, beside `--feed-host`/`--agb-remote-path` (`:482-483`)
+- [x] add the refusal at the top of `role_mac`, beside `--feed-host`/`--agb-remote-path` (`:482-483`)
       and **before any filesystem mutation** — Decision 3's message, single-quoted
-- [ ] leave the `farm` role untouched, with a comment saying why it is different
-- [ ] make `install.sh:725` unconditional (Decision 4) — it dies with the **refusal**, because `:446`
+- [x] leave the `farm` role untouched, with a comment saying why it is different
+- [x] make `install.sh:725` unconditional (Decision 4) — it dies with the **refusal**, because `:446`
       already requires `--statedir` for every instance. Comment why `:618`, dead by the same argument,
       is deliberately left alone (nothing tests it; `:725` moves only because `:644` asserts its
       conditionality). ⚠️ `:757`/`:767` are `role_farm`'s and correctly stay conditional
-- [ ] ⚠️ mark the withdrawn rule at `install.sh:401-402` — *"an ABSENT `--instance` has to keep meaning
+- [x] ⚠️ mark the withdrawn rule at `install.sh:401-402` — *"an ABSENT `--instance` has to keep meaning
       the default instance"* is now false. **Keep the paragraph and mark that sentence withdrawn with
       its reason**, per the house rule the plan restates: a withdrawn reason that is deleted gets
       re-proposed. ⚠️ `:400`'s *"OPT-IN, and it can never become the default"* **survives** — a bare
@@ -492,7 +492,7 @@ by itself and the suite is green — which was **not** true of revision 4's spli
       for a legacy nameless install (Task 5 says so outright). So: keep the OPT-IN clause, withdraw
       the upgrade-path clause with it. The block runs `:396-418`; the second ⚠️ paragraph
       (`:408-414`) stays true
-- [ ] update `usage()` (`install.sh:66`): the `mac` synopsis gains `--instance <name>`, and the
+- [x] update `usage()` (`install.sh:66`): the `mac` synopsis gains `--instance <name>`, and the
       `--instance` entry (`:77`) states that it is **required**. ⚠️ Task 3 edits the *same entry* for
       the adoption rule — this task owns "required", Task 3 owns "and its statedir may come from its
       own config". ⚠️ Nothing tests `usage()`'s prose, so this is the item most likely to be
@@ -500,64 +500,67 @@ by itself and the suite is green — which was **not** true of revision 4's spli
 
 *The fixture, and the 12 it moves (Decision 5 shape A):*
 
-- [ ] `"--instance": HOST` in `mac_args`' args dict, `--config`/`--log-dir` still pinned; rewrite the
+- [x] `"--instance": HOST` in `mac_args`' args dict, `--config`/`--log-dir` still pinned; rewrite the
       docstring to say what a default test install now **is** and that the derived label is the only
       thing that moves. ⚠️ The sentence about the pinned `--config` keeping Task 3's adoption branch
       from firing belongs in **Task 3** — written here it documents a feature that never lands if the
       fallback is taken
-- [ ] verify `_instance_args` (`:1151`), `_probing_args` (`:1852`) and `_auto_args` (`:1947`) still
+- [x] verify `_instance_args` (`:1151`), `_probing_args` (`:1852`) and `_auto_args` (`:1947`) still
       compose — all three override `--instance` or filter argv, none touches `--label`
-- [ ] **re-measure the failure set** and reconcile against the 12 below before changing any of them —
+- [x] **re-measure the failure set** and reconcile against the 12 below before changing any of them —
       a 13th means the installer change went further than intended
-- [ ] **mechanical (5)** — `:926`, `:943`, `:976`, `:1073`, `:1112` assert `agents/com.agbridge.plist`,
+      — ➕ **re-measured at `fd08a39`** (post Task 1): baseline **1910 passed**; refusal only **45
+      failed** (the plan's number, reproduced exactly); refusal + fixture **12 failed** — *the same
+      twelve*, no thirteenth; refusal + fixture + repairs **1913 passed** (−1 deleted, +4 new)
+- [x] **mechanical (5)** — `:926`, `:943`, `:976`, `:1073`, `:1112` assert `agents/com.agbridge.plist`,
       now `com.agbridge.box2.plist`. ⚠️ `:926` also asserts `parsed["Label"] == "com.agbridge"` at
       `:938` — one assertion more than "the path"
-- [ ] ⚠️ **audit the tests that keep PASSING and stop asserting** — the failure set cannot see these,
+- [x] ⚠️ **audit the tests that keep PASSING and stop asserting** — the failure set cannot see these,
       and this is the plan's own named failure class (Testing Strategy). Five **negative** assertions
       name `agents/com.agbridge.plist` — `:1011`, `:1039`, `:1205`, `:1438`, `:1984` — and after shape
       (A) no successful install can produce that filename, so each goes quiet. Grep the file for
       `com.agbridge.plist` and re-point every one at the name the fixture now renders
-- [ ] ⚠️ two of those five are the sharp ones, and both are **labelled "Non-vacuity"** in the source:
+- [x] ⚠️ two of those five are the sharp ones, and both are **labelled "Non-vacuity"** in the source:
       `:1205` and `:1984` assert *"the DEFAULT instance was not written"* as the isolation claim of an
       instance install. There is no default install to be isolated from any more, so re-anchor the
       claim (assert the **other** instance's plist is absent) rather than re-pointing the path. ⚠️
       `:1011` and `:1039` are refusal tests running a success-shaped `mac_args()`; their
       `glob("*.tmp.*") == []` companion keeps them green while the plist assertion says nothing
-- [ ] ⚠️ `:644` `…omits_the_statedir_when_none_was_given` — **delete** it (Decision 4); its successor
+- [x] ⚠️ `:644` `…omits_the_statedir_when_none_was_given` — **delete** it (Decision 4); its successor
       is Task 3's, so the replacement spans two tasks. Say that here, or the deletion reads as a
       violation of "invert, do not delete"
-- [ ] ⚠️ `:606` `…defaults_the_config_to_the_users_own_dotfile` — the "own dotfile" is now
+- [x] ⚠️ `:606` `…defaults_the_config_to_the_users_own_dotfile` — the "own dotfile" is now
       `~/.config/agbridge/<name>/config`. The property (the *default* path is exercised, not only the
       `--config` seam) survives; the path it names does not
-- [ ] ⚠️ `:1238` `test_an_instance_adopts_the_macs_existing_mac_id` — seeds the default config with
+- [x] ⚠️ `:1238` `test_an_instance_adopts_the_macs_existing_mac_id` — seeds the default config with
       `run_sh(mac_args(**{"--config": None}))`, i.e. **through the installer**, which no longer
       creates one. Reseed by calling `agb install-config` directly (`tests/test_install_pkg.py:429`
       already does this, and it is the stronger reseed here — this test's subject is adoption from a
       *real* installer-written config); the `instance_config` **fixture** (`tests/conftest.py:502`,
       request it, do not call it as a module function — `name=None` writes the default path) is the
       lighter alternative. Say in the docstring why the installer can no longer be the seeder
-- [ ] ⚠️ `:1442` `test_reinstalling_an_instance_keeps_the_mac_id_it_already_has` — same reseed
+- [x] ⚠️ `:1442` `test_reinstalling_an_instance_keeps_the_mac_id_it_already_has` — same reseed
       (`:1457`), and it is the load-bearing pin of the "own config first" rule Task 3's adoption
       imitates. Its docstring should say how the two rules differ (Task 3's comment)
-- [ ] ⚠️ `:1493` `test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag` — asserts
+- [x] ⚠️ `:1493` `test_a_default_install_is_the_plist_it_always_was_plus_the_config_flag` — asserts
       `"instance:" not in out` (`:1519`), which *was* the definition of a default install. Invert with
       the reasoning rewritten: there is no default install, so the banner is always printed. ⚠️ its
       plist filename (`:1505`), `ProgramArguments` config (`:1506-1508`) and `Label` (`:1509`) all
       move too — four changes, not one
-- [ ] ⚠️ `:1522` `test_what_a_default_install_renders_leaves_the_bridge_where_it_was` — the only
+- [x] ⚠️ `:1522` `test_what_a_default_install_renders_leaves_the_bridge_where_it_was` — the only
       **end-to-end** exercise of invariant 14's first cross-file agreement (`install.sh`'s
       `DEFAULT_CONFIG` vs `agb.config_path()`). ⚠️ Revision 5 said *"there is no route to a default
       install at all"* — **that is false**, and it would have given up coverage that is recoverable:
       `install.sh mac --instance X --config <the default path>` is still legal, and this plan
       documents it twice. **Repair it that way** (`mac_args(**{"--config": <default path>})`), which
       ⚠️ **measured** keeps it green with its non-vacuity block (`:1560-1569`) intact
-- [ ] ⚠️ **and record the coverage that is genuinely lost**: ⚠️ **measured**, after this task replacing
+- [x] ⚠️ **and record the coverage that is genuinely lost**: ⚠️ **measured**, after this task replacing
       `install.sh:452` (`[ -n "$config" ] || config="$DEFAULT_CONFIG"`) with a `die` causes **zero**
       failures in the whole suite. Every mac test derives its config from `--instance`; every farm test
       pins `--config` (`_farm`, `:2116`). That line survives only as the *string* compared at `:2203`.
       Either drop `--config` from one farm test to keep it exercised, or say plainly in `:2203`'s
       comment that the runtime use is now test-dead and the string guard is all there is
-- [ ] ⚠️ `:2084` `test_an_absent_instance_is_the_default_one_even_when_the_probe_answers` — the worst
+- [x] ⚠️ `:2084` `test_an_absent_instance_is_the_default_one_even_when_the_probe_answers` — the worst
       one: its whole subject (the ⚠️ pin behind `install.sh:401-402`) is **deleted** by this plan.
       Invert into its successor — ⚠️ but **not** *"refused even when the probe answers"*: **measured**,
       the refusal at the top of `role_mac` fires before `probe_farmhost` (`install.sh:546`), so
@@ -569,16 +572,24 @@ by itself and the suite is green — which was **not** true of revision 4's spli
 
 *New tests, and the gate:*
 
-- [ ] write tests: a nameless `mac` install is refused, **writing nothing** — no config, no `$dest`,
+- [x] write tests: a nameless `mac` install is refused, **writing nothing** — no config, no `$dest`,
       no `$agentsdir`, no `launchctl` call — asserted as absence, not exit code
-- [ ] write tests: `--instance auto` and an explicit `--instance <name>` both still work
-- [ ] write tests: `install.sh farm` still installs with no `--instance`
-- [ ] keep `PLIST_TEMPLATE` (`:55`) and the two shape oracles in `tests/test_agb_refresh.py`
+- [x] write tests: `--instance auto` and an explicit `--instance <name>` both still work
+- [x] write tests: `install.sh farm` still installs with no `--instance`
+- [x] keep `PLIST_TEMPLATE` (`:55`) and the two shape oracles in `tests/test_agb_refresh.py`
       (`:2443`, `:2526`) pointing at `dist/com.agbridge.plist` — the template is label-agnostic
-- [ ] **mutation-check**: downgrade the refusal to a warning; let the farm role inherit the
+- [x] **mutation-check**: downgrade the refusal to a warning; let the farm role inherit the
       requirement; move the refusal below `mkdir -p "$dest"`; drop `--instance` from the fixture dict
       — each confirming a **named** test fails, not merely "many tests"
-- [ ] `sh -n install.sh`; run tests — must pass before Task 3
+      — ➕ all four done, in-memory snapshot restored and sha256-verified, never `git checkout`:
+      (a) → `test_a_nameless_mac_install_is_refused_and_writes_nothing`,
+      (b) → `test_install_sh_farm_still_installs_with_no_instance`,
+      (c) → `test_a_nameless_mac_install_is_refused_and_writes_nothing`,
+      (d) → `test_the_rendered_plist_names_the_installed_agb`.
+      ⚠️ (c) needs **two** edits — deleting the refusal from the top of `role_mac` as well as adding
+      it after `mkdir -p "$dest"`, or the original still fires and the mutation is a no-op that reads
+      as a pass
+- [x] `sh -n install.sh`; run tests — must pass before Task 3
 
 ### Task 3: `install.sh mac` adopts its statedir from the derived config
 
