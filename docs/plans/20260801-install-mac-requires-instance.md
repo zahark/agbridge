@@ -682,18 +682,76 @@ Needs Task 1. Droppable with it (see *Solution Overview*).
 
 ### Task 4: Verify acceptance criteria
 
-- [ ] a nameless `install.sh mac` is refused and writes nothing, in a throwaway `$HOME`
-- [ ] `install.sh mac --instance auto` still names an instance after its feed host
-- [ ] an upgrade of an existing instance succeeds **without** `--statedir` and keeps the old value
-- [ ] a new instance without `--statedir` is still refused
-- [ ] ⚠️ `--instance X --config <the default config>` without `--statedir` is still refused
-- [ ] `install.sh farm` is unaffected
-- [ ] the legacy paths still work: a hand-placed 0.5.0-era `com.agbridge.plist` is still listed by
+⚠️ **All nine were EXERCISED end to end**, in throwaway `$HOME`s under a scratch directory, with
+`launchctl`/`ssh`/`pgrep` as recording stubs on `$PATH` so nothing could reach a real launchd or the
+network. The real `$HOME` was confirmed untouched afterwards (`~/Library/LaunchAgents` and
+`~/.local/lib/agbridge` still absent; `~/.config/agbridge` and `~/.local/bin/agb` still at their
+pre-session mtimes). Running on Linux cost nothing: `--no-load` and the `ssh` stub are the same
+machinery `tests/test_install_pkg.py`'s `mac_args`/`_ssh_answering` use, and no criterion needed a
+Mac. **Nothing below was skipped.**
+
+- [x] a nameless `install.sh mac` is refused and writes nothing, in a throwaway `$HOME`
+      — ➕ exit 1, the message naming both `--instance <name>` and `--instance auto`, and the
+      throwaway `$HOME` still containing **exactly one path — itself** (`find | wc -l` == 1). Asserted
+      as absence, not as an exit code
+- [x] `install.sh mac --instance auto` still names an instance after its feed host
+      — ➕ against a stub `ssh` answering `farmbox01`: one `ssh … 'hostname -s'` call, then
+      `instance: auto -> farmbox01`, `~/.config/agbridge/farmbox01/config`,
+      `~/Library/LaunchAgents/com.agbridge.farmbox01.plist` and
+      `~/Library/Logs/agbridge/farmbox01/`. The rendered plist's `ProgramArguments` end
+      `bridge --config <that instance's config>`
+- [x] an upgrade of an existing instance succeeds **without** `--statedir` and keeps the old value
+      — ➕ re-running against the instance criterion 2 created printed
+      `statedir: adopted /shared/agb from …/farmbox01/config` directly under the `instance:` banner
+      (the adjacency Task 3's `>/dev/null` was chosen to buy, confirmed in a **real** install, not
+      only a `--dry-run`), exit 0, and the config still carries `statedir = /shared/agb`
+- [x] a new instance without `--statedir` is still refused
+      — ➕ `--instance brandnew` with no `--statedir`: exit 1, and the `$HOME` path count is
+      **unchanged** (24 → 24) — no `~/.config/agbridge/brandnew`, no
+      `com.agbridge.brandnew.plist`, no `~/Library/Logs/agbridge/brandnew`
+- [x] ⚠️ `--instance X --config <the default config>` without `--statedir` is still refused
+      — ➕ the measured hole, exercised as the plan describes it: a default config **present and
+      carrying `statedir = /shared/DEFAULT`**, `--instance hostb --config <it>` and no `--statedir`
+      → exit 1, and that config **byte-identical** afterwards (sha256 compared). Non-vacuity in the
+      same run: the identical argv **with** `--statedir /shared/hostb` installs
+- [x] `install.sh farm` is unaffected
+      — ➕ a farm install into its own throwaway `$HOME` with no `--instance`: exit 0, config with
+      `statedir`+`mac_id`, and all four hook events merged into `~/.claude/settings.json`. And the
+      other half of the asymmetry re-confirmed: `install.sh farm --instance x` is still refused
+- [x] the legacy paths still work: a hand-placed 0.5.0-era `com.agbridge.plist` is still listed by
       `agb instances` as `(default)`, still claimed by `bind_label_to_config`, still swept — the
       *"what this does NOT do"* section, asserted rather than assumed
-- [ ] `agb` unchanged: `git diff -- agb` empty; character count re-measured against
+      — ➕ **the artefact was not hand-written.** `git archive v0.5.0` was extracted to a scratch
+      tree and **0.5.0's own `install.sh mac`** run with no `--instance`, which is the shape today's
+      installer then refused in the same `$HOME`. Against that file, today's code: `agb instances`
+      prints `(default)  com.agbridge  <default config>` and `--labels` prints `com.agbridge`;
+      `agb-refresh --config <default config>` binds `label com.agbridge` **without** the
+      *"no plist … names this config"* note — and the **negative control** (same command, plist moved
+      away) prints that note, so the match was real and not the fallback; a **bare** `agb-refresh`
+      swept it and actually forgot a binding (`bound aaaa1111 → ROW-1` in the map before,
+      `forgot 1 of 1 binding` and an empty map after); `agb close-done` discovered it too.
+      ➕ Also exercised the *pre*-0.5.0 branch the same section names: the same plist with the
+      `--config` pair removed is still `(default)` and still claimed, which is
+      `bind_label_to_config`'s *"a plist with no `--config` implies the default config"*.
+      ➕ **Pinned permanently**, since the conjunction had no test: new
+      `test_the_installed_tree_still_reads_a_plist_it_can_no_longer_write`
+      (`tests/test_install_pkg.py`) renders the nameless plist from `dist/com.agbridge.plist` — the
+      shipped template, so it cannot drift from what a 0.5.0 Mac has — and reads it back with the
+      `agb` the installer **just installed**, asserting the name **column** is `(default)` and that
+      `--labels` lists it. **Mutation-checked**: `instance_display_name`'s `or "(default)"` removed
+      (the original live bug) fails that named test; in-memory snapshot restored and sha256-verified,
+      `__pycache__` dropped either side per Task 1's hazard.
+      The three sub-claims each also keep their existing separate tests
+      (`test_instances_listing_names_the_default_instance`,
+      `test_a_plist_from_before_the_flag_still_claims_the_default_map`,
+      `test_a_bare_run_sweeps_every_instance_in_order`)
+- [x] `agb` unchanged: `git diff -- agb` empty; character count re-measured against
       `tests/conftest.AGB_PARSE_BUDGET` (characters, not `wc -c`)
-- [ ] full suite; `sh -n install.sh && sh -n agb-refresh`
+      — ➕ `git diff -- agb`, `git diff 598d184..HEAD -- agb` and `git diff v0.6.0..HEAD -- agb` all
+      empty. Re-measured: **103,198 characters** (103,212 `wc -c` bytes — the wrong number) against
+      `AGB_PARSE_BUDGET = 103200` with a strict `<`, so **1 character** of headroom, unmoved
+- [x] full suite; `sh -n install.sh && sh -n agb-refresh`
+      — ➕ **1921 passed** (1920 before this task's one new test), 72.9 s; both `sh -n` clean
 
 ### Task 5: [Final] Documentation
 
