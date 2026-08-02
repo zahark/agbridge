@@ -379,23 +379,23 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
 - Modify: `tests/test_bridge_transport.py`
 - Modify: `tests/test_core.py`
 
-- [ ] add `"row_fields"` (the **parsed** list, not the raw string) and `"row_fields_error"` to
+- [x] add `"row_fields"` (the **parsed** list, not the raw string) and `"row_fields_error"` to
       the `render_settings` return dict (`:2401`),
       read off the **config dict it was handed** — never a fresh `agb.read_config()`, which
       `test_the_bridge_reads_its_config_exactly_once` pins
-- [ ] warn once from `bridge_sink` (`:2506`), which is confirmed as the right seam: it takes `warn`
+- [x] warn once from `bridge_sink` (`:2506`), which is confirmed as the right seam: it takes `warn`
       and calls `render_settings` at `:2516`, two lines before building the renderer, and it is
       `render_settings`' only production caller. ⚠️ **Guard for `warn=None`** — several existing
       call sites pass nothing (`tests/test_bridge_rows.py:579`, `:619`, `:676`), as
       `load_rows(settings["rows"], warn)` already tolerates
-- [ ] add `row_fields` to `agb_ops.CONFIG_KEYS` (`:228`)
-- [ ] add a line to the hand-written config blob in `test_parse_config_reads_the_documented_keys`
+- [x] add `row_fields` to `agb_ops.CONFIG_KEYS` (`:228`)
+- [x] add a line to the hand-written config blob in `test_parse_config_reads_the_documented_keys`
       (`tests/test_core.py:212-213`) — it iterates `CONFIG_KEYS` asserting `key in values`, so
       **adding** the key without the blob line does go red. It is the *removal* mutation that only
       `test_the_documented_key_list_is_pinned_by_name` catches, so add the key to that hardcoded
       set too
-- [ ] write a test that `render_settings` surfaces the parsed fields, and the default when absent
-- [ ] write a test that a bad value produces a warning through the real channel — not just a
+- [x] write a test that `render_settings` surfaces the parsed fields, and the default when absent
+- [x] write a test that a bad value produces a warning through the real channel — not just a
       non-None error in the dict. ⚠️ Assert the warning **reaches the warn callable**, or this
       proves the parser and not the plumbing. ⚠️ And pass a **tmp config**:
       `bridge_sink(model, {"config": <tmp>}, warn=collector, config={"row_fields": "label,workspace"})`
@@ -405,9 +405,9 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       (`tests/test_bridge_rows.py:579`, `:619`, `:676`, `tests/test_bridge_transport.py:1116`).
       ⚠️ Pass `run=Runner()` too if the test ever drives an op — without it `RowRenderer` gets the
       real `_run_command`
-- [ ] mutation-test: drop the key from `CONFIG_KEYS` → the hardcoded test must fail; swallow the
+- [x] mutation-test: drop the key from `CONFIG_KEYS` → the hardcoded test must fail; swallow the
       warning → the plumbing test must fail
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 4
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 4
 
 ### Task 4: Docs
 
