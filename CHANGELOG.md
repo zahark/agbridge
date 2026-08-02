@@ -103,7 +103,7 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
   - the **host is identical on every row** on a single-host setup — 25 of ~72 characters, **35% of
     the line carrying no information**;
-  - **`cwd` largely repeats the label** — one row read `data_pipeline_v2 · … · /home/zk/data_pipeline_v2`,
+  - **`cwd` largely repeats the label** — one row read `data_pipeline_v2 · … · /home/me/data_pipeline_v2`,
     the same word twice;
   - ⚠️ **`pane` is last and it is the disambiguator.** Two agents in two panes of one tmux session
     share label, host, cwd *and* tmux, so `%15` is the only thing separating their rows — and being

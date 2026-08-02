@@ -10,17 +10,17 @@ A row's title is `<label> · <host> · <cwd> · <pane> [· <beat>]`, built in on
 characters**:
 
 ```
-73  agbridge_dev · dev01-container-xterm-032 · /home/zk/agbridge-public · %15
-69  api_tests · dev01-container-xterm-032 · /home/zk/api_gateway_svc · %0
-77  data_pipeline_v2 · dev01-container-xterm-032 · /home/zk/data_pipeline_v2 · %7
-71  agb-public · dev01-container-xterm-032 · /home/zk/agbridge-public · %23
+73  agbridge_dev · dev01-container-xterm-032 · /home/me/agbridge-public · %15
+69  api_tests · dev01-container-xterm-032 · /home/me/api_gateway_svc · %0
+77  data_pipeline_v2 · dev01-container-xterm-032 · /home/me/data_pipeline_v2 · %7
+71  agb-public · dev01-container-xterm-032 · /home/me/agbridge-public · %23
 ```
 
 Three findings, and the third is arguably a design bug rather than a preference:
 
 1. **`host` is identical on every row** — 25 of ~72 characters, **35% of the line carrying zero
    information** on a single-host setup.
-2. **`cwd` largely repeats `label`.** Row 3 is `data_pipeline_v2 · … · /home/zk/data_pipeline_v2`
+2. **`cwd` largely repeats `label`.** Row 3 is `data_pipeline_v2 · … · /home/me/data_pipeline_v2`
    — the same word twice.
 3. ⚠️ **`pane` is last, and it is the disambiguator.** Two agents in two panes of one tmux session
    share label, host, cwd **and** tmux — `%15` is the only thing separating their rows, and it is
@@ -152,7 +152,7 @@ def row_title(session, now=None, prefix="", fields=None):
 |---|---|---|
 | `label` | `agbridge_dev` | ⚠️ **`label or key or "?"`**, the full chain `row_title` uses today (`agb_mac:1551`). Not plain `session["label"]` — see below |
 | `host` | `dev01-container-xterm-032` | already domain-stripped by `own_host()` |
-| `cwd` | `/home/zk/agbridge-public` | `cwd:base` → `agbridge-public`. ⚠️ `os.path.basename(v.rstrip("/")) or v` — bare `basename` returns `""` for `/home/zk/` and for `/`, silently vanishing the field |
+| `cwd` | `/home/me/agbridge-public` | `cwd:base` → `agbridge-public`. ⚠️ `os.path.basename(v.rstrip("/")) or v` — bare `basename` returns `""` for `/home/me/` and for `/`, silently vanishing the field |
 | `pane` | `%15` | the only thing separating two agents in one tmux session |
 | `beat` | `12m` | **empty unless late** — see decision 6 |
 | `key` | `a9c35465` | first 8 of a **16**-character key; **not** in the default |
@@ -338,7 +338,7 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       since `wire()`'s default beat renders `""`)
 - [x] write tests: each field renders what it claims; order is respected (assert a *reordered* list
       produces a different, specified string — not just that all fields are present)
-- [x] write tests: `cwd:base` shortens; ⚠️ and does not vanish on a trailing slash (`/home/zk/`) or
+- [x] write tests: `cwd:base` shortens; ⚠️ and does not vanish on a trailing slash (`/home/me/`) or
       on `/` — bare `os.path.basename` returns `""` for both
 - [x] ⚠️ write a test that `key` renders the **first 8 of a 16-character key**. The `wire()` fixture
       uses 8-char keys (`"aaaa1111"`) while real keys are 16 (`agb:406` `KEY_BYTES = 8` → hex), so a

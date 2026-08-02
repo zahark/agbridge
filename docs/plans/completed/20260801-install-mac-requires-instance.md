@@ -821,13 +821,16 @@ Mac. **Nothing below was skipped.**
       caught three leaks during the parent plan, two of them written *while documenting the first*
       — ➕ run, and **nothing this task wrote** matches (the same pattern over `git diff`: clean).
       ⚠️ It did surface **pre-existing** leaks from the `row_fields` commits (`b2f4bf4`, `75ab873`),
-      confirmed by `git log -S`: a real internal hostname `dev01-container-xterm-032`
-      (`docs/cookbook.md` and a completed plan), `/home/zk/...` paths, and the internal project
-      names `data_pipeline_v2` / `api_gateway_svc` / `api_tests` -- across `CHANGELOG.md`,
-      `docs/commands.md`, `docs/cookbook.md`, `docs/agtermctl.md`, `agb_mac`,
+      confirmed by `git log -S`: a real internal hostname, the owner's home-directory paths, and
+      three internal project names -- across `CHANGELOG.md`, `docs/cookbook.md`, `agb_mac`,
       `tests/test_bridge_rows.py` and `docs/plans/completed/20260802-agb-row-fields.md`.
-      **Reported, not fixed**: they predate this plan, span files it does not own, and the cookbook
-      ones sit inside character-count worked examples a rename would falsify. Wants its own commit
+      **Reported, not fixed here**: they predate this plan and span files it does not own.
+      ⚠️ Note this bullet is *itself* the trap it describes -- naming the leaked strings in the
+      report re-leaks them, which is the "two of them written *while documenting the first*" shape
+      one line above. Say what class leaked, never the value. Fixed in its own commit afterwards:
+      each identifier was replaced by a **same-length** generic one, because the cookbook and the
+      `row_fields` plan quote these strings inside character-count worked examples (`73`/`69`/`77`/
+      `71` chars, and "25 of ~72 characters, 35%") that a different-length rename would falsify
 - [x] ⚠️ **gate this task too**: `sh -n install.sh && sh -n agb-refresh`; full suite. This is the task
       that rewrites eight `agb-refresh` messages in a POSIX-sh file, and it is the only one with no
       gate after it. `tests/test_agb_refresh.py:3678` asserts the substring `"install.sh mac"` — a
