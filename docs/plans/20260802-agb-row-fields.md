@@ -315,18 +315,18 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
 - Modify: `agb_mac`
 - Modify: `tests/test_bridge_rows.py`
 
-- [ ] add `fields=None` to `row_title` (`agb_mac:1540`), defaulting to `ROW_FIELDS_DEFAULT`
-- [ ] ⚠️ rewrite `row_title`'s **own docstring** (`agb_mac:1541`), which states the fixed format
+- [x] add `fields=None` to `row_title` (`agb_mac:1540`), defaulting to `ROW_FIELDS_DEFAULT`
+- [x] ⚠️ rewrite `row_title`'s **own docstring** (`agb_mac:1541`), which states the fixed format
       `<label> · <host> · <cwd> · <pane> [· <beat age>]`. It is the docstring of the function this
       change exists to generalise, and it is the one place a stale claim is most likely to be
       believed. Say the default, not the only possibility — and ⚠️ do not name all four status
       words while rewriting it (`test_the_status_vocabulary_has_exactly_one_source` walks docstrings)
-- [ ] render each field per the vocabulary table; `cwd:base` via `os.path.basename`
-- [ ] ⚠️ keep the empty-title fallback: label, then key. Never return just the prefix
-- [ ] ⚠️ **no time calls may enter `row_title`** — `test_the_renderer_never_consults_the_macs_own_clock`
+- [x] render each field per the vocabulary table; `cwd:base` via `os.path.basename`
+- [x] ⚠️ keep the empty-title fallback: label, then key. Never return just the prefix
+- [x] ⚠️ **no time calls may enter `row_title`** — `test_the_renderer_never_consults_the_macs_own_clock`
       names it explicitly, and every age here is `feed now - beat`, both server-stamped
-- [ ] pass `self.settings.get("row_fields")` from `_create_row` (`:1870`) and `_title` (`:2336`)
-- [ ] ⚠️ write the test that matters most first: **the default renders byte-identically to today**.
+- [x] pass `self.settings.get("row_fields")` from `_create_row` (`:1870`) and `_title` (`:2336`)
+- [x] ⚠️ write the test that matters most first: **the default renders byte-identically to today**.
       Assert the exact string, and do it for **four** records, because each catches a different
       silent change and `wire()`'s default catches only the first:
       a full one; one with **no label** (the only way to see the `label`-field chain shortened);
@@ -336,26 +336,26 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       rest unconditionally; and
       one with a **late beat** (the only way a change to `beat`'s place in the default is visible,
       since `wire()`'s default beat renders `""`)
-- [ ] write tests: each field renders what it claims; order is respected (assert a *reordered* list
+- [x] write tests: each field renders what it claims; order is respected (assert a *reordered* list
       produces a different, specified string — not just that all fields are present)
-- [ ] write tests: `cwd:base` shortens; ⚠️ and does not vanish on a trailing slash (`/home/user/`) or
+- [x] write tests: `cwd:base` shortens; ⚠️ and does not vanish on a trailing slash (`/home/user/`) or
       on `/` — bare `os.path.basename` returns `""` for both
-- [ ] ⚠️ write a test that `key` renders the **first 8 of a 16-character key**. The `wire()` fixture
+- [x] ⚠️ write a test that `key` renders the **first 8 of a 16-character key**. The `wire()` fixture
       uses 8-char keys (`"aaaa1111"`) while real keys are 16 (`agb:406` `KEY_BYTES = 8` → hex), so a
       test built on the fixture default proves nothing about truncation
-- [ ] write tests: `beat` renders only past `BEAT_LATE` and is absent below it — ⚠️ under a
+- [x] write tests: `beat` renders only past `BEAT_LATE` and is absent below it — ⚠️ under a
       **non-default** list, since the two existing beat tests both run the default
-- [ ] ⚠️ write the empty-title tests against **both** reachable routes, not one:
+- [x] ⚠️ write the empty-title tests against **both** reachable routes, not one:
       `row_fields = beat` on a **healthy** record, and `row_fields = pane` on a record with
       `pane=None` (a plain-ssh or session-leader agent, which has no pane at all). With a prefix
       each must render the **exact** string `[done] build` — not merely something
       starting `[done] `, since `_title`'s own `body = key` fallback (`agb_mac:2338-2342`) also
       produces a non-empty prefixed title and would make that half vacuous. Without a prefix each
       must render a non-empty body, **not** return `False` — that is the half that genuinely fails
-- [ ] ⚠️ write a test that **`[done]` and `[?]` survive an EMPTY-BODY field list**, not merely a
+- [x] ⚠️ write a test that **`[done]` and `[?]` survive an EMPTY-BODY field list**, not merely a
       short one. `row_fields = key` always renders something, so it proves only that a prefix
       survives a short list — the invariant is about the body being empty
-- [ ] ⚠️ write the plumbing test: drive an upsert through the `bridge` fixture with
+- [x] ⚠️ write the plumbing test: drive an upsert through the `bridge` fixture with
       `settings={"row_fields": mac.parse_row_fields("label,pane")[0]}` — ⚠️ **the parsed
       `(name, modifier)` list, not the raw string.** Guessing the string makes this test pass while
       `row_title` iterates characters. Assert **both** the recorded `session new --name` and the
@@ -363,13 +363,13 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       directly, so dropping `fields=` at `_create_row` (`:1870`) would have **no victim** — and it
       is invisible in the sidebar, because `_render_upsert` calls `_title` immediately after
       `_create_row` (`agb_mac:1945-1950`) and renames the row one call later
-- [ ] mutation-test, each naming its victim: drop the prefix → the safety test; ignore the field
+- [x] mutation-test, each naming its victim: drop the prefix → the safety test; ignore the field
       order → the order test; let the join-level fallback go → the `beat`-only test; ignore `:base`
       → the basename test; drop `fields=` at `_create_row` → the plumbing test's `--name`
       assertion; drop it at `_title` → the plumbing test's `rename` assertion; ⚠️ **render an empty
       field as an empty segment instead of dropping it** → the full and `pane=None` byte-identity
       records (the latter is what catches a `beat`-only special case surviving)
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 3
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 3
 
 ### Task 3: Wire the config through, and warn on a bad value
 

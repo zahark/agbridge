@@ -1552,26 +1552,54 @@ def beat_age_text(age):
     return "%dd" % (int(age) // 86400,)
 
 
-def row_title(session, now=None, prefix=""):
-    """`<label> · <host> · <cwd> · <pane> [· <beat age>]`, with a prefix.
+def row_title(session, now=None, prefix="", fields=None):
+    """The fields of `fields`, joined, with a prefix. Default:
+    `<label> · <host> · <cwd> · <pane> [· <beat age>]`.
 
-    `pane` is in there because two agents in two panes of one tmux session share
-    label, host, cwd **and** tmux: without it their rows are identical on
-    screen. `[?]` and `[done]` are title prefixes rather than statuses because
-    the vocabulary has no `unknown` and `idle` renders as *no glyph*, so a
-    removed row would otherwise be pixel-identical to a live idle agent.
+    `pane` is in the default because two agents in two panes of one tmux
+    session share label, host, cwd **and** tmux: without it their rows are
+    identical on screen. `row_fields` can drop it, which is the user's call --
+    what it cannot drop is `[?]`/`[done]`, which are prefixes rather than
+    statuses because the vocabulary has no `unknown` and `idle` renders as *no
+    glyph*, so a removed row would otherwise be pixel-identical to a live idle
+    agent.
+
+    ⚠️ **A field with no value is dropped, not rendered as an empty segment.**
+    Every field but `label` is conditional, so a record with no pane renders
+    one separator fewer rather than a dangling ` · `. Easy to get wrong and
+    invisible in any test whose record has every field populated.
+
+    ⚠️ **Two fallback chains, and they are not duplication.** `label` itself is
+    `label or key or "?"` -- keeping the default byte-identical on a record
+    with no label. The *join* then falls back the same way if the chosen
+    fields all render empty, which config can reach (`row_fields = beat` on a
+    healthy agent, or `pane` on one that is not in tmux). An empty return here
+    means `_title` skips the rename entirely and agterm keeps its own name on
+    the row -- a silent, permanent failure that reads as a bridge bug.
     """
     if not isinstance(session, dict):
         session = {}
-    parts = [str(session.get("label") or session.get("key") or "?")]
-    for name in ("host", "cwd", "pane"):
-        value = session.get(name)
+    if fields is None:
+        fields = ROW_FIELDS_DEFAULT
+    label = str(session.get("label") or session.get("key") or "?")
+    parts = []
+    for name, mod in fields:
+        if name == "label":
+            value = label
+        elif name == "key":
+            value = str(session.get("key") or "")[:8]
+        elif name == "beat":
+            value = beat_age_text(beat_age(session, now))
+        else:
+            value = session.get(name)
+            value = str(value) if value else ""
+            if value and name == "cwd" and mod == "base":
+                # `rstrip` first: bare `basename` is "" for `/home/user/` and for
+                # `/`, which would vanish the field rather than shorten it.
+                value = os.path.basename(value.rstrip("/")) or value
         if value:
-            parts.append(str(value))
-    age = beat_age_text(beat_age(session, now))
-    if age:
-        parts.append(age)
-    return prefix + TITLE_SEP.join(parts)
+            parts.append(value)
+    return prefix + TITLE_SEP.join(parts or [label])
 
 
 def local_agb_path():
@@ -1882,7 +1910,8 @@ class RowRenderer(object):
         command = pane_command(session, settings.get("agb_path"),
                                settings.get("python"), jump_for(session, settings),
                                settings.get("config"))
-        name = row_title(session, self.model.now)
+        name = row_title(session, self.model.now,
+                         fields=(self.settings or {}).get("row_fields"))
         args = ["session", "new",
                 "--name", name,
                 "--cwd", str(session.get("cwd") or ""),
@@ -2348,8 +2377,9 @@ class RowRenderer(object):
         """
         if prefix is None:
             prefix = TITLE_STALE if self.stale else ""
-        body = row_title(session, self.model.now) if session else \
-            self.rows.title_for(key)
+        body = row_title(session, self.model.now,
+                         fields=(self.settings or {}).get("row_fields")) \
+            if session else self.rows.title_for(key)
         keep = bool(body)
         if not body:
             if not prefix:
