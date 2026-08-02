@@ -1346,6 +1346,21 @@ TITLE_SEP = " · "
 TITLE_STALE = "[?] "
 TITLE_DONE = "[done] "
 
+# What a row's title can be made of, and what it is made of unless the config
+# says otherwise. See `row_title` and `parse_row_fields`.
+#
+# The default is today's title exactly, which is the promise to everyone who
+# never sets `row_fields`: this feature is invisible until you ask for it.
+#
+# `key` is deliberately absent from it -- the 8 characters `agb rename` takes
+# are worth having when you are renaming and are noise the rest of the time.
+ROW_FIELDS = ("label", "host", "cwd", "pane", "beat", "key")
+ROW_FIELDS_DEFAULT = (("label", ""), ("host", ""), ("cwd", ""),
+                      ("pane", ""), ("beat", ""))
+# The only modifier, and only on `cwd`. Elsewhere it would be a no-op, and a
+# modifier that silently does nothing is a typo nobody ever finds.
+ROW_FIELD_MODS = {"cwd": ("base",)}
+
 # Printed once when `agtermctl` refuses a `--target` this bridge still believes
 # in. There is no command that clears a stale *bound* entry -- `close-done`
 # only reaches `[done]` ones, and `RowMap.rebind` only ever returns an entry to
@@ -2501,6 +2516,77 @@ def config_seconds(config, key, default):
     except ValueError:
         return default
     return number if number > 0 else 0.0
+
+
+def parse_row_fields(config, key):
+    """`(fields, error)` -- which fields a row title is made of, and in what
+    order. `error` is None, or a message naming what was wrong with the value.
+
+    `(config, key)` like `config_flag` and `config_seconds` beside it, so
+    "absent" is handled in here rather than becoming a `None` every caller has
+    to remember to guard -- and `None.strip()` on the render path is exactly
+    the exception this must never raise.
+
+    **An unknown field rejects the WHOLE list**, falling back to the default.
+    Blunt on purpose: dropping only the bad field leaves you with most of what
+    you asked for, and a *missing* field is precisely what goes unnoticed.
+    Rejecting the lot means you edit the config, restart, and nothing changes
+    at all -- an unmissable signal, with the reason in the log.
+
+    ⚠️ **The strip is per COMPONENT, not per item.** `agb.parse_config` strips
+    the whole value only, so `label, cwd:base, pane` arrives with its spaces.
+    Stripping the item alone is not enough: `cwd: base` would then carry the
+    modifier `" base"`, an unknown modifier, and the whole list would be
+    refused over a space after a colon. Both halves of `name:mod` are stripped,
+    then empty items are skipped -- in that order, or `label, ,pane` is
+    refused over a stray space too.
+
+    ⚠️ **It never returns an empty list.** `row_fields = ,` reduces to nothing
+    once empty items are skipped, and an empty list would render an empty
+    title -- which `_title` turns into no rename at all, leaving agterm's own
+    name on the row. A value naming no field gives the user nothing they asked
+    for, so it is the unknown-field case rather than the empty-value one.
+    """
+    value = (config or {}).get(key)
+    if value is None:
+        return (ROW_FIELDS_DEFAULT, None)
+    if not value.strip():
+        return (ROW_FIELDS_DEFAULT, None)
+    fields = []
+    for item in value.split(","):
+        name, sep, mod = item.partition(":")
+        name = name.strip().lower()
+        mod = mod.strip().lower() if sep else ""
+        if not name and not mod:
+            continue                      # `label,,pane`, a trailing comma
+        if not name:
+            return (ROW_FIELDS_DEFAULT,
+                    "row_fields: %r names no field. Valid names: %s"
+                    % (item.strip(), ", ".join(ROW_FIELDS)))
+        if name not in ROW_FIELDS:
+            return (ROW_FIELDS_DEFAULT,
+                    "row_fields: unknown field %r. Valid names: %s"
+                    % (name, ", ".join(ROW_FIELDS)))
+        # A colon with nothing after it is a mistake, not a bare field: the
+        # user meant to name a modifier. Accepting it silently as plain `cwd`
+        # is the kind of near-miss that never gets noticed.
+        if sep and not mod:
+            return (ROW_FIELDS_DEFAULT,
+                    "row_fields: %r ends in a colon but names no modifier%s"
+                    % (item.strip(),
+                       "" if name not in ROW_FIELD_MODS else
+                       " (only: %s)" % ", ".join(ROW_FIELD_MODS[name])))
+        if mod and mod not in ROW_FIELD_MODS.get(name, ()):
+            return (ROW_FIELDS_DEFAULT,
+                    "row_fields: %r takes no modifier %r%s"
+                    % (name, mod,
+                       "" if name not in ROW_FIELD_MODS else
+                       " (only: %s)" % ", ".join(ROW_FIELD_MODS[name])))
+        fields.append((name, mod))
+    if not fields:
+        return (ROW_FIELDS_DEFAULT,
+                "row_fields: %r names no fields at all" % (value.strip(),))
+    return (tuple(fields), None)
 
 
 def bridge_sink(model, opts, warn=None, config=None, run=None):

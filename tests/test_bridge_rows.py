@@ -4351,3 +4351,118 @@ def test_the_sweep_and_agb_instances_share_one_membership_rule(
     for root in ("run_close_done", "run_forget_rows", "run_instances"):
         assert root in funcs
         assert "_is_agbridge_instance" in conftest.reachable_from(funcs, root)
+
+
+# ---------------------------------------------------------------------------
+# `row_fields`: which fields a row title is made of
+# ---------------------------------------------------------------------------
+
+def test_parse_row_fields_reads_the_documented_contract(mac):
+    """Every row of the plan's contract table, and each one is a case somebody
+    actually types.
+
+    ⚠️ The whitespace cases are the point. `agb.parse_config` strips the whole
+    *value* only, so `label, cwd:base, pane` arrives with its spaces -- and
+    stripping the ITEM alone is not enough, because `cwd: base` would then
+    carry the modifier `" base"` and the whole list would be refused over a
+    space after a colon. Both halves are stripped, then empties are skipped,
+    in that order: the other order refuses `label, ,pane` over a stray space.
+    """
+    D = mac.ROW_FIELDS_DEFAULT
+    ok = [
+        (None, D), ("", D), ("   ", D),
+        ("label,cwd:base,pane",
+         (("label", ""), ("cwd", "base"), ("pane", ""))),
+        # per-component stripping, which is what the two below prove
+        ("label, cwd:base, pane",
+         (("label", ""), ("cwd", "base"), ("pane", ""))),
+        ("cwd: base", (("cwd", "base"),)),
+        ("cwd : base", (("cwd", "base"),)),
+        ("\tlabel , pane\t", (("label", ""), ("pane", ""))),
+        ("LABEL,Cwd:Base", (("label", ""), ("cwd", "base"))),
+        # empty items are skipped -- after the strip, not before
+        ("label, ,pane", (("label", ""), ("pane", ""))),
+        ("label,,pane", (("label", ""), ("pane", ""))),
+        ("label,cwd:base,pane,",
+         (("label", ""), ("cwd", "base"), ("pane", ""))),
+        (",label", (("label", ""),)),
+        # order is the user's, not the canonical one
+        ("pane,label", (("pane", ""), ("label", ""))),
+        # duplicates are allowed; the (name, modifier) PAIR is the identity, so
+        # `cwd` and `cwd:base` are two different fields and both render
+        ("label,label", (("label", ""), ("label", ""))),
+        ("cwd,cwd:base", (("cwd", ""), ("cwd", "base"))),
+    ]
+    for value, want in ok:
+        config = {} if value is None else {"row_fields": value}
+        fields, error = mac.parse_row_fields(config, "row_fields")
+        assert fields == want, (value, fields)
+        assert error is None, (value, error)
+
+
+def test_parse_row_fields_refuses_the_whole_list_and_says_why(mac):
+    """An unknown field rejects everything rather than dropping one field.
+
+    Dropping just the bad one leaves you with most of what you asked for, and
+    a *missing* field is exactly what nobody notices. Refusing the lot means
+    you edit, restart, and nothing changes at all -- unmissable, with the
+    reason in the log. So every case here must also NAME the offender: a
+    message reading only "bad row_fields" makes you diff your own config.
+    """
+    D = mac.ROW_FIELDS_DEFAULT
+    bad = [
+        ("label,workspace", "workspace"),
+        ("nosuchfield", "nosuchfield"),
+        ("label:base", "label"),          # the modifier is cwd-only
+        ("pane:base", "pane"),
+        ("cwd:basename", "basename"),
+        ("cwd:base:base", "base:base"),
+        ("cwd:", "cwd:"),                 # a colon naming no modifier
+        (":base", ":base"),               # ...and no field
+        (",", ","),                       # names nothing at all
+        (",,", ",,"),
+        (":", ":"),
+    ]
+    for value, offender in bad:
+        fields, error = mac.parse_row_fields({"row_fields": value},
+                                             "row_fields")
+        assert fields == D, (value, fields)
+        assert error, value
+        assert offender in error, (value, error)
+
+
+def test_parse_row_fields_never_returns_an_empty_list(mac):
+    """⚠️ `row_fields = ,` reduces to nothing once empty items are skipped, and
+    an empty list renders an empty title -- which `_title` turns into no rename
+    at all, leaving agterm's own name on the row. A value naming no field gives
+    the user nothing they asked for, so it is the unknown-field case (default +
+    error) rather than the empty-value one (default, silently).
+
+    The two are one character apart: `row_fields =` is empty and takes the
+    default quietly; `row_fields = ,` is a typo and says so.
+    """
+    for value in (",", ",,", " , , "):
+        fields, error = mac.parse_row_fields({"row_fields": value},
+                                             "row_fields")
+        assert fields, value
+        assert fields == mac.ROW_FIELDS_DEFAULT, value
+        assert error, value
+    # ...whereas an genuinely empty value is not an error at all
+    for value in ("", "   "):
+        fields, error = mac.parse_row_fields({"row_fields": value},
+                                             "row_fields")
+        assert fields == mac.ROW_FIELDS_DEFAULT, value
+        assert error is None, value
+
+
+def test_parse_row_fields_takes_a_config_not_a_string(mac):
+    """`(config, key)` like `config_flag` and `config_seconds` beside it, so
+    "absent" is handled inside rather than becoming a `None` every caller must
+    remember to guard -- `None.strip()` on the render path is exactly the
+    exception this must never raise."""
+    assert mac.parse_row_fields(None, "row_fields") == (
+        mac.ROW_FIELDS_DEFAULT, None)
+    assert mac.parse_row_fields({}, "row_fields") == (
+        mac.ROW_FIELDS_DEFAULT, None)
+    assert mac.parse_row_fields({"other": "x"}, "row_fields") == (
+        mac.ROW_FIELDS_DEFAULT, None)

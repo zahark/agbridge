@@ -281,17 +281,17 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
 - Modify: `agb_mac`
 - Modify: `tests/test_bridge_rows.py`
 
-- [ ] add `ROW_FIELDS` and `ROW_FIELDS_DEFAULT` near `TITLE_SEP` (`agb_mac:1345`), with the reason
+- [x] add `ROW_FIELDS` and `ROW_FIELDS_DEFAULT` near `TITLE_SEP` (`agb_mac:1345`), with the reason
       the default exists in one place: `render_settings` and `row_title`'s own fallback must agree
-- [ ] add `parse_row_fields(text)` beside `config_seconds` (`agb_mac:2474`), returning
+- [x] add `parse_row_fields(text)` beside `config_seconds` (`agb_mac:2474`), returning
       `(fields, error)` per the parse-contract table
-- [ ] docstring records **why an unknown field rejects the whole list** (decision 4) and **why it
+- [x] docstring records **why an unknown field rejects the whole list** (decision 4) and **why it
       never raises** (render path)
-- [ ] ⚠️ check the new tuples do not trip `test_the_status_vocabulary_has_exactly_one_source` — it
+- [x] ⚠️ check the new tuples do not trip `test_the_status_vocabulary_has_exactly_one_source` — it
       walks the **whole** `agb_mac` AST including docstrings and fails on any single string
       containing all four status words. The field names are unrelated, but the docstring is where
       an example could accidentally list them
-- [ ] write a table-driven test for `parse_row_fields` covering **every row** of the contract table:
+- [x] write a table-driven test for `parse_row_fields` covering **every row** of the contract table:
       absent, empty, whitespace, valid list, order preserved, `cwd:base`, ⚠️ **per-item whitespace**
       (`label, cwd:base, pane`), ⚠️ **whitespace around the `:`** (`cwd: base`, `cwd : base` — the
       cases that divide per-item from per-component stripping), ⚠️ **`label, ,pane`** (strip before
@@ -299,15 +299,15 @@ item on `:`, and strip **both halves**. Then apply the empty-item skip, in that 
       (`cwd:basename`, `cwd:`, `cwd:base:base`), ⚠️ **empty field name** (`:base`, `:`), unknown
       field refused, duplicates accepted — ⚠️ and a duplicate with *different* modifiers
       (`cwd,cwd:base`) renders both, in position, since the pair is the identity
-- [ ] write a test that the error message **names the offending field** and lists the valid ones —
+- [x] write a test that the error message **names the offending field** and lists the valid ones —
       a warning that says only "bad row_fields" makes the user diff their config by hand
-- [ ] mutation-test: accept an unknown field instead of rejecting → the contract table's
+- [x] mutation-test: accept an unknown field instead of rejecting → the contract table's
       `label,workspace` case must fail
-- [ ] mutation-test: drop the per-item strip → the `label, cwd:base, pane` case must fail
-- [ ] ⚠️ mutation-test: strip the **item** but not its components → `cwd: base` must fail. Without
+- [x] mutation-test: drop the per-item strip → the `label, cwd:base, pane` case must fail
+- [x] ⚠️ mutation-test: strip the **item** but not its components → `cwd: base` must fail. Without
       this case the two granularities are indistinguishable and the choice is accidental
-- [ ] mutation-test: check-empty before stripping → `label, ,pane` must fail
-- [ ] run `python3 -m pytest tests/ -q` — must pass before Task 2
+- [x] mutation-test: check-empty before stripping → `label, ,pane` must fail
+- [x] run `python3 -m pytest tests/ -q` — must pass before Task 2
 
 ### Task 2: `row_title` renders the chosen fields
 
