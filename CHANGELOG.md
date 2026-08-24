@@ -223,6 +223,25 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
   stdout, and neither answer says which one it is.
 
+- **`agb-codex` — the launcher, so a Codex agent gets a row at all.** `agb-claude` for Codex: name
+  the tmux session, mint the row, then `exec`. Verified live — `agb-codex -d probe-codex` produced
+  `probe-codex  completed  %86` in `agb list` with Codex drawn in the pane.
+
+  ⚠️ **The pre-mint matters more here than for Claude.** Claude would eventually mint a row on its
+  first hook, so the wrapper only makes it earlier; **Codex never would**, because it fires no
+  agbridge hooks at all. Without this there is no row, not on the first prompt and not ever.
+
+  ⚠️ **And that row's status never changes** — it stays `completed` for its whole life. The glyph
+  never moves, and `agb-peer`'s status gate protects a Codex peer not at all. Said loudly at the top
+  of the script and pinned by a test, because it is the single most surprising thing about a Codex
+  row and the kind of fact that is otherwise discovered at the worst moment.
+
+  It is a near-copy of `agb-claude` and that is deliberate: the two are expected to diverge (no trust
+  prompt, `resume`/`queue`, no hooks), which is the same reasoning recorded for
+  `open_split`/`open_drawer`. What must not diverge is the pre-mint, and five mutation-checked tests
+  pin it — dropping the `exec`, dropping `AGB_AGENT_PID`, minting `active`, making the hook fatal
+  with `&&`, and dropping the no-hooks caveat.
+
 - **Codex works as a peer, and it cost one character.** MEASURED against codex-cli 0.149.1 on a
   cluster host: its composer glyph is `›` where Claude's is `❯`, and that is the **only** difference.
   The empty-composer caret is column 2 for both, Enter submits for both, and a ~900-character fast

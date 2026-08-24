@@ -1219,6 +1219,31 @@ none of that. The bridge restarts itself (`RunAtLoad` in the LaunchAgent) and it
 a second or two, which `agb doctor` on any cluster host will show. Open agterm, run this, and the
 rows return on the next snapshot with the same identities.
 
+## `agb-codex [name]` — farm, a convenience
+
+```
+agb-codex [-d] [name] [--greet <text>] [-- <codex args>...]
+```
+
+`agb-claude` for Codex, and a near-copy of it deliberately — the two are expected to diverge (Codex
+has no trust prompt, has `resume`/`queue`, and fires no agbridge hooks). What must not diverge is the
+pre-mint, which is what five mutation-checked tests pin.
+
+⚠️ **Codex fires NO agbridge hooks, so the row it mints stays `completed` for ever.** agbridge's
+state machine is driven by Claude Code's four hooks; Codex has its own hook system and nothing wires
+it to `agb hook`. The row is real, attachable and addressable — which is the whole point — but:
+
+- the sidebar glyph never moves, so you cannot see whether a Codex agent is working or blocked;
+- **`agb-peer`'s status gate protects a Codex peer not at all**, since it always reads `completed`.
+  The mode and caret checks still apply, and Codex is the safer peer anyway: MEASURED, it does not
+  paste-collapse a long injection, so delivery verification is *more* reliable than for Claude.
+
+Wiring Codex's own hooks to `agb hook` would fix the first and is unexplored.
+
+⚠️ And the pre-mint matters more here than for Claude: Claude would eventually mint a row on its
+first hook, so the wrapper only makes it *earlier*. Codex never would, so without this the row would
+not exist at all.
+
 ## `agb-claude [name]` — farm, a convenience
 
 ```
