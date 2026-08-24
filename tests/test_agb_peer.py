@@ -1223,3 +1223,40 @@ def test_a_failed_tmux_read_refuses_instead_of_guessing(peer):
         peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
     assert not any(c[1] == "set" for c in run.calls), \
         "nothing may be written after a failed read"
+
+
+def test_a_failed_window_name_read_refuses_too(peer):
+    """The SECOND guard, which the test above cannot reach.
+
+    That one's fake fails every call, so the options read raises first and the
+    window-name fallback is never exercised — the mutation that restored the
+    old guess-and-store survived it. Here the options read SUCCEEDS with an
+    empty value (a pane that has no base stored yet, the normal first-send
+    case) and only the window-name read fails.
+    """
+
+    class EmptyThenFailing(LocalRun):
+        def __call__(self, argv):
+            self.calls.append(argv)
+            verb = argv[1] if len(argv) > 1 else ""
+            if verb == "show-options":
+                return 0, "", ""          # no base stored yet: a real answer
+            if verb == "display-message":
+                return 124, "", "did not answer"
+            return 0, "", ""
+
+    run = EmptyThenFailing()
+    with pytest.raises(peer.PeerError):
+        peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
+    assert not any(c[1] == "set" for c in run.calls), \
+        "a guessed base must never be stored"
+
+
+def test_a_pane_with_no_window_name_still_works(peer):
+    """The companion: a SUCCESSFUL read of an empty name is a different thing
+    from a failed read, and must not refuse."""
+
+    run = LocalRun(window="", base="")
+    peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
+    stored = [c for c in run.calls if c[1] == "set" and peer.OPTION_BASE in c]
+    assert stored and stored[0][-1] == "agent", stored
