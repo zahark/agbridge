@@ -330,6 +330,23 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ✅ **FARM ↔ MAC VERIFIED, 2026-08-24 — the pairing that motivated the whole design.** A Claude
+  running in tmux inside an agterm session on the Mac exchanged messages both ways with a Claude on
+  a Linux cluster host. The `@local` path drained the Mac agent's tmux **without ssh**, and the farm
+  side went over one; neither agent knew or cared where the other was, which is the property the
+  screen-as-address-space choice was made for.
+
+  Getting there cost four more fixes, all found in use and none reachable from the suite: agterm's
+  `bash --noprofile --norc` PATH (which ate `tmux`, then `claude`, then `tmux` again from inside a
+  tool call), unbounded `communicate()` calls that hung for two minutes against a wedged agterm
+  dashboard client, and a failed tmux read being turned into a guess and then **stored**. The last
+  is the one worth remembering: the timeout fix had converted a visible hang into a silently wrong
+  result.
+
+  Setting up a Mac participant is `brew install tmux` plus
+  `agtermctl session new --name <n> --command "<abs tmux> new -A -s <n> <abs claude>"` — absolute
+  paths throughout, because that shell reads no profile.
+
   ✅ **ROUND TRIP VERIFIED, 2026-08-24 — two agents, a conversation, both directions.** A dedicated
   peer was started with `agb-claude -d peer-bot`, and its row came up **detached**, so the relay
   armed it with the bare-newline attach — the refresh-survival path, exercised live for the first
