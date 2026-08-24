@@ -871,11 +871,28 @@ def deliver(ctl, session, pane, body, send, lines, say):
     if err:
         raise PeerError("typed, but the pane could not be read back, so it was "
                         "NOT sent: %s" % (err,), 4)
-    # Compare on the tail of the body: agterm may wrap a long line, and a
-    # wrapped line contains no single substring equal to the whole message.
+    # Compare on the tail of the body, with ALL WHITESPACE STRIPPED from both
+    # sides.
+    #
+    # ⚠️ Two different things defeat a naive match, and fixing only the first
+    # left every wrapped message needing a human to press Enter:
+    #
+    #   * **pasted** -- Claude Code collapses a long, fast injection into
+    #     `[Pasted text #1]` and the body is not on screen at all;
+    #   * **wrapped** -- the body IS on screen, but agterm has broken it across
+    #     lines, so a 40-character probe straddles the wrap and matches
+    #     nothing. Stripping whitespace makes the comparison wrap-immune, which
+    #     is the same reasoning the old line protocol used and this check did
+    #     not inherit.
+    #
+    # Stripping can in principle join two unrelated fragments into a false
+    # match; over a 40-character probe that is not a risk worth a more
+    # complicated comparison.
     probe = body[-40:] if len(body) > 40 else body
+    flat_probe = "".join(probe.split())
+    flat_text = "".join((text or "").split())
     pasted = text.count(PASTE_MARK) > (before or "").count(PASTE_MARK)
-    if probe not in text and not pasted:
+    if flat_probe not in flat_text and not pasted:
         raise PeerError("typed, but %r never appeared in the peer's pane, so it "
                         "was NOT sent. Look at that row before retrying."
                         % (probe,), 4)

@@ -1503,6 +1503,13 @@ participant then uses the identical mechanism minus the ssh. Without it the targ
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
 
+⚠️ **TWO things defeat the delivery check, and fixing one leaves the other.** A message that was
+**pasted** is not on screen at all (`[Pasted text #1]`); a message that was **wrapped** is on screen,
+but agterm broke it across lines so a 40-character tail probe straddles the break and matches
+nothing. The check strips all whitespace from both sides, which makes it wrap-immune — the same
+reasoning the wire format uses, and which this check did not inherit for an embarrassing number of
+hours.
+
 ⚠️ **Whether a message is typed or pasted depends on the TRANSPORT, not the length alone.** Delivery
 to a farm agent goes over `ssh` into tmux and trickles in slowly enough to be typed; delivery to a
 local agent is tmux-inside-agterm and arrives fast enough to be pasted. So the same message can be

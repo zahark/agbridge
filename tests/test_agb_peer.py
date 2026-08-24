@@ -1353,3 +1353,38 @@ def test_the_relays_refusal_does_not_mention_zero_checks(peer):
     with pytest.raises(peer.PeerError) as caught:
         peer.wait_ready(ctl, session(), "left", 0, 0, False, 40, lambda m: None)
     assert "0 checks" not in str(caught.value)
+
+
+def test_a_wrapped_message_still_gets_its_return(peer):
+    """The second way verification fails, and the one that survived the paste
+    fix: the body IS on screen, but agterm wrapped it, so a 40-character tail
+    probe straddles the break and matches nothing. Every long message that was
+    typed rather than pasted needed a human to press Enter.
+    """
+    body = "[chat from alice] " + " ".join("word%d" % i for i in range(40))
+
+    class Wrapping(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            if text != "\n":
+                wrapped = "\n".join(text[i:i + 24] for i in range(0, len(text), 24))
+                self.current[target] = COMPOSER + wrapped
+            return True
+
+    ctl = Wrapping(panes())
+    peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert ctl.typed[-1][2] == "\n", "a wrapped message must still be submitted"
+
+
+def test_text_that_truly_never_arrived_is_still_refused(peer):
+    """The companion: stripping whitespace must not turn the gate off."""
+    class Swallowing(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            return True
+
+    ctl = Swallowing(panes())
+    with pytest.raises(peer.PeerError) as caught:
+        peer.deliver(ctl, session(), "left", "[chat from alice] hello there",
+                     True, 500, lambda m: None)
+    assert caught.value.code == 4
