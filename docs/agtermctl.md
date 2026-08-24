@@ -832,10 +832,27 @@ Error loading configuration: `approval_policy = "never"` cannot be used because 
 not allow `sandbox_mode = "danger-full-access"`
 ```
 
-An **org policy** forbidding the mode, not a bad flag. Where such a requirement is in force there is
-no local workaround: every permitted sandbox mode blocks the socket, and the mode that would not is
-disallowed. A Codex peer is then **receive-only, permanently** — send to it, and do not expect it to
-answer.
+An **org policy** forbidding the mode, not a bad flag.
+
+⚠️ **And the near-miss does not work either.** The refusal is precise: that sandbox is forbidden only
+in combination with `approval_policy = "never"`, so `codex -s danger-full-access -a on-request`
+**starts cleanly**. It does not help — MEASURED, in that configuration the policy silently downgrades
+to read-only (bash cannot even create a heredoc temp file) and the socket is refused exactly as
+before. The full table, all measured on one host:
+
+| configuration | result |
+|---|---|
+| `read-only`, `workspace-write` | socket blocked |
+| `danger-full-access` + `on-request` | starts, but downgraded to read-only; socket still blocked |
+| `--dangerously-bypass-approvals-and-sandbox` | refused by org policy, will not start |
+
+So where such a requirement is in force there is **no configuration at all** in which a Codex peer
+can send. It is receive-only, permanently — send to it, and do not expect it to answer.
+
+⚠️ One portability bug fell out of the attempt, and it was in a file claimed to be model-agnostic:
+`skills/agb-peer/SKILL.md` said "always through `--stdin` and a quoted heredoc, **never** as an
+argument". A heredoc needs a writable temp file, which a read-only sandbox does not provide, so that
+instruction is unfollowable there. The skill now names the fallback.
 
 ⚠️ Worth recording separately: `codex sandbox -c sandbox_mode="danger-full-access"` behaved *more*
 restrictively than `workspace-write` (it could not write `/tmp` at all), so that `-c` override does

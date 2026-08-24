@@ -22,8 +22,13 @@ checkout, so an edit here is a change to somebody's repository.
 
 ## Sending
 
-**Always through `--stdin` and a quoted heredoc.** Never as an argument: a shell
-mangles quotes, backticks and `$`, and your message is prose.
+**Prefer `--stdin` with a quoted heredoc.** A shell mangles quotes, backticks and
+`$`, and your message is prose.
+
+⚠️ **If the heredoc fails with `cannot create temp file for here-document:
+Read-only file system`, pass the message as a plain argument instead** — bash
+needs a writable temp file to implement a heredoc, and some sandboxes do not
+give it one. Quote it carefully; that is the tradeoff you are making.
 
 ```sh
 agb-peer send --to <peer> --stdin <<'CHAT'
