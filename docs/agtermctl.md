@@ -21,6 +21,9 @@ What remains `ASSUMED` is that `session rename` may be called repeatedly — whi
 every update, so a failure would be loud and constant rather than subtle — and the spelling of
 `--auto-reset`, which agbridge does not use (see "`--auto-reset`: deliberately dropped").
 
+✅ **The status vocabulary is no longer assumed.** `session status bogus` answers `error: invalid
+status` and exits 1 — recorded at the bottom of this file, 2026-08-24.
+
 ⚠️ **The exception is `session scratch`**, added for `agb pane`'s `[d] drawer`. Its *spelling* is
 recorded verbatim from `--help`, but its **behaviour has not yet been exercised**: nobody has
 watched a scratch drawer open, been hidden and come back with the same shell alive. Until that
@@ -994,15 +997,36 @@ _not recorded_
 
 ### `agtermctl session status --help`
 
-_not recorded_
+⚠️ **Evidence class: CONFIRMED behaviour, PARAPHRASED text.** These three were run on the Mac by
+another agent and reported back over `agb-peer` — so the *results* were observed, but the wording
+below is its summary and not a verbatim capture. Anything depending on exact spelling still wants a
+paste. Recorded 2026-08-24.
+
+- the state argument must be one of `idle` / `active` / `completed` / `blocked`
+- flags include `--blink`, **`--sound`**, **`--color`**, **`--shape`**, `--pane`, `--target`
+
+✅ **The vocabulary is ENFORCED — this closes a long-standing ASSUMED clause.**
+`agtermctl session status bogus --target X` answers **`error: invalid status`** and exits **1**. The
+Task 4b stub has rejected out-of-vocabulary statuses since it was written, on the strength of a
+design argument alone; agterm really does refuse them, so the stub is not stricter than reality and
+"there is no `unknown`" is a property of the tool and not just of this project.
+
+⚠️ **`--sound`, `--color` and `--shape` were not in any previous survey.** They are per-row
+presentation, which is the human's business rather than a bridge's on the same reasoning that keeps
+`theme` and `font` out — but `--sound` is worth a second look, since agbridge currently has no way
+to distinguish "an agent needs you" from "an agent finished" audibly.
 
 ### `agtermctl session rename --help`
 
-_not recorded_
+**CONFIRMED behaviour, paraphrased** (same provenance as above):
+`session rename <name> [--target] [--socket] [--json] [--window]` — sets the session's name.
 
 ### `agtermctl session close --help`
 
-_not recorded_
+**CONFIRMED behaviour, paraphrased** (same provenance as above):
+`session close [--target …] [--socket] [--json] [--window]`, and ⚠️ **`--target` is repeatable, so
+several rows close in one call.** `agb close-done` closes them one at a time; batching is available
+if that ever matters.
 
 ### `agtermctl session list --help`
 
@@ -1015,4 +1039,5 @@ _not recorded_
 - is `blink` sticky or one-shot? (the flag itself is confirmed accepted; this is still open)
 - can `rename` be applied repeatedly to a live row?
 - does `session close` exist, and does it take `--target`?
-- is any status outside the four-word vocabulary accepted (it must not be)?
+- ~~is any status outside the four-word vocabulary accepted (it must not be)?~~ **ANSWERED
+  2026-08-24: no — `error: invalid status`, exit 1.**
