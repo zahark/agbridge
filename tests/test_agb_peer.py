@@ -1320,3 +1320,36 @@ def test_a_stale_paste_placeholder_is_not_evidence(peer):
     assert caught.value.code == 4
     assert [x[2] for x in ctl.typed] == [body], \
         "it must not press Return on a placeholder that was already there"
+
+
+def test_a_held_message_says_its_reason_once(peer):
+    """A relay retries every tick, and a peer whose composer has a draft in it
+    stays that way until a human looks -- which produced the identical line
+    every eight seconds for as long as nobody did."""
+    ctl = RelayCtl(panes(alice=bell("aaa")), cursors=[41])
+    fetch = Fetcher(framed(("aaa", "bob", "held")))
+    seen, pending, notes = {}, [], {}
+    for _ in range(5):
+        peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch,
+                        notes=notes)
+    holds = [s for s in ctl.said if "composer is not empty" in s]
+    assert len(holds) == 1, holds
+
+
+def test_the_reason_is_said_again_after_a_delivery(peer):
+    """Once is not never: a new hold after a success is news again."""
+    ctl = RelayCtl(panes(alice=bell("aaa")), cursors=[41, 2, 41])
+    fetch = Fetcher(framed(("aaa", "bob", "held")))
+    seen, pending, notes = {}, [], {}
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch, notes=notes)
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch, notes=notes)
+    ctl.current["AAAA1111"] = COMPOSER + bell("bbb")
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch, notes=notes)
+    assert ("said", "bob") not in notes
+
+
+def test_the_relays_refusal_does_not_mention_zero_checks(peer):
+    ctl = RelayCtl(panes(), cursors=[41])
+    with pytest.raises(peer.PeerError) as caught:
+        peer.wait_ready(ctl, session(), "left", 0, 0, False, 40, lambda m: None)
+    assert "0 checks" not in str(caught.value)

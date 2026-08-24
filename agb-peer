@@ -836,8 +836,12 @@ def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
                       % (column, EMPTY_COLUMN))
         attempt += 1
         if attempt > retries:
-            raise PeerError("%s, still, after %d checks. Nothing was typed."
-                            % (reason, retries), 3)
+            # ⚠️ `retries=0` is the RELAY's setting -- it must not block, so it
+            # gives up immediately and tries again next tick. "after 0 checks"
+            # was the direct command's phrasing leaking into that path and
+            # reading as nonsense.
+            waited = (", still, after %d checks" % (retries,)) if retries else ""
+            raise PeerError("%s%s. Nothing was typed." % (reason, waited), 3)
         say("waiting: %s (%d/%d)" % (reason, attempt, retries))
         ctl.sleep(interval)
         # Re-read the session: `status` is a snapshot and this is the only
@@ -1000,7 +1004,8 @@ def drain(fetch, name, target, pane, say):
     return messages
 
 
-def try_deliver(ctl, sessions, people, sender, message, lines, say):
+def try_deliver(ctl, sessions, people, sender, message, lines, say,
+                notes=None):
     """One delivery attempt. True = done with it, False = try again next tick.
 
     ⚠️ **A relay must not block.** The direct command waits out a busy peer for
@@ -1032,8 +1037,19 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say):
         wait_ready(ctl, session, pane, 0, 0, False, lines, say)
         deliver(ctl, session, pane, body, True, lines, say)
     except PeerError as error:
-        say("%s -> %s: %s" % (sender, recipient, error))
+        # ⚠️ Said ONCE per unchanged reason. A relay retries a held message
+        # every tick, and a peer whose composer has a draft in it stays that
+        # way until a human looks -- which produced the same line every eight
+        # seconds for as long as nobody did. Repeating it adds no information
+        # and buries everything else the relay says.
+        line = "%s -> %s: %s" % (sender, recipient, error)
+        if notes is None or notes.get(("said", recipient)) != line:
+            say(line)
+            if notes is not None:
+                notes[("said", recipient)] = line
         return error.code == 4
+    if notes is not None:
+        notes.pop(("said", recipient), None)
     say("%s -> %s: delivered" % (sender, recipient))
     return True
 
@@ -1120,7 +1136,8 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
             % (len(discarded), ", ".join(discarded)))
     held = []
     for sender, message in pending:
-        if not try_deliver(ctl, sessions, people, sender, message, lines, say):
+        if not try_deliver(ctl, sessions, people, sender, message, lines, say,
+                           notes):
             held.append((sender, message))
     pending[:] = held
     return len(pending)
