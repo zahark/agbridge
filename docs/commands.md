@@ -1467,6 +1467,14 @@ participant then uses the identical mechanism minus the ssh. Without it the targ
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
 
+⚠️ **agterm spawns `bash --noprofile --norc`, so a pane inherits only what `login` gives it — NOT
+your PATH.** Measured on macOS, and it bit three times in a row at three different depths: the row's
+`--command` could not find `tmux`, then could not find `claude`, and then an agent running happily
+*inside* tmux still could not exec `tmux` from a tool call. Use absolute paths in a `session new
+--command`, and put `agb-peer` somewhere `login` already exports (`/opt/homebrew/bin`), not
+`~/.local/bin`. `agb-peer` resolves tmux itself — `$AGB_TMUX`, then the usual homes, then the bare
+name — so only the things it does not control need spelling out.
+
 ⚠️ **Every participant needs tmux, including on the Mac — and macOS ships without it.** This is by
 construction, not an oversight: the doorbell *is* a tmux window name and the message store *is* a
 tmux option. `brew install tmux`, then start the agent inside it:

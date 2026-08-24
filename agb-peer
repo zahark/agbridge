@@ -119,6 +119,28 @@ EMPTY_COLUMN = 2
 PANE_WORDS = ("q", "quit", "exit", "s", "shell", "split", "d", "drawer",
               "scratch")
 
+# ⚠️ agterm spawns its shell with `bash --noprofile --norc`, so a pane inherits
+# only what `login` provides -- NOT the user's PATH. Measured on macOS: an
+# agent running inside tmux inside agterm has `$TMUX_PANE` set and cannot exec
+# `tmux`, because `/opt/homebrew/bin` is not on that PATH. The same trap ate
+# `tmux new` and `claude` in the row's own `--command` before it ate this.
+# `$AGB_TMUX` overrides; otherwise the usual homes are tried before the bare
+# name, which is the same shape as agbridge's `/proc/<pid>/exe` fallback.
+TMUX_CANDIDATES = ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux",
+                   "/usr/bin/tmux", "/bin/tmux")
+
+
+def tmux_binary(env=None):
+    env = os.environ if env is None else env
+    explicit = env.get("AGB_TMUX")
+    if explicit:
+        return explicit
+    for path in TMUX_CANDIDATES:
+        if os.access(path, os.X_OK):
+            return path
+    return "tmux"
+
+
 MODE_MENU = "menu"
 MODE_COMPOSER = "composer"
 MODE_UNKNOWN = "unknown"
@@ -466,11 +488,19 @@ def unset_argv(pane, key):
     return ["tmux", "set", "-pu", "-t", pane, key]
 
 
-def ssh_argv(target, argv):
-    """Wrap for ssh, or not, for a participant whose tmux is on this machine."""
+def ssh_argv(target, argv, env=None):
+    """Wrap for ssh, or not, for a participant whose tmux is on this machine.
+
+    ⚠️ The LOCAL branch resolves tmux's path, the ssh branch deliberately does
+    not: over ssh the remote login shell finds its own tmux, and a Mac path
+    would be nonsense there. Only this side has the profile-less-PATH problem.
+    """
+    argv = list(argv)
     if not target or target == "local":
-        return list(argv)
-    return ["ssh", "-o", "BatchMode=yes", target] + list(argv)
+        if argv and argv[0] == "tmux":
+            argv[0] = tmux_binary(env)
+        return argv
+    return ["ssh", "-o", "BatchMode=yes", target] + argv
 
 
 def unescape_option(value):
@@ -836,7 +866,8 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
     pane = env.get("TMUX_PANE")
     if not pane:
         raise PeerError("send must run inside tmux: $TMUX_PANE is not set. "
-                        "Start the agent with `agb-claude <name>`.")
+                        "Start the agent with `agb-claude <name>`, or inside "
+                        "`tmux new -A -s <name> <the agent>`.")
     flat = " ".join((text or "").split())
     if not flat:
         raise PeerError("refusing to send an empty message")
@@ -846,16 +877,19 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
                         "split the row rather than reach the agent" % (flat,))
     ident = message_id(now)
 
-    def tmux(args):
-        rc, _out, err = run(["tmux"] + args)
-        if rc != 0:
-            raise PeerError("tmux %s failed: %s" % (args[0], err.strip() or rc))
+    exe = tmux_binary(env)
 
-    rc, base, _err = run(["tmux", "show-options", "-pqv", "-t", pane,
+    def tmux(args):
+        rc, _out, err = run([exe] + args)
+        if rc != 0:
+            raise PeerError("%s %s failed: %s" % (exe, args[0],
+                                                  err.strip() or rc))
+
+    rc, base, _err = run([exe, "show-options", "-pqv", "-t", pane,
                           OPTION_BASE])
     base = base.strip() if rc == 0 else ""
     if not base:
-        rc, base, _err = run(["tmux", "display-message", "-p", "-t", pane,
+        rc, base, _err = run([exe, "display-message", "-p", "-t", pane,
                               "#{window_name}"])
         base = (base.strip() if rc == 0 else "") or "agent"
         # Remembered so a second send renders `<original> [peer #id]` rather

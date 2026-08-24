@@ -655,9 +655,13 @@ class LocalRun(object):
 
     def __call__(self, argv):
         self.calls.append(argv)
-        if argv[:3] == ["tmux", "show-options", "-pqv"]:
+        # Matched on the VERB, not on argv[0]: `tmux_binary` may resolve an
+        # absolute path, and a fake that only knows the bare name would send
+        # every call down its default branch and quietly change the test.
+        verb = argv[1] if len(argv) > 1 else ""
+        if verb == "show-options" and "-pqv" in argv:
             return 0, self.base, ""
-        if argv[:2] == ["tmux", "display-message"]:
+        if verb == "display-message":
             return 0, self.window, ""
         return 0, "", ""
 
@@ -668,9 +672,10 @@ def test_send_writes_a_tmux_option_and_never_the_screen(peer):
     run, out = LocalRun(), io.StringIO()
     peer.cmd_send("bob", "hello there", run, out, now=1.0,
                   env={"TMUX_PANE": "%7"})
-    sets = [c for c in run.calls if c[:2] == ["tmux", "set"]]
+    sets = [c for c in run.calls
+            if os.path.basename(c[0]) == "tmux" and c[1] == "set"]
     assert any(c[5].startswith(peer.OPTION_PREFIX) for c in sets), sets
-    assert any(c[:2] == ["tmux", "rename-window"] for c in run.calls)
+    assert any(c[1] == "rename-window" for c in run.calls)
     assert "hello there" not in out.getvalue(), \
         "the message must not be printed -- nothing can read it there"
 
@@ -683,7 +688,7 @@ def test_send_refuses_outside_tmux(peer):
 def test_send_remembers_the_window_name_only_once(peer):
     run = LocalRun(base="claude")          # already remembered
     peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
-    assert not any(c[:2] == ["tmux", "display-message"] for c in run.calls), \
+    assert not any(c[1] == "display-message" for c in run.calls), \
         "it must not re-read the window name once a base is stored"
 
 
@@ -714,7 +719,7 @@ def test_local_means_no_ssh_at_all(peer):
     which is what keeps one design covering all three pairings."""
     fetch = Fetcher(framed(("aaa", "bob", "hi")))
     peer.drain(fetch, "bob", "local", "%7", lambda m: None)
-    assert fetch.calls[0][0] == "tmux", fetch.calls[0]
+    assert os.path.basename(fetch.calls[0][0]) == "tmux", fetch.calls[0]
 
 
 def test_a_failed_fetch_says_why_and_returns_nothing(peer):
@@ -845,8 +850,9 @@ def test_send_pins_automatic_rename_off(peer):
     """
     run = LocalRun()
     peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
-    assert ["tmux", "set", "-w", "-t", "%7", "automatic-rename", "off"] \
-        in run.calls, run.calls
+    pinned = [c for c in run.calls
+              if c[1:] == ["set", "-w", "-t", "%7", "automatic-rename", "off"]]
+    assert pinned, run.calls
 
 
 def test_a_busy_recipient_holds_the_message_instead_of_blocking(peer):
@@ -1129,3 +1135,41 @@ def test_an_explicit_tmux_target_beats_the_rows_argv(peer):
     listing = [a for a in fetch.calls if "show-options" in a][0]
     assert "macbot" in listing, listing
     assert "%7" not in listing, "the explicit target must win over foreground"
+
+
+# ------------------------------------------------- finding the tmux binary
+
+def test_agb_tmux_overrides_everything(peer):
+    assert peer.tmux_binary({"AGB_TMUX": "/somewhere/tmux"}) == "/somewhere/tmux"
+
+
+def test_a_bare_name_is_the_last_resort(peer, monkeypatch):
+    monkeypatch.setattr(peer.os, "access", lambda p, m: False)
+    assert peer.tmux_binary({}) == "tmux"
+
+
+def test_a_usual_home_is_preferred_over_the_bare_name(peer, monkeypatch):
+    """agterm spawns `bash --noprofile --norc`, so a pane inherits only what
+    `login` gives it -- NOT the user's PATH. Measured: an agent inside tmux
+    inside agterm has $TMUX_PANE set and still cannot exec `tmux`."""
+    monkeypatch.setattr(peer.os, "access",
+                        lambda p, m: p == "/opt/homebrew/bin/tmux")
+    assert peer.tmux_binary({}) == "/opt/homebrew/bin/tmux"
+
+
+def test_send_uses_the_resolved_binary(peer, monkeypatch):
+    monkeypatch.setattr(peer.os, "access",
+                        lambda p, m: p == "/opt/homebrew/bin/tmux")
+    run = LocalRun()
+    peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
+    assert run.calls and all(c[0] == "/opt/homebrew/bin/tmux" for c in run.calls), \
+        run.calls
+
+
+def test_only_the_local_branch_resolves_a_path(peer, monkeypatch):
+    """Over ssh the remote login shell finds its own tmux, and a Mac path would
+    be nonsense there."""
+    monkeypatch.setattr(peer.os, "access",
+                        lambda p, m: p == "/opt/homebrew/bin/tmux")
+    assert peer.ssh_argv("local", ["tmux", "ls"], {})[0] == "/opt/homebrew/bin/tmux"
+    assert peer.ssh_argv("farmbox", ["tmux", "ls"], {})[-2:] == ["tmux", "ls"]
