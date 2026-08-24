@@ -1467,6 +1467,13 @@ participant then uses the identical mechanism minus the ssh. Without it the targ
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
 
+⚠️ **Whether a message is typed or pasted depends on the TRANSPORT, not the length alone.** Delivery
+to a farm agent goes over `ssh` into tmux and trickles in slowly enough to be typed; delivery to a
+local agent is tmux-inside-agterm and arrives fast enough to be pasted. So the same message can be
+verifiable one way and invisible the other — a local pane is the harsher case, which is the reverse
+of what you would guess. And the collapse is a **hybrid**: the head is typed literally and only the
+tail becomes the placeholder, so a check matching the message's *tail* is exactly the one that fails.
+
 ⚠️ **Claude Code collapses a long, fast injection into `[Pasted text #1]`** — the body is simply not
 on the screen to verify against. MEASURED at 843 characters, and **Return submits it fine**: the
 Return was never the problem, the verification was, and it refused to press it. So every long

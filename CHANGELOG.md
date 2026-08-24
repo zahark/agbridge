@@ -330,6 +330,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ✅ **Both directions, both lengths, unattended.** short→Mac, short→farm, long→Mac, long→farm — all
+  four delivered and submitted with no keypress.
+
+  ⚠️ **The asymmetry that made this hard to see is worth carrying: the transport decides whether a
+  message is TYPED or PASTED.** Delivery to a farm agent goes through `ssh` into tmux and arrives
+  slowly enough that Claude Code types it, so the body is on screen and verification passes.
+  Delivery to a Mac agent is tmux-inside-agterm on the same machine, fast enough to trigger paste
+  collapse — and then the body is not on screen at all. Same `deliver` code, opposite outcomes,
+  which is why long messages appeared to work inbound and fail outbound for an hour. A local pane is
+  the *harsher* environment here, which is the reverse of what anyone would guess.
+
+  Also observed: the collapse is a **hybrid** — `❯ [chat from me] Long outbound test. This message
+  is deliberately [Pasted text #1]` — the head typed literally and only the tail collapsed. So a
+  verification matching on the message's *tail* is the one that fails; matching on the head would
+  have masked the bug rather than fixed it.
+
   ✅ **The paste fix is confirmed live**: with the relay restarted, a ~1,150-character message from
   the Mac agent arrived and **submitted itself** with no keypress. Before it, every message over a
   few hundred characters needed a human to press Enter, in both directions.
