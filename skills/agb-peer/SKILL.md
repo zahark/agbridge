@@ -9,16 +9,16 @@ Another agent is running beside you. You can send it a message; it can send you 
 Neither of you needs to know where the other is — one may be on a cluster host and
 one on the Mac, and nothing you do here changes.
 
-## Setup — edit these three lines before first use
+## What you need to know first
 
-```
-AGB_PEER    = /path/to/agb-peer     # where the script lives on YOUR machine
-MY NAME     = <your participant name>
-PEERS       = <name>, <name>        # who you may write to
-```
+Nothing in this file needs editing — it is normally a **symlink** into the agbridge
+checkout, so an edit here is a change to somebody's repository.
 
-The names are the ones the relay was started with (`agb-peer relay alice=… bob=…`).
-Ask the user if you do not know them.
+- **The command is `agb-peer`**, on your `$PATH`. If it is not, `$AGB_PEER` holds the
+  path to it. If neither works, say so and stop; do not go looking for it.
+- **Participant names** — yours and your peer's — are whatever the relay was started
+  with (`agb-peer relay alice=… bob=…`). If you have not been told them, **ask the
+  user**. Do not guess a name; a message to a name the relay does not know is dropped.
 
 ## Sending
 
@@ -26,7 +26,7 @@ Ask the user if you do not know them.
 mangles quotes, backticks and `$`, and your message is prose.
 
 ```sh
-/path/to/agb-peer send --to <peer> --stdin <<'CHAT'
+agb-peer send --to <peer> --stdin <<'CHAT'
 your message here, as one paragraph
 CHAT
 ```

@@ -70,6 +70,33 @@ PANE_KINDS = ("left", "right", "scratch")
 # because the prompt is followed by whatever the human last typed.
 MENU_MARKER = "[enter] attach"
 
+# ---------------------------------------------------------------------------
+# ⚠️ THE THREE CONSTANTS BELOW ARE CLAUDE CODE'S, not every agent's.
+#
+# The agent-facing half of this tool is genuinely agent-agnostic -- `send`
+# prints a line and `skills/agb-peer/SKILL.md` says nothing about Claude -- so
+# a Codex peer needs no new skill and no `AGTERM_SESSION_ID` injection, which
+# agterm's own cookbook does need because there the agent drives delivery.
+# What is NOT agent-agnostic is the relay's reading of a pane. To add another
+# agent these three become a per-participant profile:
+#
+#   COMPOSER_GLYPH  what says "this pane holds an agent"      (classify)
+#   EMPTY_COLUMN    the caret column of an empty composer     (wait_ready)
+#   the submit key  "\n" in `deliver`                          (deliver)
+#
+# ⚠️ **Do not fill in a second profile from documentation.** Claude's `2` was
+# MEASURED against a live agent, and this project has twice been wrong about
+# agterm by reading rather than running. Codex's glyph and empty column want
+# the same treatment: `agtermctl surface cursor` on a real one, empty and
+# dirty, before anything is coded against them.
+#
+# ⚠️ And one of the three is BEHAVIOUR, not spelling. agterm's cookbook records
+# that Codex takes **Tab**, which QUEUES the message, where Claude takes Return,
+# which INTERRUPTS. A queuing peer can be written to mid-turn -- so the status
+# gate would be relaxed for such a participant, not merely re-spelled. That is
+# a design change to `wait_ready`, not a table entry.
+# ---------------------------------------------------------------------------
+
 # Claude Code draws its composer with this glyph. Used only for the POST-type
 # verification -- never to decide the composer is empty, because an empty
 # composer's rendering has not been recorded and guessing at it is how a

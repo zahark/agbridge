@@ -867,3 +867,37 @@ def test_the_skill_carries_the_deadlock_rule(peer):
     body = io.open(SKILL_PATH, encoding="utf-8").read().lower()
     assert "deadlock" in body
     assert "never poll" in body
+
+
+def test_the_claude_specific_constants_are_marked_as_such(peer):
+    """They read as universal and are not, which is how a Codex participant
+    would silently be classified as "not an agent" and never written to.
+
+    Pinned as a test rather than left as a comment because the comment is the
+    only thing standing between the next reader and a guessed second profile --
+    and this project's rule is that agterm behaviour is measured, not read.
+    """
+    body = io.open(PEER_PATH, encoding="utf-8").read()
+    head = body[:body.index('COMPOSER_GLYPH = "❯"')]
+    assert "CLAUDE CODE'S, not every agent's" in head
+    for name in ("COMPOSER_GLYPH", "EMPTY_COLUMN", "submit key"):
+        assert name in head, name
+
+
+def test_the_skill_has_nothing_to_fill_in(peer):
+    """It is installed as a SYMLINK into this repo, like every other skill
+    here, so anything an operator is told to edit is a repo modification.
+
+    The first draft had three fill-in lines. This pins that they are gone:
+    the command is on $PATH and the names are asked for, not edited in.
+    """
+    body = io.open(SKILL_PATH, encoding="utf-8").read()
+    assert "/path/to/agb-peer" not in body
+    assert "<your participant name>" not in body
+    # ⚠️ Whitespace-collapsed before matching, and the reason is the joke this
+    # project keeps landing on: prose wraps, so `ask the user` was `ask the\n
+    # user` and a literal substring check failed on a sentence that was there.
+    # The same class of bug as the one the wire format exists to avoid.
+    flat = " ".join(body.lower().split())
+    assert "ask the user" in flat, \
+        "the agent must be told to ASK for a name it was not given"

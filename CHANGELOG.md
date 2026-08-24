@@ -325,8 +325,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   correctly once the digit count changes, around 2059.
 
   **`skills/agb-peer/SKILL.md` is the agent's half** — an agent will not use any of this unless it
-  is told to. `cp -r skills/agb-peer ~/.claude/skills/` on every participant's machine, then edit
-  three lines: the path to `agb-peer`, the agent's own participant name, and who it may write to.
+  is told to. `ln -s "$PWD/skills/agb-peer" ~/.claude/skills/agb-peer` on every participant's
+  machine — a **symlink**, which is how every other skill here is installed, because a copy goes
+  stale the next time the repo moves and nothing says so.
+
+  ⚠️ **Which is why the skill contains nothing to edit.** The first draft had three fill-in lines
+  (path, own name, peers) — and through a symlink, filling them in is a modification to the
+  repository. `agb-peer` is expected on `$PATH` or `$AGB_PEER`, and participant names are something
+  the agent is told or asks the user for, never guesses. It also lives in `skills/` rather than
+  `.claude/skills/` where this repo's own `agbridge` skill sits: that directory is for people
+  working *on* agbridge, this one is for an agent *being* a participant.
 
   **One skill file, not one per agent.** agterm's cookbook ships two because each agent drives
   delivery itself and they differ — Tab versus Return to submit, different command names. Here the

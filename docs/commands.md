@@ -1427,8 +1427,22 @@ for all three pairings without a shared disk or a second ssh.
 An agent will not use any of this unless it is told to, so the repo ships one skill:
 
 ```sh
-cp -r skills/agb-peer ~/.claude/skills/          # on every participant's machine
+ln -s "$PWD/skills/agb-peer" ~/.claude/skills/agb-peer   # on every participant's machine
 ```
+
+**A symlink, not a copy**, which is how every other skill in this project is installed — a copy goes
+stale the next time the repo moves forward and nothing says so. ⚠️ The target must be **absolute**:
+a relative link resolves against `~/.claude/skills/`, not against your shell's directory.
+
+⚠️ **Which is why the skill file contains nothing to edit.** An earlier draft had three
+fill-in-the-blank lines; through a symlink, filling them in is a modification to the repository.
+`agb-peer` is expected on `$PATH` (or `$AGB_PEER`), and the participant names are something the
+agent is told or **asks the user for** — never guesses, because a message to an unknown name is
+dropped.
+
+⚠️ It lives in `skills/`, deliberately **not** in `.claude/skills/` where this repo's own `agbridge`
+skill sits. That directory is for people *working on agbridge*; this one is for an agent *being a
+participant*, and putting it there would offer peer-chat to anyone who opened this repository.
 
 **One file, not one per agent** — agterm's cookbook needs two because each agent drives delivery
 itself and they differ (Tab vs Return to submit, different command names). Here the relay absorbs
