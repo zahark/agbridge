@@ -620,42 +620,6 @@ broken one fails before `agb` starts and leaves no breadcrumb at all. The previo
 `settings.json` is copied to `settings.json.agb.bak` and the `backup:` line names it. A run that
 would change nothing writes neither.
 
-### `agb install-hooks --agterm` — Mac, for an agent that IS an agterm session
-
-```
-agb install-hooks --agterm [--agtermctl <abs path>] [--settings <path>] [--dry-run]
-```
-
-A **Mac-side agent** has no statedir and no bridge — it *is* an agterm session, so it sets its own
-row's status directly and needs none of agbridge to do it:
-
-```
-AGB_AGTERM_HOOK=1 /opt/homebrew/bin/agtermctl session status active --target "$AGTERM_SESSION_ID" --blink
-```
-
-Same four events as the farm hooks, same careful rewrite of a live `~/.claude/settings.json` — only
-the commands and the which-hooks-are-ours predicate differ.
-
-- ⚠️ **`$AGTERM_SESSION_ID` is expanded by the shell at hook time.** MEASURED 2026-08-24 by an agent
-  running inside tmux inside agterm: both it and `AGTERM_PANE_ID` are set and survive the tmux
-  layer. Without that the hook could not name its own row at all.
-- ⚠️ **The agtermctl path must be absolute**, and is *verified by running it* (`session status
-  --help`) before anything is written — an existence check is what every one of agr's silent no-ops
-  would have passed. agterm spawns `bash --noprofile --norc`, so a hook inherits only `login`'s
-  PATH; on macOS that has no `/opt/homebrew/bin`, measured.
-- ⚠️ **Ours is recognised by the `AGB_AGTERM_HOOK=1` marker, not by the program.** `agb … hook` is
-  unambiguously this tool's; `agtermctl session status` is something somebody may reasonably have
-  wired by hand, and deleting it would be the silent-tooling-loss this installer refuses everywhere
-  else.
-- ⚠️ **The two modes do not remove each other.** A machine could be both a Mac and a farm host.
-  `--agterm` replaces only agterm hooks; a plain run replaces only `agb` and `agr` ones.
-- `--statedir`, `--python` and `--agb` are **refused** with `--agterm` rather than accepted and
-  ignored, and `--agtermctl` is refused without it.
-
-⚠️ **The Mac loads `agb_ops` from `~/.local/lib/agbridge/`, not from your checkout** — so after a
-`git pull` this command still runs the installed copy. Either re-run `install.sh mac --instance …`
-or invoke the checkout's `agb` by path, which loads its siblings from beside itself.
-
 ## `agb install-config` — both sides, once per host
 
 ```
