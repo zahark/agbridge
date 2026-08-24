@@ -219,6 +219,21 @@ directory is in the body because two agents on one host share everything else �
 which piece of work turned up. Config `notify_on_new_row`, **on by default**, separate from
 `notify_on_blocked`.
 
+That key also takes a **list of states** instead of on/off, and then only an agent whose
+*first-seen* state is one of them is announced — the row is still created either way. The point is
+that the first state **is** the launcher: `agb-claude` mints the row before Claude runs, with
+`completed`, while a bare `claude` mints on its first hook and so can only arrive `active`. So:
+
+```
+notify_on_new_row = completed      # announce `agb-claude` sessions, not every `claude`
+```
+
+`idle` is refused — the bridge emits it for `[?]` and `[done]`, both of which are about a row that
+already exists, so no new row can arrive in it. An unknown state refuses the **whole** list and
+falls back to **on**, logging why: a typo must restore today's behaviour and say so, never switch
+notifications off in silence. ⚠️ `agb doctor` validates key *names*, not values, and runs on the
+farm — the bridge log is the only place this warning appears.
+
 ⚠️ **Rows are minted in bursts, and a burst is silent.** `agb-refresh` forgets every binding and the
 bridge re-mints all of them; so does a first install or a lost rows file. Rows created within
 `NEW_ROW_QUIET` (3 s) of the first op batch of a connection send nothing — otherwise a nine-row refresh

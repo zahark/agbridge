@@ -50,19 +50,52 @@ to implement and to stub.
 The bridge nevertheless treats the id as an **opaque string**: never parsed, never generated, only
 stored and echoed back via `--target`. A UUID today is an observation, not a guarantee.
 
-Verbatim from `agtermctl session new --help` (2026-07-30), the flags agbridge uses:
+Verbatim from `agtermctl session new --help`, **re-captured 2026-08-06** on the upgraded build
+(⚠️ the version was not captured in the same run, so this is dated rather than versioned — the
+2026-07-30 capture it replaces was taken before the v0.19.1 upgrade):
 
 ```
-  --cwd <cwd>              Working directory (defaults to $HOME).
-  --workspace <workspace>  Target workspace by id/prefix/active (defaults to the current one).
-                           Mutually exclusive with --workspace-name.
-  --workspace-name <name>  Target workspace by name; errors if not found unless --create-workspace.
-  --create-workspace       With --workspace-name, create the workspace when it does not exist.
-  --command <command>      Run this command as the session's process instead of the login shell.
-  --name <name>            Initial session name.
-  --no-select              Create the session in the background without selecting or focusing it
-                           (leaves the current selection untouched).
+OVERVIEW: Create a session.
+
+USAGE: agtermctl session new <options>
+
+OPTIONS:
+  --cwd <cwd>             Working directory (defaults to $HOME).
+  --workspace <workspace> Target workspace by id/prefix/active (defaults to the current one). Mutually exclusive with --workspace-name.
+  --workspace-name <workspace-name>
+                          Target workspace by name; errors if not found unless --create-workspace. Mutually exclusive with --workspace.
+  --create-workspace      With --workspace-name, create the workspace when it does not exist (reuse it otherwise).
+  --command <command>     Run this command as the session's process instead of the login shell (no echoed command line; the session closes when it
+                          exits).
+  --wait                  With --command, hold the session open after the command exits (press any key to close) instead of closing immediately.
+  --name <name>           Initial session name (defaults to the auto basename).
+  --after <after>         Place the new session right AFTER this anchor session (id/prefix/active); the anchor carries its own workspace, replacing
+                          --workspace.
+  --before <before>       Place the new session right BEFORE this anchor session (id/prefix/active); mirror of --after.
+  --no-select             Create the session in the background without selecting or focusing it (leaves the current selection untouched).
+  --socket <socket>       Override the control socket path.
+  --json                  Print the raw JSON response.
+  --window <window>       Target window id, unique prefix, or 'active' (defaults to the frontmost).
+  -h, --help              Show help information.
 ```
+
+Six flags are new since the 2026-07-30 capture — `--wait`, `--after`, `--before`, `--socket`,
+`--json`, `--window` — and one of them is not a minor addition. ⚠️ **`--command`'s own help text now
+states the closing rule outright**: *"the session closes when it exits"*. That was learned here the
+hard way, live, and written up below under "agterm closes a session when its command exits"; it is
+now documented behaviour rather than an observation of ours.
+
+⚠️ **`--wait` looks like a cheap partial fix for exactly that**, and is untested. See its entry in
+"What agbridge does not use yet".
+
+**No icon flag, and that is a recorded negative.** Asked on 2026-08-06 because a locally-run Claude
+shows an icon on its agterm row and an agbridge row does not: there is nothing here that sets one,
+and `agtermctl --help | grep -i icon` was empty. ⚠️ That second one is **weak evidence** — the
+top-level help lists subcommands, not their flags, so it does not rule out a separate verb. What
+paints the local icon is unknown: process detection on the Mac (structurally unreachable for a
+bridge row, whose only local process is `agb pane` while Claude is on the farm) or an escape
+sequence from Claude itself (which would travel over ssh, and would already show while attached).
+The experiment that distinguishes them is to attach to a live row and watch it; nobody has run it.
 
 agbridge uses it as:
 
@@ -315,8 +348,17 @@ clicked, `exit` typed at the `agb pane` prompt without attaching. The row **vani
 sidebar** while the agent stayed alive on the farm — tmux session running, key in the marker, state
 `completed`.
 
-This is not documented anywhere in agterm's own reference and nothing in agbridge assumed it. It has
-three consequences, and the first is a bug we lived with for a day without recognising it.
+⚠️ **Update, 2026-08-06: it IS documented now, and agterm ships a flag against it.** The re-captured
+`session new --help` above says so in `--command`'s own text — *"the session closes when it exits"* —
+and adds **`--wait`**, which holds the row open instead. So the sentence below stands as history
+rather than as a current claim about the reference. `--wait` is untested and is **not** simply the
+fix: what it leaves behind is a row whose command has ended, which may be worse than a gone row, and
+it cannot tell a typed `quit` from `agb pane` dying for a real reason. Its survey entry lists the
+three questions.
+
+This was not documented anywhere in agterm's own reference at the time and nothing in agbridge
+assumed it. It has three consequences, and the first is a bug we lived with for a day without
+recognising it.
 
 **1. Leaving the prompt costs you the row.** `q`, `quit` and `exit` are all `PANE_QUIT_WORDS`, and
 any of them ends `agb pane` with status 0 — so agterm destroys the row of a perfectly healthy agent.
@@ -424,6 +466,7 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 | Command | What it would buy |
 |---|---|
 | ⚠️ **`events`** — *control-event stream* | **Exists from agterm v0.16.0; usable only as a long-lived stream.** Full findings in "What `agtermctl events` actually does" above. Would give live `session.closed` and `tree.changed`; would **not** give restart detection or catch-up, because no run id is obtainable. Design work is done and shelved in `docs/plans/blocked/20260731-agb-events-feedback-loop.md`. |
+| ⚠️ **`session new --wait`** — *hold the row open after its command exits* | **Found 2026-08-06** in the re-captured `--help`; not present in the 2026-07-30 one. *"With `--command`, hold the session open after the command exits (press any key to close)."* That is the row-destroying bug below, addressed by one flag in `_create_row`'s `args` — far cheaper than `session restore`, and the two are not alternatives: `--wait` stops the row **dying**, `restore` brings its command **back**. ⚠️ Read off help text, untested, and three things need answering before it is a plan. Does "press any key to close" leave a row that looks alive but runs nothing, which is worse than a gone row? What does `agb-refresh` see when it closes such a row? And it fires for *every* exit, not just a typed `quit` — including `agb pane` dying for a real reason, which is a case we currently find out about. |
 | **`session restore`** — *pin the command a pane re-runs* | Promoted after 2026-07-31: this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today (see the section above). It would also let rows come back alive after an agterm restart rather than as dead panes — the other half of the reboot story in `docs/cookbook.md` — and shrink what `agb-refresh` is needed for. |
 | **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
 

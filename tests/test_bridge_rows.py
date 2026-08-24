@@ -1301,6 +1301,51 @@ def test_new_row_banners_can_be_turned_off_alone(bridge):
     assert len(_notifies(b)) == 1, "the blocked banner is a separate switch"
 
 
+def test_new_row_banners_can_be_limited_to_a_first_seen_state(bridge):
+    """`notify_on_new_row = completed` means *the sessions I started with
+    `agb-claude`*, and the state is how the bridge can tell.
+
+    `agb-claude` premints the row before Claude runs, with `completed`; a bare
+    `claude` mints on its first hook and so arrives `active`. The Mac side
+    never learns which command was typed, but it does not have to.
+
+    ⚠️ The suppressed key is asserted to have got its ROW. This withholds a
+    banner, never a row -- and a test that only counted banners would pass just
+    as well against a version that dropped the agent on the floor.
+    """
+    b = _past_quiet(bridge(settings={"notify_new_row": frozenset(["completed"])}))
+
+    b.upsert(wire("aaaa1111", state="active"))          # a bare `claude`
+    assert _notifies(b) == []
+    assert b.rows.row_for("aaaa1111"), "the row is still created"
+
+    b.upsert(wire("bbbb2222", state="completed"))       # `agb-claude`
+    assert len(_notifies(b)) == 1
+    assert _notifies(b)[0][2] == b.rows.row_for("bbbb2222")
+
+
+def test_limiting_the_new_row_banner_leaves_the_other_banners_alone(bridge):
+    """Three switches, three questions. An agent whose arrival went unannounced
+    must still be able to say it is blocked -- that one means *you* are the
+    blocker, and losing it to a cosmetic preference about arrivals is the
+    failure mode worth a test of its own."""
+    b = _past_quiet(bridge(settings={"notify_new_row": frozenset(["completed"])}))
+    b.upsert(wire("aaaa1111", state="active"))
+    assert _notifies(b) == []
+    b.upsert(wire("aaaa1111", state="blocked", seq=2))
+    assert len(_notifies(b)) == 1, "the blocked banner is a separate switch"
+
+
+def test_a_truthy_non_bool_new_row_setting_does_not_raise(bridge):
+    """⚠️ A guard on the render path, not a style point. The gate is read out
+    of a settings dict, `1` is not the `True` singleton, and `x in 1` is a
+    `TypeError` -- which inside `_render_upsert` wedges the paint for every
+    row, not just this one."""
+    b = _past_quiet(bridge(settings={"notify_new_row": 1}))
+    b.upsert(wire("aaaa1111", state="active"))
+    assert len(_notifies(b)) == 1
+
+
 def _seens(bridge_obj):
     """The `agtermctl session seen` calls, as targets."""
     return [_options(call).get("--target") for call in bridge_obj.run.agterm()

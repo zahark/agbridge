@@ -98,6 +98,58 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`notify_on_new_row` also takes a list of states, so the Dock stops bouncing for every `claude`
+  on the cluster.** The symptom: a Mac raising a banner and bouncing the Dock every single time a
+  bare `claude` started on a farm host — a session opened in a VNC desktop the user was already
+  sitting in, interrupting a machine they were not looking at. Six such keys had accumulated on one
+  host in a week.
+
+  `notify_on_new_row = 0` could not express what was wanted, because it is one switch for two
+  different arrivals. The key now also accepts states:
+
+  ```
+  notify_on_new_row = completed      # `agb-claude` announces; a bare `claude` does not
+  ```
+
+  Only a row whose **first-seen** state is in the list is announced. The row is created either way
+  — this withholds a banner, never a row.
+
+  **Why states can stand in for the launcher, which is the part that will look like a trick later.**
+  `agb-claude` mints the row *before* Claude runs, with `completed` (a session at an empty prompt is
+  waiting for you). A bare `claude` mints on its first hook, and the first hook can only ever be
+  `UserPromptSubmit` or `PostToolUse` → `active`. So the first state *is* the launcher, and the Mac
+  side needs to learn nothing new.
+
+  **The honest alternative was rejected on cost, and it is worth saying which.** Marking the record
+  at mint time — `agb-claude` exporting `AGB_ANNOUNCE=1`, `agb hook` writing an `origin` field —
+  names the launcher instead of inferring it. It needs an env read and a record field in `agb`,
+  which is re-parsed on every hook and had **one character** of headroom against `AGB_PARSE_BUDGET`.
+  A cosmetic Mac-side preference is not what a third budget raise is for. `agb` is untouched by this
+  change and `wc -c agb` is unmoved. The inference is a cross-file agreement with `agb-claude`'s
+  `PREMINT`, and it is pinned where it can be seen:
+  `test_the_premint_state_is_completed_not_active` now says out loud that a Mac-side key depends on
+  that word.
+
+  Details that were decided rather than fallen into:
+
+  - **`idle` is refused**, though it is in the status vocabulary. The bridge emits it for `[?]` and
+    `[done]`, both of which are about a row that already exists, so no *new* row can arrive in it —
+    accepting the word would be a value that silently does nothing. The allowed list is
+    `agb.AGENT_STATES` itself, so the exclusion cannot drift.
+  - **An unknown state refuses the whole list and falls back to *on*, with the reason in the bridge
+    log.** `row_fields`' rule for the refusal, but the fallback direction is the opposite of what
+    looks natural and is the point: a typo restores exactly today's behaviour and says why, where
+    falling back to *off* would silently remove notifications — not being told is the failure this
+    key exists to fix. ⚠️ `agb doctor` validates key *names*, not values, and runs on the farm, so
+    the bridge log is the only place that warning appears.
+  - **The default is unchanged.** Absent, empty, `1`/`yes`/`on`/`true` all still mean every new row.
+
+  ⚠️ **Not verified against a live agterm.** The gate is unit- and mutation-tested, but nobody has
+  yet watched a bare `claude` start in silence and an `agb-claude` start raise its banner on the
+  same Mac. This project's history is that agterm-facing features pass every test and still need a
+  fix after live use, twice in the last four. The check is both launchers in one sitting, on a row
+  that is **not** selected.
+
 - **`row_fields` — you choose what a row shows.** Titles were `label · host · cwd · pane · beat`,
   fixed, and on a real four-row sidebar that ran **69–77 characters**. The measurements say why:
 

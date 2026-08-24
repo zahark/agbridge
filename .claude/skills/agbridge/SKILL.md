@@ -374,8 +374,25 @@ On by default; each has its own config key:
 |---|---|---|
 | banner: an agent needs you | `notify_on_blocked` | a transition into `blocked` |
 | banner: a new agent appeared | `notify_on_new_row` | a row is minted (silent for 3 s after a bridge start/reconnect, or a refresh would banner every row) |
+| — the same, but only for the agents you started on purpose | `notify_on_new_row = completed` | see below |
 | banner: an agent finished | `notify_on_completed_after` | a turn ends **that ran at least N seconds** — default 300. The number is the switch; `off`/`0` disables |
 | the unseen badge is cleared | `notify_on_blocked` | the agent leaves `blocked` |
+
+⚠️ **`notify_on_new_row` is three-valued, and the third value is the answer to "my Dock bounces
+every time I start Claude on a cluster host".** Besides on and off it takes a comma-separated list
+of states, and then only an agent whose **first-seen** state is one of them is announced:
+
+```sh
+echo 'notify_on_new_row = completed' >> ~/.config/agbridge/<name>/config   # then agb-refresh
+```
+
+That reads as *announce `agb-claude`, not a bare `claude`*, because the first state **is** the
+launcher: `agb-claude` mints the row before Claude starts, with `completed`, while a bare `claude`
+mints on its first hook and so cannot arrive as anything but `active`. The row is created either
+way — this withholds a banner, never a row, and the `blocked` banner is a separate switch. `idle` is
+refused (no new row can arrive in it); any unknown state refuses the **whole** list and falls back
+to **on**, with the reason in `~/Library/Logs/agbridge/<name>/bridge.err.log` — `agb doctor` cannot
+see it, since it validates key *names* and runs on the farm.
 
 ⚠️ The finished-turn banner is thresholded because `completed` fires **once per turn**: ungated it
 announces the "yes" you typed three seconds ago, and there is no "only when I'm away" to fall back
@@ -409,7 +426,8 @@ side's config — and on a Mac, only one installed before `--instance` became ma
 | `agb_remote_path`, `remote_python` | Mac | absolute cluster-side paths |
 | `jump_host` | Mac | for hosts not directly reachable |
 | `workspace` | Mac | agterm workspace for new rows, by name |
-| `notify_on_blocked`, `notify_on_new_row` | Mac | `0`/`no`/`off`/`false` to disable |
+| `notify_on_blocked` | Mac | `0`/`no`/`off`/`false` to disable |
+| `notify_on_new_row` | Mac | the same, **or** a comma-separated list of `active`/`blocked`/`completed` — announce only rows first seen in one of those. `completed` means "`agb-claude` only" |
 | `notify_on_completed_after` | Mac | seconds a turn must run before finishing is announced; default `300`, and `0`/`off`/`no`/`false`/negative disables |
 | `row_fields` | Mac | which fields a row title shows, in order: `label`/`host`/`cwd`/`pane`/`beat`/`key`, comma-separated, `cwd:base` for the basename. Default `label,host,cwd,pane,beat` |
 | `host_<hostname> = <ssh target>` | Mac | a record's host is a hostname, not an alias |

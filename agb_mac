@@ -2145,10 +2145,25 @@ class RowRenderer(object):
 
         `rebind` deliberately does not come through here: a `[done]` row being
         reported again is an agent we already knew about, not an arrival.
+
+        ⚠️ **The switch is three-valued, not two.** `notify_on_new_row` also
+        takes a set of states, and then only a row whose *first-seen* state is
+        one of them is announced -- which is how "tell me about the sessions I
+        started with `agb-claude`, not about every `claude` on the cluster"
+        is spelled. `parse_new_row_states` carries that reasoning and the
+        coupling it rests on. The row itself is created either way: this
+        withholds a banner, never a row.
         """
-        if not (self.settings or {}).get("notify_new_row", True):
+        gate = (self.settings or {}).get("notify_new_row", True)
+        if not gate:
             return
         if self.quiet_until is not None and self.clock() < self.quiet_until:
+            return
+        # `isinstance` rather than `gate is not True`, because a settings dict
+        # built by hand (every test does) may hold any truthy value, and `x in
+        # 1` is a TypeError on the render path.
+        if isinstance(gate, (set, frozenset)) \
+                and (session or {}).get("state") not in gate:
             return
         label = (session or {}).get("label") or "an agent"
         host = (session or {}).get("host") or "?"
@@ -2473,6 +2488,7 @@ def render_settings(opts, config=None):
     if config is None:
         config = agb.read_config(path)
     row_fields, row_fields_error = parse_row_fields(config, "row_fields")
+    new_row, new_row_error = parse_new_row_states(config, "notify_on_new_row")
     return {
         "rows": opts.get("rows") or rows_path(path),
         "placements": placements_path(path),
@@ -2487,7 +2503,12 @@ def render_settings(opts, config=None):
         # nobody has. `agb.config_flag` reads absent as the default, so an
         # existing config gets the banners without being edited.
         "notify_blocked": config_flag(config, "notify_on_blocked", True),
-        "notify_new_row": config_flag(config, "notify_on_new_row", True),
+        # `True`/`False` as before, or a frozenset of the states a new row's
+        # first sighting must be in -- `parse_new_row_states` has the why. The
+        # settings key keeps its name and its two old values, so nothing that
+        # reads it had to change.
+        "notify_new_row": new_row,
+        "notify_new_row_error": new_row_error,
         # A number rather than a flag, because the number IS the switch: one
         # key to explain, and no way to write a combination that silently does
         # nothing. Read off the config dict this was HANDED, never a fresh
@@ -2509,6 +2530,14 @@ def render_settings(opts, config=None):
 # that does not exist. Lives here rather than in `agb`: the hot path never reads
 # a flag, and `agb` has 71 bytes of headroom against its parse budget.
 CONFIG_FALSE = ("0", "no", "off", "false")
+
+# What counts as *on*, which `config_flag` never needed: it reads anything not
+# in `CONFIG_FALSE` as true, so the yes-words never had to be written down.
+# `parse_new_row_states` does need them, because its grammar is wider than a
+# flag -- with state names in the value, an unrecognised word can no longer be
+# quietly read as "true". It has to be refused, and refusing it means knowing
+# which words were meant as yes.
+CONFIG_TRUE = ("1", "yes", "on", "true")
 
 
 def config_flag(config, key, default):
@@ -2625,6 +2654,81 @@ def parse_row_fields(config, key):
     return (tuple(fields), None)
 
 
+def parse_new_row_states(config, key):
+    """`(gate, error)` -- which new rows get the "an agent started" banner.
+
+    `True` for every one (the default, and what this key has always meant),
+    `False` for none, or a **frozenset** of the states a row's *first-seen*
+    state must be one of. `(config, key)` in and `(value, error)` out, like
+    `parse_row_fields` above it, for the same two reasons: "absent" is handled
+    in here rather than becoming a `None` every caller has to guard, and the
+    render path must never see an exception out of a config value.
+
+    ⚠️ **The states are a proxy for the LAUNCHER, and that is the whole point
+    of the key.** `agb-claude` mints the row before Claude runs, with
+    `completed` -- the session exists and is waiting for you. A bare `claude`
+    mints on its first hook, which can only ever be `UserPromptSubmit` or
+    `PostToolUse`, so it arrives `active`. So `notify_on_new_row = completed`
+    reads as *announce the sessions I started deliberately, not every agent
+    that happens to fire a hook* -- which is the request this exists for: a
+    Mac Dock bouncing every time a cluster shell ran `claude`.
+
+    That inference is a **cross-file agreement** with `agb-claude`'s `PREMINT`,
+    and it is pinned there rather than here --
+    `tests/test_agb_claude.py::test_the_premint_state_is_completed_not_active`
+    already refuses to let that mint state move. Naming the launcher in the
+    record instead would be more honest and was rejected on cost: it needs an
+    env read and a record field in `agb`, which is re-parsed on every hook and
+    had one character of headroom against `AGB_PARSE_BUDGET`.
+
+    ⚠️ **`idle` is not accepted**, though it is in the status vocabulary --
+    `agb.AGENT_STATES` is the list, and reusing it is what makes the exclusion
+    structural rather than a second copy that can drift. No hook produces
+    `idle`; the bridge emits it for the `[?]` and `[done]` renderings, and both
+    of those are about a row that already exists. A new row can never arrive in
+    it, so accepting the word would be a value that silently does nothing --
+    the exact failure `config_seconds` warns about beside it.
+
+    **An unknown state refuses the WHOLE list**, `parse_row_fields`' rule and
+    its reasoning: dropping the bad item leaves you most of what you asked for,
+    and a missing one is what goes unnoticed. ⚠️ But the fallback is `True`,
+    not the parsed remainder and not `False`, and the direction is deliberate:
+    a typo then restores exactly today's behaviour and logs why. The other way
+    round, a typo would silently switch notifications off -- and *not being
+    told* is precisely what this feature exists to fix.
+    """
+    value = (config or {}).get(key)
+    if value is None:
+        return (True, None)
+    value = value.strip()
+    if not value:
+        return (True, None)
+    if value.lower() in CONFIG_FALSE:
+        return (False, None)
+    if value.lower() in CONFIG_TRUE:
+        return (True, None)
+    states = []
+    for item in value.split(","):
+        name = item.strip().lower()
+        if not name:
+            continue                      # `active,,completed`, a trailing comma
+        if name not in agb.AGENT_STATES:
+            return (True, "%s: unknown state %r. Valid states: %s%s"
+                    % (key, name, ", ".join(agb.AGENT_STATES),
+                       # The near-miss worth its own sentence: `idle` is a real
+                       # status, just never an agent's, so "unknown" alone
+                       # would read as a typo the user could not find.
+                       "; `idle` is emitted by the bridge alone, so no new row"
+                       " can arrive in it" if name == "idle" else ""))
+        states.append(name)
+    if not states:
+        # `notify_on_new_row = ,` -- every item skipped as empty. A value
+        # naming no state gives the user nothing they asked for, so it is the
+        # unknown-state case rather than the empty-value one.
+        return (True, "%s: %r names no state at all" % (key, value))
+    return (frozenset(states), None)
+
+
 def bridge_sink(model, opts, warn=None, config=None, run=None):
     """The op sink: the log always, the agterm renderer unless disabled.
 
@@ -2639,9 +2743,12 @@ def bridge_sink(model, opts, warn=None, config=None, run=None):
     # Once, here: this is `render_settings`' only production caller and its own
     # only caller is `run_bridge`, so "warn once" is structural rather than a
     # rule somebody has to keep. Guarded because `warn` is optional and three
-    # existing call sites pass nothing.
-    if settings.get("row_fields_error") and warn:
-        warn(settings["row_fields_error"])
+    # existing call sites pass nothing. A loop rather than a second `if`, so a
+    # parser added later is reported by adding its key to this tuple -- the
+    # failure otherwise is a value that refuses itself in silence.
+    for problem in ("row_fields_error", "notify_new_row_error"):
+        if settings.get(problem) and warn:
+            warn(settings[problem])
     rows = load_rows(settings["rows"], warn)
     renderer = RowRenderer(model, rows, run=run, warn=warn, settings=settings)
     return (OpTee([bridge_report, renderer]), renderer)

@@ -278,6 +278,16 @@ def test_the_premint_state_is_completed_not_active(wrapper):
 
     It also raises no banner: the finished-turn banner measures from a
     preceding `active`, and a freshly minted key has none.
+
+    ⚠️ **A Mac-side config key now depends on this line, so it is a
+    cross-file agreement and not only a rendering choice.**
+    `notify_on_new_row = completed` means *announce the sessions I started
+    with `agb-claude`, not every `claude` on the cluster*, and the only thing
+    that distinguishes them is that this premint says `completed` while a bare
+    `claude`'s first hook can only be `active`. Changing the word here does not
+    break a test over there -- it silently inverts which sessions announce
+    themselves -- so this test is where that cost has to be visible.
+    `agb_mac.parse_new_row_states` carries the other half of the reasoning.
     """
     wrapper.run(["work"])
     script = _premint(wrapper.new_session()[0])

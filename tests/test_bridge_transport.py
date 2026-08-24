@@ -1465,6 +1465,102 @@ def test_row_fields_reaches_the_renderer_as_a_parsed_list(mac, config_file,
     assert settings["row_fields_error"] is None
 
 
+def test_notify_on_new_row_takes_a_state_list_as_well_as_a_flag(mac):
+    """The key is three-valued: on, off, or *which* new rows.
+
+    ⚠️ The two old spellings are asserted `is True` / `is False` on purpose,
+    not for truthiness. `_notify_new_row` distinguishes a bool from a set to
+    decide whether to look at the record's state at all, so a parser returning
+    `frozenset(["active", "blocked", "completed"])` for `1` would pass every
+    truthiness check and still change what `1` means -- silently, for the two
+    values that were shipped.
+    """
+    assert mac.parse_new_row_states({}, "k") == (True, None)
+    assert mac.parse_new_row_states({"k": ""}, "k") == (True, None)
+    assert mac.parse_new_row_states({"k": "   "}, "k") == (True, None)
+    for yes in mac.CONFIG_TRUE:
+        assert mac.parse_new_row_states({"k": yes}, "k")[0] is True, yes
+    for no in mac.CONFIG_FALSE:
+        assert mac.parse_new_row_states({"k": no}, "k")[0] is False, no
+
+    # The value this key exists for: `agb-claude` premints `completed`, a bare
+    # `claude` arrives `active`.
+    assert mac.parse_new_row_states({"k": "completed"}, "k") == (
+        frozenset(["completed"]), None)
+    # Per-component whitespace, a comma with nothing after it, and case --
+    # `agb.parse_config` strips the whole value only, so the items arrive with
+    # their spaces exactly as `row_fields` sees them.
+    assert mac.parse_new_row_states({"k": " Completed , active ,"}, "k") == (
+        frozenset(["completed", "active"]), None)
+
+
+def test_a_bad_notify_on_new_row_falls_back_to_announcing_everything(mac, agb):
+    """⚠️ The fallback DIRECTION is the whole decision, so it is asserted as a
+    value rather than as "an error came back".
+
+    A typo must restore *today's* behaviour and log why. Falling back to
+    `False` -- or to whichever states did parse, which is the tempting one --
+    would silently switch notifications off, and not being told is the exact
+    failure this key exists to fix.
+    """
+    for bad in ("nonsense", "active,nonsense", ",", "off,completed"):
+        gate, error = mac.parse_new_row_states({"k": bad}, "k")
+        assert gate is True, bad          # announcing everything, as before
+        assert error and error.startswith("k:"), bad
+
+    # An unknown state rejects the WHOLE list, `parse_row_fields`' rule: the
+    # good half surviving is what makes a missing state go unnoticed.
+    assert "active" not in str(
+        mac.parse_new_row_states({"k": "active,nonsense"}, "k")[0])
+
+    # ⚠️ `idle` is the near-miss -- a real status, just never an agent's -- so
+    # it is refused like any unknown word, but the message has to say why or it
+    # reads as a typo the user cannot find.
+    gate, error = mac.parse_new_row_states({"k": "idle"}, "k")
+    assert gate is True
+    assert "idle" in error and "bridge" in error, error
+    # ...and the exclusion is `agb.AGENT_STATES` itself, not a second copy of
+    # the vocabulary that can drift away from the one the hooks write.
+    assert "idle" not in agb.AGENT_STATES
+    assert set(agb.AGENT_STATES) == set(["active", "blocked", "completed"])
+
+    # A trailing comma is not an error -- `row_fields` skips empty items too.
+    assert mac.parse_new_row_states({"k": "completed,"}, "k") == (
+        frozenset(["completed"]), None)
+
+
+def test_notify_on_new_row_reaches_the_renderer_as_a_parsed_gate(
+        mac, config_file, fake_home):
+    """The one line joining the config key to `_notify_new_row`.
+
+    The same plumbing bug `row_fields` has a test for: a settings name, a key
+    name and a coercer, any one of which can be typo'd into a feature that
+    simply never turns on.
+    """
+    config_file("notify_on_new_row = completed\n")
+    settings = mac.render_settings(mac.parse_bridge_args([]))
+    assert settings["notify_new_row"] == frozenset(["completed"])
+    assert settings["notify_new_row_error"] is None
+
+
+def test_a_bad_notify_on_new_row_warning_reaches_the_channel(mac, tmp_path):
+    """⚠️ Through `bridge_sink`, not off the settings dict -- an error in a
+    dict proves the parser, not the plumbing. `agb doctor` cannot report this
+    one: it validates key *names*, not values, and runs on the farm while this
+    is a Mac-side key. The bridge log is the only place it can appear.
+    """
+    path = str(tmp_path / "config")
+    with open(path, "w") as handle:
+        handle.write("notify_on_new_row = idle\n")
+    warnings = []
+    sink, renderer = mac.bridge_sink(mac.BridgeModel(), {"config": path},
+                                     warn=warnings.append)
+    assert renderer is not None
+    assert len(warnings) == 1, warnings
+    assert "idle" in warnings[0]
+    assert renderer.settings["notify_new_row"] is True
+
+
 def test_a_bad_row_fields_falls_back_and_the_warning_reaches_the_channel(
         mac, config_file, fake_home, tmp_path):
     """⚠️ Asserted through `bridge_sink`, not off the settings dict: a non-None
