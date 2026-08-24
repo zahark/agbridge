@@ -1474,6 +1474,18 @@ nothing. The check strips all whitespace from both sides, which makes it wrap-im
 reasoning the wire format uses, and which this check did not inherit for an embarrassing number of
 hours.
 
+✅ **Codex works as a peer, and needed one character.** MEASURED against codex-cli 0.149.1: its
+composer glyph is `›` where Claude's is `❯`, and that is the **only** difference — the empty-composer
+caret is column 2 for both, Enter submits for both, and a ~900-character injection is rendered in
+full by Codex rather than collapsed to a placeholder, which makes it the *easier* case for the
+delivery verification. `classify` accepts either glyph; nothing else changed.
+
+⚠️ **`codex queue --thread <uuid> --message …` was measured working and deliberately NOT used.** It
+delivers to a live TUI session with no composer at all and **queues** rather than interrupts, which
+is genuinely safer — but delivery already rides agterm's own ssh, so that route would *add* an ssh we
+do not otherwise need, plus a uuid-discovery problem and a second code path.
+`docs/agtermctl.md` records it for the day the interrupt-vs-queue difference actually bites.
+
 ⚠️ **Whether a message is typed or pasted depends on the TRANSPORT, not the length alone.** Delivery
 to a farm agent goes over `ssh` into tmux and trickles in slowly enough to be typed; delivery to a
 local agent is tmux-inside-agterm and arrives fast enough to be pasted. So the same message can be

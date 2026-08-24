@@ -71,37 +71,57 @@ PANE_KINDS = ("left", "right", "scratch")
 MENU_MARKER = "[enter] attach"
 
 # ---------------------------------------------------------------------------
-# ⚠️ THE THREE CONSTANTS BELOW ARE CLAUDE CODE'S, not every agent's.
+# HOW MUCH OF THIS IS AGENT-SPECIFIC -- measured, not assumed
 #
-# The agent-facing half of this tool is genuinely agent-agnostic -- `send`
-# prints a line and `skills/agb-peer/SKILL.md` says nothing about Claude -- so
-# a Codex peer needs no new skill and no `AGTERM_SESSION_ID` injection, which
-# agterm's own cookbook does need because there the agent drives delivery.
-# What is NOT agent-agnostic is the relay's reading of a pane. To add another
-# agent these three become a per-participant profile:
+# The agent-facing half is agent-agnostic by construction: `send` writes a tmux
+# option and renames a window, which any agent that can run a shell command can
+# do, and `skills/agb-peer/SKILL.md` names no model. What could have been
+# agent-specific is the relay's reading of a pane, and the answer turned out to
+# be much smaller than expected.
 #
-#   COMPOSER_GLYPH  what says "this pane holds an agent"      (classify)
-#   EMPTY_COLUMN    the caret column of an empty composer     (wait_ready)
-#   the submit key  "\n" in `deliver`                          (deliver)
+# MEASURED 2026-08-24, Claude Code vs codex-cli 0.149.1, on a live pane each:
 #
-# ⚠️ **Do not fill in a second profile from documentation.** Claude's `2` was
-# MEASURED against a live agent, and this project has twice been wrong about
-# agterm by reading rather than running. Codex's glyph and empty column want
-# the same treatment: `agtermctl surface cursor` on a real one, empty and
-# dirty, before anything is coded against them.
+#   composer glyph        `❯` vs `›`      <- the ONLY difference
+#   EMPTY_COLUMN          2 vs 2          same
+#   submit key            Enter vs Enter  same
+#   ~900-char injection   Claude collapses to `[Pasted text #1]`;
+#                         Codex renders it in full
 #
-# ⚠️ And one of the three is BEHAVIOUR, not spelling. agterm's cookbook records
-# that Codex takes **Tab**, which QUEUES the message, where Claude takes Return,
-# which INTERRUPTS. A queuing peer can be written to mid-turn -- so the status
-# gate would be relaxed for such a participant, not merely re-spelled. That is
-# a design change to `wait_ready`, not a table entry.
+# So `COMPOSER_GLYPHS` is a list and everything else is shared. `PASTE_MARK`
+# stays Claude-shaped and simply never fires for Codex, which makes Codex the
+# EASIER case for the delivery verification rather than the harder one.
+#
+# ⚠️ **Do not add a third entry from documentation.** Both of these were read
+# off a running agent; this project has twice been wrong about agterm by
+# reading rather than running, and once today about Codex -- agterm's cookbook
+# says "Tab for Codex", which is about queueing while busy and not about
+# submitting.
 # ---------------------------------------------------------------------------
 
-# Claude Code draws its composer with this glyph. Used only for the POST-type
-# verification -- never to decide the composer is empty, because an empty
-# composer's rendering has not been recorded and guessing at it is how a
-# delivery check passes vacuously.
-COMPOSER_GLYPH = "❯"
+# The glyphs an agent draws its composer with. Used only to tell a pane holding
+# an AGENT from `agb pane`'s menu or a plain shell -- never to decide the
+# composer is empty, because an empty composer's rendering has not been
+# recorded and guessing at it is how a delivery check passes vacuously.
+#
+# ⚠️ **A LIST, not a constant, and that is the whole of Codex support.**
+# MEASURED 2026-08-24 against codex-cli 0.149.1: its composer glyph is `›`,
+# and it is the ONLY thing that differs. The empty-composer caret is column 2
+# for both, Enter submits for both, and a ~900-character fast injection is
+# rendered in full by Codex rather than collapsed to a paste placeholder -- so
+# Codex is the *easier* case for the delivery verification, not the harder one.
+#
+# ⚠️ agterm's own cookbook says "Tab for Codex". That is about queueing while
+# BUSY, not submitting; Enter submits an idle composer. The difference is real
+# but it is a property of the peer, not of this list: Enter into a working
+# Codex interrupts it, exactly as with Claude.
+#
+# ⚠️ `codex queue --thread <uuid> --message …` is a first-party delivery
+# channel that avoids the composer entirely and QUEUES rather than interrupts.
+# It was measured working and deliberately NOT used: delivery already rides
+# agterm's own ssh, so this route adds an ssh we otherwise do not need, plus a
+# uuid-discovery problem and a second code path. `docs/agtermctl.md` records it
+# for the day the interrupt-vs-queue difference actually bites.
+COMPOSER_GLYPHS = ("❯", "›")
 
 # ⚠️ Claude Code COLLAPSES a long, fast injection into a placeholder --
 # `❯ [Pasted text #1]` / `paste again to expand` -- so the body is simply not
@@ -337,8 +357,9 @@ def classify(text):
         return MODE_UNKNOWN
     if MENU_MARKER in text:
         return MODE_MENU
-    if COMPOSER_GLYPH in text:
-        return MODE_COMPOSER
+    for glyph in COMPOSER_GLYPHS:
+        if glyph in text:
+            return MODE_COMPOSER
     return MODE_UNKNOWN
 
 

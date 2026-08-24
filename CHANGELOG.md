@@ -223,6 +223,24 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
   stdout, and neither answer says which one it is.
 
+- **Codex works as a peer, and it cost one character.** MEASURED against codex-cli 0.149.1 on a
+  cluster host: its composer glyph is `›` where Claude's is `❯`, and that is the **only** difference.
+  The empty-composer caret is column 2 for both, Enter submits for both, and a ~900-character fast
+  injection is rendered in full by Codex rather than collapsed into `[Pasted text #1]` — so Codex is
+  the *easier* case for the delivery verification, not the harder one. `classify` takes a list of
+  glyphs now; `PASTE_MARK` stays Claude-shaped and simply never fires.
+
+  agterm's cookbook says "Tab for Codex". Measured: that is about queueing while **busy**, not
+  submitting — Enter submits an idle composer, and interrupts a working one exactly as with Claude.
+
+  ⚠️ **`codex queue --thread <uuid> --message …` was measured working and deliberately not used.** It
+  delivers to a live TUI session with no composer, no caret gate, no paste-or-wrap verification and
+  no submit key, and it **queues** rather than interrupts — genuinely safer. It was rejected on cost:
+  delivery already rides agterm's own ssh, so that route *adds* an ssh we do not need, plus a
+  uuid-discovery problem (the thread uuid only exists after the session's first completed turn) and
+  a second code path. Recorded in `docs/agtermctl.md`, along with the trap that `queue` succeeds
+  against a **dead** thread just as loudly as a live one, so its success is not a delivery receipt.
+
 - ⚠️ **`agb install-hooks --agterm` was built, tested, pushed and then WITHDRAWN.** Recorded because
   the reasoning is the useful part.
 
