@@ -330,6 +330,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ✅ **ROUND TRIP VERIFIED, 2026-08-24 — two agents, a conversation, both directions.** A dedicated
+  peer was started with `agb-claude -d peer-bot`, and its row came up **detached**, so the relay
+  armed it with the bare-newline attach — the refresh-survival path, exercised live for the first
+  time. A message went out, was delivered and submitted; the peer then **discovered the `agb-peer`
+  skill on its own** (symlinked into `~/.claude/skills/` mid-session — skills are found
+  dynamically, not only at startup), rang its own doorbell, and its reply came back through the same
+  relay into the sender's composer.
+
+  Three things ran for the first time in that exchange and all held: `agb-peer send` from an agent
+  other than the author of this code, delivery **into** a busy conversation's composer, and arming a
+  row that had never been attached.
+
   ✅ **VERIFIED LIVE, 2026-08-24 — the whole path, farm agent to farm agent through the Mac.** A
   message left one agent as a tmux option plus a doorbell on its window name; agterm rendered tmux's
   status bar; the relay read the doorbell on a tick it was making anyway, fetched over one
