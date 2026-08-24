@@ -1148,13 +1148,31 @@ def test_a_bare_name_is_the_last_resort(peer, monkeypatch):
     assert peer.tmux_binary({}) == "tmux"
 
 
-def test_a_usual_home_is_preferred_over_the_bare_name(peer, monkeypatch):
+def test_a_usual_home_is_used_when_PATH_is_stripped(peer, monkeypatch):
     """agterm spawns `bash --noprofile --norc`, so a pane inherits only what
     `login` gives it -- NOT the user's PATH. Measured: an agent inside tmux
     inside agterm has $TMUX_PANE set and still cannot exec `tmux`."""
     monkeypatch.setattr(peer.os, "access",
                         lambda p, m: p == "/opt/homebrew/bin/tmux")
     assert peer.tmux_binary({}) == "/opt/homebrew/bin/tmux"
+
+
+def test_PATH_beats_the_hardcoded_homes(peer, monkeypatch):
+    """MEASURED, and the order matters more than it looks: on a cluster host
+    `/usr/bin/tmux` is **2.7** while the running server is **3.5a** from a PATH
+    directory. The old binary has no `show-options -p`, cannot speak to a 3.5a
+    server, and BLOCKS trying to start its own -- which reads as "tmux is
+    wedged". Preferring the candidates broke the farm while fixing the Mac.
+    """
+    monkeypatch.setattr(peer.os, "access", lambda p, m: p in (
+        "/shared/tools/tmux-3.5a/bin/tmux", "/usr/bin/tmux"))
+    got = peer.tmux_binary({"PATH": "/shared/tools/tmux-3.5a/bin:/usr/bin"})
+    assert got == "/shared/tools/tmux-3.5a/bin/tmux", got
+
+
+def test_the_first_PATH_entry_wins(peer, monkeypatch):
+    monkeypatch.setattr(peer.os, "access", lambda p, m: True)
+    assert peer.tmux_binary({"PATH": "/a:/b"}) == "/a/tmux"
 
 
 def test_send_uses_the_resolved_binary(peer, monkeypatch):

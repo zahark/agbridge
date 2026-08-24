@@ -131,10 +131,31 @@ TMUX_CANDIDATES = ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux",
 
 
 def tmux_binary(env=None):
+    """$AGB_TMUX, then **$PATH**, then the usual homes, then the bare name.
+
+    ⚠️ **$PATH comes before the candidates, and getting that order wrong broke
+    the farm side while fixing the Mac side.** On a cluster host `/usr/bin/tmux`
+    is a decoy: measured, tmux **2.7**, while the running server is **3.5a**
+    from `/shared/tools/tmux-3.5a/bin` on PATH. The old binary has no
+    `show-options -p`, cannot speak to a 3.5a server, and answers
+    `unknown option -- p` and then BLOCKS trying to start a server of its own --
+    which read as "tmux is wedged" for three rounds of diagnosis.
+
+    So: a populated PATH is the best evidence available, because the tmux that
+    started the session we are inside is almost always the one on it. The
+    hardcoded homes exist only for the case where PATH has been stripped, which
+    is agterm's `bash --noprofile --norc`.
+    """
     env = os.environ if env is None else env
     explicit = env.get("AGB_TMUX")
     if explicit:
         return explicit
+    for directory in (env.get("PATH") or "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = os.path.join(directory, "tmux")
+        if os.access(candidate, os.X_OK):
+            return candidate
     for path in TMUX_CANDIDATES:
         if os.access(path, os.X_OK):
             return path
