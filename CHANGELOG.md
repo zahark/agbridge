@@ -238,8 +238,15 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   connect still fails. Since the doorbell **is** a tmux window name and the message store **is** a
   tmux option, such a peer can be sent to and can never send.
 
-  The escape hatch is running Codex with its sandbox bypassed. `agb-codex` deliberately will not do
-  that for you — it removes the sandbox for *every* command that agent runs, not just ours, which is
+  ⚠️ **And the escape hatch may not exist.** MEASURED: Codex refuses to start with the bypass —
+  `` `approval_policy = "never"` cannot be used because requirements do not allow
+  `sandbox_mode = "danger-full-access"` `` — an **org policy** forbidding the mode, not a bad flag.
+  Where such a requirement is in force there is no local workaround at all: every permitted mode
+  blocks the socket and the one that would not is disallowed. A Codex peer is then **receive-only,
+  permanently**.
+
+  The escape hatch, where it does exist, is running Codex with its sandbox bypassed. `agb-codex`
+  deliberately will not do that for you — it removes the sandbox for *every* command that agent runs, not just ours, which is
   the human's decision, the same reasoning that stops `agb-claude` answering Claude's trust prompt.
 
   Found the only way it could be: Codex received a message, found the skill in `~/.codex/skills/`,

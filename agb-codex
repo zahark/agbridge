@@ -46,6 +46,16 @@
 #
 #     agb-codex -d peer -- --dangerously-bypass-approvals-and-sandbox
 #
+# ⚠️ **And that hatch may not be available at all.** MEASURED on this host,
+# Codex refuses to start with it:
+#
+#     Error loading configuration: `approval_policy = "never"` cannot be used
+#     because requirements do not allow `sandbox_mode = "danger-full-access"`
+#
+# That is an ORG POLICY refusing the mode, not a bad flag -- so where such a
+# requirement is in force, a Codex peer is receive-only and there is no local
+# workaround. Send to it; do not expect it to answer.
+#
 # ⚠️ **This wrapper deliberately does NOT do that for you.** It removes the
 # sandbox for every command that agent runs, not just ours, and that is a
 # security decision belonging to the human -- the same reasoning that stops

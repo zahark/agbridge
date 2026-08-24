@@ -825,6 +825,18 @@ that makes a sandboxed Codex a peer that can be **sent to** and can never **send
 is running it with the sandbox bypassed, which is a security decision for the human and which
 `agb-codex` deliberately will not do on its own.
 
+⚠️ **And that hatch may not exist.** MEASURED on this host, Codex refuses to start with it:
+
+```
+Error loading configuration: `approval_policy = "never"` cannot be used because requirements do
+not allow `sandbox_mode = "danger-full-access"`
+```
+
+An **org policy** forbidding the mode, not a bad flag. Where such a requirement is in force there is
+no local workaround: every permitted sandbox mode blocks the socket, and the mode that would not is
+disallowed. A Codex peer is then **receive-only, permanently** — send to it, and do not expect it to
+answer.
+
 ⚠️ Worth recording separately: `codex sandbox -c sandbox_mode="danger-full-access"` behaved *more*
 restrictively than `workspace-write` (it could not write `/tmp` at all), so that `-c` override does
 not appear to be honoured by the `sandbox` subcommand. Do not use it to reason about what a real
