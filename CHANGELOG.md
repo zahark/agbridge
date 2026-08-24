@@ -330,6 +330,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ✅ **VERIFIED LIVE, 2026-08-24 — the whole path, farm agent to farm agent through the Mac.** A
+  message left one agent as a tmux option plus a doorbell on its window name; agterm rendered tmux's
+  status bar; the relay read the doorbell on a tick it was making anyway, fetched over one
+  argv-only ssh, unset the option, and typed the text into the other agent's composer, which
+  submitted it and started working. `--dashboard` showed both panes side by side throughout.
+
+  This project's rule is that agterm-facing features pass every test and still need a fix after live
+  use. This one needed **four**, and none was reachable from the suite: a `fetch` seam with no
+  production default, `--all` and `--lines` being mutually exclusive, a POSIX script handed to a
+  tcsh login shell, and priming discarding a message queued before the relay started. 2078 tests
+  were green for all four.
+
   ⚠️ **Priming names what it discards, because the first successful live run threw a message away.**
   The relay was started *after* the message was queued, so the priming pass drained and discarded it —
   correct behaviour, but `discarded 1 message(s)` reads as housekeeping rather than "this is the
