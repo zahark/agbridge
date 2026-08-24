@@ -902,13 +902,25 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
             raise PeerError("%s %s failed: %s" % (exe, args[0],
                                                   err.strip() or rc))
 
-    rc, base, _err = run([exe, "show-options", "-pqv", "-t", pane,
-                          OPTION_BASE])
-    base = base.strip() if rc == 0 else ""
+    rc, base, err = run([exe, "show-options", "-pqv", "-t", pane,
+                         OPTION_BASE])
+    if rc != 0:
+        raise PeerError("cannot read tmux options for %s: %s"
+                        % (pane, err.strip() or rc))
+    base = base.strip()
     if not base:
-        rc, base, _err = run([exe, "display-message", "-p", "-t", pane,
-                              "#{window_name}"])
-        base = (base.strip() if rc == 0 else "") or "agent"
+        rc, base, err = run([exe, "display-message", "-p", "-t", pane,
+                             "#{window_name}"])
+        # ⚠️ **A failed read is not a value.** This used to fall back to a
+        # hardcoded name and then STORE it -- so one transient tmux stall
+        # (a wedged agterm client will do it) permanently renamed the pane's
+        # base to a guess. Converting "could not read" into data is the exact
+        # failure this project writes invariants against; a send that cannot
+        # read tmux has no business writing to it either.
+        if rc != 0:
+            raise PeerError("cannot read the window name for %s: %s"
+                            % (pane, err.strip() or rc))
+        base = base.strip() or "agent"
         # Remembered so a second send renders `<original> [peer #id]` rather
         # than `<original> [peer #id1] [peer #id2]`, for ever.
         tmux(["set", "-p", "-t", pane, OPTION_BASE, base])

@@ -1205,3 +1205,21 @@ def test_both_runners_share_the_timing_out_spawner(peer):
         assert fn, name
         body = ast.dump(fn[0])
         assert "_spawn" in body, "%s must not start its own Popen" % (name,)
+
+
+def test_a_failed_tmux_read_refuses_instead_of_guessing(peer):
+    """MEASURED: one transient tmux stall made `send` fall back to a hardcoded
+    base name and then STORE it, permanently renaming the pane's doorbell base
+    to a guess. Converting "could not read" into data is the failure this
+    project writes invariants against."""
+
+    class Failing(LocalRun):
+        def __call__(self, argv):
+            self.calls.append(argv)
+            return 124, "", "did not answer"
+
+    run = Failing()
+    with pytest.raises(peer.PeerError):
+        peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
+    assert not any(c[1] == "set" for c in run.calls), \
+        "nothing may be written after a failed read"
