@@ -223,6 +223,29 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
   stdout, and neither answer says which one it is.
 
+- **`agb install-hooks --agterm` — a Mac-side agent sets its own row's status.** Until now only farm
+  agents had a status, so the delivery gate that refuses to type into an agent mid-turn or sitting
+  on a permission prompt simply did not apply to a Mac participant: `agb-peer --list` showed
+  `STATUS -` and only the mode and cursor checks protected it. This closes that.
+
+  It reuses the whole of `install-hooks` — the same four events, the same careful rewrite of a live,
+  hand-edited `~/.claude/settings.json` — and changes only the commands and the which-hooks-are-ours
+  predicate. A Mac agent needs no statedir, no interpreter and no `agb`; it is an agterm session and
+  talks to agterm.
+
+  ⚠️ **Ours is recognised by an `AGB_AGTERM_HOOK=1` marker rather than by the program name.**
+  `agb … hook` is unambiguously this tool's; `agtermctl session status` is something somebody may
+  reasonably have wired by hand, and deleting it would be the silent-tooling-loss this installer
+  refuses everywhere else. For the same reason **the two modes do not remove each other** — a machine
+  could be both a Mac and a farm host.
+
+  ⚠️ **`$AGTERM_SESSION_ID` survives the tmux layer** — measured on a Mac by an agent running inside
+  tmux inside agterm, before any of this was written. Without it the hook could not name its own row.
+  And the agtermctl path must be absolute and is **verified by running it**, because agterm spawns
+  `bash --noprofile --norc` and a hook inherits only `login`'s PATH.
+
+  `--statedir`, `--python` and `--agb` are refused with `--agterm` rather than accepted and ignored.
+
 - **`agb-peer` — one agent can type into another's composer, from the Mac.** agterm ships a
   [`two-agent-chat`](https://github.com/umputun/agterm/tree/master/cookbook/two-agent-chat) cookbook
   where two *local* agents talk by injecting keystrokes into each other's pane. This is that, pointed

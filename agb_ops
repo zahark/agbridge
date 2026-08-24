@@ -2814,8 +2814,43 @@ AGR_PROGRAM = "agr"
 # between a mistake and a loss.
 BACKUP_SUFFIX = ".agb.bak"
 
-INSTALL_VALUE_ARGS = ("--settings", "--statedir", "--python", "--agb")
-INSTALL_FLAGS = {"--dry-run": "dry_run"}
+INSTALL_VALUE_ARGS = ("--settings", "--statedir", "--python", "--agb",
+                      "--agtermctl")
+INSTALL_FLAGS = {"--dry-run": "dry_run", "--agterm": "agterm"}
+
+# --------------------------------------------------------------------------
+# `--agterm`: the same four hooks for an agent running ON THE MAC
+# --------------------------------------------------------------------------
+#
+# A Mac-side agent has no statedir and no bridge -- it IS an agterm session, so
+# it sets its own row's status directly and needs none of agbridge to do it:
+#
+#     AGB_AGTERM_HOOK=1 <abs agtermctl> session status <state> \
+#         --target "$AGTERM_SESSION_ID"
+#
+# ⚠️ **`$AGTERM_SESSION_ID` is expanded by the shell at hook time**, which is
+# sound for the reason this file already gives for `agr`'s `$HOME`: a hook
+# `command` is a shell command line. MEASURED 2026-08-24 on a Mac by an agent
+# running inside tmux inside agterm -- both `AGTERM_SESSION_ID` and
+# `AGTERM_PANE_ID` are set and survive the tmux layer, and
+# `agtermctl session status blocked --target "$AGTERM_SESSION_ID"` exits 0 and
+# moves the glyph. Without that the hook could not name its own row at all.
+#
+# ⚠️ **An absolute `agtermctl`**, for the same reason as the absolute
+# interpreter above and with fresh evidence: agterm spawns its shell as
+# `bash --noprofile --norc`, so a pane inherits only what `login` gives it --
+# measured on macOS, where `/opt/homebrew/bin` is absent and even `tmux` could
+# not be found by name.
+#
+# ⚠️ **Recognised by a MARKER, not by the program.** `agb ... hook` is
+# unambiguously this tool's; `agtermctl session status` is not -- somebody may
+# reasonably have wired that by hand, and deleting it would be the
+# somebody-else's-tooling failure this file is built to avoid.
+AGTERM_HOOK_VAR = "AGB_AGTERM_HOOK"
+HOOK_OURS_AGTERM = "agb-agterm"
+
+# `--blink` on `active` only: blink is an event, not a level.
+AGTERM_HOOK_BLINK = "active"
 
 INSTALL_PORTABILITY_NOTE = (
     "the interpreter must resolve to a working python at this **same absolute "
@@ -2849,6 +2884,20 @@ def hook_command(python, agb_path, sd, state):
     return "%s=%s %s -S -E %s hook %s" % (
         STATEDIR_VAR, shlex.quote(sd), shlex.quote(python),
         shlex.quote(agb_path), shlex.quote(state))
+
+
+def agterm_hook_command(ctl_path, state):
+    """The command installed for one state by `--agterm`. Pure: a string test.
+
+    `--target "$AGTERM_SESSION_ID"` is deliberately double-quoted rather than
+    `shlex.quote`d: it must reach the shell as a variable to expand, and
+    quoting it would install a hook targeting a session literally named
+    `$AGTERM_SESSION_ID`.
+    """
+    import shlex
+    blink = " --blink" if state == AGTERM_HOOK_BLINK else ""
+    return '%s=1 %s session status %s --target "$AGTERM_SESSION_ID"%s' % (
+        AGTERM_HOOK_VAR, shlex.quote(ctl_path), shlex.quote(state), blink)
 
 
 def command_words(command):
@@ -2922,6 +2971,9 @@ def classify_hook(command):
     if not isinstance(command, str) or not command.strip():
         return HOOK_OTHER
     words = command_words(command)
+    for word in words:
+        if word == AGTERM_HOOK_VAR + "=1":
+            return HOOK_OURS_AGTERM
     for index, word in enumerate(words):
         if (os.path.basename(word) == "agb"
                 and words[index + 1:index + 2] == ["hook"]):
@@ -2966,7 +3018,20 @@ def our_groups(commands):
     return groups
 
 
-def merge_hooks(settings, commands):
+def removable_kinds(agterm=False):
+    """Which existing hook kinds this run replaces.
+
+    ⚠️ **The two modes do not remove each other.** A machine could be both a
+    Mac and a farm host, and deleting the other mode's wiring because it "looks
+    like ours" is the silent-tooling-loss this file refuses everywhere else.
+    `agr` is removed only by the farm mode, being the tool those hooks replace.
+    """
+    if agterm:
+        return (HOOK_OURS_AGTERM,)
+    return (HOOK_OURS, HOOK_AGR)
+
+
+def merge_hooks(settings, commands, agterm=False):
     """(new settings, removed, kept). Pure -- no I/O, so its tests are data.
 
     Removal first, over every event in the file, then our four groups appended.
@@ -3002,7 +3067,7 @@ def merge_hooks(settings, commands):
                 if not isinstance(entry, dict):
                     raise _shape_error("an entry in hooks.%s" % (event,), entry)
                 kind = classify_hook(entry.get("command"))
-                if kind in (HOOK_OURS, HOOK_AGR):
+                if kind in removable_kinds(agterm):
                     removed.append((event, kind, entry.get("command")))
                     dropped += 1
                     continue
@@ -3195,7 +3260,7 @@ def parse_install_args(argv):
     cannot reach.
     """
     opts = {"settings": None, "statedir": None, "python": None, "agb": None,
-            "dry_run": False}
+            "agtermctl": None, "dry_run": False, "agterm": False}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -3244,6 +3309,62 @@ def install_settings(opts):
     return (path, python, agb_path, sd)
 
 
+def agterm_settings(opts):
+    """(settings path, agtermctl path) for `--agterm`. No statedir, no python."""
+    path = opts["settings"] or settings_path()
+    ctl = opts.get("agtermctl") or _find_agtermctl()
+    if not ctl:
+        raise agb.AgbError(
+            "install-hooks --agterm: cannot find `agtermctl`. Pass "
+            "--agtermctl <absolute path>. It must be absolute because a hook "
+            "runs under `bash --noprofile --norc`, which on macOS does not "
+            "have /opt/homebrew/bin on its PATH -- measured.")
+    if not ctl.startswith("/"):
+        raise agb.AgbError(
+            "install-hooks --agterm: the agtermctl path must be absolute, not "
+            "%r: a hook runs with no reliable PATH." % (ctl,))
+    return path, ctl
+
+
+def _find_agtermctl():
+    """`agtermctl` on $PATH, or the usual Homebrew homes. Absolute or nothing."""
+    for directory in (os.environ.get("PATH") or "").split(os.pathsep):
+        if directory and directory.startswith("/"):
+            candidate = os.path.join(directory, AGTERMCTL)
+            if os.access(candidate, os.X_OK):
+                return candidate
+    for candidate in ("/opt/homebrew/bin/agtermctl",
+                      "/usr/local/bin/agtermctl"):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def probe_agterm_command(ctl, run=None):
+    """Run `<agtermctl> session status --help` and require exit 0.
+
+    The same argument as `probe_hook_command`: an existence check is what every
+    one of agr's silent no-ops would have passed. This proves the binary runs
+    AND that it is a build with `session status` in it, which is the whole of
+    what the hook depends on.
+    """
+    if run is None:
+        run = _probe_run
+    argv = [ctl, "session", "status", "--help"]
+    try:
+        code, _out, err = run(argv)
+    except OSError as exc:
+        raise agb.AgbError("install-hooks --agterm: cannot run %s: %s"
+                           % (ctl, exc))
+    if code != 0:
+        raise agb.AgbError(
+            "install-hooks --agterm: `%s` exited %s (%s). That is the binary "
+            "the hooks call on every tool call, so it is verified before "
+            "anything is written."
+            % (" ".join(argv), code, (err or "").strip()[:120]))
+    return argv
+
+
 def describe_hook(entry):
     """`event  kind  command`, for the report. Every removal is named."""
     event, kind, command = entry
@@ -3281,14 +3402,32 @@ def run_install_hooks(argv, out=None, run=None):
     if out is None:
         out = sys.stdout
     opts = parse_install_args(argv)
-    path, python, agb_path, sd = install_settings(opts)
-    probe_argv = probe_hook_command(python, agb_path, run)
-    commands = {}
-    for _event, _matcher, state in HOOK_EVENTS:
-        commands[state] = hook_command(python, agb_path, sd, state)
+    agterm = bool(opts.get("agterm"))
+    if agterm:
+        for name in ("statedir", "python", "agb"):
+            if opts.get(name):
+                raise agb.AgbError(
+                    "install-hooks: --agterm takes no --%s. An agterm hook "
+                    "calls agtermctl and never runs agb, so that flag would "
+                    "be accepted and ignored." % (name,))
+        path, ctl_path = agterm_settings(opts)
+        probe_argv = probe_agterm_command(ctl_path, run)
+        sd = None
+        commands = {}
+        for _event, _matcher, state in HOOK_EVENTS:
+            commands[state] = agterm_hook_command(ctl_path, state)
+    else:
+        if opts.get("agtermctl"):
+            raise agb.AgbError(
+                "install-hooks: --agtermctl only means anything with --agterm.")
+        path, python, agb_path, sd = install_settings(opts)
+        probe_argv = probe_hook_command(python, agb_path, run)
+        commands = {}
+        for _event, _matcher, state in HOOK_EVENTS:
+            commands[state] = hook_command(python, agb_path, sd, state)
 
     settings, previous = read_settings(path)
-    merged, removed, kept = merge_hooks(settings, commands)
+    merged, removed, kept = merge_hooks(settings, commands, agterm)
     text = settings_text(merged)
 
     out.write("agb install-hooks %s -- host %s\n" % (agb.VERSION,
@@ -3296,28 +3435,34 @@ def run_install_hooks(argv, out=None, run=None):
     out.write("settings: %s%s\n" % (path, "" if previous is not None
                                     else " (does not exist yet)"))
     out.write("verified: %s -> agb %s\n" % (" ".join(probe_argv), agb.VERSION))
-    try:
-        agb.ensure_statedir(sd)
-        out.write("statedir: %s (ready)\n" % (sd,))
-    except (OSError, agb.AgbError) as exc:
-        # Not fatal either way: a sulking NFS mount now is no reason to leave
-        # Claude Code unwired. But two very different failures arrive as this
-        # one exception, and "the first hook will try again" is a promise only
-        # the first of them can keep. `verify_statedir` refuses a wrong-mode,
-        # wrong-owner or not-a-directory statedir on *every* call, so a hook
-        # would no-op for ever with that line as the only clue -- the silent
-        # no-op this tool exists to remove. So the permanent condition is
-        # tested for directly rather than inferred from the exception text.
-        if statedir_is_unrepairable(sd):
-            out.write(
-                "statedir: %s -- NOT usable: %s\n"
-                "          No hook will ever repair this: every hook re-runs\n"
-                "          the same check and no-ops. Fix it by hand --\n"
-                "          `chmod 0700 %s`, and check you own it -- then\n"
-                "          re-run install-hooks.\n" % (sd, exc, sd))
-        else:
-            out.write("statedir: %s -- NOT ready: %s (the first hook will try "
-                      "again)\n" % (sd, exc))
+    if sd is None:
+        # `--agterm`: there is no statedir, because a Mac-side agent
+        # writes no state files at all -- it sets its own agterm row's
+        # status directly, and agbridge is not in the path.
+        out.write("statedir: none -- an agterm hook writes no state\n")
+    else:
+        try:
+            agb.ensure_statedir(sd)
+            out.write("statedir: %s (ready)\n" % (sd,))
+        except (OSError, agb.AgbError) as exc:
+            # Not fatal either way: a sulking NFS mount now is no reason to leave
+            # Claude Code unwired. But two very different failures arrive as this
+            # one exception, and "the first hook will try again" is a promise only
+            # the first of them can keep. `verify_statedir` refuses a wrong-mode,
+            # wrong-owner or not-a-directory statedir on *every* call, so a hook
+            # would no-op for ever with that line as the only clue -- the silent
+            # no-op this tool exists to remove. So the permanent condition is
+            # tested for directly rather than inferred from the exception text.
+            if statedir_is_unrepairable(sd):
+                out.write(
+                    "statedir: %s -- NOT usable: %s\n"
+                    "          No hook will ever repair this: every hook re-runs\n"
+                    "          the same check and no-ops. Fix it by hand --\n"
+                    "          `chmod 0700 %s`, and check you own it -- then\n"
+                    "          re-run install-hooks.\n" % (sd, exc, sd))
+            else:
+                out.write("statedir: %s -- NOT ready: %s (the first hook will try "
+                          "again)\n" % (sd, exc))
     for event, matcher, state in HOOK_EVENTS:
         out.write("hook:     %s%s -> %s\n" % (
             event, "[%s]" % (matcher,) if matcher else "", state))
@@ -3330,7 +3475,11 @@ def run_install_hooks(argv, out=None, run=None):
             describe_hook(entry),
             "   <- mentions `agr` but is not the agr program; check by hand"
             if entry[1] == HOOK_SUSPECT else ""))
-    out.write("note:     %s\n" % (INSTALL_PORTABILITY_NOTE,))
+    if not agterm:
+        # There is no interpreter in agterm mode, so the portability note --
+        # which is entirely about the python path -- would be advice about a
+        # thing this run did not install.
+        out.write("note:     %s\n" % (INSTALL_PORTABILITY_NOTE,))
 
     if opts["dry_run"]:
         out.write("dry run: nothing was written\n")
