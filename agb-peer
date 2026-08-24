@@ -526,6 +526,13 @@ def parse_participants(words):
     `agb pane --host`, which is a hostname and may need an ssh alias -- hence
     the override.
 
+    ⚠️ An optional `:<tmux target>` after that names the tmux pane or session,
+    and a **Mac-native participant needs it**. The pane id is otherwise read
+    out of the row's `agb pane --pane` argv, and an agterm session that is not
+    an agbridge row has no such argv -- its `foreground` is a shell. So
+    `macside=<label>@local:<tmux session>` is the shape for an agent running in
+    tmux on the Mac; tmux resolves a session name to its active pane.
+
     ⚠️ `<row>` should be a **label substring**, not a row id: `agb-refresh`
     re-mints every row and every id changes. `resolve` tries an exact id, then
     an id prefix, then a title substring, so a label keeps working across a
@@ -538,6 +545,7 @@ def parse_participants(words):
             raise PeerError("participants are name=<row> or name=<row>:<pane>, "
                             "not %r" % (word,))
         where, at, target = where.partition("@")
+        target, _sep3, tmux_target = target.partition(":")
         row, sep2, pane = where.partition(":")
         pane = pane if sep2 else "left"
         if pane not in PANE_KINDS:
@@ -552,7 +560,7 @@ def parse_participants(words):
         # `@local` means "this agent's tmux is on THIS machine" -- a Mac-side
         # participant, which needs no ssh and is otherwise identical. Absent,
         # the target is taken from the row's own `agb pane --host`.
-        people[name] = (row, pane, target or None)
+        people[name] = (row, pane, target or None, tmux_target or None)
     if len(people) < 2:
         raise PeerError("a relay needs at least two participants")
     return people
@@ -912,7 +920,7 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say):
     if recipient == sender:
         say("dropping a message %r addressed to itself" % (sender,))
         return True
-    row, pane, _target = people[recipient]
+    row, pane, _target, _tmux = people[recipient]
     session = sessions.get(row)
     if session is None:
         say("%s's row is gone from the tree -- holding the message" % (recipient,))
@@ -947,7 +955,7 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
         sessions[session["id"]] = session
     discarded = []
     for name in sorted(people):
-        row, pane, target = people[name]
+        row, pane, target, tmux_target = people[name]
         session = sessions.get(row)
         if session is None:
             # ⚠️ Not silent. A row is briefly absent while `agb-refresh`
@@ -989,7 +997,8 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
         if not ident or seen.get(name) == ident:
             continue
         seen[name] = ident
-        tmux_pane = pane_argv_field(session.get("foreground"), "--pane")
+        tmux_pane = tmux_target or pane_argv_field(session.get("foreground"),
+                                                   "--pane")
         host = target or pane_argv_field(session.get("foreground"), "--host")
         done = notes.setdefault("delivered", set())
         for message in drain(fetch, name, host, tmux_pane, say):
@@ -1030,9 +1039,9 @@ def resolve_all(ctl, spec, say, previous=None):
     previous = previous or {}
     resolved = {}
     for name in sorted(spec):
-        row, pane, target = spec[name]
+        row, pane, target, tmux_target = spec[name]
         try:
-            resolved[name] = (resolve(ctl, row)["id"], pane, target)
+            resolved[name] = (resolve(ctl, row)["id"], pane, target, tmux_target)
         except PeerError as error:
             if name in previous:
                 # Keep the old binding rather than dropping a participant on a
@@ -1062,14 +1071,16 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                     "every row, and the old ids are dead)")
             resolved = fresh
             for name in sorted(resolved):
-                row, pane, target = resolved[name]
-                say("%-12s %s:%s%s" % (name, row[:8], pane,
-                                       "  via " + target if target else ""))
+                row, pane, target, tmux_target = resolved[name]
+                say("%-12s %s:%s%s%s"
+                    % (name, row[:8], pane,
+                       "  via " + target if target else "",
+                       "  tmux " + tmux_target if tmux_target else ""))
             if dashboard and len(resolved) > 1:
                 # Re-opened on every move for the same reason the ids are
                 # re-resolved: a grid built on dead ids shows dead cells.
-                members = ["%s:%s" % (r[0], r[1]) for r in
-                           (resolved[n] for n in sorted(resolved))]
+                members = ["%s:%s" % (resolved[n][0], resolved[n][1])
+                           for n in sorted(resolved)]
                 ok, why = ctl.dashboard(members)
                 say("dashboard: %s" % ("open" if ok else why))
         relay_tick(ctl, resolved, seen, pending, lines, say, fetch,

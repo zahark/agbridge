@@ -1452,10 +1452,15 @@ which is an undocumented dependency: if anything re-enables it, tmux overwrites 
 the relay goes deaf with no error anywhere. `send` therefore pins `automatic-rename off` explicitly
 the first time it stores the base name.
 
-`@<target>` says where that agent's tmux lives; `@local` means this machine, and a Mac-side
+`@<target>[:<tmux target>]` says where that agent's tmux lives; `@local` means this machine, and a Mac-side
 participant then uses the identical mechanism minus the ssh. Without it the target comes from the
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
+
+⚠️ **A Mac-native participant must name its tmux session**, e.g.
+`macside=<label>@local:<tmux session>`. The pane id is otherwise read out of the row's
+`agb pane --pane` argv, and an agterm session that is not an agbridge row has no such argv — its
+`foreground` is a shell. Without the explicit target, `@local` could never work at all.
 
 ### The agent's half: `skills/agb-peer/SKILL.md`
 

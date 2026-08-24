@@ -459,8 +459,8 @@ class RelayCtl(object):
         self.said.append(message)
 
 
-PEOPLE = {"alice": ("AAAA1111", "left", "farmbox"),
-          "bob": ("BBBB2222", "left", "local")}
+PEOPLE = {"alice": ("AAAA1111", "left", "farmbox", None),
+          "bob": ("BBBB2222", "left", "local", None)}
 
 
 def panes(alice="", bob=""):
@@ -624,18 +624,18 @@ def test_pane_argv_field_takes_the_inline_spelling_too(peer):
 
 def test_participants_default_to_the_left_pane_and_no_target(peer):
     assert peer.parse_participants(["a=R1", "b=R2"]) == {
-        "a": ("R1", "left", None), "b": ("R2", "left", None)}
+        "a": ("R1", "left", None, None), "b": ("R2", "left", None, None)}
 
 
 def test_a_participant_can_name_its_ssh_target(peer):
     got = peer.parse_participants(["a=alpha@farmbox", "b=beta@local"])
-    assert got["a"] == ("alpha", "left", "farmbox")
-    assert got["b"] == ("beta", "left", "local")
+    assert got["a"] == ("alpha", "left", "farmbox", None)
+    assert got["b"] == ("beta", "left", "local", None)
 
 
 def test_a_pane_suffix_is_agterms_own_spelling(peer):
     assert peer.parse_participants(["a=R1:right", "b=R2"])["a"] == (
-        "R1", "right", None)
+        "R1", "right", None, None)
 
 
 @pytest.mark.parametrize("words", [
@@ -814,8 +814,8 @@ def test_a_missing_row_is_eventually_reported_not_silently_skipped(peer):
     """A row is briefly absent while it is re-minted, so not on tick one. But a
     relay that never said anything would leave "gone" looking like "quiet"."""
     ctl = RelayCtl(panes())
-    people = {"alice": ("VANISHED", "left", None),
-              "bob": ("BBBB2222", "left", "local")}
+    people = {"alice": ("VANISHED", "left", None, None),
+              "bob": ("BBBB2222", "left", "local", None)}
     notes = {}
     peer.relay_tick(ctl, people, {}, [], 500, ctl.say, Fetcher(), notes=notes)
     assert not any("VANISHED" in s or "alice" in s for s in ctl.said), \
@@ -829,8 +829,8 @@ def test_a_missing_row_is_eventually_reported_not_silently_skipped(peer):
 def test_a_row_that_comes_back_clears_its_absence_count(peer):
     ctl = RelayCtl(panes())
     notes = {}
-    gone = {"alice": ("VANISHED", "left", None),
-            "bob": ("BBBB2222", "left", "local")}
+    gone = {"alice": ("VANISHED", "left", None, None),
+            "bob": ("BBBB2222", "left", "local", None)}
     for _ in range(2):
         peer.relay_tick(ctl, gone, {}, [], 500, ctl.say, Fetcher(), notes=notes)
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, Fetcher(), notes=notes)
@@ -882,7 +882,7 @@ def test_the_relay_never_types_a_doorbell(peer):
 
 def test_resolve_all_binds_labels_to_current_ids(peer):
     ctl = RelayCtl(panes())
-    spec = {"alice": ("AAAA1111", "left", None)}
+    spec = {"alice": ("AAAA1111", "left", None, None)}
     assert peer.resolve_all(ctl, spec, lambda m: None)["alice"][0] == "AAAA1111"
 
 
@@ -890,15 +890,15 @@ def test_a_vanished_row_keeps_its_previous_binding(peer):
     """A row is briefly absent while `agb-refresh` re-mints it. Dropping the
     participant on that transient would make the relay deaf until restart."""
     ctl = RelayCtl(panes())
-    spec = {"alice": ("NOSUCHROW", "left", None)}
-    previous = {"alice": ("AAAA1111", "left", None)}
+    spec = {"alice": ("NOSUCHROW", "left", None, None)}
+    previous = {"alice": ("AAAA1111", "left", None, None)}
     got = peer.resolve_all(ctl, spec, lambda m: None, previous)
     assert got["alice"] == previous["alice"]
 
 
 def test_an_unresolvable_new_participant_is_reported(peer):
     said = []
-    peer.resolve_all(RelayCtl(panes()), {"z": ("NOPE", "left", None)}, said.append)
+    peer.resolve_all(RelayCtl(panes()), {"z": ("NOPE", "left", None, None)}, said.append)
     assert said
 
 
@@ -1109,3 +1109,23 @@ def test_a_message_is_never_delivered_twice(peer):
     assert len(listings) == 2, "both rings must have fetched"
     bodies = [t for (_, _, t) in ctl.typed if t != "\n"]
     assert bodies == ["[chat from alice] only once"], bodies
+
+
+def test_a_mac_native_participant_names_its_tmux_session(peer):
+    """An agterm session that is NOT an agbridge row has no `agb pane` argv, so
+    its tmux pane id cannot be read out of `foreground` -- its foreground is a
+    shell. Without an explicit target, `@local` could never work at all.
+    """
+    got = peer.parse_participants(["a=macbot@local:macbot", "b=R2"])
+    assert got["a"] == ("macbot", "left", "local", "macbot")
+
+
+def test_an_explicit_tmux_target_beats_the_rows_argv(peer):
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    fetch = Fetcher(framed(("aaa", "bob", "hi")))
+    people = {"alice": ("AAAA1111", "left", "local", "macbot"),
+              "bob": ("BBBB2222", "left", "local", None)}
+    peer.relay_tick(ctl, people, {}, [], 500, ctl.say, fetch)
+    listing = [a for a in fetch.calls if "show-options" in a][0]
+    assert "macbot" in listing, listing
+    assert "%7" not in listing, "the explicit target must win over foreground"
