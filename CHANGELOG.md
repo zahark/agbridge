@@ -223,6 +223,31 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
   stdout, and neither answer says which one it is.
 
+- ⚠️ **`agb install-hooks --agterm` was built, tested, pushed and then WITHDRAWN.** Recorded because
+  the reasoning is the useful part.
+
+  The premise was: a Mac-side agent has no status, so `agb-peer`'s delivery gate — the one that
+  refuses to type into an agent mid-turn or on a permission prompt — cannot protect it. That premise
+  came from seeing `STATUS -` in `agb-peer --list` and **inventing a cause instead of looking**.
+
+  What is actually there: **agterm ships `agent-status/agterm-agent-status.sh` in its app bundle**,
+  and agterm's own hook installer wires it to the same four events. It targets `$AGTERM_SESSION_ID`,
+  forwards `--pane` and `--pane-id` for split resolution, honours `$AGTERM_SOCKET`, no-ops outside
+  agterm and always exits 0. Every agterm user already has it, and it is **more complete than what
+  was written here** — the version in `11b3854` handled none of the pane, socket or outside-agterm
+  cases. Shipping it would have been a worse duplicate of a first-party feature, and on a machine
+  that already had the real one it would have left eight hooks doing one job.
+
+  It was the peer agent on the Mac that caught this, twice: first by noticing the pre-existing hooks
+  in the installer's own dry-run output, then by reading the script when asked to confirm a
+  hypothesis that turned out to be wrong. Neither was reachable from here.
+
+  Kept from the exercise, and worth more than the code: **`--auto-reset` is the reason a status
+  disappears.** agterm's `Stop` hook passes `completed --auto-reset`, so an idle row clears its own
+  glyph and reports no status at all. That is exactly why `docs/agtermctl.md` records agbridge
+  deliberately **not** emitting that flag — a row that clears itself is indistinguishable from a
+  dead one — and the file predicted this failure before anyone went looking for it.
+
 - **`agb-peer` — one agent can type into another's composer, from the Mac.** agterm ships a
   [`two-agent-chat`](https://github.com/umputun/agterm/tree/master/cookbook/two-agent-chat) cookbook
   where two *local* agents talk by injecting keystrokes into each other's pane. This is that, pointed
