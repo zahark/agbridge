@@ -103,6 +103,15 @@ MENU_MARKER = "[enter] attach"
 # delivery check passes vacuously.
 COMPOSER_GLYPH = "❯"
 
+# ⚠️ Claude Code COLLAPSES a long, fast injection into a placeholder --
+# `❯ [Pasted text #1]` / `paste again to expand` -- so the body is simply not
+# on the screen to verify against. MEASURED: 843 characters pasted, and Return
+# submitted it fine. The Return was never the problem; the verification was,
+# and it refused to press it. agterm's own cookbook checks for "a
+# pasted-content indicator" for exactly this reason, and this file had read
+# that sentence and not carried it over.
+PASTE_MARK = "[Pasted text"
+
 # MEASURED: an empty Claude composer reports zero-based cursor column 2, the
 # same value agterm's own cookbook checks for a local agent. ⚠️ It is a SIGNAL,
 # not proof -- `surface cursor --help` says so itself: "AT the prompt it
@@ -848,6 +857,10 @@ def deliver(ctl, session, pane, body, send, lines, say):
     what rules that out, and it is why the Return is a SECOND call.
     """
     target = session["id"]
+    # Read BEFORE typing, so a paste placeholder left over from an earlier
+    # message cannot be mistaken for this one arriving. A count that went up is
+    # evidence; a placeholder merely being present is not.
+    before, _err = ctl.text(target, pane, lines)
     ctl.type(target, pane, body)
     ctl.sleep(1)
     text, err = ctl.text(target, pane, lines)
@@ -857,7 +870,8 @@ def deliver(ctl, session, pane, body, send, lines, say):
     # Compare on the tail of the body: agterm may wrap a long line, and a
     # wrapped line contains no single substring equal to the whole message.
     probe = body[-40:] if len(body) > 40 else body
-    if probe not in text:
+    pasted = text.count(PASTE_MARK) > (before or "").count(PASTE_MARK)
+    if probe not in text and not pasted:
         raise PeerError("typed, but %r never appeared in the peer's pane, so it "
                         "was NOT sent. Look at that row before retrying."
                         % (probe,), 4)

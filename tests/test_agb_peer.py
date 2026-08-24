@@ -1278,3 +1278,45 @@ def test_a_pane_with_no_window_name_still_works(peer):
     peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
     stored = [c for c in run.calls if c[1] == "set" and peer.OPTION_BASE in c]
     assert stored and stored[0][-1] == "agent", stored
+
+
+def test_a_pasted_message_still_gets_its_return(peer):
+    """MEASURED: Claude Code collapses a long, fast injection into
+    `❯ [Pasted text #1]`, so the body is not on screen to verify against.
+    Return submits it fine -- the verification was refusing to press it, which
+    is why every long message needed a human. agterm's own cookbook checks for
+    the paste indicator for exactly this reason.
+    """
+    body = "[chat from alice] " + ("x" * 900)
+
+    class Pasting(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            if text != "\n":
+                self.current[target] = COMPOSER + "❯ [Pasted text #1]"
+            return True
+
+    ctl = Pasting(panes())
+    peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert ctl.typed[-1][2] == "\n", "a pasted message must still be submitted"
+
+
+def test_a_stale_paste_placeholder_is_not_evidence(peer):
+    """It has to be a placeholder that WASN'T there before. Otherwise one
+    earlier long message makes every later failure look like a success."""
+    body = "[chat from alice] " + ("x" * 900)
+
+    class Swallowing(RelayCtl):
+        """Types and NOTHING appears -- the real failure this gate is for."""
+
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            return True
+
+    ctl = Swallowing({"AAAA1111": COMPOSER + "❯ [Pasted text #1]",
+                      "BBBB2222": COMPOSER})
+    with pytest.raises(peer.PeerError) as caught:
+        peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert caught.value.code == 4
+    assert [x[2] for x in ctl.typed] == [body], \
+        "it must not press Return on a placeholder that was already there"

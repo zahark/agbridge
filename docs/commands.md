@@ -1467,6 +1467,13 @@ participant then uses the identical mechanism minus the ssh. Without it the targ
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
 
+⚠️ **Claude Code collapses a long, fast injection into `[Pasted text #1]`** — the body is simply not
+on the screen to verify against. MEASURED at 843 characters, and **Return submits it fine**: the
+Return was never the problem, the verification was, and it refused to press it. So every long
+message needed a human to hit Enter, in both directions. `deliver` accepts a paste placeholder as
+evidence — but only one that **was not there before typing**, or a single earlier long message would
+make every later failure look like a success. agterm's own cookbook checks for the same indicator.
+
 ⚠️ **A wedged agterm client wedges tmux, and `agb-peer` times out rather than hanging.** MEASURED:
 while a `dashboard` had an unresponsive view-only client attached, `tmux list-clients` answered
 instantly and every command that has to *notify* a client — `display-message`, `show-options -t`,
