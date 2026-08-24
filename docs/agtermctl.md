@@ -784,6 +784,52 @@ tmux draws its own status line, so the agent's composer is not the last line of 
 cursor column is robust to that where a `session text` tail-match is not, which inverts the
 cookbook's preference between the two.
 
+## Codex as a peer — MEASURED 2026-08-24, on a Linux cluster host
+
+Everything below was run against `codex-cli 0.149.1`, not read. It matters for `agb-peer`, whose
+delivery half is the only part of that tool that is agent-specific at all.
+
+### The TUI differs in exactly ONE constant
+
+| | Claude Code | Codex |
+|---|---|---|
+| composer glyph | `❯` | **`›`** |
+| empty-composer caret column | 2 | **2** |
+| submit key | Enter | **Enter** |
+| a ~900-char fast injection | collapses to `[Pasted text #1]` | **rendered in full, wrapped** |
+
+So a Codex peer needs no profile worth the name: `classify` accepting either glyph covers it, the
+caret gate is unchanged, and Codex is the *easier* case for verification because nothing is hidden
+behind a placeholder. ⚠️ agterm's own cookbook says "Tab for Codex" — that is about **queueing while
+busy**, not submitting; Enter submits an idle composer.
+
+⚠️ **A submit key sent immediately after the text is LOST.** Measured twice: text then Enter with no
+gap left the line sitting in the composer; text, one second, Enter submitted it. `agb-peer`'s
+`deliver` already sleeps between the two, for an unrelated reason, and is not exposed.
+
+### ✅ `codex queue` is a first-party delivery channel, and it is better than typing
+
+```sh
+codex queue --thread <session uuid> --message "<text>"
+```
+
+Measured: a message queued to a **live** TUI session was answered 16 seconds later. No keystrokes,
+no composer, no caret check, no paste or wrap problem, no submit key — and it **queues**, so it is
+safe to send mid-turn, which is the property the keystroke path cannot have.
+
+Constraints, all measured:
+
+- ⚠️ **The thread UUID only exists after the session's FIRST COMPLETED TURN.** A freshly started
+  Codex has no rollout file and is not addressable. It appears as
+  `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, and the uuid is in the filename.
+- ⚠️ **No app-server daemon is needed** — which contradicts what `codex agents` implies. On this host
+  the daemon could not start at all (`codex app-server daemon start` requires the *standalone*
+  install at `~/.codex/packages/standalone/current/codex`; a shared managed install under
+  `/shared/tools` is not it). `queue` worked regardless.
+- ⚠️ **`queue` succeeds against a DEAD thread too**, silently. Measured: queueing to a killed
+  session's uuid printed `Queued message …` exactly as for a live one. So the command's success is
+  **not a delivery receipt**, and anything that needs one must still read the pane afterwards.
+
 ## Decisions this file settles
 
 ### `--blink`: adopted for `active`, **transitions only**
