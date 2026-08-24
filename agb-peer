@@ -407,13 +407,16 @@ def chunk_words(text, width=CHUNK):
     return lines
 
 
-def encode(sender, recipient, text, now=None):
+def encode(recipient, text, now=None):
     """The lines an agent prints. Pure: its test is a string test.
 
-    `sender` is accepted and deliberately NOT written into the line. The relay
-    signs a message with the participant name of the pane it was found in,
-    which cannot be misstated; a `from` field on the wire could be, and having
-    both invites someone to trust the wrong one.
+    ⚠️ **There is no sender on the wire, and that is the design.** The relay
+    signs a message with the participant name of the PANE it was found in,
+    because an agent cannot print into another agent's pane -- the place is the
+    only part of the envelope that cannot be misstated. A `from` field would be
+    a second, weaker answer to the same question, and having both invites
+    someone to trust the wrong one. `send` refuses `--from` for this reason
+    rather than accepting and ignoring it.
     """
     flat = " ".join((text or "").split())
     parts = chunk_words(flat)
@@ -849,11 +852,17 @@ def main(argv, out=None, ctl=None):
         recipient = opts.get("to")
         if not recipient:
             raise PeerError("send: --to <name> is required")
-        sender = (opts.get("from") or os.environ.get("AGB_PEER_FROM")
-                  or "peer")
-        # No companion "readable" line any more: the wire format IS readable,
-        # so a second copy would only be a second thing to keep in step.
-        out.write(encode(sender, recipient, " ".join(message.split())) + "\n")
+        if opts.get("from"):
+            # Refused rather than ignored. There is no `from` field on the
+            # wire: the relay signs a message with the participant name of the
+            # PANE it was found in, which an agent cannot misstate, and a
+            # `--from` here would look like it changed that and would not.
+            raise PeerError("send takes no --from: a message is signed with "
+                            "the pane it was printed in, which is the only "
+                            "part of it that cannot be misstated")
+        # No companion "readable" line: the wire format IS readable, so a
+        # second copy would only be a second thing to keep in step.
+        out.write(encode(recipient, " ".join(message.split())) + "\n")
         return 0
     if argv and argv[0] == "relay":
         opts = parse_args(argv[1:])

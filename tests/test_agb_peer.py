@@ -460,14 +460,14 @@ def panes(alice="", bob=""):
 def test_the_wire_format_is_readable(peer):
     """The requirement, not an aesthetic: these lines land in a human's
     transcript. Every field is plain and the text is verbatim."""
-    line = peer.encode("alice", "bob", "hello there")
+    line = peer.encode("bob", "hello there")
     assert line.startswith("[peer bob ")
     assert line.endswith("] hello there")
     assert "=" not in line.split("]")[0], "the header stays positional and short"
 
 
 def test_a_message_round_trips(peer):
-    got = peer.find_markers(peer.encode("alice", "bob", "hello there"))
+    got = peer.find_markers(peer.encode("bob", "hello there"))
     assert len(got) == 1
     assert got[0]["to"] == "bob"
     assert got[0]["text"] == "hello there"
@@ -478,7 +478,7 @@ def test_a_long_message_is_split_on_word_boundaries(peer):
     """Never mid-word, because rejoining a split word has to guess about a
     space -- and guessing is the whole thing this format avoids."""
     text = " ".join("word%d" % i for i in range(40))
-    lines = peer.encode("alice", "bob", text).splitlines()
+    lines = peer.encode("bob", text).splitlines()
     assert len(lines) > 1, "the harness message was not long enough to split"
     for line in lines:
         body = line.split("] ", 1)[1]
@@ -490,19 +490,19 @@ def test_every_chunk_fits_an_eighty_column_pane(peer):
     # If header + chunk exceeded the narrowest pane anyone runs, the format
     # would corrupt itself by construction.
     text = " ".join("word%d" % i for i in range(60))
-    for line in peer.encode("alice", "bob", text).splitlines():
+    for line in peer.encode("bob", text).splitlines():
         assert len(line) <= 80, line
 
 
 def test_a_word_longer_than_a_chunk_is_left_intact(peer):
     long_word = "x" * 120
-    got = peer.find_markers(peer.encode("a", "b", "see " + long_word))
+    got = peer.find_markers(peer.encode("b", "see " + long_word))
     assert got[0]["text"] == "see " + long_word
 
 
 def test_an_incomplete_message_is_not_returned_yet(peer):
     # A pane caught mid-print. Not an error -- the next poll sees the rest.
-    lines = peer.encode("a", "b", " ".join("word%d" % i for i in range(40)))
+    lines = peer.encode("b", " ".join("word%d" % i for i in range(40)))
     partial = "\n".join(lines.splitlines()[:-1])
     assert peer.find_markers(partial) == []
 
@@ -514,7 +514,7 @@ def test_a_chunk_that_wrapped_is_refused_not_delivered_short(peer):
     has no header, so it is dropped. The reassembly is then SHORT -- and the
     declared length is what catches it.
     """
-    lines = peer.encode("a", "b", "one two three four five six seven").splitlines()
+    lines = peer.encode("b", "one two three four five six seven").splitlines()
     # simulate the continuation of the last chunk being lost to a wrap
     lines[-1] = lines[-1][:len(lines[-1]) - 6]
     got = peer.find_markers("\n".join(lines))
@@ -525,7 +525,7 @@ def test_a_chunk_that_wrapped_is_refused_not_delivered_short(peer):
 def test_a_repeated_line_is_not_a_second_message(peer):
     # Claude Code shows a command and its output, so the same line can appear
     # twice on one screen.
-    line = peer.encode("a", "b", "echoed twice")
+    line = peer.encode("b", "echoed twice")
     got = peer.find_markers(line + "\n" + line)
     assert len(got) == 1 and got[0]["text"] == "echoed twice"
 
@@ -598,7 +598,7 @@ def test_priming_delivers_nothing(peer):
     sent into somebody's composer. The first pass marks everything seen and
     sends none of it.
     """
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "bob", "old news")))
+    ctl = RelayCtl(panes(alice=peer.encode("bob", "old news")))
     seen, pending = set(), []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, deliver_new=False)
     assert len(seen) == 1, "it must still REMEMBER what it saw"
@@ -610,7 +610,7 @@ def test_a_marker_that_appears_after_priming_is_delivered(peer):
     ctl = RelayCtl(panes())
     seen, pending = set(), []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, deliver_new=False)
-    ctl.current["AAAA1111"] += "\n" + peer.encode("alice", "bob", "new news")
+    ctl.current["AAAA1111"] += "\n" + peer.encode("bob", "new news")
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
     bodies = [t for (target, pane, t) in ctl.typed if t != "\n"]
     assert bodies == ["[chat from alice] new news"]
@@ -618,7 +618,7 @@ def test_a_marker_that_appears_after_priming_is_delivered(peer):
 
 
 def test_a_message_is_delivered_once_however_often_the_pane_is_read(peer):
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "bob", "once please")))
+    ctl = RelayCtl(panes(alice=peer.encode("bob", "once please")))
     seen, pending = set(), []
     for _ in range(4):
         peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
@@ -632,7 +632,7 @@ def test_the_relay_never_types_a_marker(peer):
     the next poll. If it echoed the marker the message would bounce for ever,
     so it types the DECODED prose and the recipient's pane matches nothing.
     """
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "bob", "no loops")))
+    ctl = RelayCtl(panes(alice=peer.encode("bob", "no loops")))
     seen, pending = set(), []
     for _ in range(5):
         peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
@@ -642,14 +642,19 @@ def test_the_relay_never_types_a_marker(peer):
         "five passes over a pane holding the delivered text produced one send"
 
 
-def test_the_sender_is_the_pane_not_the_from_field(peer):
+def test_the_sender_is_the_pane_and_the_wire_carries_no_other_claim(peer):
     """A pane is a place, and an agent cannot print into another agent's pane.
 
-    So the participant name of the pane the marker was found in is the only
-    part of the envelope that cannot be misstated, and it is what signs the
-    message. Here `from` claims to be someone else and is ignored.
+    So the participant name of the pane a message was found in is the only part
+    of the envelope that cannot be misstated, and it is what signs the message.
+    There is deliberately no sender field on the wire to disagree with it --
+    this pins both halves: the line carries no name, and the delivered body
+    carries the pane's.
     """
-    ctl = RelayCtl(panes(alice=peer.encode("eve", "bob", "trust me")))
+    line = peer.encode("bob", "trust me")
+    assert "alice" not in line and "eve" not in line, \
+        "the wire must carry no sender at all"
+    ctl = RelayCtl(panes(alice=line))
     seen, pending = set(), []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
     bodies = [t for (_, _, t) in ctl.typed if t != "\n"]
@@ -662,7 +667,7 @@ def test_a_busy_recipient_holds_the_message_instead_of_blocking(peer):
     A refusal leaves the message pending and the next tick tries again, so one
     busy participant cannot stall every other conversation.
     """
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "bob", "held")),
+    ctl = RelayCtl(panes(alice=peer.encode("bob", "held")),
                    cursors=[41, 2])
     seen, pending = set(), []
     left = peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
@@ -686,7 +691,7 @@ def test_a_detached_participant_is_reported_and_read_as_silent(peer):
 
 
 def test_a_message_to_a_stranger_is_dropped_with_a_reason(peer):
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "carol", "who?")))
+    ctl = RelayCtl(panes(alice=peer.encode("carol", "who?")))
     seen, pending = set(), []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
     assert ctl.typed == []
@@ -695,7 +700,7 @@ def test_a_message_to_a_stranger_is_dropped_with_a_reason(peer):
 
 
 def test_a_self_addressed_message_is_dropped(peer):
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "alice", "hello me")))
+    ctl = RelayCtl(panes(alice=peer.encode("alice", "hello me")))
     seen, pending = set(), []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say)
     assert ctl.typed == []
@@ -721,8 +726,7 @@ def test_the_relay_reads_scrollback_not_just_the_screen(peer):
 
 def test_send_prints_a_marker_and_touches_no_agtermctl(peer):
     out = io.StringIO()
-    assert peer.main(["send", "--to", "bob", "--from", "alice", "hi"], out,
-                     None) == 0
+    assert peer.main(["send", "--to", "bob", "hi"], out, None) == 0
     got = peer.find_markers(out.getvalue())
     assert len(got) == 1 and got[0]["to"] == "bob" and got[0]["text"] == "hi"
 
@@ -746,7 +750,7 @@ def test_cmd_relay_primes_before_it_delivers(peer):
     test green while a real relay replayed the whole scrollback on startup --
     found by mutation, not by reading.
     """
-    ctl = RelayCtl(panes(alice=peer.encode("alice", "bob", "old news")))
+    ctl = RelayCtl(panes(alice=peer.encode("bob", "old news")))
     out = io.StringIO()
     rc = peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True,
                         out)
@@ -763,12 +767,19 @@ def test_cmd_relay_reports_what_each_name_resolved_to(peer):
     assert "alice" in body and "bob" in body and "AAAA1111"[:8] in body
 
 
+def test_send_refuses_a_from_rather_than_ignoring_it(peer):
+    # A flag that silently does nothing is worse than no flag: it looks like
+    # it changed who the message is signed by, and cannot.
+    with pytest.raises(peer.PeerError):
+        peer.main(["send", "--to", "bob", "--from", "eve", "hi"], io.StringIO(),
+                  None)
+
+
 def test_send_writes_the_message_in_plain_sight(peer):
     """No companion echo line: the wire format is already readable, and a
     second copy would only be a second thing to keep in step."""
     out = io.StringIO()
-    peer.main(["send", "--to", "bob", "--from", "alice", "hello there"], out,
-              None)
+    peer.main(["send", "--to", "bob", "hello there"], out, None)
     body = out.getvalue()
     assert "hello there" in body
     assert len([l for l in body.splitlines() if l.strip()]) == 1
@@ -789,7 +800,7 @@ def test_the_relay_refuses_a_corrupt_message(peer):
     a truncated sentence in somebody's composer, indistinguishable from a
     complete one.
     """
-    lines = peer.encode("alice", "bob",
+    lines = peer.encode("bob",
                         "one two three four five six seven").splitlines()
     lines[-1] = lines[-1][:len(lines[-1]) - 6]
     ctl = RelayCtl(panes(alice="\n".join(lines)))
@@ -806,3 +817,53 @@ def test_a_header_must_start_its_line(peer):
     must not become a message."""
     quoted = 'he wrote "[peer bob abc12 1/1 2] hi" in passing'
     assert peer.find_markers(quoted) == []
+
+
+# --------------------------------------------------------------- the skill
+
+SKILL_PATH = os.path.join(REPO_ROOT, "skills", "agb-peer", "SKILL.md")
+
+
+def test_the_skill_exists_and_has_frontmatter(peer):
+    body = io.open(SKILL_PATH, encoding="utf-8").read()
+    assert body.startswith("---\n"), "a skill needs YAML frontmatter"
+    head = body.split("---", 2)[1]
+    assert "name:" in head and "description:" in head
+
+
+def test_every_flag_the_skill_names_is_a_real_flag(peer):
+    """A cross-file agreement with no single source of truth.
+
+    The skill is prose an agent follows literally. A flag renamed in the parser
+    and left in the skill sends every agent down a path that exits 1 with
+    `unknown option`, and nothing in the suite would notice -- the skill is not
+    code and is never executed.
+    """
+    import re
+    body = io.open(SKILL_PATH, encoding="utf-8").read()
+    known = set(peer.PEER_FLAGS) | set(peer.PEER_VALUE_ARGS)
+    named = set()
+    for line in body.splitlines():
+        if "agb-peer" not in line:
+            continue
+        named.update(re.findall(r"--[a-z][a-z-]*", line))
+    assert named, "the walk found no flags -- the skill or this parser changed"
+    assert named <= known, "the skill names flags agb-peer does not have: %s" % (
+        sorted(named - known),)
+
+
+def test_the_verbs_the_skill_names_are_dispatched(peer):
+    body = io.open(SKILL_PATH, encoding="utf-8").read()
+    assert "agb-peer send" in body, "the skill must tell an agent how to send"
+    # `send` reaching the parser at all is what this proves: an undispatched
+    # verb would be read as the message and refused for having no --to.
+    with pytest.raises(peer.PeerError):
+        peer.main(["send", "hi"], io.StringIO(), None)
+
+
+def test_the_skill_carries_the_deadlock_rule(peer):
+    """agterm's own cookbook calls this out, and it is the failure mode this
+    arrangement is most prone to: two agents each waiting on the other."""
+    body = io.open(SKILL_PATH, encoding="utf-8").read().lower()
+    assert "deadlock" in body
+    assert "never poll" in body

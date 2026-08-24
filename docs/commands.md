@@ -1422,6 +1422,43 @@ plus `--lines` bounds what is read; a file-based transport could not lose one, a
 of using the screen — which is the transport, deliberately, because it is the only one that works
 for all three pairings without a shared disk or a second ssh.
 
+### The agent's half: `skills/agb-peer/SKILL.md`
+
+An agent will not use any of this unless it is told to, so the repo ships one skill:
+
+```sh
+cp -r skills/agb-peer ~/.claude/skills/          # on every participant's machine
+```
+
+**One file, not one per agent** — agterm's cookbook needs two because each agent drives delivery
+itself and they differ (Tab vs Return to submit, different command names). Here the relay absorbs
+every difference, so the agent side is identical whether it runs on a cluster host or the Mac. That
+is the same uniformity that made the screen the transport.
+
+Three lines in it must be edited before first use: the path to `agb-peer`, the agent's own
+participant name, and who it may write to. The names are the ones the relay was started with.
+
+The rules in it are not decoration; two are lifted from agterm's cookbook because they are failures
+somebody hit:
+
+- ⚠️ **Never poll or wait for a reply.** If both agents wait on each other, nothing moves. Send and
+  end the turn; the reply arrives as a prompt. This is the failure the arrangement is most prone to.
+- ⚠️ **Never touch the peer's terminal directly** — no `agtermctl session type`, no `tmux send-keys`,
+  no reading its pane. Delivery is gated on the peer not being mid-turn and its composer being
+  empty; going around that types into whatever is on screen, including a permission dialog.
+- **Send through `--stdin` and a quoted heredoc**, never as an argument: a shell mangles quotes,
+  backticks and `$`, and a message is prose.
+- **Print the message and let the turn end.** The lines *are* the message, and a large print
+  immediately afterwards scrolls them out of the buffer before the relay reads them.
+
+⚠️ **`send` refuses `--from`.** There is no sender field on the wire: the relay signs a message with
+the participant name of the pane it was found in, because an agent cannot print into another agent's
+pane, so the place is the only part of the envelope that cannot be misstated. A `--from` would look
+like it changed that and could not, so it is an error rather than something ignored.
+
+A test asserts every flag the skill names is a flag the parser has. The skill is prose an agent
+follows literally and is never executed, so a rename on one side is otherwise silent.
+
 ### What it inherits from the cookbook, unfixed
 
 The composer check cannot tell an empty composer from one whose caret was moved back over text —

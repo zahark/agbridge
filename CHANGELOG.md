@@ -324,6 +324,28 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   "gone" look like "quiet"; and ids are compared for equality only — base36 milliseconds stop sorting
   correctly once the digit count changes, around 2059.
 
+  **`skills/agb-peer/SKILL.md` is the agent's half** — an agent will not use any of this unless it
+  is told to. `cp -r skills/agb-peer ~/.claude/skills/` on every participant's machine, then edit
+  three lines: the path to `agb-peer`, the agent's own participant name, and who it may write to.
+
+  **One skill file, not one per agent.** agterm's cookbook ships two because each agent drives
+  delivery itself and they differ — Tab versus Return to submit, different command names. Here the
+  relay absorbs every difference, so the agent side is byte-identical whether it runs on a cluster
+  host or the Mac. Same uniformity that made the screen the transport.
+
+  Two of its rules are lifted from the cookbook because they are failures somebody hit: **never poll
+  or wait for a reply** (two agents each waiting on the other is a deadlock, and it is what this
+  arrangement is most prone to), and **never touch the peer's terminal directly** — delivery is
+  gated, and going around it types into whatever is on screen, including a permission dialog.
+
+  Two warts fixed on the way: **`send` now refuses `--from`** instead of accepting and ignoring it,
+  and `encode` lost the sender parameter it never wrote. There is no sender on the wire by design —
+  the relay signs with the pane a message was found in, because an agent cannot print into another
+  agent's pane — and a flag that looks like it changes that, and cannot, is worse than no flag.
+
+  A test asserts **every flag the skill names is one the parser has**. The skill is prose an agent
+  follows literally and is never executed, so a rename on one side is otherwise silent.
+
   **Carried forward, unfixed, and they are the cookbook's own**: the cursor check cannot tell an
   empty composer from one whose caret was moved back over text (agterm's `--help` says so); sending
   to Claude Code interrupts rather than queues; there is no transcript; and a model may decline to
