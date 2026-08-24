@@ -330,6 +330,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ✅ **The paste fix is confirmed live**: with the relay restarted, a ~1,150-character message from
+  the Mac agent arrived and **submitted itself** with no keypress. Before it, every message over a
+  few hundred characters needed a human to press Enter, in both directions.
+
+  ✅ **And the peer channel did real work**: the Mac agent was asked to run four read-only
+  `agtermctl --help` captures and report back, which closed an **ASSUMED** clause `docs/agtermctl.md`
+  had carried since it was written — `session status bogus` really is refused (`error: invalid
+  status`, exit 1), so the Task 4b stub is not stricter than reality. It also turned up `--sound`,
+  `--color` and `--shape` on `session status`, and a **repeatable** `session close --target`, which
+  no survey had. Recorded there as CONFIRMED behaviour with PARAPHRASED text, since a relayed
+  summary is a weaker provenance than a paste and is labelled rather than blended in.
+
   ✅ **FARM ↔ MAC VERIFIED, 2026-08-24 — the pairing that motivated the whole design.** A Claude
   running in tmux inside an agterm session on the Mac exchanged messages both ways with a Claude on
   a Linux cluster host. The `@local` path drained the Mac agent's tmux **without ssh**, and the farm
