@@ -1282,6 +1282,75 @@ attached to from outside, and agbridge would record the outer session's name for
 It exists because the tmux session name is resolved **once**, at the agent's first hook, and never
 refreshed — so naming has to happen before the agent starts, and forgetting is easy.
 
+## `agb-peer` — Mac, not installed by default
+
+```
+agb-peer --to <peer> [<message> | --stdin] [options]
+agb-peer --list
+```
+
+Types a message into **another agent's composer** — agterm's own
+[`cookbook/two-agent-chat`](https://github.com/umputun/agterm/tree/master/cookbook/two-agent-chat)
+pointed at agbridge rows, where the agent is in tmux on a cluster host rather than in the next pane.
+It works because keystrokes survive agterm → `ssh -t` → tmux → the composer (CONFIRMED live
+2026-08-24; `docs/agtermctl.md` has the transcript).
+
+⚠️ **It is not wired into `install.sh` and nothing in `agb`/`agb_mac`/`agb_ops` imports it.** Copy it
+onto `$PATH` yourself. It is an experiment on top of agbridge, not part of the bridge.
+
+| flag | |
+|---|---|
+| `--to <peer>` | row id, id prefix, or a substring of the row's title. Tried in that order, first non-empty tier wins |
+| `--stdin` | read the message from stdin instead of an argument |
+| `--from <label>` | how the message is signed; default `$AGB_PEER_FROM`, then `peer` |
+| `--pane <kind>` | `left` \| `right` \| `scratch`, default `left` |
+| `--no-send` | type the message but do not press Return |
+| `--no-arm` | refuse an unattached row instead of attaching it |
+| `--force` | deliver even when the peer's status says it is busy |
+| `--retries <n>` / `--interval <secs>` | re-checks of a busy peer; default 5 × 8 s |
+| `--dry-run` | say what would happen; touch nothing |
+| `--list` | every row with its status and its **mode** |
+
+Exit codes are distinct because the caller is usually another agent: **0** delivered, **1**
+usage/environment, **2** no such peer or ambiguous, **3** peer busy after the retries, **4** typed
+but not verified — *and therefore not sent*.
+
+### The three gates, and why they are three
+
+- **Mode.** A row's pane is either `agb pane`'s menu (unattached) or the agent's composer
+  (attached), and the same bytes mean different things in each. `session text` is the only thing
+  that can tell them apart — ⚠️ **`foreground` cannot**, because it is the argv the session was
+  *launched* with and an agbridge row always reports `agb pane`. A menu row is armed with a **bare
+  newline**, which is the one input `agb pane` cannot act on (`""` after its `.strip()`), so arming
+  can never hit the branch that closes the row.
+- **Status.** `tree` carries the status the bridge last set, which came from the peer's own Claude
+  Code hooks — a fact about the *agent*, not a guess about a screen, and the one signal the cookbook
+  has no equivalent for. `active` and `blocked` refuse. ⚠️ `idle` is allowed through: it is the
+  bridge's word for *no current information*, so refusing it would strand every row whose feed
+  blinked.
+- **Composer.** `surface cursor` must report the empty-composer column. This is the gate that
+  matters in practice — the very first row this was ever pointed at had an unsubmitted draft sitting
+  in it, which a naive `session type` would have appended to and submitted together on the next
+  Return.
+
+Then it types, **re-reads the pane to confirm the text rendered**, and only then sends Return as a
+*second* call. That ordering is not defensive coding: a permission dialog can appear between the
+cursor check and the keystrokes and swallow them, and pressing Return would then be answering the
+dialog.
+
+⚠️ **A message that strips to a word `agb pane` acts on — `q`, `quit`, `exit`, `s`, `shell`,
+`split`, `d`, `drawer`, `scratch` — is refused outright, in either mode.** Mode detection is a
+screen read and a screen read can be wrong; the cost of being wrong on those nine words is a
+destroyed row rather than a lost message. That list is a cross-file agreement with `agb_ops`'
+`PANE_QUIT_WORDS`/`PANE_SPLIT_WORDS`/`PANE_DRAWER_WORDS`, pinned by a test.
+
+### What it inherits from the cookbook, unfixed
+
+The composer check cannot tell an empty composer from one whose caret was moved back over text —
+agterm's own `surface cursor --help` says so. Sending to Claude Code **interrupts** rather than
+queues. There is no transcript. And a model may simply decline to answer a perfectly delivered
+message.
+
 ## `agb version`
 
 ```

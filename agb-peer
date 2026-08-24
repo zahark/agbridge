@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+# agb-peer -- deliver a message into another agent's composer, from the Mac.
+#
+# agterm's own `cookbook/two-agent-chat` lets two LOCAL agents talk: each owns a
+# pane of one split, and each types into the other's composer with
+# `agtermctl session type`. This is the same idea pointed at agbridge rows,
+# where the agent is not on this machine at all -- it is in tmux on a cluster
+# host, and the row's pane is running `agb pane` over `ssh -t`.
+#
+# That works. Keystrokes survive agterm -> ssh -t -> tmux -> the composer, and
+# `surface cursor` reports column 2 for an empty Claude composer through the
+# same two hops. Both CONFIRMED live 2026-08-24; the transcript is in
+# `docs/agtermctl.md` -> "Re-surveyed against the installed binary".
+#
+# What is different, and why this file is not just the cookbook's script:
+#
+#   * **A row's pane has TWO MODES and they consume text differently.**
+#     Unattached it is `agb pane`'s menu prompt; attached it is the agent's
+#     composer. Send a message into the first and it is swallowed whole and the
+#     row attaches -- or, if the message strips to `q`/`quit`/`exit`, the row is
+#     DESTROYED, because agterm closes a session when its command exits.
+#   * **agbridge cannot tell you which mode**, deliberately: attaching changes
+#     no agent state, which is what makes its four-word status vocabulary
+#     trustworthy. Only `session text` can, and `foreground` cannot -- it is the
+#     argv the session was LAUNCHED with, so an agbridge row reports `agb pane`
+#     whether or not anybody is attached.
+#   * **A bare newline is the safe arming primitive.** `agb pane` strips its
+#     input, and "" matches none of its three word sets, so it falls through to
+#     the attach and cannot hit the destructive branch.
+#   * **`tree` already carries the agent's status**, because the bridge puts it
+#     there. That is a hook-reported fact about the AGENT rather than a guess
+#     read off a screen, and it is the one signal the cookbook has no equivalent
+#     for. See `peer_busy` for what it is and is not evidence of.
+#
+# Usage:
+#
+#   agb-peer --to deploy-review "have you seen this before?"
+#   agb-peer --to 8D51158B --stdin < message.txt
+#   agb-peer --to deploy-review --no-send "draft this, I will hit return"
+#   agb-peer --list
+#
+# Exit codes are distinct because the caller is usually another agent:
+#   0 delivered   1 usage/environment   2 no such peer (or ambiguous)
+#   3 peer busy (still busy after the retries)   4 typed but NOT verified
+#
+# This script is deliberately NOT wired into `install.sh`. It is a Mac-side
+# experiment on top of agbridge, not part of the bridge, and nothing in `agb`,
+# `agb_mac` or `agb_ops` imports it.
+
+import json
+import os
+import subprocess
+import sys
+import time
+
+VERSION = "0.1.0"
+
+CTL = os.environ.get("AGB_AGTERMCTL", "agtermctl")
+
+# MEASURED 2026-08-24, and it is NOT what 0.24.0's `--help` says. The help
+# documents `primary/left/top, split/right/bottom, or scratch`; the binary
+# rejects `primary`, `top`, `split` and `bottom` with `invalid pane: X`. The
+# accepted set is the old one. `docs/agtermctl.md` has the table and the reason
+# this matters: "modernising" a caller to the documented spelling breaks it,
+# with agterm's own help as the justification.
+PANE_KINDS = ("left", "right", "scratch")
+
+# `agb pane`'s prompt, verbatim from `agb_ops.PANE_PROMPT`. A row showing this
+# is UNATTACHED -- the pane is a menu, not a composer. Matched as a substring
+# because the prompt is followed by whatever the human last typed.
+MENU_MARKER = "[enter] attach"
+
+# Claude Code draws its composer with this glyph. Used only for the POST-type
+# verification -- never to decide the composer is empty, because an empty
+# composer's rendering has not been recorded and guessing at it is how a
+# delivery check passes vacuously.
+COMPOSER_GLYPH = "❯"
+
+# MEASURED: an empty Claude composer reports zero-based cursor column 2, the
+# same value agterm's own cookbook checks for a local agent. ⚠️ It is a SIGNAL,
+# not proof -- `surface cursor --help` says so itself: "AT the prompt it
+# establishes nothing, since the caret may have been moved back over text that
+# is still there." We take it because it is the cheapest gate that catches the
+# case that actually happens (a human left a draft), not because it is sound.
+EMPTY_COLUMN = 2
+
+# Anything `agb pane` acts on rather than passing through. A message that strips
+# to one of these must never be sent, in EITHER mode: mode detection is a
+# screen read and a screen read can be wrong, and the cost of being wrong here
+# is a destroyed row rather than a lost message.
+# Mirrors agb_ops.PANE_QUIT_WORDS + PANE_SPLIT_WORDS + PANE_DRAWER_WORDS.
+PANE_WORDS = ("q", "quit", "exit", "s", "shell", "split", "d", "drawer",
+              "scratch")
+
+MODE_MENU = "menu"
+MODE_COMPOSER = "composer"
+MODE_UNKNOWN = "unknown"
+
+# Statuses agbridge can put on a row. `active` is mid-turn, `blocked` is sitting
+# on a permission dialog -- typing into either is what the cookbook's README
+# calls its "Dialog Window Vulnerability".
+BUSY_STATUSES = ("active", "blocked")
+
+PEER_FLAGS = ("--stdin", "--no-send", "--no-arm", "--dry-run", "--list",
+              "--force", "--version")
+PEER_VALUE_ARGS = ("--to", "--pane", "--from", "--retries", "--interval",
+                   "--lines")
+
+USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
+       agb-peer --list
+
+  --to <peer>        row id, id prefix, or a substring of the row's title
+  --stdin            read the message from stdin instead of an argument
+  --from <label>     how the message is signed (default $AGB_PEER_FROM, "peer")
+  --pane <kind>      left | right | scratch (default left)
+  --no-send          type the message but do not press Return
+  --no-arm           refuse an unattached row instead of attaching it
+  --force            deliver even when the peer's status says it is busy
+  --retries <n>      times to re-check a busy peer (default 5)
+  --interval <secs>  seconds between those checks (default 8)
+  --lines <n>        lines of pane text to read (default 40)
+  --dry-run          say what would happen; touch nothing
+  --list             show candidate rows and their status
+"""
+
+
+class PeerError(Exception):
+    """Anything the caller should see as a one-line message plus an exit code."""
+
+    def __init__(self, message, code=1):
+        Exception.__init__(self, message)
+        self.code = code
+
+
+# ---------------------------------------------------------------------------
+# pure helpers -- everything here is a string/dict test, no subprocess
+# ---------------------------------------------------------------------------
+
+def parse_args(argv):
+    """Hand-rolled, matching the convention the other thirteen parsers use.
+
+    `--opt=` with an empty inline value is a MISSING-VALUE error rather than an
+    empty string, in this parser as in all of them: an empty `--to` would
+    otherwise match the first row in the tree.
+    """
+    opts = {"pane": "left", "retries": "5", "interval": "8", "lines": "40"}
+    words = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            words.extend(argv[i + 1:])
+            break
+        if arg.startswith("--"):
+            name, sep, inline = arg.partition("=")
+            if name in PEER_FLAGS:
+                if sep:
+                    raise PeerError("%s takes no value" % (name,))
+                opts[name[2:].replace("-", "_")] = True
+            elif name in PEER_VALUE_ARGS:
+                if sep:
+                    if not inline:
+                        raise PeerError("%s needs a value" % (name,))
+                    value = inline
+                else:
+                    i += 1
+                    if i >= len(argv):
+                        raise PeerError("%s needs a value" % (name,))
+                    value = argv[i]
+                opts[name[2:].replace("-", "_")] = value
+            else:
+                raise PeerError("unknown option: %s" % (name,))
+        else:
+            words.append(arg)
+        i += 1
+    opts["message"] = " ".join(words) if words else None
+    return opts
+
+
+def positive_int(value, name):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise PeerError("%s must be a whole number, not %r" % (name, value))
+    if number < 0:
+        raise PeerError("%s must not be negative" % (name,))
+    return number
+
+
+def sessions_of(tree):
+    """Every session object in `tree --json`, workspace order.
+
+    Tolerant of a missing level rather than raising: a tree shape we do not
+    recognise should read as "no rows here", which the caller reports as a
+    peer that cannot be found -- not as a traceback that says nothing.
+    """
+    found = []
+    spaces = (((tree or {}).get("result") or {}).get("tree") or {}).get(
+        "workspaces")
+    if not isinstance(spaces, list):
+        return found
+    for space in spaces:
+        if not isinstance(space, dict):
+            continue
+        for session in space.get("sessions") or []:
+            if isinstance(session, dict) and session.get("id"):
+                found.append(session)
+    return found
+
+
+def match_sessions(sessions, want):
+    """Sessions matching `want`: exact id, then id prefix, then name substring.
+
+    Tried in that order and the FIRST non-empty tier wins, so an exact id is
+    never made ambiguous by a name that happens to contain it. Case-insensitive
+    for the two loose tiers only -- an id is echoed back by agterm and is
+    compared as given.
+    """
+    if not want:
+        return []
+    exact = [s for s in sessions if s.get("id") == want]
+    if exact:
+        return exact
+    lowered = want.lower()
+    prefix = [s for s in sessions
+              if str(s.get("id", "")).lower().startswith(lowered)]
+    if prefix:
+        return prefix
+    return [s for s in sessions
+            if lowered in str(s.get("name") or "").lower()]
+
+
+def surface_of(session, kind):
+    """The surface id for one pane, READ from `surfaces` rather than built.
+
+    The id happens to be `surface:<session id>:<kind>`, so concatenation would
+    work today. Reading it is not pedantry: `surfaces` is also what says which
+    panes exist, so a missing entry is the answer to "is there a split?" and a
+    built string would instead produce a confident `invalid surface` later.
+    """
+    for surface in session.get("surfaces") or []:
+        if isinstance(surface, dict) and surface.get("kind") == kind:
+            return surface.get("id")
+    return None
+
+
+def classify(text):
+    """Which mode a pane is in, from its buffer.
+
+    Three-valued on purpose, and `MODE_UNKNOWN` is not a failure: a pane that
+    shows neither marker may be an agent whose UI we do not recognise, a pane
+    mid-redraw, or a shell. The caller refuses on it rather than guessing,
+    because both wrong guesses are bad in different ways.
+    """
+    if text is None:
+        return MODE_UNKNOWN
+    if MENU_MARKER in text:
+        return MODE_MENU
+    if COMPOSER_GLYPH in text:
+        return MODE_COMPOSER
+    return MODE_UNKNOWN
+
+
+def peer_busy(status):
+    """Is the peer's agterm status a reason not to type? Returns a reason or None.
+
+    ⚠️ What this IS: the state the AGENT's own Claude Code hooks reported, which
+    the bridge pushed into agterm and `tree` reads back. That is strictly better
+    evidence than the cookbook's caret check, which is a guess about a screen.
+
+    ⚠️ What it is NOT. `idle` is emitted by the bridge alone, for a feed that
+    went quiet and for a removed agent -- so it means "no current information",
+    not "ready", and it is allowed through for that reason: refusing it would
+    strand every row whose bridge is briefly disconnected. And a status can be
+    up to REASSERT_INTERVAL (30 s) stale, so `completed` is a necessary
+    condition and never a sufficient one. The composer check is what actually
+    protects the message.
+    """
+    state = (status or "").strip().lower()
+    if state in BUSY_STATUSES:
+        return {"active": "the peer is mid-turn",
+                "blocked": "the peer is waiting on a permission prompt"}[state]
+    return None
+
+
+def compose(message, sender):
+    """The line that lands in the peer's composer.
+
+    Prefixed for the reason agterm's cookbook gives: an agent that receives a
+    bare sentence reads it as a fresh instruction from its human. Naming the
+    sender says "this is a conversation", which is the difference between a
+    reply and a new task.
+    """
+    text = (message or "").strip()
+    if not text:
+        raise PeerError("refusing to send an empty message")
+    if "\n" in text:
+        # A newline IS the submit key, so one inside the body would send the
+        # first line on its own and leave the rest as a second turn.
+        text = " ".join(part.strip() for part in text.splitlines() if part.strip())
+    if text.lower() in PANE_WORDS:
+        raise PeerError(
+            "refusing to send %r: `agb pane` acts on that word, and if the "
+            "mode read was wrong it would close or split the row rather than "
+            "reach the agent" % (text,))
+    return "[chat from %s] %s" % (sender, text)
+
+
+# ---------------------------------------------------------------------------
+# the agtermctl seam -- one door, injectable, never raises on a tool failure
+# ---------------------------------------------------------------------------
+
+def run_ctl(argv):
+    """(rc, stdout, stderr). The only place a subprocess is started."""
+    try:
+        proc = subprocess.Popen([CTL] + list(argv),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise PeerError("%s: %s" % (CTL, exc))
+    out, err = proc.communicate()
+    return (proc.returncode,
+            out.decode("utf-8", "replace"),
+            err.decode("utf-8", "replace"))
+
+
+class Ctl(object):
+    """Thin typed wrapper so the flow below reads as intent, not as argv."""
+
+    def __init__(self, run=None, sleep=None):
+        self.run = run or run_ctl
+        self.sleep = sleep or time.sleep
+
+    def tree(self):
+        rc, out, err = self.run(["tree", "--json"])
+        if rc != 0:
+            raise PeerError("tree failed: %s" % (err.strip() or rc,))
+        try:
+            return json.loads(out)
+        except ValueError:
+            raise PeerError("tree returned something that is not JSON")
+
+    def text(self, target, pane, lines):
+        rc, out, err = self.run(["session", "text", "--target", target,
+                                 "--pane", pane, "--lines", str(lines)])
+        if rc != 0:
+            return None, (err.strip() or "exit %s" % (rc,))
+        return out, None
+
+    def cursor(self, surface):
+        rc, out, err = self.run(["surface", "cursor", "--target", surface])
+        if rc != 0:
+            return None, (err.strip() or "exit %s" % (rc,))
+        try:
+            return int(out.strip()), None
+        except ValueError:
+            return None, "cursor returned %r" % (out.strip(),)
+
+    def type(self, target, pane, text):
+        rc, out, err = self.run(["session", "type", text,
+                                 "--target", target, "--pane", pane])
+        if rc != 0:
+            raise PeerError("session type failed: %s" % (err.strip() or rc,))
+        return True
+
+
+# ---------------------------------------------------------------------------
+# the flow
+# ---------------------------------------------------------------------------
+
+def resolve(ctl, want):
+    """The peer session, or a PeerError naming what to do about it."""
+    sessions = sessions_of(ctl.tree())
+    if not sessions:
+        raise PeerError("agterm reports no sessions at all", 2)
+    matches = match_sessions(sessions, want)
+    if not matches:
+        raise PeerError("no row matches %r -- `agb-peer --list` shows them"
+                        % (want,), 2)
+    if len(matches) > 1:
+        names = ", ".join(str(s.get("name") or s.get("id")) for s in matches[:5])
+        raise PeerError("%r matches %d rows (%s) -- use a longer prefix or the "
+                        "row id" % (want, len(matches), names), 2)
+    return matches[0]
+
+
+def ensure_composer(ctl, session, pane, arm, lines, say):
+    """Get the pane into composer mode, arming it if that is allowed.
+
+    Arming is a real side effect on somebody's row -- it attaches it -- so it
+    is reported rather than done quietly, and `--no-arm` refuses instead. The
+    poll after it exists because the attach is an `ssh` and a `tmux attach`, so
+    the composer is not there on the next syscall.
+    """
+    target = session["id"]
+    text, err = ctl.text(target, pane, lines)
+    if err:
+        raise PeerError("cannot read the peer's pane: %s" % (err,))
+    mode = classify(text)
+    if mode == MODE_COMPOSER:
+        return text
+    if mode == MODE_UNKNOWN:
+        raise PeerError(
+            "the peer's pane shows neither `agb pane`'s menu nor a composer, "
+            "so there is no safe place to type. Look at it first.", 3)
+    # menu mode
+    if not arm:
+        raise PeerError("the peer's row is not attached, and --no-arm was "
+                        "given. Press [enter] on it, or drop --no-arm.", 3)
+    say("peer is at the `agb pane` menu -- attaching it with a bare newline")
+    ctl.type(target, pane, "\n")
+    for _ in range(10):
+        ctl.sleep(1)
+        text, err = ctl.text(target, pane, lines)
+        if err:
+            continue
+        if classify(text) == MODE_COMPOSER:
+            return text
+    raise PeerError("the row did not reach a composer after attaching -- it may "
+                    "be a shell, or the ssh may be slow or failing", 3)
+
+
+def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
+    """Block until the peer's status and composer both say it is safe to type.
+
+    Two gates, and they answer different questions. `status` is about the
+    AGENT (is it mid-turn, is it on a permission prompt) and comes from its own
+    hooks. The cursor column is about the COMPOSER (has a human left a draft),
+    and is the one that fired on the first row this was ever pointed at.
+    """
+    target = session["id"]
+    surface = surface_of(session, pane)
+    if not surface:
+        raise PeerError("that row has no %r pane" % (pane,), 2)
+    attempt = 0
+    while True:
+        reason = None if force else peer_busy(session.get("status"))
+        if reason is None:
+            column, err = ctl.cursor(surface)
+            if err:
+                raise PeerError("cannot read the composer's cursor: %s" % (err,))
+            if column == EMPTY_COLUMN:
+                return
+            reason = ("the composer is not empty (cursor at column %s, empty "
+                      "is %s) -- somebody has a draft in it"
+                      % (column, EMPTY_COLUMN))
+        attempt += 1
+        if attempt > retries:
+            raise PeerError("%s, still, after %d checks. Nothing was typed."
+                            % (reason, retries), 3)
+        say("waiting: %s (%d/%d)" % (reason, attempt, retries))
+        ctl.sleep(interval)
+        # Re-read the session: `status` is a snapshot and this is the only
+        # thing that can change our mind about it.
+        for fresh in sessions_of(ctl.tree()):
+            if fresh.get("id") == target:
+                session = fresh
+                break
+
+
+def deliver(ctl, session, pane, body, send, lines, say):
+    """Type, verify it rendered, and only then press Return.
+
+    The verification is the cookbook's, and its value is not that typing might
+    fail -- it is that a permission dialog can appear between the cursor check
+    and the keystrokes, swallowing them. Seeing our own text on the screen is
+    what rules that out, and it is why the Return is a SECOND call.
+    """
+    target = session["id"]
+    ctl.type(target, pane, body)
+    ctl.sleep(1)
+    text, err = ctl.text(target, pane, lines)
+    if err:
+        raise PeerError("typed, but the pane could not be read back, so it was "
+                        "NOT sent: %s" % (err,), 4)
+    # Compare on the tail of the body: agterm may wrap a long line, and a
+    # wrapped line contains no single substring equal to the whole message.
+    probe = body[-40:] if len(body) > 40 else body
+    if probe not in text:
+        raise PeerError("typed, but %r never appeared in the peer's pane, so it "
+                        "was NOT sent. Look at that row before retrying."
+                        % (probe,), 4)
+    if not send:
+        say("typed, not sent (--no-send). It is sitting in the composer.")
+        return
+    ctl.type(target, pane, "\n")
+    say("delivered")
+
+
+def cmd_list(ctl, pane, lines, out):
+    """Candidate rows, with the two things that decide whether one is usable."""
+    sessions = sessions_of(ctl.tree())
+    if not sessions:
+        out.write("no sessions\n")
+        return 0
+    out.write("%-38s %-10s %-9s %s\n" % ("ID", "STATUS", "MODE", "NAME"))
+    for session in sessions:
+        text, err = ctl.text(session["id"], pane, 6)
+        mode = "?" if err else classify(text)
+        out.write("%-38s %-10s %-9s %s\n"
+                  % (session.get("id"), (session.get("status") or "-")[:10],
+                     mode, session.get("name") or ""))
+    return 0
+
+
+def main(argv, out=None, ctl=None):
+    out = out or sys.stdout
+    opts = parse_args(argv)
+    if opts.get("version"):
+        out.write("agb-peer %s\n" % (VERSION,))
+        return 0
+    pane = opts["pane"]
+    if pane not in PANE_KINDS:
+        raise PeerError("--pane must be one of %s (agterm's 0.24.0 --help lists "
+                        "more; the binary rejects them)"
+                        % ("|".join(PANE_KINDS),))
+    lines = positive_int(opts["lines"], "--lines")
+    ctl = ctl or Ctl()
+
+    def say(message):
+        out.write("agb-peer: %s\n" % (message,))
+        out.flush()
+
+    if opts.get("list"):
+        return cmd_list(ctl, pane, lines, out)
+
+    want = opts.get("to")
+    if not want:
+        raise PeerError("--to is required. `agb-peer --list` shows the rows.")
+    message = opts.get("message")
+    if opts.get("stdin"):
+        if message:
+            raise PeerError("give a message or --stdin, not both")
+        message = sys.stdin.read()
+    body = compose(message, opts.get("from")
+                   or os.environ.get("AGB_PEER_FROM") or "peer")
+
+    session = resolve(ctl, want)
+    say("peer: %s (%s), status %s"
+        % (session.get("name") or "?", session["id"][:8],
+           session.get("status") or "-"))
+
+    if opts.get("dry_run"):
+        text, err = ctl.text(session["id"], pane, lines)
+        say("mode: %s" % ("unreadable (%s)" % err if err else classify(text)))
+        say("would send: %s" % (body,))
+        say("dry run -- nothing was typed")
+        return 0
+
+    ensure_composer(ctl, session, pane, not opts.get("no_arm"), lines, say)
+    wait_ready(ctl, session, pane,
+               positive_int(opts["retries"], "--retries"),
+               positive_int(opts["interval"], "--interval"),
+               bool(opts.get("force")), lines, say)
+    deliver(ctl, session, pane, body, not opts.get("no_send"), lines, say)
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        sys.stderr.write(USAGE)
+        sys.exit(1)
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except PeerError as error:
+        sys.stderr.write("agb-peer: %s\n" % (error,))
+        sys.exit(error.code)
+    except KeyboardInterrupt:
+        sys.stderr.write("agb-peer: interrupted\n")
+        sys.exit(1)

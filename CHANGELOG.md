@@ -223,6 +223,50 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
   stdout, and neither answer says which one it is.
 
+- **`agb-peer` — one agent can type into another's composer, from the Mac.** agterm ships a
+  [`two-agent-chat`](https://github.com/umputun/agterm/tree/master/cookbook/two-agent-chat) cookbook
+  where two *local* agents talk by injecting keystrokes into each other's pane. This is that, pointed
+  at agbridge rows — where the agent is in tmux on a cluster host and the row's pane is running
+  `agb pane` over `ssh -t`. It works: keystrokes survive agterm → ssh → tmux → the composer, and
+  `surface cursor` reports the empty-composer column through the same hops. Both confirmed live
+  before the script was written, not after.
+
+  ⚠️ **Not installed.** `install.sh` does not touch it and nothing in `agb`/`agb_mac`/`agb_ops`
+  imports it — `agb`'s byte cap is untouched. Copy it onto `$PATH` yourself.
+  [`docs/commands.md`](docs/commands.md) has the flags.
+
+  **Three gates, because there are three different ways this goes wrong**, and the middle one is the
+  part agterm's own recipe cannot have:
+
+  - *Mode.* A row's pane is either `agb pane`'s menu or the agent's composer, and the same bytes
+    mean different things in each — a message sent to the menu is swallowed whole, and one that
+    strips to `q` **destroys the row**. `session text` is the only detector; `foreground` looks like
+    one and is not, because it reports the argv the session was *launched* with, so an agbridge row
+    says `agb pane` whether or not anyone is attached. A menu row is armed with a **bare newline**,
+    the one input `agb pane` cannot act on.
+  - *Status.* `tree` carries the status the bridge last set, which came from the peer's own hooks —
+    a fact about the agent rather than a guess about a screen. `active` and `blocked` refuse.
+    `idle` is allowed through on purpose: it is the bridge's word for *no current information*, so
+    refusing it would strand every row whose feed blinked.
+  - *Composer.* `surface cursor` must report the empty column. **This is the one that earns its
+    keep** — the very first row this was ever pointed at had an unsubmitted draft in it
+    (`test the install script on another workarea`), which a naive `session type` would have
+    appended to and submitted together on the next Return.
+
+  Then it types, re-reads the pane to confirm the text rendered, and only then presses Return as a
+  **second** call — because a permission dialog can appear between the cursor check and the
+  keystrokes, and pressing Return would answer the dialog rather than the agent.
+
+  **Carried forward, unfixed, and they are the cookbook's own**: the cursor check cannot tell an
+  empty composer from one whose caret was moved back over text (agterm's `--help` says so); sending
+  to Claude Code interrupts rather than queues; there is no transcript; and a model may decline to
+  answer a perfectly delivered message.
+
+  ⚠️ **The nine words `agb pane` acts on are refused outright, in either mode**, because mode
+  detection is a screen read and a screen read can be wrong. That list is a cross-file agreement
+  with `agb_ops` — a standalone Mac script cannot import it — and is pinned by a test that compares
+  against the three tuples themselves.
+
 ### Changed
 
 - **`agb-claude` mints the row before Claude starts.** A hook is what mints a key, so a row used to
