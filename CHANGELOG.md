@@ -259,6 +259,36 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   This is the one thing here that could surprise: the row for a detached session now shows
   `completed` from the start rather than briefly going `active` while "hi" is answered.
 
+### Fixed
+
+- **`docs/agtermctl.md` promised `session restore` as the structural fix for a row dying when its
+  command exits. It is not, and building it would have fixed nothing that hurts.** The symptom is
+  the familiar one: type `q` at the `agb pane` prompt and a live agent's row disappears, because
+  agterm closes a session when its command exits. The entry claimed a per-session restore pin would
+  prevent that. `agtermctl help session restore` on the installed 0.24.0 binary says the opposite —
+  *"The override is written now and consumed on the NEXT launch — it never touches the running
+  session."* So restore covers only the **restart** half (rows come back alive after agterm is
+  relaunched, instead of as dead panes); the typed-`quit` half is untouched and still points at
+  `session new --wait`. The two had been bundled into one table row because both were read off
+  `agterm.com/commands` rather than run — the third time that page has cost this project a reversed
+  decision, and the reason `CLAUDE.md` carries the rule about running the command on the Mac first.
+
+  Corrected in place, and the same pass re-ran `--help` for four other commands the file had only
+  ever surveyed. Two say more than was written down: **`session move`** takes a repeatable
+  `--target` and `--after`/`--before` anchors (so deterministic row *order*, not just workspace
+  restore), and **`session text`** reads a pane *"even when hidden"*, with scrollback and `--json`.
+  **`surface cursor`** is new in 0.24.0 and was not in the survey at all — and its own help warns
+  that a cursor column *"AT the prompt establishes nothing"*, which is worth having written down
+  before someone builds an is-the-composer-empty check on it.
+
+  Three constraints on `session restore` that nobody had recorded, and any future use inherits all
+  three: it is **gated on a user setting**, it is **sticky** until cleared, and the pinned command is
+  **readable via `tree`**, so it must not carry secrets.
+
+  Also recorded: `agtermctl --help` and `agtermctl session --help` verbatim, closing two
+  `_not recorded_` gaps that had been open since the file was written — which is what answers the
+  third, `session list --help`, since there is no `session list`. No code changed.
+
 ### Installing after this change
 
 **If your Mac's instances are already named** — every `install.sh mac` since 0.5.0 that passed

@@ -10,7 +10,10 @@ This file therefore has two layers, and they are kept **visually separate on pur
 1. **The assumed contract** — what Tasks 4b, 8 and 9b code against *today*. Every clause is tagged
    with its evidence class.
 2. **The verbatim recording** — `--help` output captured on the Mac. `session split` and
-   `session type` are recorded below.
+   `session type` are recorded inline in layer 1; `agtermctl --help` and `agtermctl session --help`
+   are at the bottom of the file; and `surface cursor`, `session text`, `session restore` and
+   `session move` are in "Re-surveyed against the installed binary — agterm **0.24.0**", which also
+   **corrects** a `session restore` claim this file made from the website and never ran.
 
 **As of 2026-07-30 every clause this tool depends on has been exercised against a live agterm**,
 including the spelling of `--blink` (observed blinking a live row) — **with one exception, below.**
@@ -285,7 +288,32 @@ interactive shell destroyed when it is dismissed is the opposite of a drawer. `s
 because its help promises *"the hidden scratch shell stays alive"*. Recorded so the next reader does
 not re-evaluate it from scratch.
 
-### `agtermctl session type [<text>] [--pane left|right|scratch] [--target <id>]` — **CONFIRMED**
+### `agtermctl session type [<text>] [--pane <pane>] [--target <id>]` — **CONFIRMED**
+
+Recaptured on **0.24.0**, 2026-08-24. The 2026-07-29 capture is kept below it, because the
+difference is the point: the pane vocabulary **widened** and the old spelling still works, so a
+reader who finds only the new one cannot tell whether `--pane right` was ever valid.
+
+```
+OVERVIEW: Inject text into a session.
+
+USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--target <target>] [--socket <socket>] [--json] [--window <window>]
+
+ARGUMENTS:
+  <text>                  Text to inject (omit with --stdin).
+
+OPTIONS:
+  --stdin                 Read the text from stdin instead of an argument.
+  --select                Select the session first if its surface is not ready (main pane only; a split pane must already exist).
+  --pane <pane>           Which pane to type into: primary/left/top, split/right/bottom, or scratch (even when hidden). Defaults to primary.
+  --target <target>       Target session/workspace id, unique prefix, or 'active'. (default: active)
+  --socket <socket>       Override the control socket path.
+  --json                  Print the raw JSON response.
+  --window <window>       Target window id, unique prefix, or 'active' (defaults to the frontmost).
+  -h, --help              Show help information.
+```
+
+As captured 2026-07-29, on the build before:
 
 ```
 OVERVIEW: Inject text into a session.
@@ -294,6 +322,10 @@ USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--t
              (main pane only; a split pane must already exist).
   --pane     Which pane to type into: left (main), right (split), or scratch. Defaults to left.
 ```
+
+`--select`'s constraint is **unchanged** across the two, which is what keeps both consequences below
+true. `TYPE_RIGHT`/`TYPE_SCRATCH` in `agb_ops` need no edit: `right` and `scratch` are still
+accepted, now as aliases for `split` and themselves.
 
 Two consequences, both load-bearing:
 
@@ -456,7 +488,9 @@ Mac was on a build older than **v0.16.0**, which is where `agtermctl events` and
 appear. But the page was *also wrong about behaviour* on the build that has them: see the `events`
 entry below, where it cost two reversed design decisions.
 
-*Surveyed 2026-07-31 against `agterm.com/commands`. agterm exposes roughly **70** subcommands;
+*Surveyed 2026-07-31 against `agterm.com/commands`, and **five entries re-surveyed 2026-08-24
+against the installed 0.24.0 binary** — see the section after this one, which corrects one of them.
+agterm exposes roughly **70** subcommands;
 agbridge calls **eight**: `session new`/`rename`/`status`/`close`/`split`/`scratch`/`type`, `notify`,
 and `tree --json`. This is the menu for later, not a backlog — nothing here is committed, and each
 entry says what it would buy so the next reader does not have to re-derive it.*
@@ -467,15 +501,15 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 |---|---|
 | ⚠️ **`events`** — *control-event stream* | **Exists from agterm v0.16.0; usable only as a long-lived stream.** Full findings in "What `agtermctl events` actually does" above. Would give live `session.closed` and `tree.changed`; would **not** give restart detection or catch-up, because no run id is obtainable. Design work is done and shelved in `docs/plans/blocked/20260731-agb-events-feedback-loop.md`. |
 | ⚠️ **`session new --wait`** — *hold the row open after its command exits* | **Found 2026-08-06** in the re-captured `--help`; not present in the 2026-07-30 one. *"With `--command`, hold the session open after the command exits (press any key to close)."* That is the row-destroying bug below, addressed by one flag in `_create_row`'s `args` — far cheaper than `session restore`, and the two are not alternatives: `--wait` stops the row **dying**, `restore` brings its command **back**. ⚠️ Read off help text, untested, and three things need answering before it is a plan. Does "press any key to close" leave a row that looks alive but runs nothing, which is worse than a gone row? What does `agb-refresh` see when it closes such a row? And it fires for *every* exit, not just a typed `quit` — including `agb pane` dying for a real reason, which is a case we currently find out about. |
-| **`session restore`** — *pin the command a pane re-runs* | Promoted after 2026-07-31: this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today (see the section above). It would also let rows come back alive after an agterm restart rather than as dead panes — the other half of the reboot story in `docs/cookbook.md` — and shrink what `agb-refresh` is needed for. |
-| **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. |
+| ⚠️ **`session restore`** — *pin the command a pane re-runs* | **The claim that used to sit here was wrong, and wrong in the direction that would have got the wrong fix built.** It read: *"this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today"*. `--help` on 0.24.0 says the opposite — *"The override is written now and consumed on the **NEXT launch** — it never touches the running session."* So it fixes only the **restart** half (rows come back alive after an agterm restart instead of as dead panes, the other half of the reboot story in `docs/cookbook.md`); a live row destroyed by a typed `quit` is gone and restore cannot bring it back. That half still points at `session new --wait`, above. Full capture and the three new constraints — sticky, gated on a setting, world-readable via `tree` — in "Re-surveyed against the installed binary", below. |
+| **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. **CONFIRMED 0.24.0**, and it does more than the survey said: `--target` is **repeatable** (one call for a batch), `--to up\|down\|top\|bottom` reorders within a workspace, and `--after`/`--before` place relative to an anchor session that *carries its own workspace* — relocate and position in one shot. The second half is a capability agbridge has never had: deterministic row **order**, e.g. grouped by host. |
 
 ### New capability, no existing pain
 
 | Command | What it would buy |
 |---|---|
 | `session flag` | Flag on `blocked`, unflag when it clears — agterm's flagged view becomes "agents that need you". Overlaps with the status glyph, so it may be redundant. |
-| `session text` / `session search` | Read a row's terminal buffer from outside. Could answer *why* an agent is blocked without attaching to it. |
+| `session text` / `session search` | Read a row's terminal buffer from outside. Could answer *why* an agent is blocked without attaching to it. **`session text` CONFIRMED 0.24.0** with more reach than assumed: `--pane` reads a pane *"even when hidden"*, `--all` takes scrollback as well as the visible screen, `--lines N` keeps the tail, `--json` for the raw response. It is also the only command here that can tell an agbridge row's **two modes apart** — `agb pane`'s menu prompt versus an attached agent — see the re-survey below. |
 | `session background text` | A per-row watermark — the host name behind the pane, so a full-screen agent still shows which box it is on. |
 | `window select`, `session go next-attention` | The bring-to-front family. Scoped and deliberately deferred: a bouncing Dock says "come here when you are ready", a window jumping in front says "stop what you are doing". See `window select`'s entry above for the id trap. |
 
@@ -486,6 +520,181 @@ copy`/`paste`/`select-all`/`reveal`/`duplicate`/`focus`/`resize`, and most of `w
 the human's UI, not a bridge's business. `pick` is the near miss: an agterm-native row picker sounds
 appealing, but `agb list` already does that on the farm side, which is where you are when you need
 a key.
+
+## Re-surveyed against the installed binary — agterm **0.24.0**, CONFIRMED live 2026-08-24
+
+Prompted by a question that had nothing to do with agbridge: whether agterm's own
+[`cookbook/two-agent-chat`](https://github.com/umputun/agterm/tree/master/cookbook/two-agent-chat)
+recipe — two agents in one split, each typing into the other's composer — could be pointed at
+agbridge rows. Answering it meant running `--help` on five commands this file had only ever
+*surveyed off the website*. One of the five said the opposite of what was written down, and two
+said more than was written down. That ratio is the argument for the rule in `CLAUDE.md`, not a
+reason to distrust this particular page.
+
+⚠️ **`agtermctl` has no `--version`** (`Error: Unknown option '--version'`). The build number comes
+from the app bundle:
+
+```sh
+defaults read /Applications/agterm.app/Contents/Info CFBundleShortVersionString   # -> 0.24.0
+```
+
+### `agtermctl surface cursor` — **CONFIRMED, not used**, new in this survey
+
+Not in the 2026-07-31 survey at all; `surface` had only `zoom` on 0.19.1. The recipe above requires
+it, which is why that recipe needs agterm ≥ 0.24.0.
+
+```
+OVERVIEW: Report a terminal surface's zero-based cursor column.
+
+Prints the column alone, so it drops straight into a command substitution. Row is not reported: the
+pinned libghostty exposes no cursor accessor and the vertical metrics it does export cannot recover
+a row that survives a custom `adjust-font-baseline`.
+
+A column is a signal, not proof about the line's content. Past the prompt it establishes the line is
+not empty; AT the prompt it establishes nothing, since the caret may have been moved back over text
+that is still there.
+
+USAGE: agtermctl surface cursor [--target <target>] [--socket <socket>] [--json] [--window <window>]
+
+OPTIONS:
+  --target <target>       Target surface id from tree, 'quick' (the quick terminal), or 'active'. (default: active)
+  --socket <socket>       Override the control socket path.
+  --json                  Print the raw JSON response.
+  --window <window>       Target window id, unique prefix, or 'active' (defaults to the frontmost).
+  -h, --help              Show help information.
+```
+
+Two things worth carrying, both from agterm's own text:
+
+- ⚠️ **A cursor column is not an emptiness proof, and the tool says so** — *"AT the prompt it
+  establishes nothing, since the caret may have been moved back over text that is still there."*
+  That is exactly the "Composer Safety Risk" the cookbook's README lists as its own worst
+  limitation, restated by the binary. Anything built on it inherits the limitation; `session text`,
+  which can read the line's content, is the stronger signal and `surface cursor` is the cheap
+  pre-filter.
+- **`--target` is a *surface* id from `tree`, not a session id.** `tree_workspaces` (`agb_mac:1243`)
+  parses `result.tree.workspaces[].sessions[].id` and stops there, so a caller would need to reach
+  one level further into the same JSON it already fetches. **Where surface ids live in that
+  structure is NOT YET RECORDED** — capture `agtermctl tree --json` with a row present before
+  writing anything against it.
+
+### `agtermctl session text` — **CONFIRMED, not used**
+
+```
+OVERVIEW: Print a session's terminal buffer as plain text (does not touch the system clipboard).
+
+USAGE: agtermctl session text [--all] [--lines <lines>] [--pane <pane>] [--target <target>] [--socket <socket>] [--json] [--window <window>]
+
+OPTIONS:
+  --all                   Read the full screen + scrollback instead of just the visible screen.
+  --lines <lines>         Keep only the last N lines of the full buffer.
+  --pane <pane>           Which pane to read: primary/left/top, split/right/bottom, or scratch (even when hidden). Defaults to the on-screen pane.
+  --target <target>       Target session/workspace id, unique prefix, or 'active'. (default: active)
+  --socket <socket>       Override the control socket path.
+  --json                  Print the raw JSON response.
+  --window <window>       Target window id, unique prefix, or 'active' (defaults to the frontmost).
+  -h, --help              Show help information.
+```
+
+⚠️ **`--pane` defaults to *the on-screen pane*, not to `primary`** — unlike `session type`, which
+defaults to `primary` outright. A caller that omits it is asking about whichever pane happens to be
+showing, which for an agbridge row changes the moment somebody opens the `[s]` split. Pass it.
+
+### `agtermctl session restore` — **CONFIRMED, not used**, and it is NOT what this file said
+
+The entry in "Would fix something we have actually hit" claimed restore was the structural fix for
+a row dying when `agb pane` exits. It is not:
+
+```
+The override is written now and consumed on the NEXT launch -- it never touches the running session.
+It wins over the pane's captured foreground command, is gated on the restore-running-command
+setting, and reads back on `tree` as restoreCommand (main pane) or splitRestoreCommand (split pane).
+It is STICKY: it fires again on every launch until cleared.
+
+COMMAND is shell code, stored verbatim in the window's state file and readable via `tree`, so it
+must not carry secrets.
+```
+
+So it addresses the **restart** half of the row-lifetime story and nothing else. A live row
+destroyed by a typed `quit` is gone at that instant, and no pin brings it back — that half is
+`session new --wait`'s, and the two were bundled into one entry because both were read off a
+website rather than run.
+
+Three constraints that follow, none of which were in the survey:
+
+- **It is gated on a user setting** ("restore-running-command"). A feature built on it is off by
+  default for anyone who has that setting off, silently.
+- **It is sticky** — it fires on *every* launch until `--clear`. Written per row, that is durable
+  state agbridge would then own on the agterm side, in addition to `rows` and `placements`.
+  Invariant 12 says everything the Mac side persists derives from the config; a pin lives in
+  agterm's window state instead, which is the first thing that would not.
+- ⚠️ **It is world-readable via `tree`** and is *"stored verbatim in the window's state file"*. An
+  `agb pane` line carries a host, a tmux session name, a pane id and possibly a `--config` path —
+  none secret today, but this turns "what goes on that command line" from a free choice into a
+  constraint.
+
+`--pane-id` also documents **`$AGTERM_PANE_ID`**, a stable per-surface token in the pane's
+environment. Together with the cookbook's `AGTERM_SESSION_ID` that means a row's own `agb pane`
+process can learn its agterm identity without the bridge telling it — a door agbridge does not
+currently use.
+
+### `agtermctl session move` — **CONFIRMED, not used**
+
+```
+OVERVIEW: Move a session: to another workspace, reorder with --to, or place relative to an anchor with --after/--before.
+
+USAGE: agtermctl session move [<workspace>] [--to <to>] [--after <after>] [--before <before>] [--target <target> ...] [--socket <socket>] [--json] [--window <window>]
+```
+
+`--target` is repeatable, so a whole refresh is one call. `--after`/`--before` take an anchor that
+carries its own workspace, relocating and positioning in one shot — which is a capability agbridge
+has never had at all: deterministic row **order**, e.g. all of one host's rows together.
+
+### What this says about pushing text into an agbridge row
+
+Recorded here because the question will be asked again, and because the answer is *yes with a
+qualifier* rather than the *no* it first looks like.
+
+`session type` works on an agbridge row. What differs from the cookbook's case is that the row's
+pane has **two modes**, and the same bytes mean different things in each:
+
+| mode | what receives the text |
+|---|---|
+| unattached | `agb pane`'s `sys.stdin.readline()` — the `[enter] attach   [s] split   [d] drawer   [q] quit >` prompt |
+| attached | the pty running `ssh -t … tmux attach-session`, hence the remote agent's composer |
+
+⚠️ **agbridge cannot tell you which**, and that is deliberate: attaching, detaching and scrolling
+change no agent state, which is what makes the four-word status vocabulary trustworthy. The mode is
+readable only off the screen — `session text --pane primary --lines 5` — which is the one thing this
+survey added that makes the route defensible at all.
+
+Two consequences:
+
+- **Menu mode consumes a message silently.** `pane_attach`'s dispatch falls through to the attach
+  for *anything* unrecognised (`agb_ops:2205`), so an unattached row swallows the text and attaches.
+  The exceptions are the word sets, which are matched after `.strip().lower()`:
+  `PANE_QUIT_WORDS = ("q", "quit", "exit")` **destroys the row** (agterm closes a session when its
+  command exits), and `("s","shell","split")` / `("d","drawer","scratch")` open panes.
+- **A bare newline is the safe arming primitive.** It strips to `""`, which is in none of the three
+  sets, so it falls through to the attach and cannot hit the destructive case. One call turns menu
+  mode into composer mode.
+
+⚠️ **NOT YET MEASURED**, and it is the claim the whole route rests on: that keystrokes injected by
+`session type` survive agterm → `ssh -t` → remote tmux → the agent's composer. It is reasoned from
+`pane_attach` running the ssh in the **foreground** (`subprocess.call`, so ssh owns the pty), not
+observed. Until it is run, nothing here may be coded against. The test is three commands, on a row
+attached to a live agent:
+
+```sh
+agtermctl session text --target <row> --pane primary --lines 5    # which mode?
+agtermctl session type "hello" --target <row> --pane primary
+agtermctl session text --target <row> --pane primary --lines 5    # did it reach the composer?
+```
+
+Also unmeasured, and separate: whether `surface cursor` reports anything useful for an attached row.
+tmux draws its own status line, so the agent's composer is not the last line of the buffer — the
+cursor column is robust to that where a `session text` tail-match is not, which inverts the
+cookbook's preference between the two.
 
 ## Decisions this file settles
 
@@ -589,10 +798,14 @@ contract forbids:
 - append every invocation's argv to a recording file for assertions
 - accept `--target` on `rename`, `status` and `close`, and fail if it is missing
 
-## Verbatim recording *(from the Mac — NOT YET RECORDED)*
+## Verbatim recording *(from the Mac — PARTIALLY RECORDED)*
 
 Run these on the Mac and paste the output verbatim under each heading. Then reconcile the assumed
 contract above and the stub, keeping the vocabulary rejection.
+
+**Recorded so far: the two top-level listings, on 0.24.0, 2026-08-24.** The five `session <cmd>
+--help` captures below are still open. Note `agtermctl session --help` and `agtermctl help session`
+print the same listing; the second is what was run.
 
 ```sh
 agtermctl --help
@@ -606,11 +819,89 @@ agtermctl session list --help    # may not exist; record the error if so
 
 ### `agtermctl --help`
 
-_not recorded_
+**CONFIRMED 0.24.0, 2026-08-24.** No `--version` subcommand or flag: `agtermctl --version` is
+`Error: Unknown option '--version'`.
+
+```
+OVERVIEW: Drive agterm over its control socket.
+
+USAGE: agtermctl <subcommand>
+
+OPTIONS:
+  -h, --help              Show help information.
+
+SUBCOMMANDS:
+  tree                    Print the workspace/session tree.
+  events                  Continuously print control events.
+  workspace               Workspace commands.
+  session                 Session commands.
+  surface                 Terminal surface commands.
+  dashboard               Open a view-only grid of live sessions, or --close the open one.
+  window                  Window commands.
+  quick                   Quick terminal: visibility, type into it, read its text.
+  sidebar                 Sidebar visibility and view mode.
+  notify                  Post a desktop notification (default: the active session of the frontmost window).
+  font                    Font size commands.
+  keymap                  Keymap commands.
+  config                  Config commands.
+  theme                   Theme commands.
+  pick                    Open, poll, or cancel a native fuzzy picker.
+  restore                 Restore-running-command commands.
+
+  See 'agtermctl help <subcommand>' for detailed help.
+```
+
+⚠️ **`restore` at top level is not `session restore`.** Its own help says so explicitly:
+*"Not to be confused with `agtermctl restore clear`, which is app-global and clears every session's
+CAPTURED foreground command; this one is per-session and clears only the override."* An app-global
+command that discards captured state is worth knowing the name of before anyone types it.
 
 ### `agtermctl session --help`
 
-_not recorded_
+**CONFIRMED 0.24.0, 2026-08-24** (captured as `agtermctl help session`).
+
+```
+OVERVIEW: Session commands.
+
+USAGE: agtermctl session <subcommand>
+
+OPTIONS:
+  -h, --help              Show help information.
+
+SUBCOMMANDS:
+  new                     Create a session.
+  duplicate               Duplicate a session: a fresh shell in its directory, placed right after it.
+  close                   Close a session.
+  select                  Select a session.
+  go                      Navigate sessions: next|prev|first|last|next-attention|prev-attention.
+  rename                  Rename a session.
+  reveal                  Reveal a session's focused working directory in Finder.
+  move                    Move a session: to another workspace, reorder with --to, or place relative to an anchor with --after/--before.
+  type                    Inject text into a session.
+  split                   Show or hide a session split (on|off|toggle).
+  scratch                 Show or hide a session scratch terminal (on|off|toggle).
+  focus                   Focus a split session's pane (left|right|other).
+  resize                  Resize a split session's divider (set or nudge the left-pane fraction).
+  copy                    Print a session's selected text (does not touch the system clipboard).
+  paste                   Paste the system clipboard into a session (like ⌘V).
+  select-all              Select a session's entire terminal buffer (like ⌘A).
+  text                    Print a session's terminal buffer as plain text (does not touch the system clipboard).
+  status                  Set a session's agent status indicator.
+  restore                 Pin the command a session's pane re-runs on the next launch.
+  flag                    Flag a session for the flagged working-set view (on|off|toggle|clear).
+  seen                    Clear a session's unseen-notification badge without changing the selection or focus (idempotent).
+  search                  Search a session's terminal output (open the bar, set a needle, or step matches).
+  background              Set or clear a session's background (image, rasterized text, or solid color).
+  overlay                 Open, resize, or close an ephemeral overlay terminal on a session.
+
+  See 'agtermctl help session <subcommand>' for detailed help.
+```
+
+⚠️ **There is no `session list`.** The last open capture below asks for it; this listing answers it.
+`tree` is the enumeration command, which is what agbridge already uses.
+
+**All eight subcommands agbridge calls are present and spelled as coded** — `new`, `rename`,
+`status`, `close`, `split`, `scratch`, `type`, plus top-level `notify` and `tree`.
 
 ### `agtermctl session new --help`
 
@@ -630,7 +921,8 @@ _not recorded_
 
 ### `agtermctl session list --help`
 
-_not recorded_
+**Answered without running it: there is no `session list`** — see the `session --help` listing above.
+`tree --json` is the enumeration route and is what agbridge uses.
 
 ### Checks to make while recording
 
