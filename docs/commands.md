@@ -1402,6 +1402,10 @@ no help from the far side.
 latest, so a tick that missed one would lose it for ever; sweeping every `@agbpeer_msg_*` makes a
 missed doorbell harmless. Each is unset as it is read, so nothing is delivered twice.
 
+⚠️ **Order matters, and it bit on the first live run: start the relay BEFORE anyone sends.** The
+first tick primes, and priming drains and discards — so a message queued a moment earlier is thrown
+away, correctly and by design. The line naming what it dropped is the only warning you get.
+
 ⚠️ **Priming fetches and DISCARDS.** Options left in tmux from an earlier session would otherwise be
 swept up by the first real message's drain and delivered as if new. The first pass clears them and
 says how many.

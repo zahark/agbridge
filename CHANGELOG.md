@@ -330,6 +330,11 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ⚠️ **Priming names what it discards, because the first successful live run threw a message away.**
+  The relay was started *after* the message was queued, so the priming pass drained and discarded it —
+  correct behaviour, but `discarded 1 message(s)` reads as housekeeping rather than "this is the
+  thing you were waiting for". It now names each one and says to send *after* the relay is up.
+
   ⚠️ **The second live run died on tcsh.** The fetch ran a POSIX `for … in $(…)` loop over ssh and
   answered `Illegal variable name.` — `ssh <host> <cmd>` hands the command to the remote **login**
   shell, and a farm login shell is often tcsh. Rather than quote a script through it, there is no

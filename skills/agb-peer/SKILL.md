@@ -41,6 +41,10 @@ about how long the message is.
 - **Do not write "Chat from me:" or any label.** The relay adds one, naming the pane
   you sent from. Anything you write yourself is just part of your message.
 
+⚠️ **A message only travels while a relay is running.** If nobody has started one, `send` succeeds
+and the message waits in tmux — and the next relay to start will discard it as stale. If the user
+asks why a peer never answered, that is the first thing to check.
+
 ## Receiving
 
 A message from a peer arrives as an ordinary prompt beginning:

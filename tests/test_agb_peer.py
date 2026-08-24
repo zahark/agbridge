@@ -772,7 +772,7 @@ def test_priming_fetches_and_discards(peer):
                     deliver_new=False)
     assert fetch.calls, "priming must still DRAIN, or the next fetch replays it"
     assert ctl.typed == [], "but it must deliver none of it"
-    assert any("discarded" in s for s in ctl.said)
+    assert any("discarded" in s and "#old" in s for s in ctl.said), ctl.said
 
 
 def test_the_sender_is_the_pane_the_doorbell_rang_in(peer):

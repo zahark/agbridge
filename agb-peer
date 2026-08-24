@@ -945,7 +945,7 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
     sessions = {}
     for session in sessions_of(ctl.tree()):
         sessions[session["id"]] = session
-    discarded = 0
+    discarded = []
     for name in sorted(people):
         row, pane, target = people[name]
         session = sessions.get(row)
@@ -1002,10 +1002,15 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
             if deliver_new:
                 pending.append((name, message))
             else:
-                discarded += 1
+                # ⚠️ Named, not counted. "discarded 1 message(s)" reads as
+                # housekeeping; an operator who queued something a moment
+                # earlier needs to see that THIS is what was thrown away.
+                discarded.append("#%s (%s -> %s)"
+                                 % (message["id"], name, message["to"]))
     if not deliver_new and discarded:
-        say("discarded %d message(s) left in tmux from before this relay "
-            "started" % (discarded,))
+        say("discarded %d message(s) queued before this relay started: %s. "
+            "Send AFTER the relay is up, or it primes them away."
+            % (len(discarded), ", ".join(discarded)))
     held = []
     for sender, message in pending:
         if not try_deliver(ctl, sessions, people, sender, message, lines, say):
