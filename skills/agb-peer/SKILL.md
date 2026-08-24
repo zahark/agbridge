@@ -1,6 +1,6 @@
 ---
 name: agb-peer
-description: Talk to another Claude Code agent through agterm — send it a message and read its replies. Use when the user asks you to consult, ask, challenge, check with, or hand something to a peer agent, or when a prompt arrives beginning "[chat from <name>]". Works whether the peer is on this machine or another one.
+description: Talk to another AI coding agent through agterm — Claude Code or Codex, either end — send it a message and read its replies. Use when the user asks you to consult, ask, challenge, check with, or hand something to a peer agent, or when a prompt arrives beginning "[chat from <name>]". Works whether the peer is on this machine or another one.
 ---
 
 # Talking to a peer agent
@@ -37,7 +37,7 @@ fetch it. So you do not need to worry about scrolling, about printing afterwards
 about how long the message is.
 
 - **You must be running inside tmux.** If `$TMUX_PANE` is not set, `send` refuses and
-  says so. Start agents with `agb-claude <name>`.
+  says so. Start agents with `agb-claude <name>` or `agb-codex <name>`.
 - **Do not write "Chat from me:" or any label.** The relay adds one, naming the pane
   you sent from. Anything you write yourself is just part of your message.
 

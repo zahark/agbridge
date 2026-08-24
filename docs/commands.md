@@ -1565,6 +1565,15 @@ An agent will not use any of this unless it is told to, so the repo ships one sk
 ln -s "$PWD/skills/agb-peer" ~/.claude/skills/agb-peer   # on every participant's machine
 ```
 
+✅ **Codex reads the same format from `~/.codex/skills/`** — MEASURED: `~/.codex/skills/<name>/SKILL.md`
+with `name`/`description` frontmatter, identical to Claude Code's, and a symlinked `agb-peer` showed
+up in a live Codex's own list of skills. So the one file serves both:
+
+```sh
+ln -s "$PWD/skills/agb-peer" ~/.claude/skills/agb-peer     # Claude Code
+ln -s "$PWD/skills/agb-peer" ~/.codex/skills/agb-peer      # Codex
+```
+
 **A symlink, not a copy**, which is how every other skill in this project is installed — a copy goes
 stale the next time the repo moves forward and nothing says so. ⚠️ The target must be **absolute**:
 a relative link resolves against `~/.claude/skills/`, not against your shell's directory.

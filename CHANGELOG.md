@@ -223,6 +223,14 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   failure this project keeps removing. `--print-mac-id` alongside it is refused too — both own
   stdout, and neither answer says which one it is.
 
+- **One skill file serves both agents.** MEASURED: Codex reads
+  `~/.codex/skills/<name>/SKILL.md` with `name`/`description` frontmatter — byte-identical in shape
+  to Claude Code's — and a symlinked `agb-peer` appeared in a live Codex's own list of skills
+  alongside its bundled ones. So the agent-facing half needed no port at all, only a second symlink,
+  which is the strongest evidence yet that `send` printing to tmux was the right shape: it names no
+  model and neither does the skill, now that its description says "Claude Code or Codex" rather than
+  assuming.
+
 - **`agb-codex` — the launcher, so a Codex agent gets a row at all.** `agb-claude` for Codex: name
   the tmux session, mint the row, then `exec`. Verified live — `agb-codex -d probe-codex` produced
   `probe-codex  completed  %86` in `agb list` with Codex drawn in the pane.
