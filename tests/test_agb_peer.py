@@ -55,6 +55,7 @@ class FakeCtl(object):
         self.cursors = list(cursors) if cursors is not None else [2]
         self.typed = []
         self.slept = []
+        self.text_lines = []
 
     def sleep(self, seconds):
         self.slept.append(seconds)
@@ -63,6 +64,7 @@ class FakeCtl(object):
         return tree_of(*self._sessions)
 
     def text(self, target, pane, lines):
+        self.text_lines.append(lines)
         value = self.texts[0] if len(self.texts) == 1 else self.texts.pop(0)
         if isinstance(value, Exception):
             return None, str(value)
@@ -371,3 +373,29 @@ def test_the_whole_flow_types_then_sends(peer):
                    ctl)
     assert rc == 0
     assert ctl.typed == [body, "\n"]
+
+
+# ---------------------------------------------------------------- the listing
+
+def test_the_listing_reads_the_same_window_the_flow_does(peer):
+    """MEASURED 2026-08-24: it did not, and the listing lied about a live row.
+
+    `cmd_list` used a hardcoded 6 lines while the flow used 40. A `blocked`
+    agent's permission dialog pushed the composer glyph off the 6-line window,
+    so `--list` reported `unknown` for a row `--dry-run` reported as
+    `composer` -- a diagnostic disagreeing with the thing it diagnoses, in the
+    direction that reads as safe.
+    """
+    ctl = FakeCtl(sessions=[session("AAAA1111"), session("BBBB2222")])
+    peer.cmd_list(ctl, "left", 40, io.StringIO())
+    assert ctl.text_lines, "no pane was read -- the loop did not run"
+    assert set(ctl.text_lines) == {40}
+
+
+def test_the_listing_names_every_row(peer):
+    ctl = FakeCtl(sessions=[session("AAAA1111", name="one"),
+                            session("BBBB2222", name="two")])
+    out = io.StringIO()
+    peer.cmd_list(ctl, "left", 40, out)
+    body = out.getvalue()
+    assert "AAAA1111" in body and "BBBB2222" in body

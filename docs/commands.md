@@ -1325,7 +1325,11 @@ but not verified — *and therefore not sent*.
   can never hit the branch that closes the row.
 - **Status.** `tree` carries the status the bridge last set, which came from the peer's own Claude
   Code hooks — a fact about the *agent*, not a guess about a screen, and the one signal the cookbook
-  has no equivalent for. `active` and `blocked` refuse. ⚠️ `idle` is allowed through: it is the
+  has no equivalent for. `active` and `blocked` refuse. ⚠️ **This gate is not redundant with the mode
+  check, and that is measured rather than argued**: a live `blocked` agent reads as `composer`,
+  because its permission dialog is on screen *and* the composer glyph is still in the buffer. There
+  is somewhere to type, and it is the dialog — the cookbook's "Dialog Window Vulnerability". Neither
+  the mode check nor the cursor check can catch that one. ⚠️ `idle` is allowed through: it is the
   bridge's word for *no current information*, so refusing it would strand every row whose feed
   blinked.
 - **Composer.** `surface cursor` must report the empty-composer column. This is the gate that

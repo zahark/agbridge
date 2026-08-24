@@ -268,6 +268,14 @@ def peer_busy(status):
     the bridge pushed into agterm and `tree` reads back. That is strictly better
     evidence than the cookbook's caret check, which is a guess about a screen.
 
+    ⚠️ **And it is not redundant with the mode check -- measured, not argued.**
+    A `blocked` agent read as `composer`: its permission dialog is on screen and
+    the composer glyph is still in the buffer, so `classify` says there is
+    somewhere to type. There is, and it is the dialog. That is the cookbook's
+    "Dialog Window Vulnerability", and THIS gate is the only thing that catches
+    it -- the mode check cannot, and the cursor check would be measuring the
+    dialog's caret.
+
     ⚠️ What it is NOT. `idle` is emitted by the bridge alone, for a feed that
     went quiet and for a removed agent -- so it means "no current information",
     not "ready", and it is allowed through for that reason: refusing it would
@@ -487,14 +495,22 @@ def deliver(ctl, session, pane, body, send, lines, say):
 
 
 def cmd_list(ctl, pane, lines, out):
-    """Candidate rows, with the two things that decide whether one is usable."""
+    """Candidate rows, with the two things that decide whether one is usable.
+
+    ⚠️ **It must read the same window the flow does**, which is why `lines` is
+    threaded here rather than a cheap constant. It was 6, measured live: a
+    `blocked` agent's permission dialog pushes the composer glyph off a 6-line
+    window, so the listing said `unknown` for a row the flow reads as
+    `composer`. A listing that disagrees with the tool it is a listing FOR is
+    worse than no listing, and it disagreed in the direction that looks safe.
+    """
     sessions = sessions_of(ctl.tree())
     if not sessions:
         out.write("no sessions\n")
         return 0
     out.write("%-38s %-10s %-9s %s\n" % ("ID", "STATUS", "MODE", "NAME"))
     for session in sessions:
-        text, err = ctl.text(session["id"], pane, 6)
+        text, err = ctl.text(session["id"], pane, lines)
         mode = "?" if err else classify(text)
         out.write("%-38s %-10s %-9s %s\n"
                   % (session.get("id"), (session.get("status") or "-")[:10],

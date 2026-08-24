@@ -257,6 +257,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   **second** call — because a permission dialog can appear between the cursor check and the
   keystrokes, and pressing Return would answer the dialog rather than the agent.
 
+  ⚠️ **Live testing immediately found one bug and one confirmation.** The bug: `--list` read a
+  hardcoded **6 lines** per row where the flow reads 40, so a `blocked` agent — whose permission
+  dialog pushes the composer glyph off a short window — was listed as `unknown` while `--dry-run`
+  called the same row `composer`. A diagnostic that disagrees with the thing it diagnoses, in the
+  direction that reads as safe. Fixed by threading `--lines` through, and pinned by a test.
+
+  The confirmation is the better half: **that same row proves the status gate is not redundant.** A
+  `blocked` agent reads as `composer` at any window size, because the dialog and the composer glyph
+  are both on screen. There *is* somewhere to type and it is the dialog — the cookbook's "Dialog
+  Window Vulnerability" — and neither the mode check nor the cursor check can see it. The gate that
+  looked like belt-and-braces is the only one that catches that case.
+
   **Carried forward, unfixed, and they are the cookbook's own**: the cursor check cannot tell an
   empty composer from one whose caret was moved back over text (agterm's `--help` says so); sending
   to Claude Code interrupts rather than queues; there is no transcript; and a model may decline to
