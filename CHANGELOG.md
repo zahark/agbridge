@@ -242,11 +242,19 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   in the installer's own dry-run output, then by reading the script when asked to confirm a
   hypothesis that turned out to be wrong. Neither was reachable from here.
 
-  Kept from the exercise, and worth more than the code: **`--auto-reset` is the reason a status
-  disappears.** agterm's `Stop` hook passes `completed --auto-reset`, so an idle row clears its own
-  glyph and reports no status at all. That is exactly why `docs/agtermctl.md` records agbridge
-  deliberately **not** emitting that flag — a row that clears itself is indistinguishable from a
-  dead one — and the file predicted this failure before anyone went looking for it.
+  ⚠️ **And the `STATUS -` that started all of this still has no confirmed explanation.** Three
+  hypotheses were offered and two were measured false. It is not the hooks being absent (they are
+  there and correct). It is **not `--auto-reset`** either: measured on the Mac, a row reads `active`
+  while working and `completed` after sixty seconds idle, never blank. What is left is unproven — the
+  dash appeared on several rows at once, including a **farm** row with ordinary agbridge hooks, and
+  always shortly after rows had been re-minted, which fits `CLAUDE.md`'s note that agterm resets a
+  row's status when its command starts and `_reassert` only repaints every 30 s. Fits, but was not
+  tested, and this entry has already been wrong twice about it.
+
+  The lesson is the one the whole day kept teaching and this feature is the clearest case of:
+  **a symptom was observed, a cause was invented, and a fix was built, tested and pushed before
+  anyone looked at what was already installed.** Two of the three explanations offered along the way
+  were disproved by one agent running two commands.
 
 - **`agb-peer` — one agent can type into another's composer, from the Mac.** agterm ships a
   [`two-agent-chat`](https://github.com/umputun/agterm/tree/master/cookbook/two-agent-chat) cookbook
