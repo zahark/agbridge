@@ -1062,6 +1062,28 @@ class ArgvCtl(object):
         return 0, "", ""
 
 
+def test_every_read_is_the_whole_visible_screen(peer):
+    """MEASURED, and reading a tail hid Codex completely: Claude anchors its
+    composer to the BOTTOM of the pane, Codex draws from the TOP and leaves
+    the bottom blank. `--lines 40` finds Claude every time and missed Codex's
+    composer entirely, so `classify` answered `unknown` for a healthy Codex row
+    and the relay would never have delivered to it. The doorbell kept working
+    throughout, because tmux's status bar is always the last line.
+
+    The tail bought nothing anyway: the alternate screen has no scrollback, so
+    `--all`, `--lines 400` and the bare default all return the same lines.
+    """
+    recorder = ArgvCtl()
+    ctl = peer.Ctl(run=recorder.run)
+    ctl.text("ROW", "left")
+    ctl.text("ROW", "left", 40, whole=True)
+    assert recorder.calls, "no read was made"
+    for argv in recorder.calls:
+        assert_text_argv(argv)
+        assert "--lines" not in argv, argv
+        assert "--all" not in argv, argv
+
+
 def test_a_bounded_read_never_asks_for_all_and_lines_together(peer):
     recorder = ArgvCtl()
     ctl = peer.Ctl(run=recorder.run)

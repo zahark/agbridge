@@ -250,6 +250,20 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   pin it — dropping the `exec`, dropping `AGB_AGENT_PID`, minting `active`, making the hook fatal
   with `&&`, and dropping the no-hooks caveat.
 
+- ⚠️ **Reading a tail hid Codex completely, and the fix is to stop reading tails.** MEASURED on the
+  first live Codex row: **Claude anchors its composer to the BOTTOM of the pane; Codex draws from the
+  TOP and leaves the bottom blank.** `--lines 40` therefore finds Claude every time and missed
+  Codex's composer entirely — `classify` said `unknown` for a healthy row, and the relay would never
+  have delivered to it. The doorbell kept working the whole time, because tmux's status bar is
+  always the last line: two reads, two geometries, and only one of them had ever been tested against
+  Codex.
+
+  Every pane read is now the whole **visible screen** — no `--lines`, no `--all`. Which the earlier
+  measurements had already made the right answer and nobody joined up: the alternate screen has no
+  scrollback, so those flags all returned the same lines, and the only thing the tail ever did was
+  hide the top of a pane. It also makes the `--all`/`--lines` conflict that shipped in the first
+  place unrecreatable, since neither flag is sent at all.
+
 - **Codex works as a peer, and it cost one character.** MEASURED against codex-cli 0.149.1 on a
   cluster host: its composer glyph is `›` where Claude's is `❯`, and that is the **only** difference.
   The empty-composer caret is column 2 for both, Enter submits for both, and a ~900-character fast

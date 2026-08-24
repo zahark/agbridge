@@ -1499,6 +1499,17 @@ nothing. The check strips all whitespace from both sides, which makes it wrap-im
 reasoning the wire format uses, and which this check did not inherit for an embarrassing number of
 hours.
 
+⚠️ **Every pane read is the WHOLE VISIBLE SCREEN — no `--lines`, no `--all` — and reading a tail hid
+Codex completely.** MEASURED: **Claude anchors its composer to the bottom of the pane; Codex draws
+from the top and leaves the bottom blank.** So `--lines 40` finds Claude every time and missed
+Codex's composer entirely, and `classify` answered `unknown` for a perfectly healthy Codex row that
+the relay would then never deliver to. The doorbell kept working throughout, because tmux's status
+bar is always the last line — two reads, two geometries, and only one of them was ever tested
+against Codex.
+
+The tail bought nothing anyway: the alternate screen has no scrollback, so `--all`, `--lines 400`
+and the bare default all return the same lines.
+
 ✅ **Codex works as a peer, and needed one character.** MEASURED against codex-cli 0.149.1: its
 composer glyph is `›` where Claude's is `❯`, and that is the **only** difference — the empty-composer
 caret is column 2 for both, Enter submits for both, and a ~900-character injection is rendered in

@@ -729,25 +729,26 @@ class Ctl(object):
         except ValueError:
             raise PeerError("tree returned something that is not JSON")
 
-    def text(self, target, pane, lines, whole=False):
-        """⚠️ `--all` and `--lines` are MUTUALLY EXCLUSIVE, and the `--help`
-        does not say so -- `agtermctl session text --all --lines 400` answers
-        `Error: use either --all or --lines, not both`.
+    def text(self, target, pane, lines=None, whole=False):
+        """The pane's VISIBLE SCREEN -- no `--lines`, no `--all`.
 
-        This shipped as both-together and would have made every relay read fail
-        on the first live tick. 2050 tests could not see it, because the fakes
-        accepted any argv; `assert_text_argv` in the tests is the answer to
-        that, and it is written against the binary's real refusals.
+        ⚠️ **Reading a tail hid Codex completely.** MEASURED: Claude Code
+        anchors its composer to the BOTTOM of the pane, Codex draws from the
+        TOP and leaves the bottom blank. So `--lines 40` finds Claude every
+        time and can miss Codex's composer entirely -- `classify` answered
+        `unknown` for a perfectly healthy Codex row, and the relay would never
+        have delivered to it. The doorbell kept working throughout, because
+        tmux's status bar is always the last line.
 
-        So `whole=True` means `--lines <n>` **alone**, which the help describes
-        as *"keep only the last N lines of the full buffer"* -- the phrase
-        "full buffer" being why this is the bounded scrollback read rather than
-        `--all`, which has no bound at all and would drag a day's history back
-        on every poll.
+        ⚠️ And the tail bought nothing anyway: the alternate screen has NO
+        scrollback, measured -- `--all`, `--lines 400` and the bare default all
+        returned exactly the same 60 lines. `lines` and `whole` are still
+        accepted so the call sites need not all change at once, and are
+        deliberately ignored; the flags they used to produce are what agterm
+        rejects when combined.
         """
-        argv = ["session", "text", "--target", target, "--pane", pane]
-        argv += ["--lines", str(lines)] if (whole or lines) else ["--all"]
-        rc, out, err = self.run(argv)
+        rc, out, err = self.run(["session", "text", "--target", target,
+                                 "--pane", pane])
         if rc != 0:
             return None, (err.strip() or "exit %s" % (rc,))
         return out, None
