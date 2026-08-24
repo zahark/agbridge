@@ -1467,6 +1467,19 @@ participant then uses the identical mechanism minus the ssh. Without it the targ
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
 
+⚠️ **Every participant needs tmux, including on the Mac — and macOS ships without it.** This is by
+construction, not an oversight: the doorbell *is* a tmux window name and the message store *is* a
+tmux option. `brew install tmux`, then start the agent inside it:
+
+```sh
+agtermctl session new --name macbot --cwd "$HOME" \
+  --command "tmux new -A -s macbot $(command -v claude)"
+```
+
+⚠️ **agterm closes a session the moment its command exits**, so a failure here makes the row appear
+and vanish with nothing to read. `--wait` holds it open and prints the error — CONFIRMED live
+2026-08-24, which is how `exec: tmux: not found` was found at all.
+
 ⚠️ **A Mac-native participant must name its tmux session**, e.g.
 `macside=<label>@local:<tmux session>`. The pane id is otherwise read out of the row's
 `agb pane --pane` argv, and an agterm session that is not an agbridge row has no such argv — its
