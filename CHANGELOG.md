@@ -269,6 +269,61 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Window Vulnerability" — and neither the mode check nor the cursor check can see it. The gate that
   looked like belt-and-braces is the only one that catches that case.
 
+  **`agb-peer send` / `agb-peer relay` make it a conversation, and one mechanism covers all three
+  pairings** — farm↔farm, farm↔Mac, Mac↔Mac. **The transport is the screen**: every agent already
+  has a pane on the Mac, which is what agbridge is for, so the Mac is the one place agents in
+  different worlds coexist. An agent sends by *printing a line* — `agb-peer send` calls no
+  `agtermctl` and runs anywhere — and a Mac-side relay reads panes and types the payload into the
+  recipient's composer. A file-based outbox was designed first and rejected: it only works when both
+  parties share a disk, so it fails Mac↔Mac entirely and fails farm↔farm across two instances.
+
+  Watch one with `agtermctl dashboard <a>:left <b>:left` — one agent per row, so each keeps its own
+  status, glyph and banner.
+
+  **The wire is plain text and stays that way**, because these lines land in the sender's own
+  transcript where a human is reading. A base64 frame was built first and thrown away: it solved the
+  wrong half. The terminal wraps *mid-word*, so wrapped plain text cannot be reassembled — but the
+  answer is not to encode, it is **not to wrap**. `send` breaks the message on word boundaries into
+  50-column chunks, each with its own header, so nothing needs ambiguous rejoining:
+
+  ```
+  [peer bob k3n9x2 1/2 63] the first part of the message, on word bounds
+  [peer bob k3n9x2 2/2 63] and the rest of it
+  ```
+
+  A pane narrower than that is still possible, so the header carries the message's **length** and a
+  reassembly that does not match is refused and reported — the one corruption this format cannot
+  prevent, made loud rather than silent.
+
+  Rechecking agterm's cookbook is what turned this around: it has **no encoding and no delimiter at
+  all**, just a `Chat from Claude: ` prefix, because there the sending agent *calls* the delivery
+  script and the screen is only ever a destination. Everything ugly here descended from making the
+  sender's screen the source; keeping that transport but dropping the encoding gets both.
+
+  The rest is forced the same way:
+
+  - **The relay types the text, never a header**, or the message bounces for ever.
+  - **The first pass primes**, or the whole scrollback replays into a composer on startup.
+  - **There is no `from` field** — an agent cannot print into another agent's pane, so the place is
+    the only unspoofable part of the envelope, and it signs the message.
+  - **A relay never blocks**: a busy peer leaves the message pending for the next tick.
+
+  ⚠️ **Mutation-testing corrected this three times, and once it was the harness that was wrong.**
+  `cmd_relay`'s priming had no test at all — `relay_tick`'s own test passes the flag directly, so
+  flipping `cmd_relay` left every test green while a real relay would have replayed a whole
+  scrollback. A mutation aimed at the header anchoring turned out to be a **no-op**, because `^` and
+  `re.match` are redundant with each other; the redundancy is now recorded in the code so the next
+  reader does not delete one and conclude from a green suite that it was uncovered. And the harness
+  itself scored a **missing test as a caught mutation**, because pytest exits 4 for "no such test"
+  and the check only looked for non-zero — it now requires the test to exist and pass before
+  mutating.
+
+  ⚠️ **Known costs, stated rather than designed away**: a message that scrolls out before the relay
+  polls is **lost**, which a file transport could not do; a detached farm participant shows
+  `agb pane`'s menu, which holds no messages, so the relay says so every tick rather than letting
+  "gone" look like "quiet"; and ids are compared for equality only — base36 milliseconds stop sorting
+  correctly once the digit count changes, around 2059.
+
   **Carried forward, unfixed, and they are the cookbook's own**: the cursor check cannot tell an
   empty composer from one whose caret was moved back over text (agterm's `--help` says so); sending
   to Claude Code interrupts rather than queues; there is no transcript; and a model may decline to

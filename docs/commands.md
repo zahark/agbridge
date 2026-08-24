@@ -1348,6 +1348,80 @@ screen read and a screen read can be wrong; the cost of being wrong on those nin
 destroyed row rather than a lost message. That list is a cross-file agreement with `agb_ops`'
 `PANE_QUIT_WORDS`/`PANE_SPLIT_WORDS`/`PANE_DRAWER_WORDS`, pinned by a test.
 
+### `agb-peer send` / `agb-peer relay` — one mechanism for all three pairings
+
+```
+agb-peer send  --to <name> <message>            # prints a marker; needs no agtermctl
+agb-peer relay alice=<row> bob=<row>[:pane] …   # carries markers between panes
+```
+
+**The transport is the screen.** Every agent worth talking to already has a pane on the Mac — that
+is what agbridge is *for* — so the Mac is the one place a farm agent and a local agent coexist. An
+agent sends by **printing a line**; the relay reads panes and types the payload into the recipient's
+composer. Nothing in it knows where an agent runs, which is what makes one mechanism cover
+farm↔farm, farm↔Mac and Mac↔Mac. `agb-peer send` calls no `agtermctl` at all and runs anywhere.
+
+Watch a conversation with agterm's own grid — one agent per row, so each keeps its status and glyph:
+
+```sh
+agtermctl dashboard <rowA>:left <rowB>:left
+agtermctl dashboard --close
+```
+
+⚠️ **It is plain text, and that is a requirement rather than a nicety** — these lines land in the
+sender's own transcript, where a human is reading. agterm's cookbook types plain text too, and gets
+away with a bare `Chat from Claude: ` prefix because there the sending agent *calls* the delivery
+script: the screen is only ever a destination. Here it is also the source, which costs two things:
+
+```
+[peer bob k3n9x2 1/2 63] the first part of the message, on word bounds
+[peer bob k3n9x2 2/2 63] and the rest of it
+
+[peer <to> <id> <part>/<parts> <len>] <text>
+```
+
+- **The terminal wraps, and it wraps MID-WORD**, so wrapped plain text cannot be reassembled — a
+  newline the terminal inserted is indistinguishable from one the sender wrote, and rejoining either
+  way corrupts. The answer is not to encode; it is **not to wrap**. `send` breaks the message on
+  word boundaries into 50-column chunks, each carrying its own header, so nothing ever needs
+  ambiguous rejoining. ⚠️ Widening `CHUNK` is not free: header + chunk must stay inside the
+  **narrowest pane in the conversation**, and a test pins it under 80.
+- **A narrower pane is still possible**, and silent corruption is the one outcome worth engineering
+  against — so the header carries the message's total **length**. A reassembly that does not match is
+  **refused and reported**, never delivered short. That is the only failure this format cannot
+  prevent, and it is loud.
+
+Four more things that are not obvious, each of which is a test:
+
+- **The relay types the text, never a header line.** What it types lands on the recipient's screen
+  and is read again next poll; echoing a header would bounce the message for ever. Structural, not a
+  rule someone has to remember.
+- **The first pass primes.** A pane's scrollback holds every message the conversation ever sent, so
+  a relay that delivered on its first look would replay the whole history into somebody's composer.
+  Pass one marks everything seen and sends none of it.
+- **The sender is the pane, not a `from` field** — there is no `from` field on the wire, deliberately.
+  An agent cannot print into another agent's pane, so the participant name of the pane a message was
+  *found in* is the only part of the envelope that cannot be misstated, and it is what signs the
+  delivered message.
+- **A relay never blocks.** The direct command waits out a busy peer for forty seconds; here a
+  refusal leaves the message pending for the next tick, so one busy participant cannot stall
+  everyone. A message that was typed but could not be verified is **dropped**, not retried — retrying
+  would leave two copies in a composer.
+
+⚠️ **Ids are compared for equality only, never sorted.** Base36 of a millisecond clock stops being
+lexicographically ordered once the digit count changes — `message_id(1e12)` sorts *before*
+`message_id(1.0)` — and real timestamps all render eight digits until about 2059, so a sort would
+look correct for decades and then not. Order comes from position in the pane.
+
+⚠️ **The failure you will hit most: a detached farm participant.** Its row shows `agb pane`'s menu,
+a menu holds no messages, and the relay would otherwise read that as *quiet* rather than *gone*. It
+says so on every tick instead.
+
+⚠️ **A message that scrolls out of the buffer before the relay polls is lost.** `session text --all`
+plus `--lines` bounds what is read; a file-based transport could not lose one, and this is the price
+of using the screen — which is the transport, deliberately, because it is the only one that works
+for all three pairings without a shared disk or a second ssh.
+
 ### What it inherits from the cookbook, unfixed
 
 The composer check cannot tell an empty composer from one whose caret was moved back over text —
