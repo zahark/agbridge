@@ -619,30 +619,47 @@ def pane_argv_field(foreground, flag):
 # the agtermctl seam -- one door, injectable, never raises on a tool failure
 # ---------------------------------------------------------------------------
 
-def run_local(argv):
-    """(rc, stdout, stderr) for a command on THIS machine -- `send` runs tmux,
-    not agtermctl, and must work on a farm host where agterm does not exist."""
+# ⚠️ **Every subprocess here is timed out, and it is not defensive coding.**
+# MEASURED: `tmux display-message -t %N` blocked indefinitely while an agterm
+# `dashboard` had a wedged view-only client attached -- `list-clients` answered
+# and everything that has to NOTIFY a client did not. `agb-peer send` hung for
+# two minutes with no output and nothing written. This repo's own rule
+# ("always pass timeout= to communicate()") exists for exactly that, and this
+# file broke it in two places.
+SUBPROCESS_TIMEOUT = 30
+
+TIMED_OUT = 124
+
+
+def _spawn(argv, timeout):
+    """(rc, stdout, stderr). Never blocks for ever; a timeout is an error, not
+    a hang, so the caller can say which command stopped responding."""
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)
     except OSError as exc:
         raise PeerError("%s: %s" % (argv[0], exc))
-    out, err = proc.communicate()
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return TIMED_OUT, "", ("%s did not answer within %ss -- a wedged tmux "
+                               "or agterm client will do this"
+                               % (argv[0], timeout))
     return (proc.returncode, out.decode("utf-8", "replace"),
             err.decode("utf-8", "replace"))
 
 
-def run_ctl(argv):
-    """(rc, stdout, stderr). The only place a subprocess is started."""
-    try:
-        proc = subprocess.Popen([CTL] + list(argv),
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except OSError as exc:
-        raise PeerError("%s: %s" % (CTL, exc))
-    out, err = proc.communicate()
-    return (proc.returncode,
-            out.decode("utf-8", "replace"),
-            err.decode("utf-8", "replace"))
+def run_local(argv, timeout=SUBPROCESS_TIMEOUT):
+    """(rc, stdout, stderr) for a command on THIS machine -- `send` runs tmux,
+    not agtermctl, and must work on a farm host where agterm does not exist."""
+    return _spawn(argv, timeout)
+
+
+def run_ctl(argv, timeout=SUBPROCESS_TIMEOUT):
+    """(rc, stdout, stderr) for an agtermctl call."""
+    return _spawn([CTL] + list(argv), timeout)
 
 
 class Ctl(object):

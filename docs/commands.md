@@ -1467,6 +1467,12 @@ participant then uses the identical mechanism minus the ssh. Without it the targ
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
 useless for mode detection is exactly right for this.
 
+⚠️ **A wedged agterm client wedges tmux, and `agb-peer` times out rather than hanging.** MEASURED:
+while a `dashboard` had an unresponsive view-only client attached, `tmux list-clients` answered
+instantly and every command that has to *notify* a client — `display-message`, `show-options -t`,
+`rename-window` — blocked indefinitely. `send` hung with nothing written and no output. Every
+subprocess is now bounded (30 s) and a timeout is reported as an error naming the command.
+
 ⚠️ **agterm spawns `bash --noprofile --norc`, so a pane inherits only what `login` gives it — NOT
 your PATH.** Measured on macOS, and it bit three times in a row at three different depths: the row's
 `--command` could not find `tmux`, then could not find `claude`, and then an agent running happily

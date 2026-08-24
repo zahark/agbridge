@@ -1173,3 +1173,35 @@ def test_only_the_local_branch_resolves_a_path(peer, monkeypatch):
                         lambda p, m: p == "/opt/homebrew/bin/tmux")
     assert peer.ssh_argv("local", ["tmux", "ls"], {})[0] == "/opt/homebrew/bin/tmux"
     assert peer.ssh_argv("farmbox", ["tmux", "ls"], {})[-2:] == ["tmux", "ls"]
+
+
+# ------------------------------------------------------- subprocess timeouts
+
+def test_a_wedged_command_times_out_instead_of_hanging(peer):
+    """MEASURED: `tmux display-message -t %N` blocked indefinitely while an
+    agterm dashboard had a wedged view-only client -- `list-clients` answered
+    and everything that must NOTIFY a client did not. `send` hung for two
+    minutes with nothing written. This repo's rule about `communicate(timeout=)`
+    exists for exactly that, and this file broke it in two places.
+    """
+    rc, out, err = peer.run_local(
+        ["sh", "-c", "sleep 30"], timeout=1)
+    assert rc == peer.TIMED_OUT
+    assert "did not answer" in err
+
+
+def test_a_normal_command_is_unaffected(peer):
+    # The companion the timeout test needs: same call, one variable changed.
+    rc, out, err = peer.run_local(["sh", "-c", "printf hello"], timeout=10)
+    assert (rc, out) == (0, "hello")
+
+
+def test_both_runners_share_the_timing_out_spawner(peer):
+    import ast
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    for name in ("run_local", "run_ctl"):
+        fn = [n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == name]
+        assert fn, name
+        body = ast.dump(fn[0])
+        assert "_spawn" in body, "%s must not start its own Popen" % (name,)
