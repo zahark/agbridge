@@ -289,6 +289,38 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   `_not recorded_` gaps that had been open since the file was written — which is what answers the
   third, `session list --help`, since there is no `session list`. No code changed.
 
+- **The 0.24.0 doc re-survey shipped one wrong claim of its own, caught by running it.** The entry
+  above said `session type`'s pane vocabulary had *widened* in 0.24.0 and that `right`/`scratch`
+  were now aliases. Measured on a live row, the binary **rejects** `primary`, `top`, `split` and
+  `bottom` — the accepted set is exactly the old `left`, `right`, `scratch`, while the 0.24.0
+  `--help` documents all seven. So `TYPE_RIGHT`/`TYPE_SCRATCH` in `agb_ops` are correct as written,
+  and "modernising" them to the documented spelling would have broken `agb pane`'s `[s]` and `[d]`
+  with agterm's own help text as the justification. First case in this file where the bad source was
+  the **help text** rather than `agterm.com/commands`.
+
+  The same run retires the section's NOT YET MEASURED mark. ✅ **Keystrokes injected by
+  `session type` do reach a remote agent's composer** — agterm → `ssh -t` → tmux → Claude, confirmed
+  by typing a string into an attached agbridge row and reading it back out of the composer box
+  unsent. ✅ **`surface cursor` works through that ssh** and reports column `2` for an empty Claude
+  composer, the same value agterm's own two-agent-chat cookbook checks for a local agent.
+
+  Three findings that were not being looked for:
+
+  - **`foreground` does not change on attach.** It is the argv the session was *launched* with — for
+    an agbridge row, always `agb pane` — so it cannot say whether anyone is attached. The cookbook
+    validates a peer that way; here only `session text` can.
+  - **Surface ids live in `tree`'s per-session `surfaces` list** as `surface:<session id>:<kind>`,
+    with `kind` in the same `left`/`right`/`scratch` vocabulary. That object also carries `split`,
+    `scratch`, `overlay`, `realized` and `status` — five answers agbridge currently assumes or
+    re-sends, all in JSON it already fetches and discards.
+  - ⚠️ **A zsh trap that reads as an agterm limitation**: `"surface:$ROW:left"` applies zsh's `:l`
+    lowercase modifier, yielding `surface:<lowercased>eft` and an `invalid surface` error. It looked
+    exactly like "the cookbook's target syntax is not supported on this build". Brace it.
+
+  ⚠️ **The hazard the pre-check exists for fired on the first row picked**: its composer already held
+  an unsubmitted draft, which `session type` would have appended to and submitted together on the
+  next Return. Documented rather than designed around, because no fix is proposed yet.
+
 ### Installing after this change
 
 **If your Mac's instances are already named** — every `install.sh mac` since 0.5.0 that passed

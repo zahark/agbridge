@@ -291,8 +291,8 @@ not re-evaluate it from scratch.
 ### `agtermctl session type [<text>] [--pane <pane>] [--target <id>]` — **CONFIRMED**
 
 Recaptured on **0.24.0**, 2026-08-24. The 2026-07-29 capture is kept below it, because the
-difference is the point: the pane vocabulary **widened** and the old spelling still works, so a
-reader who finds only the new one cannot tell whether `--pane right` was ever valid.
+difference is the point: the help's pane list changed and **the binary's did not** — see the
+measured table below, which is the reason both captures are kept.
 
 ```
 OVERVIEW: Inject text into a session.
@@ -324,8 +324,38 @@ USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--t
 ```
 
 `--select`'s constraint is **unchanged** across the two, which is what keeps both consequences below
-true. `TYPE_RIGHT`/`TYPE_SCRATCH` in `agb_ops` need no edit: `right` and `scratch` are still
-accepted, now as aliases for `split` and themselves.
+true.
+
+### ⚠️ The `--pane` vocabulary in 0.24.0's `--help` is WRONG — **MEASURED 2026-08-24**
+
+The help above says `primary/left/top, split/right/bottom, or scratch`. Four of those seven words
+are rejected. Measured against a live row, one word per call, reading the error:
+
+| word | result |
+|---|---|
+| `left` | **accepted** — returned the buffer |
+| `right` | **accepted** — `error: session has no split pane`, a pane error, not a vocabulary error |
+| `scratch` | **accepted** — `error: session has no scratch terminal` |
+| `primary` | `error: invalid pane: primary` |
+| `top` | `error: invalid pane: top` |
+| `split` | `error: invalid pane: split` |
+| `bottom` | `error: invalid pane: bottom` |
+
+So the accepted vocabulary is exactly the **2026-07-29** one: `left`, `right`, `scratch`. The
+distinction that makes this measurable rather than a guess is that a *rejected* word answers
+`invalid pane: X` while an *accepted* word that names a pane which does not exist answers about the
+pane — so `right` and `scratch` are confirmed accepted on a session that has neither.
+
+⚠️ **`TYPE_RIGHT`/`TYPE_SCRATCH` in `agb_ops` are correct and must not be "modernised".** Rewriting
+them to the documented `split`/`primary` would break `agb pane`'s `[s]` and `[d]` outright, with the
+binary's own `--help` as the justification. This is the first case in this file where the failure
+came from agterm's **help text** rather than from `agterm.com/commands`, so the rule generalises:
+run it, whatever the source.
+
+The rejection was measured on `session text`. `session type` documents the same list; whether it
+accepts the same subset is **untested**, though agbridge has shipped `--pane right` and
+`--pane scratch` through `session type` since 0.3.0, which is evidence for `right`/`scratch` and
+says nothing about `primary`.
 
 Two consequences, both load-bearing:
 
@@ -574,9 +604,22 @@ Two things worth carrying, both from agterm's own text:
   pre-filter.
 - **`--target` is a *surface* id from `tree`, not a session id.** `tree_workspaces` (`agb_mac:1243`)
   parses `result.tree.workspaces[].sessions[].id` and stops there, so a caller would need to reach
-  one level further into the same JSON it already fetches. **Where surface ids live in that
-  structure is NOT YET RECORDED** — capture `agtermctl tree --json` with a row present before
-  writing anything against it.
+  one level further into the same JSON it already fetches. **RECORDED 2026-08-24**: each session
+  object carries a `surfaces` list, and the id is the cookbook's form —
+
+  ```json
+  "surfaces": [ { "visible": true, "kind": "left", "id": "surface:B6FB71FB-…-CA3233329B63:left", "active": true } ]
+  ```
+
+  — i.e. `surface:<session id>:<kind>`, and `kind` uses the same `left`/`right`/`scratch` vocabulary
+  the panes do. It is derivable by string concatenation, but read it from `surfaces` rather than
+  building it: `kind` is agterm's word for that pane and the list is what says which panes exist.
+
+  ⚠️ **A shell trap, not an agterm one, and it cost a wrong conclusion here.** `"surface:$ROW:left"`
+  in **zsh** applies the `:l` *lowercase modifier* to `$ROW`, producing
+  `surface:<lowercased-id>eft` — which agterm rejects as `invalid surface`, and which reads exactly
+  like "the cookbook's target syntax does not work on this build". It does work. Brace it:
+  `"surface:${ROW}:left"`.
 
 ### `agtermctl session text` — **CONFIRMED, not used**
 
@@ -650,6 +693,27 @@ USAGE: agtermctl session move [<workspace>] [--to <to>] [--after <after>] [--bef
 carries its own workspace, relocating and positioning in one shot — which is a capability agbridge
 has never had at all: deterministic row **order**, e.g. all of one host's rows together.
 
+### What `tree --json` reports that agbridge throws away — **CONFIRMED 2026-08-24**
+
+`tree_workspaces` (`agb_mac:1243`) walks `result.tree.workspaces[].sessions[]` and reads `id` — and
+`name` for the workspace. The session object it already has in hand carries all of this:
+
+| field | type | why it matters here |
+|---|---|---|
+| `id` | str | the row id; the only one read today |
+| `surfaces` | list | `{visible, kind, id, active}` per pane — the surface ids `surface cursor` needs |
+| `split`, `scratch`, `overlay` | bool | **whether those panes exist.** Invariant 13 sends `session split on` unconditionally because there was no way to ask; there is |
+| `realized` | bool | the never-shown flag `--select` exists for — a read instead of an assumption |
+| `status` | str | agterm's own copy of what the bridge last set. `RowRenderer.applied` is documented as *what we sent, not what agterm shows*; this **is** what agterm shows |
+| `foreground` | list | the argv the session was launched with — ⚠️ **not** the pane's live foreground process, see below |
+| `cwd`, `name`, `flagged`, `active`, `fontSize` | | |
+
+⚠️ **This is a menu, not a plan.** `status` in particular looks like it retires `_reassert`'s 30 s
+re-send, and it does not obviously do so: reading it costs a `tree` call per poll where the re-send
+costs nothing, and the divergence `_reassert` exists for (agterm resets a row's status when the
+row's command starts) would be *detected* rather than *prevented*. Worth measuring before anyone
+treats it as a simplification.
+
 ### What this says about pushing text into an agbridge row
 
 Recorded here because the question will be asked again, and because the answer is *yes with a
@@ -679,17 +743,38 @@ Two consequences:
   sets, so it falls through to the attach and cannot hit the destructive case. One call turns menu
   mode into composer mode.
 
-⚠️ **NOT YET MEASURED**, and it is the claim the whole route rests on: that keystrokes injected by
-`session type` survive agterm → `ssh -t` → remote tmux → the agent's composer. It is reasoned from
-`pane_attach` running the ssh in the **foreground** (`subprocess.call`, so ssh owns the pty), not
-observed. Until it is run, nothing here may be coded against. The test is three commands, on a row
-attached to a live agent:
+✅ **CONFIRMED live, 2026-08-24** — this was the claim the whole route rested on, and it holds:
+keystrokes injected by `session type` survive agterm → `ssh -t` → remote tmux → the agent's
+composer. Measured on an attached agbridge row whose agent was idle on a farm host:
 
 ```sh
-agtermctl session text --target <row> --pane primary --lines 5    # which mode?
-agtermctl session type "hello" --target <row> --pane primary
-agtermctl session text --target <row> --pane primary --lines 5    # did it reach the composer?
+ROW=<row id from tree>
+agtermctl session text --target "$ROW" --pane left --lines 12   # tmux status bar => attached
+agtermctl surface cursor --target "surface:${ROW}:left"         # -> 2, an empty composer
+agtermctl session type "hello from agtermctl" --target "$ROW" --pane left   # -> ok
+agtermctl session text --target "$ROW" --pane left --lines 12
 ```
+
+The last read showed `❯ hello from agtermctl` inside the composer box, unsent. Nothing was
+submitted — `session type` was given no trailing newline, which is what makes this test safe to
+repeat.
+
+Two results fall out of the same run:
+
+- ✅ **`surface cursor` works through the ssh, and an empty Claude composer reports column `2`** —
+  the exact value agterm's own cookbook checks for a local agent. So the caret test survives two
+  extra hops. It remains a *signal*, not proof, for the reason `surface cursor`'s help gives.
+- ⚠️ **`foreground` does NOT change on attach**, so it cannot be used as the mode detector. On this
+  attached row it was an 18-element argv beginning with `Python` — the `agb pane` command line, not
+  the `ssh` actually running in the pane. agterm reports what the session was *launched* with. The
+  cookbook validates a peer by checking `foreground` names the expected agent; for an agbridge row
+  it will always say `agb pane`, attached or not. **`session text` is the only mode detector.**
+
+⚠️ **The hazard is not theoretical, and it fired on the first row picked.** That row's composer
+already held an unsubmitted draft — `test the install script on another workarea` — which
+`session type` would have appended to, submitting both together on the next Return. It was cleared
+by hand before the test. `surface cursor` returning `2` afterwards is what made the run safe, and is
+the whole argument for taking that reading first.
 
 Also unmeasured, and separate: whether `surface cursor` reports anything useful for an attached row.
 tmux draws its own status line, so the agent's composer is not the last line of the buffer — the
