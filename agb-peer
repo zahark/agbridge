@@ -449,49 +449,72 @@ def read_doorbell(text):
     return found[-1] if found else None
 
 
-def fetch_command(pane):
-    """The shell line that drains every pending message from one tmux pane.
+def list_argv(pane):
+    """Ask tmux for every option on a pane. **Pure argv, no shell.**
 
-    One command, because it is run over ssh and a round trip per option would
-    make the fetch cost scale with how chatty the peer has been. It prints a
-    framed record per message and unsets each as it goes, so the same message
-    is never fetched twice even if the relay dies mid-drain.
+    ⚠️ The first version ran a `for … in $(…)` loop over ssh and failed with
+    `Illegal variable name.` -- tcsh, because `ssh <host> <cmd>` hands the
+    command to the remote LOGIN shell, and a farm login shell is often tcsh.
+    Quoting a POSIX script through tcsh is a losing game, so there is no remote
+    script any more: ssh execs `tmux` directly and every metacharacter problem
+    goes away with it.
     """
-    return (
-        "for k in $(tmux show-options -p -t %(pane)s 2>/dev/null "
-        "| sed -n 's/^\\(%(pfx)s[0-9a-z]*\\).*/\\1/p'); do "
-        "printf '<<AGBPEER %%s>>\\n' \"$k\"; "
-        "tmux show-options -pqv -t %(pane)s \"$k\"; "
-        "printf '<<AGBPEEREND>>\\n'; "
-        "tmux set -pu -t %(pane)s \"$k\"; done"
-    ) % {"pane": pane, "pfx": OPTION_PREFIX}
+    return ["tmux", "show-options", "-p", "-t", pane]
 
 
-def parse_fetch(output):
-    """Framed records -> [{id, to, text}], skipping anything malformed.
+def unset_argv(pane, key):
+    return ["tmux", "set", "-pu", "-t", pane, key]
 
-    The frame exists because a message is multi-line in principle and ssh gives
-    us one stream; the delimiters are what let a value contain newlines without
-    the reader having to guess.
+
+def ssh_argv(target, argv):
+    """Wrap for ssh, or not, for a participant whose tmux is on this machine."""
+    if not target or target == "local":
+        return list(argv)
+    return ["ssh", "-o", "BatchMode=yes", target] + list(argv)
+
+
+def unescape_option(value):
+    """Undo tmux's own quoting of an option value.
+
+    `show-options -p` renders each option on ONE line, escaping newline as
+    `\n`, plus `\"` and `\\` -- which is exactly why the Mac can parse it
+    with no help from the far side.
     """
+    out = []
+    index = 0
+    simple = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"'}
+    while index < len(value):
+        char = value[index]
+        if char == "\\" and index + 1 < len(value):
+            out.append(simple.get(value[index + 1], value[index + 1]))
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def parse_show_options(text):
+    """`show-options -p` output -> [{id, key, to, text}], skipping anything else.
+
+    A pane carries options that are none of our business, and a value may be
+    quoted or bare depending on whether it needs escaping -- both are handled,
+    and anything that does not parse is passed over rather than raised on.
+    """
+    import re
+    pattern = re.compile(r"^(%s[0-9a-z]+)\s+(.*)$" % (re.escape(OPTION_PREFIX),))
     messages = []
-    ident = None
-    body = []
-    for line in (output or "").splitlines():
-        if line.startswith("<<AGBPEER ") and line.endswith(">>"):
-            ident = line[len("<<AGBPEER "):-2].strip()
-            if ident.startswith(OPTION_PREFIX):
-                ident = ident[len(OPTION_PREFIX):]
-            body = []
-        elif line == "<<AGBPEEREND>>":
-            if ident:
-                parsed = parse_option_value("\n".join(body))
-                if parsed:
-                    messages.append({"id": ident, "to": parsed[0],
-                                     "text": parsed[1]})
-            ident, body = None, []
-        elif ident is not None:
-            body.append(line)
+    for line in (text or "").splitlines():
+        match = pattern.match(line.rstrip())
+        if not match:
+            continue
+        key, raw = match.group(1), match.group(2).strip()
+        if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+            raw = unescape_option(raw[1:-1])
+        parsed = parse_option_value(raw)
+        if parsed:
+            messages.append({"id": key[len(OPTION_PREFIX):], "key": key,
+                             "to": parsed[0], "text": parsed[1]})
     return messages
 
 
@@ -855,14 +878,20 @@ def drain(fetch, name, target, pane, say):
     if not pane:
         say("%s: no tmux pane recorded for that row -- cannot fetch" % (name,))
         return []
-    argv = ["sh", "-c", fetch_command(pane)]
-    if target and target != "local":
-        argv = ["ssh", "-o", "BatchMode=yes", target, fetch_command(pane)]
-    rc, out, err = fetch(argv)
+    rc, out, err = fetch(ssh_argv(target, list_argv(pane)))
     if rc != 0:
         say("%s: fetch failed: %s" % (name, (err or "").strip() or rc))
         return []
-    return parse_fetch(out)
+    messages = parse_show_options(out)
+    for message in messages:
+        rc, _out, err = fetch(ssh_argv(target, unset_argv(pane, message["key"])))
+        if rc != 0:
+            # Not fatal, and not silent: the option survives, so the next ring
+            # fetches it again. The relay's delivered-set is what stops that
+            # becoming a second delivery.
+            say("%s: could not clear %s (%s) -- it may be fetched again"
+                % (name, message["key"], (err or "").strip() or rc))
+    return messages
 
 
 def try_deliver(ctl, sessions, people, sender, message, lines, say):
@@ -962,7 +991,14 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
         seen[name] = ident
         tmux_pane = pane_argv_field(session.get("foreground"), "--pane")
         host = target or pane_argv_field(session.get("foreground"), "--host")
+        done = notes.setdefault("delivered", set())
         for message in drain(fetch, name, host, tmux_pane, say):
+            if (name, message["id"]) in done:
+                # An option the far side would not let us unset comes back on
+                # the next ring. Fetching it twice is harmless; DELIVERING it
+                # twice would put the same sentence in a composer again.
+                continue
+            done.add((name, message["id"]))
             if deliver_new:
                 pending.append((name, message))
             else:

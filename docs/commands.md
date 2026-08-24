@@ -1391,6 +1391,13 @@ The relay reads the bar on a tick it already makes for mode detection, so **watc
 Only when the id *changes* does it reach for the content — one ssh per message, none while idle.
 The screen says *when*; ssh says *what*.
 
+⚠️ **The fetch runs no remote shell.** `ssh <host> tmux show-options -p -t %N` is pure argv — the
+first version ran a POSIX `for … in $(…)` loop and died with `Illegal variable name.`, because
+`ssh <host> <cmd>` hands the command to the remote **login** shell and a farm login shell is often
+tcsh. Quoting a script through tcsh is a losing game; there is no script now. `show-options -p`
+renders each option on **one line**, escaping newline, quote and backslash, so the Mac parses it with
+no help from the far side.
+
 ⚠️ **A fetch takes everything pending, not just the announced id.** The doorbell shows only the
 latest, so a tick that missed one would lose it for ever; sweeping every `@agbpeer_msg_*` makes a
 missed doorbell harmless. Each is unset as it is read, so nothing is delivered twice.

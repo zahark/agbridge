@@ -330,6 +330,14 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ⚠️ **The second live run died on tcsh.** The fetch ran a POSIX `for … in $(…)` loop over ssh and
+  answered `Illegal variable name.` — `ssh <host> <cmd>` hands the command to the remote **login**
+  shell, and a farm login shell is often tcsh. Rather than quote a script through it, there is no
+  script: `ssh <host> tmux show-options -p -t %N` is pure argv, and `show-options -p` renders each
+  option on one line with `\n`/`\"`/`\\` escapes, so the Mac parses it unaided. Unsetting is a
+  second argv-only call per message; a **delivered-set** makes a failed unset harmless, since the
+  option comes back on the next ring and delivering it twice would repeat a sentence in a composer.
+
   ⚠️ **The first live relay died at the one seam no test filled in**: `drain`'s `fetch` parameter
   defaulted to `None`, and every test injected a fake, so the production path was the only one never
   exercised — `'NoneType' object is not callable` on the first doorbell. Exactly the shape of the

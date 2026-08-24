@@ -470,23 +470,34 @@ def panes(alice="", bob=""):
 # ---------------------------------------------------- the doorbell protocol
 
 class Fetcher(object):
-    """Stands in for ssh. Records argv so a test can assert WHERE it ran."""
+    """Stands in for ssh. Records argv so a test can assert WHERE it ran.
 
-    def __init__(self, output="", rc=0):
-        self.output, self.rc, self.calls = output, rc, []
+    Answers the LIST call with its canned output and every `set -pu` with
+    success, because `drain` is now one listing plus one unset per message.
+    """
+
+    def __init__(self, output="", rc=0, unset_rc=0):
+        self.output, self.rc, self.unset_rc, self.calls = output, rc, unset_rc, []
 
     def __call__(self, argv):
         self.calls.append(argv)
-        return self.rc, self.output, ""
+        if "show-options" in argv:
+            return self.rc, self.output, ""
+        return self.unset_rc, "", "refused" if self.unset_rc else ""
+
+    @property
+    def unsets(self):
+        return [a for a in self.calls if "-pu" in a]
 
 
 def framed(*messages):
-    out = []
+    """What `tmux show-options -p` prints: one line per option, tmux-escaped."""
+    lines = ["some-other-option 42"]
     for ident, to, text in messages:
-        out.append("<<AGBPEER %s%s>>" % (peer_prefix(), ident))
-        out.append("%s\n%s" % (to, text))
-        out.append("<<AGBPEEREND>>")
-    return "\n".join(out) + "\n"
+        value = ("%s\n%s" % (to, text)).replace("\\", "\\\\")
+        value = value.replace('"', '\\"').replace("\n", "\\n")
+        lines.append('%s%s "%s"' % (peer_prefix(), ident, value))
+    return "\n".join(lines) + "\n"
 
 
 _PREFIX = [None]
@@ -530,40 +541,72 @@ def test_the_newest_doorbell_wins(peer):
     assert peer.read_doorbell("[peer #old11]\n[peer #new22]") == "new22"
 
 
-def test_a_drain_round_trips_one_message(peer):
-    got = peer.parse_fetch(framed(("k3n9x2", "bob", "hello there")))
-    assert got == [{"id": "k3n9x2", "to": "bob", "text": "hello there"}]
+def test_a_listing_round_trips_one_message(peer):
+    got = peer.parse_show_options(framed(("k3n9x2", "bob", "hello there")))
+    assert len(got) == 1
+    assert got[0]["to"] == "bob" and got[0]["text"] == "hello there"
 
 
-def test_a_drain_takes_everything_pending(peer):
+def test_other_options_on_the_pane_are_ignored(peer):
+    # A pane carries options that are none of our business.
+    assert peer.parse_show_options("status on\nmode-keys vi\n") == []
+
+
+def test_a_listing_takes_everything_pending(peer):
     """The doorbell shows only the LATEST id, so a tick that missed one would
     otherwise lose it. Sweeping every option makes a missed doorbell harmless.
     """
-    got = peer.parse_fetch(framed(("aaa", "bob", "one"), ("bbb", "bob", "two")))
+    got = peer.parse_show_options(framed(("aaa", "bob", "one"),
+                                         ("bbb", "bob", "two")))
     assert [g["text"] for g in got] == ["one", "two"]
 
 
-def test_a_multi_line_message_survives_the_frame(peer):
-    got = peer.parse_fetch("<<AGBPEER %sxyz>>\nbob\nline one\nline two\n"
-                           "<<AGBPEEREND>>\n" % (peer.OPTION_PREFIX,))
-    assert got[0]["text"] == "line one\nline two"
+def test_tmux_escapes_are_undone(peer):
+    """`show-options -p` renders each option on ONE line, escaping newline,
+    quote and backslash -- which is exactly why the Mac can parse it with no
+    help from the far side, and no remote shell."""
+    got = peer.parse_show_options(
+        '%sxyz "bob\\nsaid \\"hi\\" and a \\\\slash"\n' % (peer.OPTION_PREFIX,))
+    assert got[0]["text"] == 'said "hi" and a \\slash'
 
 
-@pytest.mark.parametrize("bad", [
-    "", "garbage\n",
-    "<<AGBPEER x>>\nbob\n",                       # never closed
-    "<<AGBPEER x>>\nbob\n<<AGBPEEREND>>\n",       # recipient but no text
-])
-def test_a_malformed_frame_is_skipped_not_raised(peer, bad):
-    assert peer.parse_fetch(bad) == []
+def test_a_bare_unquoted_value_is_read_too(peer):
+    # tmux only quotes when it has to.
+    assert peer.parse_show_options("%sxyz bob\n" % (peer.OPTION_PREFIX,)) == []
 
 
-def test_the_drain_command_unsets_what_it_reads(peer):
+@pytest.mark.parametrize("bad", ["", "garbage\n", '%sxyz ""\n', '%sxyz "bob"\n'])
+def test_a_malformed_option_is_skipped_not_raised(peer, bad):
+    assert peer.parse_show_options(bad % (peer.OPTION_PREFIX,)
+                                   if "%s" in bad else bad) == []
+
+
+def test_the_fetch_uses_no_remote_shell(peer):
+    """MEASURED: the first version ran a POSIX `for` loop over ssh and failed
+    with `Illegal variable name.` -- tcsh, because ssh hands the command to the
+    remote LOGIN shell. There is no remote script now, only argv."""
+    argv = peer.ssh_argv("farmbox", peer.list_argv("%7"))
+    assert argv[:1] == ["ssh"]
+    assert "tmux" in argv
+    for word in argv:
+        assert not any(c in word for c in "$();|&<>"), word
+
+
+def test_the_drain_unsets_what_it_read(peer):
     """Or the same message is fetched for ever, and re-delivered every time
     any later doorbell rings."""
-    cmd = peer.fetch_command("%7")
-    assert "set -pu" in cmd and "%7" in cmd
-    assert peer.OPTION_PREFIX in cmd
+    fetch = Fetcher(framed(("aaa", "bob", "one")))
+    peer.drain(fetch, "alice", "farmbox", "%7", lambda m: None)
+    assert fetch.unsets, fetch.calls
+    assert peer.OPTION_PREFIX + "aaa" in fetch.unsets[0]
+
+
+def test_a_failed_unset_is_reported_not_swallowed(peer):
+    said = []
+    fetch = Fetcher(framed(("aaa", "bob", "one")), unset_rc=1)
+    got = peer.drain(fetch, "alice", "farmbox", "%7", said.append)
+    assert got, "the message is still delivered -- the clear is what failed"
+    assert any("could not clear" in s for s in said)
 
 
 def test_pane_argv_field_reads_the_rows_own_command_line(peer):
@@ -671,7 +714,7 @@ def test_local_means_no_ssh_at_all(peer):
     which is what keeps one design covering all three pairings."""
     fetch = Fetcher(framed(("aaa", "bob", "hi")))
     peer.drain(fetch, "bob", "local", "%7", lambda m: None)
-    assert fetch.calls[0][0] == "sh", fetch.calls[0]
+    assert fetch.calls[0][0] == "tmux", fetch.calls[0]
 
 
 def test_a_failed_fetch_says_why_and_returns_nothing(peer):
@@ -708,7 +751,8 @@ def test_an_unchanged_doorbell_costs_no_ssh(peer):
     seen, pending = {}, []
     for _ in range(4):
         peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch)
-    assert len(fetch.calls) == 1, "four ticks, one ring, one fetch"
+    listings = [a for a in fetch.calls if "show-options" in a]
+    assert len(listings) == 1, "four ticks, one ring, one listing"
 
 
 def test_no_doorbell_costs_no_ssh(peer):
@@ -1048,3 +1092,20 @@ def test_the_relay_has_a_real_fetcher_when_none_is_injected(peer, monkeypatch):
 def test_drain_with_no_fetcher_does_not_raise(peer, monkeypatch):
     monkeypatch.setattr(peer, "run_local", lambda argv: (0, "", ""))
     assert peer.drain(None, "alice", "local", "%7", lambda m: None) == []
+
+
+def test_a_message_is_never_delivered_twice(peer):
+    """An option the far side would not let us unset comes back on the next
+    ring. Fetching it twice is harmless; DELIVERING it twice would put the same
+    sentence in a composer again.
+    """
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    fetch = Fetcher(framed(("msg1", "bob", "only once")), unset_rc=1)
+    seen, pending, notes = {}, [], {}
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch, notes=notes)
+    ctl.current["AAAA1111"] = COMPOSER + bell("bbb")          # a second ring
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch, notes=notes)
+    listings = [a for a in fetch.calls if "show-options" in a]
+    assert len(listings) == 2, "both rings must have fetched"
+    bodies = [t for (_, _, t) in ctl.typed if t != "\n"]
+    assert bodies == ["[chat from alice] only once"], bodies
