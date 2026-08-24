@@ -1361,6 +1361,16 @@ agent sends by **printing a line**; the relay reads panes and types the payload 
 composer. Nothing in it knows where an agent runs, which is what makes one mechanism cover
 farm↔farm, farm↔Mac and Mac↔Mac. `agb-peer send` calls no `agtermctl` at all and runs anywhere.
 
+⚠️ **`dashboard` is a MODAL overlay: agterm takes no input while it is open.** So `--dashboard` on
+the relay is for an unattended run, not for a session you are also talking in — it opens at startup
+and blocks the keyboard until dismissed. Open and close it by hand from a terminal *outside* agterm
+instead, which is where `agtermctl` is being driven from anyway:
+
+```sh
+agtermctl dashboard <a-id>:left <b-id>:left
+agtermctl dashboard --close
+```
+
 Watch a conversation with agterm's own grid — one agent per row, so each keeps its status and glyph:
 
 ```sh
