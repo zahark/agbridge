@@ -231,6 +231,21 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   model and neither does the skill, now that its description says "Claude Code or Codex" rather than
   assuming.
 
+- ⚠️ **A sandboxed Codex is RECEIVE-ONLY, and that is measured rather than reasoned.** Codex runs
+  model-generated shell commands in a sandbox which refuses the tmux socket
+  (`error connecting to /tmp/tmux-100000/default (Operation not permitted)`). Not a file-permission
+  problem: under `workspace-write` the sandbox writes to `/tmp` and `ls` sees the socket, and the
+  connect still fails. Since the doorbell **is** a tmux window name and the message store **is** a
+  tmux option, such a peer can be sent to and can never send.
+
+  The escape hatch is running Codex with its sandbox bypassed. `agb-codex` deliberately will not do
+  that for you — it removes the sandbox for *every* command that agent runs, not just ours, which is
+  the human's decision, the same reasoning that stops `agb-claude` answering Claude's trust prompt.
+
+  Found the only way it could be: Codex received a message, found the skill in `~/.codex/skills/`,
+  ran the exact command, hit the refusal, **did not retry**, and reported it — the skill's rules,
+  written for Claude and tested only on Claude, holding on a different model unmodified.
+
 - **`agb-codex` — the launcher, so a Codex agent gets a row at all.** `agb-claude` for Codex: name
   the tmux session, mint the row, then `exec`. Verified live — `agb-codex -d probe-codex` produced
   `probe-codex  completed  %86` in `agb list` with Codex drawn in the pane.

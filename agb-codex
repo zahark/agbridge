@@ -29,6 +29,28 @@
 # Wiring Codex's own hooks to `agb hook` would fix the first, and is
 # unexplored. `docs/agtermctl.md` records what was measured about Codex.
 #
+# ⚠️ **A SANDBOXED CODEX IS RECEIVE-ONLY.** MEASURED 2026-08-24: Codex runs
+# model-generated shell commands in a sandbox, and that sandbox refuses the
+# tmux socket --
+#
+#     agb-peer: cannot read tmux options for %90:
+#     error connecting to /tmp/tmux-100000/default (Operation not permitted)
+#
+# It is not a file-permission problem: under `workspace-write` the sandbox can
+# write to /tmp and `ls` sees the socket, and connecting still fails, which
+# points at unix-socket connects being blocked outright. Since `agb-peer`'s
+# doorbell IS a tmux window name and its message store IS a tmux option, a
+# sandboxed Codex can be SENT to and can never SEND.
+#
+# The escape hatch is running Codex with the sandbox bypassed, e.g.
+#
+#     agb-codex -d peer -- --dangerously-bypass-approvals-and-sandbox
+#
+# ⚠️ **This wrapper deliberately does NOT do that for you.** It removes the
+# sandbox for every command that agent runs, not just ours, and that is a
+# security decision belonging to the human -- the same reasoning that stops
+# `agb-claude` answering Claude's "is this a project you trust?" prompt.
+#
 #   agb-codex                  # session named after the current directory
 #   agb-codex api-refactor     # session named explicitly
 #   agb-codex -d api-refactor  # start it detached, with a row already showing

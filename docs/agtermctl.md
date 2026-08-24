@@ -807,6 +807,29 @@ busy**, not submitting; Enter submits an idle composer.
 gap left the line sitting in the composer; text, one second, Enter submitted it. `agb-peer`'s
 `deliver` already sleeps between the two, for an unrelated reason, and is not exposed.
 
+### ⚠️ A sandboxed Codex is RECEIVE-ONLY
+
+Codex runs model-generated shell commands in a sandbox, and that sandbox refuses the tmux socket:
+
+```
+agb-peer: cannot read tmux options for %90:
+error connecting to /tmp/tmux-100000/default (Operation not permitted)
+```
+
+Not a file-permission problem, measured three ways: under `workspace-write` the sandbox writes to
+`/tmp` happily and `ls` sees the socket, and the connect still fails — which points at unix-socket
+connects being blocked outright rather than at the filesystem policy.
+
+Since `agb-peer`'s doorbell **is** a tmux window name and its message store **is** a tmux option,
+that makes a sandboxed Codex a peer that can be **sent to** and can never **send**. The escape hatch
+is running it with the sandbox bypassed, which is a security decision for the human and which
+`agb-codex` deliberately will not do on its own.
+
+⚠️ Worth recording separately: `codex sandbox -c sandbox_mode="danger-full-access"` behaved *more*
+restrictively than `workspace-write` (it could not write `/tmp` at all), so that `-c` override does
+not appear to be honoured by the `sandbox` subcommand. Do not use it to reason about what a real
+session's policy permits.
+
 ### ✅ `codex queue` is a first-party delivery channel, and it is better than typing
 
 ```sh
