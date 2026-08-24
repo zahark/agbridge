@@ -316,6 +316,20 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   re-opened when ids move. A relay that cached ids would go permanently deaf with silence as its only
   symptom.
 
+  Three things about a refresh that are easy to miss, each pinned by a test. ✅ **A message sent
+  during the blackout is delayed, not lost** — the doorbell and the message sit in tmux on the
+  agent's host, so when the row returns the relay reads an id it has not seen and fetches it. The
+  screen-as-content design could never have done that. ⚠️ **Every re-minted row comes back
+  detached**, and a menu is not a tmux screen, so the relay **arms it** with the bare-newline attach
+  rather than complaining — otherwise every refresh would be a manual re-attach of every participant.
+  ⚠️ **A label matching no row is reported after three ticks**, not skipped in silence: one missed
+  tick is a refresh in progress, a hundred is a bridge that never came back.
+
+  ⚠️ **`automatic-rename` is `on` in tmux by default, and the doorbell depends on it being off.**
+  Measured. It survives today only because an explicit `rename-window` disables it as a side effect —
+  an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
+  relay goes deaf with no error anywhere. `send` pins it off explicitly now.
+
   `agtermctl dashboard <a>:left <b>:left` is the read-only side-by-side view; `--dashboard` keeps it
   in step. One agent per row, so each keeps its own status, glyph and banner.
 

@@ -741,14 +741,68 @@ def test_the_sender_is_the_pane_the_doorbell_rang_in(peer):
         "[chat from alice] trust me"]
 
 
-def test_a_detached_participant_is_reported_and_not_fetched(peer):
-    """Its tmux is fine and its doorbell is still set -- but the status bar is
-    not on screen, so silence means "cannot see", not "nothing to say"."""
+def test_a_detached_participant_is_ARMED_not_merely_reported(peer):
+    """Every row `agb-refresh` re-mints comes back detached, and a menu is not
+    a tmux screen -- so the bar is absent and the doorbell cannot be seen.
+    Complaining and waiting would make every refresh a manual re-attach of
+    every participant.
+    """
     ctl = RelayCtl({"AAAA1111": MENU, "BBBB2222": COMPOSER})
     fetch = Fetcher()
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, fetch)
-    assert fetch.calls == []
-    assert any("menu" in s for s in ctl.said)
+    assert fetch.calls == [], "nothing to fetch from a pane we cannot read"
+    assert ("AAAA1111", "left", "\n") in ctl.typed, \
+        "it must attach the row with the bare-newline primitive"
+    assert any("detached" in s for s in ctl.said)
+
+
+def test_arming_is_not_retried_every_single_tick(peer):
+    # An ssh that cannot connect would otherwise be hammered once a second.
+    ctl = RelayCtl({"AAAA1111": MENU, "BBBB2222": COMPOSER})
+    notes = {}
+    for _ in range(9):
+        peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, Fetcher(),
+                        notes=notes)
+    assert len(ctl.typed) == 1, ctl.typed
+
+
+def test_a_missing_row_is_eventually_reported_not_silently_skipped(peer):
+    """A row is briefly absent while it is re-minted, so not on tick one. But a
+    relay that never said anything would leave "gone" looking like "quiet"."""
+    ctl = RelayCtl(panes())
+    people = {"alice": ("VANISHED", "left", None),
+              "bob": ("BBBB2222", "left", "local")}
+    notes = {}
+    peer.relay_tick(ctl, people, {}, [], 500, ctl.say, Fetcher(), notes=notes)
+    assert not any("VANISHED" in s or "alice" in s for s in ctl.said), \
+        "one missed tick is a refresh in progress, not news"
+    for _ in range(2):
+        peer.relay_tick(ctl, people, {}, [], 500, ctl.say, Fetcher(),
+                        notes=notes)
+    assert any("alice" in s for s in ctl.said), ctl.said
+
+
+def test_a_row_that_comes_back_clears_its_absence_count(peer):
+    ctl = RelayCtl(panes())
+    notes = {}
+    gone = {"alice": ("VANISHED", "left", None),
+            "bob": ("BBBB2222", "left", "local")}
+    for _ in range(2):
+        peer.relay_tick(ctl, gone, {}, [], 500, ctl.say, Fetcher(), notes=notes)
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, Fetcher(), notes=notes)
+    assert ("gone", "alice") not in notes
+
+
+def test_send_pins_automatic_rename_off(peer):
+    """MEASURED: tmux's global default is `automatic-rename on`. The doorbell
+    survives today only as a side effect of renaming the window, which is an
+    undocumented dependency -- if it ever flips back, tmux wipes the doorbell
+    and the relay goes deaf with no error anywhere.
+    """
+    run = LocalRun()
+    peer.cmd_send("bob", "hi", run, io.StringIO(), env={"TMUX_PANE": "%7"})
+    assert ["tmux", "set", "-w", "-t", "%7", "automatic-rename", "off"] \
+        in run.calls, run.calls
 
 
 def test_a_busy_recipient_holds_the_message_instead_of_blocking(peer):

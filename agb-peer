@@ -830,6 +830,12 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
         # Remembered so a second send renders `<original> [peer #id]` rather
         # than `<original> [peer #id1] [peer #id2]`, for ever.
         tmux(["set", "-p", "-t", pane, OPTION_BASE, base])
+        # ⚠️ MEASURED: tmux's global default is `automatic-rename on`. The
+        # doorbell survives today only because an explicit `rename-window`
+        # turns it off as a SIDE EFFECT -- an undocumented dependency, and if
+        # anything ever re-enables it tmux wipes the doorbell and the relay
+        # goes deaf with no error anywhere. Pinned explicitly instead.
+        tmux(["set", "-w", "-t", pane, "automatic-rename", "off"])
     tmux(["set", "-p", "-t", pane, OPTION_PREFIX + ident,
           option_value(recipient, flat)])
     tmux(["rename-window", "-t", pane, doorbell_name(base, ident)])
@@ -891,7 +897,7 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say):
 
 
 def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
-               deliver_new=True):
+               deliver_new=True, notes=None):
     """One pass: watch every doorbell, drain what rang, then drain the queue.
 
     `deliver_new=False` is the PRIMING pass. It still FETCHES -- and discards.
@@ -899,6 +905,7 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
     swept up an hour-old conversation and delivered it as if it were new; the
     honest move is to clear them and say how many.
     """
+    notes = {} if notes is None else notes
     sessions = {}
     for session in sessions_of(ctl.tree()):
         sessions[session["id"]] = session
@@ -907,20 +914,41 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
         row, pane, target = people[name]
         session = sessions.get(row)
         if session is None:
-            # cmd_relay re-resolves; saying it here would repeat every tick.
+            # ⚠️ Not silent. A row is briefly absent while `agb-refresh`
+            # re-mints it, which is why this is not reported on the first
+            # tick -- but if the bridge never comes back, a relay that said
+            # nothing would leave "gone" looking exactly like "quiet".
+            gone = notes.get(("gone", name), 0) + 1
+            notes[("gone", name)] = gone
+            if gone == 3 or gone % 30 == 0:
+                say("%s: no row matches that label, %d ticks running. If this "
+                    "is not a refresh in progress, check the bridge."
+                    % (name, gone))
             continue
+        notes.pop(("gone", name), None)
         text, err = ctl.text(row, pane, lines)
         if err:
             say("cannot read %s: %s" % (name, err))
             continue
         if classify(text) == MODE_MENU:
-            # The failure this hits most: a farm participant whose row was
-            # detached shows `agb pane`'s menu. Its tmux is still running and
-            # its doorbell is still set -- but the bar is not on screen, so
-            # silence here means "cannot see", not "nothing to say".
-            say("%s is at the `agb pane` menu -- detached, so its doorbell "
-                "cannot be seen until it is attached again" % (name,))
+            # ⚠️ **Armed, not merely reported.** Every row `agb-refresh`
+            # re-mints comes back DETACHED, showing `agb pane`'s menu -- and a
+            # menu is not a tmux screen, so the status bar is absent and the
+            # doorbell cannot be seen. Its tmux is fine and its doorbell is
+            # still set; the relay just cannot look. Complaining and waiting
+            # would make every refresh a manual re-attach of every
+            # participant. The bare newline is the safe arming primitive:
+            # `agb pane` strips its input and "" matches none of its three
+            # word sets, so it falls through to the attach and cannot hit the
+            # branch that closes the row.
+            tries = notes.get(("menu", name), 0)
+            notes[("menu", name)] = tries + 1
+            if tries % 10 == 0:
+                say("%s is detached -- attaching it so its doorbell can be "
+                    "seen" % (name,))
+                ctl.type(row, pane, "\n")
             continue
+        notes.pop(("menu", name), None)
         ident = read_doorbell(text)
         if not ident or seen.get(name) == ident:
             continue
@@ -976,7 +1004,7 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
         out.write("agb-peer: %s\n" % (message,))
         out.flush()
 
-    seen, pending, resolved = {}, [], {}
+    seen, pending, resolved, notes = {}, [], {}, {}
     priming = True
     while True:
         fresh = resolve_all(ctl, spec, say, resolved)
@@ -997,7 +1025,7 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                 ok, why = ctl.dashboard(members)
                 say("dashboard: %s" % ("open" if ok else why))
         relay_tick(ctl, resolved, seen, pending, lines, say, fetch,
-                   deliver_new=not priming)
+                   deliver_new=not priming, notes=notes)
         if priming:
             say("primed on %d doorbell(s); relaying every %ss -- Ctrl-C to stop"
                 % (len(seen), interval))

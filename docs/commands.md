@@ -1419,6 +1419,28 @@ only symptom would be silence.
 agb-peer relay alice=<label>[:pane][@<ssh target>] bob=<label> [--dashboard]
 ```
 
+Three consequences that are easy to miss, each with a test:
+
+- ✅ **A message sent during the blackout is delayed, not lost.** While the rows are gone the relay
+  can see nothing, but the doorbell and the message are in tmux on the agent's host and are
+  untouched. When the row returns, the relay reads an id it has not seen and fetches. The
+  screen-as-content design could never have done this — the content would have scrolled away while
+  nobody was watching.
+- ⚠️ **Every re-minted row comes back DETACHED**, showing `agb pane`'s menu — and a menu is not a
+  tmux screen, so the status bar is absent and the doorbell cannot be seen. The relay **arms it**
+  with the bare-newline attach rather than complaining and waiting, or every refresh would be a
+  manual re-attach of every participant. Retried at most once in ten ticks, so an ssh that cannot
+  connect is not hammered.
+- ⚠️ **A label that matches no row is reported, not skipped in silence** — after three ticks, then
+  every thirty. One missed tick is a refresh in progress; a hundred is a bridge that never came back,
+  and a relay that said nothing would leave "gone" looking exactly like "quiet".
+
+⚠️ **`automatic-rename` is `on` in tmux by default — MEASURED, and the doorbell depends on it being
+off.** It survives today only because an explicit `rename-window` disables it as a side effect,
+which is an undocumented dependency: if anything re-enables it, tmux overwrites the window name and
+the relay goes deaf with no error anywhere. `send` therefore pins `automatic-rename off` explicitly
+the first time it stores the base name.
+
 `@<target>` says where that agent's tmux lives; `@local` means this machine, and a Mac-side
 participant then uses the identical mechanism minus the ssh. Without it the target comes from the
 row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
