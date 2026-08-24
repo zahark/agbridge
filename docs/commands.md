@@ -1368,59 +1368,61 @@ agtermctl dashboard <rowA>:left <rowB>:left
 agtermctl dashboard --close
 ```
 
-⚠️ **It is plain text, and that is a requirement rather than a nicety** — these lines land in the
-sender's own transcript, where a human is reading. agterm's cookbook types plain text too, and gets
-away with a bare `Chat from Claude: ` prefix because there the sending agent *calls* the delivery
-script: the screen is only ever a destination. Here it is also the source, which costs two things:
+### The doorbell, and why the screen carries no content
+
+The first design printed the message to the agent's screen and had the relay read it back. **That
+does not work**, and all three reasons were measured on a live agent rather than reasoned about:
+
+| measured | consequence |
+|---|---|
+| `alternate_on=1`, `history_size=0` | Claude Code runs on the alternate screen, so the **terminal has no scrollback at all**. `capture-pane -S -2000` and agterm's `--all` both return exactly the visible screen |
+| Claude's own scrollback **collapses multi-line blocks onto one line and truncates with `…`** | a scrolled-away message is *destroyed*, not merely hard to find — and driving it with `PageUp` is visible to whoever is watching |
+| **Claude Code does not render tool output onto the pane** — it draws the command | ← the decisive one. A message printed to stdout is never on screen for anything to read, fresh or not |
+
+So the screen cannot carry content. What it *can* carry is a **doorbell**, because tmux draws the
+status bar rather than the app, and `session text` includes it:
 
 ```
-[peer bob k3n9x2 1/2 63] the first part of the message, on word bounds
-[peer bob k3n9x2 2/2 63] and the rest of it
-
-[peer <to> <id> <part>/<parts> <len>] <text>
+window name:  claude [peer #k3n9x2]     <- always visible, never scrolls
+tmux option:  @agbpeer_msg_k3n9x2       <- the message: 3 KB, exact round trip
 ```
 
-- **The terminal wraps, and it wraps MID-WORD**, so wrapped plain text cannot be reassembled — a
-  newline the terminal inserted is indistinguishable from one the sender wrote, and rejoining either
-  way corrupts. The answer is not to encode; it is **not to wrap**. `send` breaks the message on
-  word boundaries into 50-column chunks, each carrying its own header, so nothing ever needs
-  ambiguous rejoining. ⚠️ Widening `CHUNK` is not free: header + chunk must stay inside the
-  **narrowest pane in the conversation**, and a test pins it under 80.
-- **A narrower pane is still possible**, and silent corruption is the one outcome worth engineering
-  against — so the header carries the message's total **length**. A reassembly that does not match is
-  **refused and reported**, never delivered short. That is the only failure this format cannot
-  prevent, and it is loud.
+The relay reads the bar on a tick it already makes for mode detection, so **watching costs nothing**.
+Only when the id *changes* does it reach for the content — one ssh per message, none while idle.
+The screen says *when*; ssh says *what*.
 
-Four more things that are not obvious, each of which is a test:
+⚠️ **A fetch takes everything pending, not just the announced id.** The doorbell shows only the
+latest, so a tick that missed one would lose it for ever; sweeping every `@agbpeer_msg_*` makes a
+missed doorbell harmless. Each is unset as it is read, so nothing is delivered twice.
 
-- **The relay types the text, never a header line.** What it types lands on the recipient's screen
-  and is read again next poll; echoing a header would bounce the message for ever. Structural, not a
-  rule someone has to remember.
-- **The first pass primes.** A pane's scrollback holds every message the conversation ever sent, so
-  a relay that delivered on its first look would replay the whole history into somebody's composer.
-  Pass one marks everything seen and sends none of it.
-- **The sender is the pane, not a `from` field** — there is no `from` field on the wire, deliberately.
-  An agent cannot print into another agent's pane, so the participant name of the pane a message was
-  *found in* is the only part of the envelope that cannot be misstated, and it is what signs the
-  delivered message.
-- **A relay never blocks.** The direct command waits out a busy peer for forty seconds; here a
-  refusal leaves the message pending for the next tick, so one busy participant cannot stall
-  everyone. A message that was typed but could not be verified is **dropped**, not retried — retrying
-  would leave two copies in a composer.
+⚠️ **Priming fetches and DISCARDS.** Options left in tmux from an earlier session would otherwise be
+swept up by the first real message's drain and delivered as if new. The first pass clears them and
+says how many.
 
-⚠️ **Ids are compared for equality only, never sorted.** Base36 of a millisecond clock stops being
-lexicographically ordered once the digit count changes — `message_id(1e12)` sorts *before*
-`message_id(1.0)` — and real timestamps all render eight digits until about 2059, so a sort would
-look correct for decades and then not. Order comes from position in the pane.
+### Surviving `agb-refresh`
 
-⚠️ **The failure you will hit most: a detached farm participant.** Its row shows `agb pane`'s menu,
-a menu holds no messages, and the relay would otherwise read that as *quiet* rather than *gone*. It
-says so on every tick instead.
+A refresh closes and re-mints every row, so **every row id changes** — observed twice in one
+afternoon. What that does and does not touch:
 
-⚠️ **A message that scrolls out of the buffer before the relay polls is lost.** `session text --all`
-plus `--lines` bounds what is read; a file-based transport could not lose one, and this is the price
-of using the screen — which is the transport, deliberately, because it is the only one that works
-for all three pairings without a shared disk or a second ssh.
+| | survives | why |
+|---|---|---|
+| doorbell + message (tmux) | **yes** | they live on the agent's host; a refresh never touches the farm |
+| the relay's resolved ids | **no** | dead the moment the rows are re-minted |
+| an open `dashboard` grid | **no** | it was opened with those ids |
+
+So **name participants by label, not by row id** — `resolve` tries an exact id, then an id prefix,
+then a title substring, and only the last survives a refresh. The relay re-resolves every tick and
+re-opens the dashboard when ids move. A relay that cached ids would go permanently deaf, and its
+only symptom would be silence.
+
+```
+agb-peer relay alice=<label>[:pane][@<ssh target>] bob=<label> [--dashboard]
+```
+
+`@<target>` says where that agent's tmux lives; `@local` means this machine, and a Mac-side
+participant then uses the identical mechanism minus the ssh. Without it the target comes from the
+row's own `agb pane --host`, read out of agterm's `foreground` field — the same field that is
+useless for mode detection is exactly right for this.
 
 ### The agent's half: `skills/agb-peer/SKILL.md`
 

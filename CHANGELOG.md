@@ -280,49 +280,49 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Watch one with `agtermctl dashboard <a>:left <b>:left` — one agent per row, so each keeps its own
   status, glyph and banner.
 
-  **The wire is plain text and stays that way**, because these lines land in the sender's own
-  transcript where a human is reading. A base64 frame was built first and thrown away: it solved the
-  wrong half. The terminal wraps *mid-word*, so wrapped plain text cannot be reassembled — but the
-  answer is not to encode, it is **not to wrap**. `send` breaks the message on word boundaries into
-  50-column chunks, each with its own header, so nothing needs ambiguous rejoining:
+  ⚠️ **The first design put the message on the agent's own screen and had the relay read it back.
+  Live testing killed it, three times over, and every reason was measured rather than reasoned:**
+
+  - `alternate_on=1`, `history_size=0` — Claude Code runs on the **alternate screen**, so the
+    terminal has no scrollback at all. `capture-pane -S -2000` and agterm's `--all` both return
+    exactly the visible screen.
+  - Claude keeps its own transcript and repaints it when you scroll — but it **collapses multi-line
+    blocks onto one line and truncates them with an ellipsis**, so a scrolled-away message is
+    destroyed, not merely hard to find. (Driving that scroll with `PageUp` does work, and is visible
+    to whoever is watching the pane — which rules it out on its own terms.)
+  - **Claude Code does not render tool output onto the pane.** It draws the command. A message
+    printed to stdout is never on screen for anything to read, fresh or otherwise. That one is fatal
+    on its own.
+
+  **So the screen carries a doorbell, not content.** tmux draws the status bar rather than the app,
+  and `session text` includes it:
 
   ```
-  [peer bob k3n9x2 1/2 63] the first part of the message, on word bounds
-  [peer bob k3n9x2 2/2 63] and the rest of it
+  window name:  claude [peer #k3n9x2]     <- always visible, never scrolls
+  tmux option:  @agbpeer_msg_k3n9x2       <- the message: 3 KB, exact round trip, measured
   ```
 
-  A pane narrower than that is still possible, so the header carries the message's **length** and a
-  reassembly that does not match is refused and reported — the one corruption this format cannot
-  prevent, made loud rather than silent.
+  The relay reads the bar on a tick it already makes for mode detection, so **watching is free**, and
+  only a *changed* id costs an ssh — which is what makes this acceptable after "I do not want to
+  access every second". The screen says *when*; ssh says *what*. A fetch drains **everything**
+  pending and unsets each option as it reads it, so a missed doorbell cannot lose a message and
+  nothing is delivered twice. Priming drains and **discards**, or options left over from an earlier
+  session would be swept up by the first real message and delivered as if new.
 
-  Rechecking agterm's cookbook is what turned this around: it has **no encoding and no delimiter at
-  all**, just a `Chat from Claude: ` prefix, because there the sending agent *calls* the delivery
-  script and the screen is only ever a destination. Everything ugly here descended from making the
-  sender's screen the source; keeping that transport but dropping the encoding gets both.
+  **Surviving `agb-refresh` is a design requirement, not an afterthought.** A refresh re-mints every
+  row and every id changes — watched happen twice in one afternoon. The doorbell and the message live
+  in tmux on the agent's host and are untouched; the relay's resolved ids and any open `dashboard`
+  are dead. So participants are named by **label**, re-resolved every tick, and the dashboard is
+  re-opened when ids move. A relay that cached ids would go permanently deaf with silence as its only
+  symptom.
 
-  The rest is forced the same way:
+  `agtermctl dashboard <a>:left <b>:left` is the read-only side-by-side view; `--dashboard` keeps it
+  in step. One agent per row, so each keeps its own status, glyph and banner.
 
-  - **The relay types the text, never a header**, or the message bounces for ever.
-  - **The first pass primes**, or the whole scrollback replays into a composer on startup.
-  - **There is no `from` field** — an agent cannot print into another agent's pane, so the place is
-    the only unspoofable part of the envelope, and it signs the message.
-  - **A relay never blocks**: a busy peer leaves the message pending for the next tick.
-
-  ⚠️ **Mutation-testing corrected this three times, and once it was the harness that was wrong.**
-  `cmd_relay`'s priming had no test at all — `relay_tick`'s own test passes the flag directly, so
-  flipping `cmd_relay` left every test green while a real relay would have replayed a whole
-  scrollback. A mutation aimed at the header anchoring turned out to be a **no-op**, because `^` and
-  `re.match` are redundant with each other; the redundancy is now recorded in the code so the next
-  reader does not delete one and conclude from a green suite that it was uncovered. And the harness
-  itself scored a **missing test as a caught mutation**, because pytest exits 4 for "no such test"
-  and the check only looked for non-zero — it now requires the test to exist and pass before
-  mutating.
-
-  ⚠️ **Known costs, stated rather than designed away**: a message that scrolls out before the relay
-  polls is **lost**, which a file transport could not do; a detached farm participant shows
-  `agb pane`'s menu, which holds no messages, so the relay says so every tick rather than letting
-  "gone" look like "quiet"; and ids are compared for equality only — base36 milliseconds stop sorting
-  correctly once the digit count changes, around 2059.
+  `@<ssh target>` on a participant says where its tmux lives, `@local` meaning this machine — so a
+  Mac-side participant uses the identical mechanism minus the ssh. Without it the target comes from
+  the row's own `agb pane --host`, read out of agterm's `foreground` field. That field is useless for
+  telling an attached row from a detached one, and exactly right for this.
 
   **`skills/agb-peer/SKILL.md` is the agent's half** — an agent will not use any of this unless it
   is told to. `ln -s "$PWD/skills/agb-peer" ~/.claude/skills/agb-peer` on every participant's

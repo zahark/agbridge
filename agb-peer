@@ -129,13 +129,13 @@ MODE_UNKNOWN = "unknown"
 BUSY_STATUSES = ("active", "blocked")
 
 PEER_FLAGS = ("--stdin", "--no-send", "--no-arm", "--dry-run", "--list",
-              "--force", "--version", "--once")
+              "--force", "--version", "--once", "--dashboard")
 PEER_VALUE_ARGS = ("--to", "--pane", "--from", "--retries", "--interval",
                    "--lines")
 
 USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
-       agb-peer send --to <name> <message>          # print a marker; no agtermctl
-       agb-peer relay a=<row> b=<row>[:pane] ...    # carry markers between panes
+       agb-peer send --to <name> <message>          # tmux only; no agtermctl
+       agb-peer relay a=<label> b=<label>[:pane][@host] [--dashboard]
        agb-peer --list
 
   --to <peer>        row id, id prefix, or a substring of the row's title
@@ -344,66 +344,64 @@ def compose(message, sender):
 
 
 # ---------------------------------------------------------------------------
-# the line protocol -- how one agent's message crosses to another's pane
+# the doorbell protocol -- how one agent's message crosses to another's pane
 # ---------------------------------------------------------------------------
 #
-# The transport is THE SCREEN. Every agent worth talking to already has a pane
-# on the Mac -- that is what agbridge is for -- so the Mac is the one place a
-# farm agent and a local agent coexist. An agent sends by *printing lines*; the
-# relay reads panes and types the text into the recipient's composer. Nothing
-# in it knows where an agent runs, which is what makes one mechanism cover
-# farm<->farm, farm<->Mac and Mac<->Mac. No files, no ssh, no encoding.
+# ⚠️ **The first design printed the message to the agent's own screen and had
+# the relay read it back. That does not work, and the reason is measured:**
 #
-# **It is plain text, and staying plain text is a requirement rather than a
-# nicety** -- these lines land in the sender's own transcript, where a human is
-# reading. agterm's own two-agent-chat cookbook types plain text for the same
-# reason and gets away with a bare prefix; it can, because there the sending
-# agent CALLS the delivery script and the screen is only ever a destination.
-# Here the screen is also the source, which costs exactly two things:
+#   * `alternate_on=1, history_size=0` -- Claude Code runs on the alternate
+#     screen, so the TERMINAL has no scrollback at all. `capture-pane -S -2000`
+#     and agterm's `--all` both return exactly the visible screen.
+#   * Claude Code keeps its own transcript and repaints it when you scroll --
+#     but it **collapses multi-line blocks onto one line and truncates them
+#     with an ellipsis**, so a scrolled-away message is destroyed, not merely
+#     hard to find.
+#   * Worst of all: **Claude Code does not render tool output onto the pane.**
+#     It draws the command. A message printed to stdout is never on the screen
+#     for anything to read, fresh or otherwise.
 #
-#   * **The terminal wraps, and it wraps MID-WORD.** So wrapped plain text
-#     cannot be reassembled: a newline the terminal inserted is
-#     indistinguishable from one the sender wrote, and rejoining either way
-#     corrupts. The answer is not to encode -- it is **not to wrap**. The
-#     sender breaks the message on word boundaries into chunks narrow enough
-#     that no realistic pane wraps them, and each chunk carries its own header.
-#     There is then nothing to reassemble ambiguously.
-#   * **A pane narrower than that is still possible**, and silent corruption is
-#     the one outcome worth engineering against. So the header carries the
-#     total **length**, and a reassembly whose length does not match is
-#     REFUSED and reported. Corruption becomes a loud failure instead of a
-#     mangled message in somebody's composer.
+# So the screen cannot carry CONTENT. What it can carry is a **doorbell**,
+# because tmux draws the status bar -- not the app -- and `session text`
+# includes it:
 #
-# Wire format, one line per chunk, and every field is readable:
+#   window name:  claude [peer #k3n9x2]        <- always visible, never scrolls
+#   tmux option:  @agbpeer_msg_k3n9x2          <- the message, 3 KB, exact
 #
-#   [peer bob k3n9x2 1/2 63] the first part of the message, on word bounds
-#   [peer bob k3n9x2 2/2 63] and the rest of it
+# The relay reads the status bar on a tick it already makes for mode detection,
+# so watching costs nothing. Only when the id CHANGES does it reach for the
+# content -- one ssh per message, none while idle. That is the whole point: the
+# screen says *when*, ssh says *what*.
 #
-#   [peer <to> <id> <part>/<parts> <len>] <text>
+# ⚠️ **A fetch takes everything pending, not just the announced id.** The
+# doorbell shows only the latest, so a tick that missed one would otherwise
+# lose it for ever; sweeping every `@agbpeer_msg_*` makes a missed doorbell
+# harmless.
+#
+# ⚠️ **What survives `agb-refresh` and what does not.** Rows are re-minted and
+# every row id changes -- observed twice in one afternoon. The doorbell and the
+# content live in tmux on the agent's host and are untouched; the relay's
+# resolved ids and any open `dashboard` are dead. So participants are named by
+# LABEL and re-resolved every tick, and the dashboard is re-opened when ids
+# move. A relay that cached ids would go permanently deaf and never say why.
 
-# 50 leaves room for the header inside an 80-column pane, which is the
-# narrowest anybody actually runs. Widening this is not free: header + chunk
-# must stay under the NARROWEST pane in the conversation, and exceeding it
-# shows up as a refused message rather than as anything subtle.
-CHUNK = 50
+OPTION_PREFIX = "@agbpeer_msg_"
 
-PEER_TAG = "[peer "
+# Where the sender stashes the window name it found, so the doorbell can be
+# rendered as `<original> [peer #id]` rather than clobbering it.
+OPTION_BASE = "@agbpeer_base"
+
+DOORBELL = "[peer #%s]"
 
 
 def message_id(now=None):
     """A short, readable, per-sender-monotonic id -- base36 milliseconds.
 
-    Not a counter: `agb-peer send` runs on the agent's own box and holds no
-    state, so there is nowhere to keep one. The relay dedupes per sender and
-    never compares two senders' ids, so their clocks need not agree.
-
-    ⚠️ **Ids are compared for EQUALITY only -- never sorted.** Base36 of a
+    ⚠️ **Ids are compared for EQUALITY only, never sorted.** Base36 of a
     millisecond clock is not lexicographically ordered once the digit count
     changes: `message_id(1e12)` is `"9ugxnorjls"`, which sorts BEFORE
     `message_id(1.0)`'s `"rs"`. Real timestamps all render 8 digits until
     roughly 2059, so a sort would appear to work for decades and then not.
-    Ordering comes from position in the pane, which is the order they were
-    printed in; if you ever need it from the id, zero-pad it here first.
     """
     value = int((now if now is not None else time.time()) * 1000)
     alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -414,106 +412,101 @@ def message_id(now=None):
     return out or "0"
 
 
-def chunk_words(text, width=CHUNK):
-    """Break on WORD boundaries, never mid-word, so no chunk needs rejoining.
+def option_value(recipient, text):
+    """First line is the recipient, the rest is the message.
 
-    A single word longer than `width` gets a line of its own and is left
-    intact: splitting it would be the one case where rejoining has to guess
-    whether to insert a space. Such a line may wrap in a narrow pane -- and
-    that is precisely what the length check exists to catch.
+    Plain text on purpose: `tmux show-options -pqv @agbpeer_msg_k3n9x2` is a
+    thing a human debugs with, and a base64 blob there would be a wall for no
+    gain -- tmux options are not a terminal and nothing wraps them.
     """
-    words = (text or "").split()
-    if not words:
-        return []
-    lines = [words[0]]
-    for word in words[1:]:
-        if len(lines[-1]) + 1 + len(word) <= width:
-            lines[-1] += " " + word
-        else:
-            lines.append(word)
-    return lines
+    return "%s\n%s" % (recipient, " ".join((text or "").split()))
 
 
-def encode(recipient, text, now=None):
-    """The lines an agent prints. Pure: its test is a string test.
-
-    ⚠️ **There is no sender on the wire, and that is the design.** The relay
-    signs a message with the participant name of the PANE it was found in,
-    because an agent cannot print into another agent's pane -- the place is the
-    only part of the envelope that cannot be misstated. A `from` field would be
-    a second, weaker answer to the same question, and having both invites
-    someone to trust the wrong one. `send` refuses `--from` for this reason
-    rather than accepting and ignoring it.
-    """
-    flat = " ".join((text or "").split())
-    parts = chunk_words(flat)
-    ident = message_id(now)
-    total = len(parts)
-    return "\n".join(
-        "%s%s %s %d/%d %d] %s" % (PEER_TAG, recipient, ident, i + 1, total,
-                                  len(flat), part)
-        for i, part in enumerate(parts))
+def parse_option_value(value):
+    """(recipient, text) or None. Tolerant: a half-written option is not data."""
+    if not value or "\n" not in value:
+        return None
+    recipient, _, text = value.partition("\n")
+    recipient, text = recipient.strip(), text.strip()
+    if not recipient or not text:
+        return None
+    return recipient, text
 
 
-def find_markers(text):
-    """Every COMPLETE message in a pane's buffer, oldest first.
+def doorbell_name(base, ident):
+    return "%s %s" % (base, DOORBELL % (ident,))
 
-    Incomplete by design rather than by accident: a message whose chunks have
-    not all been printed yet, or whose parts do not reassemble to the declared
-    length, is not returned. It is not an error either -- a pane caught
-    mid-redraw produces exactly that, and the next poll will see the whole
-    thing.
 
-    ⚠️ **A length mismatch is reported, not silently dropped**, because it is
-    the signature of the one failure this format cannot prevent: a pane so
-    narrow that a chunk wrapped, losing its header on the continuation line.
-    Silence there would deliver a truncated message.
+def read_doorbell(text):
+    """The newest announced id from a pane's rendered STATUS BAR, or None.
+
+    ⚠️ Searched over the whole capture rather than just the last line. The bar
+    is normally last, but a pane mid-redraw can put it elsewhere, and a missed
+    doorbell costs a round trip.
     """
     import re
-    # ⚠️ `^` and `.match()` are redundant here -- `.match` anchors at position 0
-    # and there is no MULTILINE flag -- and that redundancy is recorded rather
-    # than removed, because it means NO SINGLE mutation of either one can break
-    # the anchoring. A reviewer who deletes one and finds every test still
-    # green has learned nothing about whether the property is covered; the
-    # mutation that has teeth removes both.
-    pattern = re.compile(
-        r"^\[peer (\S+) ([0-9a-z]+) (\d+)/(\d+) (\d+)\] ?(.*)$")
-    groups = {}
-    order = []
-    for line in (text or "").splitlines():
-        match = pattern.match(line.rstrip())
-        if not match:
-            continue
-        to, ident, part, total, length, body = match.groups()
-        key = (to, ident)
-        if key not in groups:
-            groups[key] = {"to": to, "id": ident, "total": int(total),
-                           "len": int(length), "parts": {}, "bad": False}
-            order.append(key)
-        entry = groups[key]
-        # A repeat of the same part is the pane showing the same line twice
-        # (a redraw, or the command echo above its own output). Last wins;
-        # they are identical.
-        entry["parts"][int(part)] = body
-    found = []
-    for key in order:
-        entry = groups[key]
-        if len(entry["parts"]) != entry["total"]:
-            continue
-        body = " ".join(entry["parts"][i + 1] for i in range(entry["total"]))
-        if len(body) != entry["len"]:
-            entry["bad"] = True
-        found.append({"to": entry["to"], "id": entry["id"], "text": body,
-                      "len": entry["len"], "ok": not entry["bad"]})
-    return found
+    found = re.findall(r"\[peer #([0-9a-z]+)\]", text or "")
+    return found[-1] if found else None
+
+
+def fetch_command(pane):
+    """The shell line that drains every pending message from one tmux pane.
+
+    One command, because it is run over ssh and a round trip per option would
+    make the fetch cost scale with how chatty the peer has been. It prints a
+    framed record per message and unsets each as it goes, so the same message
+    is never fetched twice even if the relay dies mid-drain.
+    """
+    return (
+        "for k in $(tmux show-options -p -t %(pane)s 2>/dev/null "
+        "| sed -n 's/^\\(%(pfx)s[0-9a-z]*\\).*/\\1/p'); do "
+        "printf '<<AGBPEER %%s>>\\n' \"$k\"; "
+        "tmux show-options -pqv -t %(pane)s \"$k\"; "
+        "printf '<<AGBPEEREND>>\\n'; "
+        "tmux set -pu -t %(pane)s \"$k\"; done"
+    ) % {"pane": pane, "pfx": OPTION_PREFIX}
+
+
+def parse_fetch(output):
+    """Framed records -> [{id, to, text}], skipping anything malformed.
+
+    The frame exists because a message is multi-line in principle and ssh gives
+    us one stream; the delimiters are what let a value contain newlines without
+    the reader having to guess.
+    """
+    messages = []
+    ident = None
+    body = []
+    for line in (output or "").splitlines():
+        if line.startswith("<<AGBPEER ") and line.endswith(">>"):
+            ident = line[len("<<AGBPEER "):-2].strip()
+            if ident.startswith(OPTION_PREFIX):
+                ident = ident[len(OPTION_PREFIX):]
+            body = []
+        elif line == "<<AGBPEEREND>>":
+            if ident:
+                parsed = parse_option_value("\n".join(body))
+                if parsed:
+                    messages.append({"id": ident, "to": parsed[0],
+                                     "text": parsed[1]})
+            ident, body = None, []
+        elif ident is not None:
+            body.append(line)
+    return messages
 
 
 def parse_participants(words):
     """`name=<row>` or `name=<row>:<pane>` -> {name: (row, pane)}.
 
-    The `:pane` suffix is agterm's own spelling -- the same form `tree` reports
-    for a surface id and for `dashboard` members -- so there is one way to name
-    a pane across this tool and that one.
+    An optional `@<ssh target>` says where that agent's tmux lives; `@local`
+    means this machine. Without it the target comes from the row's own
+    `agb pane --host`, which is a hostname and may need an ssh alias -- hence
+    the override.
+
+    ⚠️ `<row>` should be a **label substring**, not a row id: `agb-refresh`
+    re-mints every row and every id changes. `resolve` tries an exact id, then
+    an id prefix, then a title substring, so a label keeps working across a
+    refresh and an id does not.
     """
     people = {}
     for word in words:
@@ -521,6 +514,7 @@ def parse_participants(words):
         if not sep or not name or not where:
             raise PeerError("participants are name=<row> or name=<row>:<pane>, "
                             "not %r" % (word,))
+        where, at, target = where.partition("@")
         row, sep2, pane = where.partition(":")
         pane = pane if sep2 else "left"
         if pane not in PANE_KINDS:
@@ -528,17 +522,54 @@ def parse_participants(words):
                             % (name, "|".join(PANE_KINDS)))
         if not row:
             raise PeerError("%s: no row id" % (name,))
+        if at and not target:
+            raise PeerError("%s: @ with no ssh target" % (name,))
         if name in people:
             raise PeerError("%s named twice" % (name,))
-        people[name] = (row, pane)
+        # `@local` means "this agent's tmux is on THIS machine" -- a Mac-side
+        # participant, which needs no ssh and is otherwise identical. Absent,
+        # the target is taken from the row's own `agb pane --host`.
+        people[name] = (row, pane, target or None)
     if len(people) < 2:
         raise PeerError("a relay needs at least two participants")
     return people
 
 
+def pane_argv_field(foreground, flag):
+    """Pull a value out of a row's `agb pane` command line.
+
+    ⚠️ `foreground` is the argv the SESSION WAS LAUNCHED WITH -- measured, and
+    it is why it cannot be used to tell an attached row from a detached one.
+    For this it is exactly right: `agb pane --host <h> --pane <%N>` is how the
+    relay learns where to ssh and which tmux pane to drain, straight from
+    agterm, with no configuration of its own.
+    """
+    if not isinstance(foreground, (list, tuple)):
+        return None
+    for index, word in enumerate(foreground):
+        if word == flag and index + 1 < len(foreground):
+            return foreground[index + 1]
+        if word.startswith(flag + "="):
+            return word[len(flag) + 1:] or None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # the agtermctl seam -- one door, injectable, never raises on a tool failure
 # ---------------------------------------------------------------------------
+
+def run_local(argv):
+    """(rc, stdout, stderr) for a command on THIS machine -- `send` runs tmux,
+    not agtermctl, and must work on a farm host where agterm does not exist."""
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise PeerError("%s: %s" % (argv[0], exc))
+    out, err = proc.communicate()
+    return (proc.returncode, out.decode("utf-8", "replace"),
+            err.decode("utf-8", "replace"))
+
 
 def run_ctl(argv):
     """(rc, stdout, stderr). The only place a subprocess is started."""
@@ -570,14 +601,23 @@ class Ctl(object):
             raise PeerError("tree returned something that is not JSON")
 
     def text(self, target, pane, lines, whole=False):
-        argv = ["session", "text", "--target", target, "--pane", pane,
-                "--lines", str(lines)]
-        if whole:
-            # `--all` is screen + scrollback; `--lines` then keeps the tail of
-            # it. Both together, because a relay must see a marker that has
-            # scrolled off the visible screen but must not drag an entire
-            # day's buffer back on every poll.
-            argv.insert(2, "--all")
+        """⚠️ `--all` and `--lines` are MUTUALLY EXCLUSIVE, and the `--help`
+        does not say so -- `agtermctl session text --all --lines 400` answers
+        `Error: use either --all or --lines, not both`.
+
+        This shipped as both-together and would have made every relay read fail
+        on the first live tick. 2050 tests could not see it, because the fakes
+        accepted any argv; `assert_text_argv` in the tests is the answer to
+        that, and it is written against the binary's real refusals.
+
+        So `whole=True` means `--lines <n>` **alone**, which the help describes
+        as *"keep only the last N lines of the full buffer"* -- the phrase
+        "full buffer" being why this is the bounded scrollback read rather than
+        `--all`, which has no bound at all and would drag a day's history back
+        on every poll.
+        """
+        argv = ["session", "text", "--target", target, "--pane", pane]
+        argv += ["--lines", str(lines)] if (whole or lines) else ["--all"]
         rc, out, err = self.run(argv)
         if rc != 0:
             return None, (err.strip() or "exit %s" % (rc,))
@@ -591,6 +631,12 @@ class Ctl(object):
             return int(out.strip()), None
         except ValueError:
             return None, "cursor returned %r" % (out.strip(),)
+
+    def dashboard(self, members):
+        """(ok, reason). Best-effort like every other call here: a grid that
+        will not open is a cosmetic failure and must never stop the relay."""
+        rc, _out, err = self.run(["dashboard"] + list(members))
+        return (rc == 0), ((err or "").strip() or "exit %s" % (rc,))
 
     def type(self, target, pane, text):
         rc, out, err = self.run(["session", "type", text,
@@ -747,6 +793,65 @@ def cmd_list(ctl, pane, lines, out):
     return 0
 
 
+def cmd_send(recipient, text, run, out, now=None, env=None):
+    """Stash the message in a tmux option and ring the doorbell.
+
+    ⚠️ **Nothing is printed to the terminal**, and that is the whole lesson of
+    the first design: Claude Code does not render tool output onto the pane, so
+    a printed message is invisible to everything. tmux options are not a
+    terminal -- nothing wraps, truncates or collapses them.
+    """
+    env = os.environ if env is None else env
+    pane = env.get("TMUX_PANE")
+    if not pane:
+        raise PeerError("send must run inside tmux: $TMUX_PANE is not set. "
+                        "Start the agent with `agb-claude <name>`.")
+    flat = " ".join((text or "").split())
+    if not flat:
+        raise PeerError("refusing to send an empty message")
+    if flat.lower() in PANE_WORDS:
+        raise PeerError("refusing to send %r: `agb pane` acts on that word, "
+                        "and if the mode read were wrong it would close or "
+                        "split the row rather than reach the agent" % (flat,))
+    ident = message_id(now)
+
+    def tmux(args):
+        rc, _out, err = run(["tmux"] + args)
+        if rc != 0:
+            raise PeerError("tmux %s failed: %s" % (args[0], err.strip() or rc))
+
+    rc, base, _err = run(["tmux", "show-options", "-pqv", "-t", pane,
+                          OPTION_BASE])
+    base = base.strip() if rc == 0 else ""
+    if not base:
+        rc, base, _err = run(["tmux", "display-message", "-p", "-t", pane,
+                              "#{window_name}"])
+        base = (base.strip() if rc == 0 else "") or "agent"
+        # Remembered so a second send renders `<original> [peer #id]` rather
+        # than `<original> [peer #id1] [peer #id2]`, for ever.
+        tmux(["set", "-p", "-t", pane, OPTION_BASE, base])
+    tmux(["set", "-p", "-t", pane, OPTION_PREFIX + ident,
+          option_value(recipient, flat)])
+    tmux(["rename-window", "-t", pane, doorbell_name(base, ident)])
+    out.write("agb-peer: queued for %s as #%s\n" % (recipient, ident))
+    return 0
+
+
+def drain(fetch, name, target, pane, say):
+    """Everything pending in one participant's tmux, or [] and a reason said."""
+    if not pane:
+        say("%s: no tmux pane recorded for that row -- cannot fetch" % (name,))
+        return []
+    argv = ["sh", "-c", fetch_command(pane)]
+    if target and target != "local":
+        argv = ["ssh", "-o", "BatchMode=yes", target, fetch_command(pane)]
+    rc, out, err = fetch(argv)
+    if rc != 0:
+        say("%s: fetch failed: %s" % (name, (err or "").strip() or rc))
+        return []
+    return parse_fetch(out)
+
+
 def try_deliver(ctl, sessions, people, sender, message, lines, say):
     """One delivery attempt. True = done with it, False = try again next tick.
 
@@ -765,7 +870,7 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say):
     if recipient == sender:
         say("dropping a message %r addressed to itself" % (sender,))
         return True
-    row, pane = people[recipient]
+    row, pane, _target = people[recipient]
     session = sessions.get(row)
     if session is None:
         say("%s's row is gone from the tree -- holding the message" % (recipient,))
@@ -785,47 +890,51 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say):
     return True
 
 
-def relay_tick(ctl, people, seen, pending, lines, say, deliver_new=True):
-    """One pass: read every pane, queue what is new, then drain the queue.
+def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
+               deliver_new=True):
+    """One pass: watch every doorbell, drain what rang, then drain the queue.
 
-    `deliver_new=False` is the PRIMING pass. A pane's scrollback holds every
-    marker the conversation ever sent, so a relay that started delivering on
-    its first look would replay the whole history into somebody's composer.
-    The first pass therefore marks everything seen and sends none of it.
+    `deliver_new=False` is the PRIMING pass. It still FETCHES -- and discards.
+    Leaving stale options in tmux would mean the first real message's drain
+    swept up an hour-old conversation and delivered it as if it were new; the
+    honest move is to clear them and say how many.
     """
     sessions = {}
     for session in sessions_of(ctl.tree()):
         sessions[session["id"]] = session
+    discarded = 0
     for name in sorted(people):
-        row, pane = people[name]
-        text, err = ctl.text(row, pane, lines, whole=True)
+        row, pane, target = people[name]
+        session = sessions.get(row)
+        if session is None:
+            # cmd_relay re-resolves; saying it here would repeat every tick.
+            continue
+        text, err = ctl.text(row, pane, lines)
         if err:
             say("cannot read %s: %s" % (name, err))
             continue
         if classify(text) == MODE_MENU:
-            # The failure this will hit most: a farm participant whose row got
-            # detached shows `agb pane`'s menu, and a menu holds no markers --
-            # so silence here means "gone", not "quiet".
-            say("%s is at the `agb pane` menu -- detached, so it cannot be "
-                "heard until it is attached again" % (name,))
+            # The failure this hits most: a farm participant whose row was
+            # detached shows `agb pane`'s menu. Its tmux is still running and
+            # its doorbell is still set -- but the bar is not on screen, so
+            # silence here means "cannot see", not "nothing to say".
+            say("%s is at the `agb pane` menu -- detached, so its doorbell "
+                "cannot be seen until it is attached again" % (name,))
             continue
-        for message in find_markers(text):
-            key = (name, message.get("id"))
-            if key in seen:
-                continue
-            seen.add(key)
-            if not message.get("ok", True):
-                # The one corruption this format cannot prevent: a pane too
-                # narrow for a chunk, so the wrap's continuation line lost its
-                # header. Delivering the short version would be a truncated
-                # message nobody could tell from a complete one.
-                say("%s: message %s does not reassemble to its declared length "
-                    "-- refusing it. That pane is probably narrower than the "
-                    "%d-column chunks `send` writes."
-                    % (name, message.get("id"), CHUNK))
-                continue
+        ident = read_doorbell(text)
+        if not ident or seen.get(name) == ident:
+            continue
+        seen[name] = ident
+        tmux_pane = pane_argv_field(session.get("foreground"), "--pane")
+        host = target or pane_argv_field(session.get("foreground"), "--host")
+        for message in drain(fetch, name, host, tmux_pane, say):
             if deliver_new:
                 pending.append((name, message))
+            else:
+                discarded += 1
+    if not deliver_new and discarded:
+        say("discarded %d message(s) left in tmux from before this relay "
+            "started" % (discarded,))
     held = []
     for sender, message in pending:
         if not try_deliver(ctl, sessions, people, sender, message, lines, say):
@@ -834,32 +943,68 @@ def relay_tick(ctl, people, seen, pending, lines, say, deliver_new=True):
     return len(pending)
 
 
-def cmd_relay(ctl, words, lines, interval, once, out):
-    """Poll every participant's pane and carry markers between them."""
-    people = parse_participants(words)
+def resolve_all(ctl, spec, say, previous=None):
+    """{name: (row id, pane, target)}, re-resolved from LABELS every tick.
+
+    ⚠️ This is the `agb-refresh` defence. A refresh closes and re-mints every
+    row, so every id changes -- observed twice in one afternoon. A relay that
+    resolved once would go permanently deaf, and its only symptom would be
+    silence. Resolving by label costs one `tree` call the tick already makes.
+    """
+    previous = previous or {}
     resolved = {}
-    for name in sorted(people):
-        row, pane = people[name]
-        session = resolve(ctl, row)
-        resolved[name] = (session["id"], pane)
-        out.write("agb-peer: %-12s %s:%s  (%s)\n"
-                  % (name, session["id"][:8], pane, session.get("name") or "?"))
-    out.flush()
+    for name in sorted(spec):
+        row, pane, target = spec[name]
+        try:
+            resolved[name] = (resolve(ctl, row)["id"], pane, target)
+        except PeerError as error:
+            if name in previous:
+                # Keep the old binding rather than dropping a participant on a
+                # transient: a row is briefly absent while it is re-minted.
+                resolved[name] = previous[name]
+            else:
+                say("%s: %s" % (name, error))
+    return resolved
+
+
+def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
+              fetch=None):
+    """Watch every participant's doorbell and carry messages between them."""
+    spec = parse_participants(words)
 
     def say(message):
         out.write("agb-peer: %s\n" % (message,))
         out.flush()
 
-    seen = set()
-    pending = []
-    relay_tick(ctl, resolved, seen, pending, lines, say, deliver_new=False)
-    say("primed: %d marker(s) already on screen, none delivered" % (len(seen),))
-    if once:
-        return 0
-    say("relaying every %ss -- Ctrl-C to stop" % (interval,))
+    seen, pending, resolved = {}, [], {}
+    priming = True
     while True:
+        fresh = resolve_all(ctl, spec, say, resolved)
+        if fresh != resolved:
+            if resolved:
+                say("row ids moved -- re-resolved (an `agb-refresh` re-mints "
+                    "every row, and the old ids are dead)")
+            resolved = fresh
+            for name in sorted(resolved):
+                row, pane, target = resolved[name]
+                say("%-12s %s:%s%s" % (name, row[:8], pane,
+                                       "  via " + target if target else ""))
+            if dashboard and len(resolved) > 1:
+                # Re-opened on every move for the same reason the ids are
+                # re-resolved: a grid built on dead ids shows dead cells.
+                members = ["%s:%s" % (r[0], r[1]) for r in
+                           (resolved[n] for n in sorted(resolved))]
+                ok, why = ctl.dashboard(members)
+                say("dashboard: %s" % ("open" if ok else why))
+        relay_tick(ctl, resolved, seen, pending, lines, say, fetch,
+                   deliver_new=not priming)
+        if priming:
+            say("primed on %d doorbell(s); relaying every %ss -- Ctrl-C to stop"
+                % (len(seen), interval))
+            priming = False
+        if once:
+            return 0
         ctl.sleep(interval)
-        relay_tick(ctl, resolved, seen, pending, lines, say)
 
 
 def main(argv, out=None, ctl=None):
@@ -885,19 +1030,17 @@ def main(argv, out=None, ctl=None):
             # PANE it was found in, which an agent cannot misstate, and a
             # `--from` here would look like it changed that and would not.
             raise PeerError("send takes no --from: a message is signed with "
-                            "the pane it was printed in, which is the only "
+                            "the pane it was sent from, which is the only "
                             "part of it that cannot be misstated")
-        # No companion "readable" line: the wire format IS readable, so a
-        # second copy would only be a second thing to keep in step.
-        out.write(encode(recipient, " ".join(message.split())) + "\n")
-        return 0
+        return cmd_send(recipient, message, run_local, out)
     if argv and argv[0] == "relay":
         opts = parse_args(argv[1:])
         ctl = ctl or Ctl()
         return cmd_relay(ctl, (opts.get("message") or "").split(),
                          positive_int(opts["lines"], "--lines"),
                          positive_int(opts["interval"], "--interval"),
-                         bool(opts.get("once")), out)
+                         bool(opts.get("once")), out,
+                         dashboard=bool(opts.get("dashboard")))
     opts = parse_args(argv)
     if opts.get("version"):
         out.write("agb-peer %s\n" % (VERSION,))

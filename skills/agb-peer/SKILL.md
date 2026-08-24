@@ -31,16 +31,15 @@ your message here, as one paragraph
 CHAT
 ```
 
-That prints two or three short lines to your terminal. **That is the message** — your
-screen is how it travels. Print them and let your turn end; do not clear the screen,
-and do not print anything enormous immediately afterwards, or the lines scroll out of
-the buffer before the relay reads them.
+It prints one confirmation line — `queued for <peer> as #<id>` — and nothing else.
+The message itself does **not** go on your screen; it is stashed where the relay can
+fetch it. So you do not need to worry about scrolling, about printing afterwards, or
+about how long the message is.
 
-- **Do not write a `[peer …]` header yourself.** The script writes it.
+- **You must be running inside tmux.** If `$TMUX_PANE` is not set, `send` refuses and
+  says so. Start agents with `agb-claude <name>`.
 - **Do not write "Chat from me:" or any label.** The relay adds one, naming the pane
-  you printed in. Anything you write yourself is just part of your message.
-- **One paragraph.** Long messages become many lines, and many lines are more chances
-  to scroll away.
+  you sent from. Anything you write yourself is just part of your message.
 
 ## Receiving
 
