@@ -330,6 +330,12 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   an undocumented dependency, and if anything re-enables it tmux overwrites the window name and the
   relay goes deaf with no error anywhere. `send` pins it off explicitly now.
 
+  ⚠️ **The first live relay died at the one seam no test filled in**: `drain`'s `fetch` parameter
+  defaulted to `None`, and every test injected a fake, so the production path was the only one never
+  exercised — `'NoneType' object is not callable` on the first doorbell. Exactly the shape of the
+  `--all`/`--lines` bug earlier the same day: a default that only exists for tests. It falls back to
+  the real runner now, pinned by a test that passes no fetcher at all.
+
   `agtermctl dashboard <a>:left <b>:left` is the read-only side-by-side view; `--dashboard` keeps it
   in step. One agent per row, so each keeps its own status, glyph and banner.
 

@@ -844,7 +844,14 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
 
 
 def drain(fetch, name, target, pane, say):
-    """Everything pending in one participant's tmux, or [] and a reason said."""
+    """Everything pending in one participant's tmux, or [] and a reason said.
+
+    ⚠️ `fetch` defaults to the real runner when it is None. It did not, and the
+    first live relay died with `'NoneType' object is not callable` -- every
+    test injected a fake, so the PRODUCTION default was the one path nothing
+    exercised. Same shape as `--all`/`--lines`: a seam only the tests filled in.
+    """
+    fetch = fetch or run_local
     if not pane:
         say("%s: no tmux pane recorded for that row -- cannot fetch" % (name,))
         return []

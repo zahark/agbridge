@@ -1028,3 +1028,23 @@ def test_the_relay_builds_a_legal_read_for_every_participant(peer):
     assert len(reads) == 2, reads
     for argv in reads:
         assert_text_argv(argv)
+
+
+def test_the_relay_has_a_real_fetcher_when_none_is_injected(peer, monkeypatch):
+    """The seam nothing exercised: `fetch=None` is what production passes, and
+    every other test hands in a fake. The first live relay died on it."""
+    calls = []
+
+    def fake_local(argv):
+        calls.append(argv)
+        return 0, "", ""
+
+    monkeypatch.setattr(peer, "run_local", fake_local)
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say)   # no fetch=
+    assert calls, "drain must fall back to the real runner, not None"
+
+
+def test_drain_with_no_fetcher_does_not_raise(peer, monkeypatch):
+    monkeypatch.setattr(peer, "run_local", lambda argv: (0, "", ""))
+    assert peer.drain(None, "alice", "local", "%7", lambda m: None) == []
