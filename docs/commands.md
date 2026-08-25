@@ -1294,10 +1294,32 @@ honoured. That is what lets the agent be an *argument* to the launcher (`-I "cod
 than the program being run — and word-splitting it instead would hand the launcher `"codex` and
 `--yolo`, which no downstream error message would explain.
 
-⚠️ **`--` passthrough args and `--greet` are refused while it is set**, rather than appended. With an
-opaque launcher there is no position this wrapper could append at that is not a guess: the agent is
-inside somebody else's argument, so a trailing word lands on the *launcher*. Put them in the
-variable.
+### The two placeholders
+
+| | becomes |
+|---|---|
+| `{}` | this invocation's `--` arguments, spliced **verbatim** |
+| `{env}` | `AGB_HOST=<this host> AGB_AGENT_PID=none` |
+
+```sh
+export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo {}"'
+agb-codex -d pool -- --model gpt-5.6
+```
+
+⚠️ **Without `{}`, `--` arguments are refused rather than appended.** With an opaque launcher there
+is no position this wrapper could append at that is not a guess: the agent is inside somebody else's
+argument, so a trailing word lands on the *launcher*. The refusal names `{}`, because "there is
+nowhere to put this" is only useful alongside "here is how to say where".
+
+⚠️ **`{}` splices verbatim, so the allowed set is a positive list**, not a list of characters to
+escape: `[A-Za-z0-9._:/=+@,-]`. The wrapper cannot know whether `{}` sits inside quotes —
+`-I "codex {}"` says it does, `docker run img codex {}` says it does not — so it cannot quote for
+you, and an argument that would change how the line parses is refused instead of silently mangled.
+`--greet` stays refused for the same reason: it is prose, so it always needs quoting.
+
+`{env}` is **inert for Codex**, which fires no hooks and so can never disturb its row. It is
+supported here only because these two wrappers are deliberate near-copies; the reason it exists is
+[`AGB_CLAUDE_CUSTOM`](#agb_claude_custom--the-claude-command-line-replaced-wholesale) below.
 
 ⚠️ **It is embedded in the command tmux is handed, never inherited.** A session created against an
 already-running tmux server takes its environment from the **server's**, plus `update-environment` —
@@ -1340,6 +1362,35 @@ submits nothing. So the session's own shell hooks first and then `exec`s Claude:
 ```sh
 tmux new-session … sh -c 'AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"' …
 ```
+
+### `AGB_CLAUDE_CUSTOM` — the claude command line, replaced wholesale
+
+The same seam as `AGB_CODEX_CUSTOM`, with the same two placeholders — and one difference that is the
+whole reason `{env}` exists.
+
+```sh
+export AGB_CLAUDE_CUSTOM='submit -q big -I "{env} claude {}"'
+agb-claude work -- --model opus
+```
+
+⚠️ **Claude fires hooks from wherever it actually runs, and Codex does not.** A Codex on a pool node
+can never disturb its row, because it never writes one. A Claude there resolves a **different
+anchor** — `own_host()` returns that machine — and mints a **second row**, on a host the Mac has no
+`host_<name>` mapping for and whose pane it cannot reach.
+
+`AGB_HOST` alone does not fix it. `$TMUX`/`$TMUX_PANE` do survive job submission, so the anchor
+matches again — but `bind_key` adopts only when `idx_matches`, the pid differs, and it **replaces**
+the index, orphaning the row the wrapper minted. `AGB_AGENT_PID=none` is what makes it adopt:
+*absence of evidence must never re-mint*. `{env}` sets both.
+
+⚠️ **And that has a price, so do not use `{env}` for a launcher that keeps the agent on this
+machine.** Every hook rewrites the record's pid, so the entry becomes pid-less and can no longer be
+reaped by proof of death: when the job ends the row sits at its last state until `agb prune`.
+Liveness is proven, never inferred — nothing will tidy it up for you.
+
+⚠️ **`{env}` spells `own_host()`'s resolution in shell** (`$AGB_HOST`, else `uname -n`, domain
+stripped). That is a cross-file agreement with `agb` (CLAUDE.md invariant 14), pinned by a test that
+compares against `agb.own_host()` itself — a disagreement produces a second row, not an error.
 
 Three properties make that produce **one** row rather than two, and each was measured rather than
 reasoned about:

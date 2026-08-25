@@ -360,15 +360,33 @@ agb-ralphex docs/plans/x.md   # ONE row for a whole ralphex plan, not one per ta
 Real, attachable, addressable — but the glyph never moves, so it tells you nothing about whether
 that agent is working or blocked.
 
-⚠️ **`AGB_CODEX_CUSTOM` replaces `agb-codex`'s command line entirely**, for starting the agent
-through a scheduler, container or pool launcher. The value is a shell command line, `eval`ed, so the
-agent can be an *argument* to the launcher; with it set, `--` args and `--greet` are refused rather
-than appended, because there is no position this wrapper could guess at.
+⚠️ **`AGB_CODEX_CUSTOM` and `AGB_CLAUDE_CUSTOM` replace the agent's command line entirely**, for
+starting it through a scheduler, container or pool launcher whose spelling is site-specific. The
+value is a shell command line, `eval`ed, so the agent can be an *argument* to the launcher. Two
+placeholders say where things go — `{}` for this run's agent flags, `{env}` for the identity below:
 
 ```sh
-export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo"'
-agb-codex -d pool
+export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo {}"'
+agb-codex -d pool -- --model gpt-5.6
 ```
+
+⚠️ `{}` splices **verbatim** — the wrapper cannot know whether it sits inside quotes, so it cannot
+quote for you. Only `[A-Za-z0-9._:/=+@,-]` is spliced; anything else is refused, as is `--greet`.
+Without `{}`, `--` args are refused rather than appended somewhere guessed at.
+
+⚠️ **For Claude on ANOTHER machine you also need `{env}`**, and this is the one that bites:
+
+```sh
+export AGB_CLAUDE_CUSTOM='submit -q big -I "{env} claude {}"'
+```
+
+Claude fires hooks from wherever it runs, so without it that agent resolves a different anchor and
+mints a **second row**, on a host the Mac cannot reach. `{env}` becomes
+`AGB_HOST=<this host> AGB_AGENT_PID=none`; the second half is load-bearing, because `AGB_HOST` alone
+makes the anchor match and then a mismatched pid *replaces* the binding instead of adopting it.
+⚠️ The cost is that such a row can no longer be reaped by proof of death — it stays until
+`agb prune` — so use `{env}` only when the launcher really is remote. Codex ignores it entirely,
+having no hooks to report anything with.
 
 ### Make two agents talk to each other
 

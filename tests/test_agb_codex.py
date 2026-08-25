@@ -255,14 +255,16 @@ def test_a_single_quote_in_the_custom_command_survives(wrapper):
     assert wrapper.run_premint() == [["-I", "codex 'a b'"]]
 
 
-def test_passthrough_args_are_refused_with_a_custom_command(wrapper):
+def test_passthrough_args_without_a_placeholder_are_refused_and_it_is_named(wrapper):
     """There is no honest place to append them: with `-I "codex --yolo"` the
     agent is inside somebody else's argument, so a trailing word lands on the
-    launcher instead. Refusing says so; appending would be a silent guess."""
+    launcher instead. Refusing says so; appending would be a silent guess. The
+    refusal names `{}`, because "there is nowhere to put this" is only useful
+    with "here is how to say where"."""
     code, _out, err = wrapper.run(["-d", "bot", "--", "--model", "x"],
                                   custom=CUSTOM)
     assert code != 0
-    assert "AGB_CODEX_CUSTOM is set" in err and "--model x" in err
+    assert "no {} placeholder" in err and "--model x" in err
     assert wrapper.new_session() == []
 
 
@@ -318,3 +320,75 @@ def test_the_custom_seam_is_documented_where_it_is_looked_for(wrapper):
     code, _out, err = wrapper.run(["--help"])
     assert code == 0
     assert "AGB_CODEX_CUSTOM" in err
+
+
+# --------------------------------------------------------------------------
+# The two placeholders. `{}` is where THIS invocation's agent flags go; `{env}`
+# is the identity a remotely-launched agent must report. Without `{}` there is
+# no position the wrapper could pick that is not a guess, which is why args
+# were refused outright before it existed.
+# --------------------------------------------------------------------------
+
+NESTED = 'submit -q big -I "codex --yolo {}"'
+
+
+def test_switches_reach_the_agent_through_the_placeholder(wrapper):
+    """The whole point: `-I "codex --yolo {}"` must still hand the launcher ONE
+    argument, with this invocation's flags inside it. Asserting on the pre-mint
+    string cannot see that -- the nesting is decided by `eval`, at run time."""
+    wrapper.run(["-d", "bot", "--", "--model", "gpt-5.6", "--sandbox"],
+                custom=NESTED)
+    assert wrapper.run_premint() == [
+        ["-q", "big", "-I", "codex --yolo --model gpt-5.6 --sandbox"]]
+
+
+def test_the_env_placeholder_carries_what_a_remote_agent_must_report(wrapper):
+    wrapper.run(["-d", "bot"], custom='submit -I "{env} codex"')
+    premint = wrapper.premint()
+    assert "AGB_HOST=" in premint and "AGB_AGENT_PID=none" in premint
+
+
+def test_the_env_placeholder_spells_agbs_own_host(wrapper, agb):
+    """⚠️ A cross-file agreement (CLAUDE.md invariant 14). A POSIX-sh wrapper
+    cannot import `agb`, so it spells `own_host()`'s resolution itself --
+    `$AGB_HOST` first, else `uname -n`, domain stripped. A disagreement raises
+    no error anywhere: the remote agent reports a host nothing has a mapping
+    for, and you get a SECOND row instead of the one just minted."""
+    wrapper.run(["-d", "bot"], custom='submit -I "{env} codex"')
+    assert "AGB_HOST=%s " % (agb.own_host(),) in wrapper.premint()
+
+
+def test_an_argument_that_would_change_the_parsing_is_refused(wrapper):
+    """Spliced verbatim, so the allowed set is a POSITIVE list rather than a
+    list of things to escape. The wrapper cannot know whether `{}` sits inside
+    quotes, so it cannot quote for you -- and mangling somebody's command line
+    quietly is worse than refusing it loudly."""
+    for bad in ("hello world", 'a"b', "a$b", "a;b", "a`b`", "a'b"):
+        code, _out, err = wrapper.run(["-d", "bot", "--", bad], custom=NESTED)
+        assert code != 0, bad
+        assert "verbatim" in err, (bad, err)
+        assert wrapper.new_session() == [], bad
+
+
+def test_a_placeholder_with_no_arguments_is_not_an_error(wrapper):
+    """`{}` in the variable is a *position*, not a requirement. A launcher line
+    written once must still work on the ordinary run that passes no flags."""
+    code, _out, err = wrapper.run(["-d", "bot"], custom=NESTED)
+    assert code == 0, err
+    assert wrapper.run_premint() == [["-q", "big", "-I", "codex --yolo "]]
+
+
+def test_every_occurrence_of_the_placeholder_is_replaced(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot", "--", "--yolo"],
+                                  custom='submit {} -I "codex {}"')
+    assert code == 0, err
+    assert wrapper.run_premint() == [["--yolo", "-I", "codex --yolo"]]
+
+
+def test_the_program_check_steps_over_leading_assignments(wrapper):
+    """`{env}` puts two `VAR=value` words in front of the agent, and no shell
+    would call those the command. Taking the first word blindly would refuse a
+    perfectly good launcher line, naming a variable as a missing program."""
+    code, _out, err = wrapper.run(["-d", "bot"], custom='{env} submit -I "codex"')
+    assert code == 0, err
+    assert wrapper.new_session() != []

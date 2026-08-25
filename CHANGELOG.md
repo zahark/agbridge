@@ -98,6 +98,50 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`AGB_CLAUDE_CUSTOM`, and two placeholders so a custom launcher can still take per-run flags.**
+  `agb-claude` gets the seam `agb-codex` already had, and both grow `{}` and `{env}`:
+
+  ```sh
+  export AGB_CLAUDE_CUSTOM='submit -q big -I "{env} claude {}"'
+  agb-claude work -- --model opus
+  ```
+
+  `{}` is where **this invocation's** agent flags go. Refusing them outright was right while there
+  was no way to say *where* — the agent sits inside somebody else's argument, so appending puts the
+  flag on the launcher — but it also meant changing an environment variable to change a model. The
+  placeholder is the missing information, and it is the caller's to give.
+
+  ⚠️ **It splices verbatim, so the allowed set is a positive list** — `[A-Za-z0-9._:/=+@,-]` — not a
+  list of characters to escape. The wrapper cannot know whether `{}` sits inside quotes
+  (`-I "claude {}"` says yes, `docker run img claude {}` says no), so it cannot quote for you; an
+  argument that would change how the line parses is refused rather than silently mangled, and
+  `--greet` stays refused because prose always needs quoting.
+
+  **`{env}` is the interesting half, and it exists because Claude hooks and Codex does not.** A Codex
+  on a pool node can never disturb its row — it writes none. A Claude there resolves a *different*
+  anchor, `own_host()` naming that machine, and mints a **second row** on a host the Mac has no
+  mapping for and whose pane it cannot reach.
+
+  `AGB_HOST` alone does not fix it: `$TMUX`/`$TMUX_PANE` do survive job submission, so the anchor
+  matches again, but `bind_key` adopts only when `idx_matches`, the pid differs, and it **replaces**
+  the index — orphaning the row the wrapper just minted. `{env}` therefore expands to
+  `AGB_HOST=<this host> AGB_AGENT_PID=none`, and a pid-less hook adopts, because *absence of evidence
+  must never re-mint*.
+
+  ⚠️ **The price, and it is why `{env}` is opt-in rather than automatic:** every hook rewrites the
+  record's pid, so that entry becomes pid-less and can no longer be reaped by proof of death. When
+  the job ends the row sits at its last state until `agb prune`. Liveness is proven, never inferred,
+  so nothing tidies it up. Use `{env}` only when the launcher really is remote.
+
+  ⚠️ **A seventh cross-file agreement** (CLAUDE.md invariant 14): `{env}` spells `own_host()`'s
+  resolution in POSIX sh. A disagreement raises nothing — the agent reports a host with no mapping
+  and you get a second row, which reads as the wrapper being broken. Both wrappers' tests compare the
+  substituted value against `agb.own_host()` itself rather than a copy of its rules.
+
+  Twenty new tests, each mutation-checked. One mutation had to be redone: making the refusal fire
+  *unconditionally* killed two unrelated tests and said nothing about the guard, where removing it
+  killed exactly the named one.
+
 - **`AGB_CODEX_CUSTOM` — `agb-codex` can start the agent through a launcher, so the Codex you get a
   row for need not be the one on this host.** The case that forced it: the Codex worth talking to
   lives on a batch pool, reached through a scheduler submit command, on a machine picked at submit
@@ -121,7 +165,8 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   - **`--` passthrough args and `--greet` are refused while it is set, not appended.** With an opaque
     launcher there is no position to append at that is not a guess — the agent is inside somebody
     else's argument, so a trailing word lands on the launcher. The refusal names the variable and
-    what it dropped.
+    what it dropped. *(Superseded below: the `{}` placeholder is how you say where they go. Without
+    one they are still refused, and the refusal now names `{}`.)*
   - **It is embedded in the command `tmux` is handed, never inherited.** A session created against an
     already-running tmux server takes its environment from the **server's**, plus
     `update-environment`; a variable exported in your shell a moment ago is not there. The version

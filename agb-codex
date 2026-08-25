@@ -133,6 +133,26 @@ sanitize() {
     printf '%s' "$1" | tr ' .:' '---' | tr -cd 'A-Za-z0-9_-' | cut -c1-60
 }
 
+# Replace every literal occurrence of $2 in $1 with $3, on stdout.
+#
+# POSIX sh has no ${var//a/b}, and `sed` is the wrong tool: the needle and the
+# replacement are both user text, so every metacharacter would need escaping in
+# two different contexts to substitute a fixed string.
+subst() {
+    _s=$1; _n=$2; _r=$3; _out=""
+    while :; do
+        case $_s in
+            *"$_n"*)
+                _pre=${_s%%"$_n"*}
+                _out=$_out$_pre$_r
+                _s=${_s#*"$_n"}
+                ;;
+            *) break ;;
+        esac
+    done
+    printf '%s' "$_out$_s"
+}
+
 # ⚠️ PREMINT -- the row is minted BEFORE Codex, by the session's own shell.
 #
 # For Claude, a row appeared only when it first fired a hook, which meant it did
@@ -180,29 +200,59 @@ done
 [ "$detach" = yes ] || [ -z "$greet" ] \
     || die "--greet only means something with -d: without it you are about to type in the session anyway"
 
-# ⚠️ AGB_CODEX_CUSTOM -- see the note at the top of this file. Both ways of
-# adding words to a codex command line are REFUSED rather than appended, because
-# with an opaque launcher there is no position this wrapper could append at that
-# is not a guess: `-I "codex --yolo"` puts the agent inside somebody else's
-# argument, so a trailing word lands on the launcher instead.
+# ⚠️ AGB_CODEX_CUSTOM -- see the note at the top of this file. Two
+# placeholders, because the two things a caller wants to add belong in
+# different places and only the caller knows where:
+#
+#   {}     this invocation's codex arguments, spliced verbatim
+#   {env}  the identity a remotely-launched agent must report, so that its
+#          hooks land on the row this wrapper already minted
+#
 custom=${AGB_CODEX_CUSTOM:-}
 if [ -n "$custom" ]; then
-    [ $# -eq 0 ] || die "AGB_CODEX_CUSTOM is set, so there is no codex command line to append to; put these inside the variable: $*"
-    [ -z "$greet" ] || die "AGB_CODEX_CUSTOM is set, so --greet has nowhere to go; put the opening prompt inside the variable"
+    [ -z "$greet" ] \
+        || die "AGB_CODEX_CUSTOM is set, so --greet has nowhere to go: it is prose, so it always needs quoting, and {} splices verbatim. Put the opening prompt inside the variable."
+    # No placeholder and no arguments is the ordinary case. No placeholder WITH
+    # arguments is refused rather than appended: the agent is inside somebody
+    # else's argument, so a trailing word lands on the launcher instead.
+    case $custom in
+        *'{}'*) ;;
+        *) [ $# -eq 0 ] || die "AGB_CODEX_CUSTOM has no {} placeholder, so these arguments have nowhere to go: $*. Put {} where codex's own arguments belong, e.g. -I \"codex {}\"." ;;
+    esac
+    # ⚠️ VERBATIM, which is why the allowed set is a positive list rather than
+    # a list of characters to escape. This wrapper cannot know whether {} sits
+    # inside quotes -- `-I "codex {}"` says it does, `docker run img codex {}`
+    # says it does not -- so it cannot quote for you, and an argument that would
+    # change how the line parses is refused instead of silently mangled.
+    spliced=""
+    for a in "$@"; do
+        case $a in
+            ""|*[!A-Za-z0-9._:/=+@,-]*)
+                die "AGB_CODEX_CUSTOM splices arguments verbatim, and '$a' would change how the command line parses. Only [A-Za-z0-9._:/=+@,-] can be spliced; put anything else inside the variable, where you choose the quoting." ;;
+        esac
+        spliced="${spliced:+$spliced }$a"
+    done
+    # ⚠️ `own_host()`'s resolution, spelled again -- a cross-file agreement
+    # with `agb` (CLAUDE.md invariant 14). Disagreeing with it does not raise an
+    # error: the remote agent reports a host nothing has a mapping for, and you
+    # get a SECOND row instead of the one this wrapper minted.
+    agbhost=${AGB_HOST:-$(uname -n)}
+    custom=$(subst "$custom" '{env}' "AGB_HOST=${agbhost%%.*} AGB_AGENT_PID=none")
+    custom=$(subst "$custom" '{}' "$spliced")
     # Embedded as a single-quoted literal rather than passed as a positional or
     # left in the environment. Positionals would collide with the passthrough
-    # args every launch site below already forwards, and the environment does
-    # not survive the trip into a session on a running tmux server.
+    # args every launch site below still forwards, and the environment does not
+    # survive the trip into a session on an already-running tmux server.
     esc=$(printf '%s' "$custom" | sed "s/'/'\\\\''/g")
     PREMINT="AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
 fi
 
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
 if [ -n "$custom" ]; then
-    # Only the first word can be checked; the rest is the launcher's business.
-    # That word must therefore BE the program -- an inline assignment or a
-    # redirect in front of it reads here as a missing command.
-    head=$(printf '%s\n' "$custom" | awk 'NR==1 {print $1}')
+    # Only the program can be checked; the rest is the launcher's business.
+    # Leading `VAR=value` words are stepped over, because {env} puts two of them
+    # in front of the agent and no shell would call those the command.
+    head=$(printf '%s\n' "$custom" | awk '{for (i = 1; i <= NF; i++) { if ($i ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue; print $i; exit } }')
     [ -n "$head" ] || die "AGB_CODEX_CUSTOM is set but names no command"
     command -v "$head" >/dev/null 2>&1 \
         || die "AGB_CODEX_CUSTOM starts with '$head', which is not on \$PATH"

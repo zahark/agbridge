@@ -31,6 +31,15 @@ def wrapper(tmp_path):
         "case \"$1\" in has-session) exit ${AGBC_HAS_SESSION:-1} ;; esac\n"
         "exit 0\n")
     (binder / "claude").write_text("#!/bin/sh\nexit 0\n")
+    # A stand-in launcher for AGB_CLAUDE_CUSTOM, recording its argv so a test
+    # can assert what the eval'ed command line actually resolved to -- the
+    # nesting is the whole point of the placeholders, and a string comparison
+    # against the pre-mint would not see it.
+    submit_log = tmp_path / "submit.log"
+    (binder / "submit").write_text(
+        "#!/bin/sh\n"
+        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; }"
+        " >> \"" + str(submit_log) + "\"\nexit 0\n")
     # An `agb` that records being called. The wrapper must NEVER reach it: the
     # pre-mint belongs inside the new session, where the pane anchor is right.
     agb_log = tmp_path / "agb.log"
@@ -38,15 +47,23 @@ def wrapper(tmp_path):
         "#!/bin/sh\n"
         "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; }"
         " >> \"" + str(agb_log) + "\"\nexit 0\n")
-    for name in ("tmux", "claude", "agb"):
+    for name in ("tmux", "claude", "agb", "submit"):
         os.chmod(str(binder / name), 0o755)
 
     class Wrapper(object):
         cwd = str(work)
 
-        def run(self, args, inside_tmux=False, has_session=False):
+        def run(self, args, inside_tmux=False, has_session=False,
+                custom=None):
             env = dict(os.environ)
             env["PATH"] = str(binder) + os.pathsep + env.get("PATH", "")
+            # ⚠️ Popped unconditionally, not merely left alone. A developer who
+            # actually uses AGB_CLAUDE_CUSTOM would otherwise take it into every
+            # test in this file, and the ones that pin the DEFAULT path would
+            # fail on their machine and nowhere else.
+            env.pop("AGB_CLAUDE_CUSTOM", None)
+            if custom is not None:
+                env["AGB_CLAUDE_CUSTOM"] = custom
             env["TMUX"] = "/tmp/fake,1,0" if inside_tmux else ""
             env["AGBC_HAS_SESSION"] = "0" if has_session else "1"
             if not inside_tmux:
@@ -72,6 +89,27 @@ def wrapper(tmp_path):
                 return []
             return [line.split("\037")[:-1]
                     for line in agb_log.read_text().splitlines() if line]
+
+        def premint(self):
+            call = self.new_session()[0]
+            return [w for w in call if "agb hook" in w][0]
+
+        def run_premint(self):
+            """Execute the command tmux was handed and return the launcher's
+            argv. A string assertion cannot see whether the nesting survived --
+            `eval` decides that at run time, inside the session."""
+            env = dict(os.environ)
+            env["PATH"] = str(binder) + os.pathsep + env.get("PATH", "")
+            proc = subprocess.Popen(["sh", "-c", self.premint(), "agb-claude"],
+                                    cwd=str(work), env=env,
+                                    stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+            conftest.communicate(proc, b"")
+            if not submit_log.exists():
+                return []
+            return [line.split("\037")[:-1]
+                    for line in submit_log.read_text().splitlines() if line]
 
     return Wrapper()
 
@@ -303,3 +341,125 @@ def test_a_broken_agb_costs_a_row_and_never_a_claude(wrapper):
     script = _premint(wrapper.new_session()[0])
     assert "&&" not in script, script
     assert script.index("agb hook") < script.index("exec claude")
+
+
+# --------------------------------------------------------------------------
+# AGB_CLAUDE_CUSTOM -- the claude command line, replaced wholesale, so the
+# agent can be started through a scheduler, container or pool launcher whose
+# spelling is site-specific and cannot live in a file that ships publicly.
+#
+# ⚠️ It is NOT the Codex feature with a different name. Codex fires no agbridge
+# hooks, so a pre-minted row is the only row it will ever have. Claude hooks
+# from wherever it actually runs, which is why `{env}` exists and why the tests
+# below care about it.
+# --------------------------------------------------------------------------
+
+NESTED = 'submit -q big -I "{env} claude {}"'
+
+
+def test_a_custom_command_replaces_claude_entirely(wrapper):
+    wrapper.run(["-d", "bot"], custom='submit -I "claude"')
+    premint = wrapper.premint()
+    assert "exec claude" not in premint, premint
+    assert "eval exec" in premint, premint
+
+
+def test_the_custom_command_is_embedded_not_inherited(wrapper):
+    """⚠️ It reaches the session as part of the command tmux is HANDED. A
+    session created against an already-running tmux server takes its
+    environment from the SERVER's, plus `update-environment` -- so a variable
+    exported a moment ago in the caller's shell is simply not there, and a
+    version relying on inheritance would exec nothing on every machine where a
+    server was already up."""
+    wrapper.run(["-d", "bot"], custom='submit -I "claude"')
+    assert 'submit -I "claude"' in " ".join(wrapper.new_session()[0])
+
+
+def test_switches_reach_the_agent_through_the_placeholder(wrapper):
+    wrapper.run(["-d", "bot", "--", "--model", "opus", "--resume", "abc-123"],
+                custom=NESTED)
+    argv = wrapper.run_premint()
+    assert len(argv) == 1 and argv[0][:3] == ["-q", "big", "-I"], argv
+    assert argv[0][3].endswith("claude --model opus --resume abc-123"), argv
+
+
+def test_the_env_placeholder_spells_agbs_own_host(wrapper, agb):
+    """⚠️ A cross-file agreement (CLAUDE.md invariant 14). A POSIX-sh wrapper
+    cannot import `agb`, so it spells `own_host()`'s resolution itself. A
+    disagreement raises no error: the remote agent reports a host the Mac has
+    no mapping for, and you get a SECOND row rather than the one just minted."""
+    wrapper.run(["-d", "bot"], custom=NESTED)
+    assert "AGB_HOST=%s " % (agb.own_host(),) in wrapper.premint()
+
+
+def test_the_env_placeholder_makes_the_remote_hook_adopt_rather_than_remint(wrapper):
+    """`AGB_AGENT_PID=none` is the load-bearing half and the easy one to drop.
+    `AGB_HOST` alone gets the anchor right, and then `bind_key` finds a pid that
+    does not match, REPLACES the index and orphans the row this wrapper just
+    minted. A pid-less hook adopts instead -- absence of evidence must never
+    re-mint."""
+    wrapper.run(["-d", "bot"], custom=NESTED)
+    assert "AGB_AGENT_PID=none" in wrapper.premint()
+
+
+def test_arguments_without_a_placeholder_are_refused_and_it_is_named(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot", "--", "--model", "opus"],
+                                  custom='submit -I "claude"')
+    assert code != 0
+    assert "no {} placeholder" in err and "--model opus" in err
+    assert wrapper.new_session() == []
+
+
+def test_an_argument_that_would_change_the_parsing_is_refused(wrapper):
+    for bad in ("hello world", 'a"b', "a$b", "a;b", "a`b`", "a'b"):
+        code, _out, err = wrapper.run(["-d", "bot", "--", bad], custom=NESTED)
+        assert code != 0, bad
+        assert "verbatim" in err, (bad, err)
+        assert wrapper.new_session() == [], bad
+
+
+def test_greet_is_refused_with_a_custom_command(wrapper):
+    """Prose always needs quoting, and `{}` splices verbatim -- so the one
+    argument that could never go through the placeholder stays refused."""
+    code, _out, err = wrapper.run(["-d", "bot", "--greet", "hi"], custom=NESTED)
+    assert code != 0
+    assert "--greet has nowhere to go" in err
+    assert wrapper.new_session() == []
+
+
+def test_a_custom_command_whose_program_is_missing_is_refused(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot"], custom='nosuchlauncher -I x')
+    assert code != 0
+    assert "nosuchlauncher" in err and "not on $PATH" in err
+    assert wrapper.new_session() == []
+
+
+def test_the_program_check_steps_over_leading_assignments(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot"], custom='{env} submit -I "claude"')
+    assert code == 0, err
+    assert wrapper.new_session() != []
+
+
+def test_an_empty_variable_is_the_default_path(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot"], custom="")
+    assert code == 0, err
+    assert "exec claude" in wrapper.premint()
+
+
+def test_the_premint_is_unchanged_by_a_custom_command(wrapper):
+    wrapper.run(["-d", "bot"], custom=NESTED)
+    premint = wrapper.premint()
+    assert premint.startswith("AGB_AGENT_PID=$$ agb hook completed"), premint
+    assert "&&" not in premint and "2>/dev/null" in premint, premint
+    assert wrapper.agb_calls() == [], wrapper.agb_calls()
+
+
+def test_the_remote_row_caveat_is_documented_loudly(wrapper):
+    """The single most surprising thing about launching Claude elsewhere: it
+    hooks from there, so without `{env}` you get a second row on a host the Mac
+    cannot reach. The file must say so rather than leave it to be discovered."""
+    body = open(SCRIPT, encoding="utf-8").read()
+    head = body[:body.index("set -e")]
+    assert "DIFFERS FROM CODEX" in head
+    assert "second row" in head
+    assert "agb prune" in head

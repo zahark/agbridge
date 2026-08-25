@@ -62,6 +62,16 @@ not belong in a public file; it is embedded in the argv tmux is *handed*, never 
 session created against an already-running tmux server takes its environment from the **server's**.
 **`agb-tmux`** does it for a bare shell or any command, which is how a long build gets a row.
 
+**`AGB_CLAUDE_CUSTOM` is the same seam for `agb-claude`, and it is NOT the same feature.** Both take
+two placeholders — `{}` for this invocation's agent flags, spliced verbatim, and `{env}` for the
+identity a remotely-launched agent must report. ⚠️ **`{env}` exists because Claude hooks and Codex
+does not.** A Codex started on another machine can never disturb its row, since it never writes one;
+a Claude started there resolves a *different* anchor and mints a second row, on a host the Mac has no
+mapping for. `AGB_HOST` alone does not fix it — `bind_key` then finds a pid that does not match and
+**replaces** the index, orphaning the first row — so `{env}` sets `AGB_AGENT_PID=none` too, and a
+pid-less hook adopts. ⚠️ The price is that the entry can no longer be reaped by proof of death, so
+such a row outlives its job until `agb prune`; use `{env}` only when the launcher really is remote.
+
 And **`agb-peer`** — two agents talking to each other. ⚠️ **It is not on the wire, and that is the
 thing to hold on to**: it never reads or writes a session record. It reuses agterm rows as
 *terminals* — a Mac-side `relay` reads each participant's screen and types into the other's, while a
@@ -376,7 +386,7 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Six cross-file agreements have no single source of truth, and all fail silently.** `agb` is
+14. **Seven cross-file agreements have no single source of truth, and all fail silently.** `agb` is
     Python under a character cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
@@ -419,11 +429,19 @@ These are not style preferences. Each one has a test, and most were re-learned t
       import `agb_ops`, so it spells the union itself; a word added there and not here is a message
       that silently destroys a row instead of arriving.
 
+    - **`own_host()`'s resolution is spelled again in `agb-claude` and `agb-codex`** —
+      `$AGB_HOST`, else `uname -n`, domain stripped. Their `{env}` placeholder has to name *this*
+      host, because an agent started on another machine reports whatever it is told to. A
+      disagreement raises nothing anywhere: the agent reports a host with no `host_<name>` mapping,
+      and you get a **second row** beside the one the wrapper just minted — which looks like the
+      wrapper being broken, not like a hostname being spelled two ways.
+
     The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
     resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — the
     third by `tests/test_agb_refresh.py`, the fourth and fifth beside the first two in
-    `tests/test_install_pkg.py`, and the sixth by `tests/test_agb_peer.py`, which compares against
-    the three tuples themselves rather than a copy of their contents.
+    `tests/test_install_pkg.py`, the sixth by `tests/test_agb_peer.py`, which compares against the
+    three tuples themselves rather than a copy of their contents, and the seventh by both wrapper
+    test files, each comparing the substituted value against `agb.own_host()` itself.
 
 ## Testing conventions
 

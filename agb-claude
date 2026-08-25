@@ -10,6 +10,38 @@
 #
 # It also mints the row itself, before Claude starts -- see PREMINT below.
 #
+# ⚠️ **`AGB_CLAUDE_CUSTOM` REPLACES THE WHOLE CLAUDE COMMAND LINE**, so the
+# agent can be started through a scheduler, a container or a pool launcher whose
+# spelling is site-specific. Two placeholders say where things go:
+#
+#     export AGB_CLAUDE_CUSTOM='submit -q big -I "{env} claude {}"'
+#     agb-claude work -- --model opus
+#
+#   {}     this invocation's `--` arguments, spliced VERBATIM. The wrapper
+#          cannot know whether {} sits inside quotes, so it cannot quote for
+#          you: an argument outside [A-Za-z0-9._:/=+@,-] is refused rather than
+#          mangled, and `--greet` (prose, always needs quoting) stays refused.
+#   {env}  `AGB_HOST=<this host> AGB_AGENT_PID=none`.
+#
+# ⚠️ **{env} IS NOT OPTIONAL FOR A REMOTE LAUNCHER, AND THIS IS WHERE CLAUDE
+# DIFFERS FROM CODEX.** Codex fires no agbridge hooks, so a pre-minted row is
+# the only row it will ever have. Claude hooks from wherever it actually runs,
+# so a Claude on another machine resolves a DIFFERENT anchor -- `own_host()`
+# returns that machine -- and mints a second row, on a host the Mac has no
+# `host_<name>` mapping for and whose pane it cannot reach.
+#
+# `AGB_HOST` alone is not enough. `$TMUX`/`$TMUX_PANE` do survive job
+# submission, so the anchor then matches -- but `bind_key` adopts only when
+# `idx_matches`, the pid differs, and it REPLACES the index, orphaning the row
+# this wrapper minted. `AGB_AGENT_PID=none` is what makes it adopt: absence of
+# evidence must never re-mint.
+#
+# ⚠️ And that costs something, so do not use {env} for a launcher that keeps
+# the agent on THIS machine. Every hook rewrites the record's pid, so the entry
+# becomes pid-less and can no longer be reaped by proof of death: when the job
+# ends the row sits at its last state until `agb prune`. Liveness is proven,
+# never inferred -- nothing will tidy it up for you.
+#
 #   agb-claude                  # session named after the current directory
 #   agb-claude api-refactor     # session named explicitly
 #   agb-claude -d api-refactor  # start it detached, with a row already showing
@@ -36,6 +68,13 @@ usage: agb-claude [-d] [name] [-- <claude args>...]
 
   -h, --help     this message
 
+Environment:
+  AGB_CLAUDE_CUSTOM  a shell command line run INSTEAD of `claude`, eval'ed
+                     inside the session. `{}` is where this invocation's `--`
+                     arguments are spliced; `{env}` becomes AGB_HOST and
+                     AGB_AGENT_PID=none, which a Claude on ANOTHER machine
+                     needs or it mints a second row. --greet is refused.
+
 Re-running with the same name ATTACHES to the existing session rather than
 starting a second agent in it.
 EOF
@@ -46,6 +85,26 @@ EOF
 # but make every command that names the session need quoting, so they go too.
 sanitize() {
     printf '%s' "$1" | tr ' .:' '---' | tr -cd 'A-Za-z0-9_-' | cut -c1-60
+}
+
+# Replace every literal occurrence of $2 in $1 with $3, on stdout.
+#
+# POSIX sh has no ${var//a/b}, and `sed` is the wrong tool: the needle and the
+# replacement are both user text, so every metacharacter would need escaping in
+# two different contexts to substitute a fixed string.
+subst() {
+    _s=$1; _n=$2; _r=$3; _out=""
+    while :; do
+        case $_s in
+            *"$_n"*)
+                _pre=${_s%%"$_n"*}
+                _out=$_out$_pre$_r
+                _s=${_s#*"$_n"}
+                ;;
+            *) break ;;
+        esac
+    done
+    printf '%s' "$_out$_s"
 }
 
 # ⚠️ PREMINT -- the row is minted BEFORE Claude, by the session's own shell.
@@ -96,9 +155,67 @@ done
 [ "$detach" = yes ] || [ -z "$greet" ] \
     || die "--greet only means something with -d: without it you are about to type in the session anyway"
 
+# ⚠️ AGB_CLAUDE_CUSTOM -- see the note at the top of this file. Two
+# placeholders, because the two things a caller wants to add belong in
+# different places and only the caller knows where:
+#
+#   {}     this invocation's claude arguments, spliced verbatim
+#   {env}  the identity a remotely-launched agent must report, so that its
+#          hooks land on the row this wrapper already minted
+#
+custom=${AGB_CLAUDE_CUSTOM:-}
+if [ -n "$custom" ]; then
+    [ -z "$greet" ] \
+        || die "AGB_CLAUDE_CUSTOM is set, so --greet has nowhere to go: it is prose, so it always needs quoting, and {} splices verbatim. Put the opening prompt inside the variable."
+    # No placeholder and no arguments is the ordinary case. No placeholder WITH
+    # arguments is refused rather than appended: the agent is inside somebody
+    # else's argument, so a trailing word lands on the launcher instead.
+    case $custom in
+        *'{}'*) ;;
+        *) [ $# -eq 0 ] || die "AGB_CLAUDE_CUSTOM has no {} placeholder, so these arguments have nowhere to go: $*. Put {} where claude's own arguments belong, e.g. -I \"claude {}\"." ;;
+    esac
+    # ⚠️ VERBATIM, which is why the allowed set is a positive list rather than
+    # a list of characters to escape. This wrapper cannot know whether {} sits
+    # inside quotes -- `-I "claude {}"` says it does, `docker run img claude {}`
+    # says it does not -- so it cannot quote for you, and an argument that would
+    # change how the line parses is refused instead of silently mangled.
+    spliced=""
+    for a in "$@"; do
+        case $a in
+            ""|*[!A-Za-z0-9._:/=+@,-]*)
+                die "AGB_CLAUDE_CUSTOM splices arguments verbatim, and '$a' would change how the command line parses. Only [A-Za-z0-9._:/=+@,-] can be spliced; put anything else inside the variable, where you choose the quoting." ;;
+        esac
+        spliced="${spliced:+$spliced }$a"
+    done
+    # ⚠️ `own_host()`'s resolution, spelled again -- a cross-file agreement
+    # with `agb` (CLAUDE.md invariant 14). Disagreeing with it does not raise an
+    # error: the remote agent reports a host nothing has a mapping for, and you
+    # get a SECOND row instead of the one this wrapper minted.
+    agbhost=${AGB_HOST:-$(uname -n)}
+    custom=$(subst "$custom" '{env}' "AGB_HOST=${agbhost%%.*} AGB_AGENT_PID=none")
+    custom=$(subst "$custom" '{}' "$spliced")
+    # Embedded as a single-quoted literal rather than passed as a positional or
+    # left in the environment. Positionals would collide with the passthrough
+    # args every launch site below still forwards, and the environment does not
+    # survive the trip into a session on an already-running tmux server.
+    esc=$(printf '%s' "$custom" | sed "s/'/'\\\\''/g")
+    PREMINT="AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
+fi
+
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
-command -v claude >/dev/null 2>&1 \
-    || die "claude is not installed or not on \$PATH"
+if [ -n "$custom" ]; then
+    # Only the program can be checked; the rest is the launcher's business.
+    # Leading `VAR=value` words are stepped over, because {env} puts two of them
+    # in front of the agent and no shell would call those the command.
+    head=$(printf '%s\n' "$custom" | awk '{for (i = 1; i <= NF; i++) { if ($i ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue; print $i; exit } }')
+    [ -n "$head" ] || die "AGB_CLAUDE_CUSTOM is set but names no command"
+    command -v "$head" >/dev/null 2>&1 \
+        || die "AGB_CLAUDE_CUSTOM starts with '$head', which is not on \$PATH"
+    say "agb-claude: AGB_CLAUDE_CUSTOM is set; a new session runs: $custom"
+else
+    command -v claude >/dev/null 2>&1 \
+        || die "claude is not installed or not on \$PATH"
+fi
 
 [ -n "$name" ] || name=$(basename "$(pwd)")
 name=$(sanitize "$name")
