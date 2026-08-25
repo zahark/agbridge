@@ -1219,6 +1219,35 @@ none of that. The bridge restarts itself (`RunAtLoad` in the LaunchAgent) and it
 a second or two, which `agb doctor` on any cluster host will show. Open agterm, run this, and the
 rows return on the next snapshot with the same identities.
 
+## `agb-tmux [name]` — farm, a convenience
+
+```
+agb-tmux [-d] [name] [-- <command>...]
+```
+
+The general case of the family: a named tmux session plus an agterm row, running whatever you give
+it — default your login shell. `agb-claude` and `agb-codex` are the two special cases that know their
+agent's name and its caveats.
+
+```sh
+agb-tmux -d shellrow              # a farm shell you can click on from the sidebar
+agb-tmux -d build -- make -j8     # a long build with a row of its own
+```
+
+⚠️ **A plain tmux row has no agent, so its status never changes.** agbridge's state machine is driven
+by Claude Code's hooks and a shell fires none, so the row stays `completed` for its whole life: the
+glyph never moves, and a long build looks exactly like an idle prompt. If you want a moving glyph,
+something has to call `agb hook` itself — which needs no Claude and is exactly what this script does
+once, at launch.
+
+⚠️ **And it is deliberately not an `agb-peer` participant.** `classify` reads a shell as `unknown`,
+so the relay will never type into it. That is the right answer: a shell would *execute* what it was
+sent.
+
+⚠️ The pre-mint matters most here of the three. Claude would eventually mint a row on its first hook;
+Codex never would; a shell never would either, and unlike an agent there is nothing that could later
+change its mind.
+
 ## `agb-codex [name]` — farm, a convenience
 
 ```

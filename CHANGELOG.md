@@ -231,6 +231,24 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   model and neither does the skill, now that its description says "Claude Code or Codex" rather than
   assuming.
 
+- **`agb-tmux` — a row for any command, not just an agent.** The general case of the family:
+  `agb-tmux -d shellrow` gives you a farm shell you can click on from the sidebar, and
+  `agb-tmux -d build -- make -j8` gives a long build a row of its own. `agb-claude` and `agb-codex`
+  remain the two special cases that know their agent's name and its caveats.
+
+  ⚠️ **Its status never changes**, because a shell fires no hooks — the glyph never moves, so a long
+  build looks exactly like an idle prompt. ⚠️ **And it is deliberately not an `agb-peer`
+  participant**: `classify` reads a shell as `unknown` so the relay will never type into it, which is
+  the right answer, because a shell would *execute* what it was sent. Both are said at the top of the
+  script and pinned by a test.
+
+  The pre-mint matters most of the three here: Claude would eventually mint a row on its first hook,
+  Codex never would, and a shell never would either — with nothing that could later change its mind.
+
+  Three near-copies is a lot, and the test file says so: if a fourth appears they should be
+  collapsed. What stops that today is that the two agent wrappers are live and verified, and
+  rewriting a working thing for tidiness is the trade this project keeps declining.
+
 - ⚠️ **A sandboxed Codex is RECEIVE-ONLY, and that is measured rather than reasoned.** Codex runs
   model-generated shell commands in a sandbox which refuses the tmux socket
   (`error connecting to /tmp/tmux-100000/default (Operation not permitted)`). Not a file-permission

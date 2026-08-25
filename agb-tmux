@@ -1,0 +1,156 @@
+#!/bin/sh
+# agb-tmux -- give any command a named tmux session and an agterm row.
+#
+# The general case of the family. `agb-claude` and `agb-codex`
+# exist because they know their agent's name and its caveats; this one runs
+# whatever you give it, defaulting to your login shell.
+#
+# Why this exists: agbridge resolves the tmux session name ONCE, when an agent
+# first fires a hook. An agent started outside tmux gets a status-only row for
+# its whole life -- visible, but nothing to click through to. Naming the session
+# *before* starting the agent is the whole trick, and forgetting is easy, so
+# this wraps it.
+#
+# It mints the row itself, before the command starts -- see PREMINT below.
+#
+# ⚠️ **A PLAIN TMUX ROW HAS NO AGENT, SO ITS STATUS NEVER CHANGES.** agbridge's
+# state machine is driven by Claude Code's hooks; a shell fires none, so this
+# row stays `completed` for its whole life. That is honest -- the session IS
+# sitting there -- but the glyph never moves, so a long build looks exactly
+# like an idle prompt. If you want a moving glyph, an agent has to be the
+# thing running, or something has to call `agb hook` itself; that command
+# needs no Claude and is exactly what this script uses.
+#
+# ⚠️ **And it is not an `agb-peer` participant.** `classify` reads a shell as
+# `unknown`, deliberately, so the relay will never type into it. That is the
+# right answer: a shell would execute what it was sent.
+#
+#   agb-tmux                  # session named after the current directory
+#   agb-tmux api-refactor     # session named explicitly
+#   agb-tmux -d api-refactor  # start it detached, with a row already showing
+#   agb-tmux build -- make -j8
+#
+# Everything after `--` is the command to run (default: your login shell).
+
+set -e
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'agb-tmux: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat >&2 <<'EOF'
+usage: agb-tmux [-d] [name] [-- <command>...]
+
+  name           tmux session name (default: the current directory's name)
+  --             the command to run (default: $SHELL)
+
+  -d, --detach   start it in the background and return immediately. The row
+                 appears either way -- it is minted before the command starts.
+
+  -h, --help     this message
+
+Re-running with the same name ATTACHES to the existing session rather than
+starting a second command in it.
+EOF
+}
+
+# tmux session names may not contain "." or ":" -- both are target delimiters,
+# so a name carrying one cannot be addressed by `attach-session -t`. Spaces work
+# but make every command that names the session need quoting, so they go too.
+sanitize() {
+    printf '%s' "$1" | tr ' .:' '---' | tr -cd 'A-Za-z0-9_-' | cut -c1-60
+}
+
+# ⚠️ PREMINT -- the row is minted BEFORE the command, by the session's own shell.
+#
+# A row appears when an agent first fires a hook. A shell fires none, ever, so
+# without this there would be no row at all -- not later, not once you typed,
+# never.
+#
+# So the session's shell hooks first, then `exec`s the command. Three things make
+# that produce ONE row rather than two, and all three were measured:
+#
+#   * it runs INSIDE the new session, because the anchor is (host, tmux server
+#     pid, %PANE) -- hooking from the caller's pane would mint a row for the
+#     caller's pane;
+#   * `exec` preserves BOTH pid and starttime, so the identity the shell
+#     records IS the command's identity a moment later. `bind_key` finds a matching
+#     record and adopts the key instead of minting a second one;
+#   * recording a real pid (rather than none) keeps the entry reapable by proof
+#     of death. A pid-less entry also adopts -- "absence of evidence must never
+#     re-mint" -- but nothing except `agb prune` could ever remove it if the
+#     command failed to start at all.
+#
+# `completed` rather than `active`: the session exists and is waiting for you,
+# which is what that glyph means. `active` would claim it is working and blink
+# a transition that did not happen. It raises no banner -- the finished-turn
+# banner needs a preceding `active` to measure from, and a fresh key has none.
+#
+# Best-effort by construction: `;` not `&&`, and stderr discarded, so a missing
+# or broken `agb` costs a row and never your command.
+PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec "$@"'
+
+name=""; detach=no
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        -d|--detach) detach=yes; shift ;;
+        --)        shift; break ;;
+        -*)        die "unknown option: $1 (use -- to pass a command)" ;;
+        *)         [ -n "$name" ] && die "only one name, got '$name' and '$1'"
+                   name=$1; shift ;;
+    esac
+done
+
+command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
+
+
+# No command given means your login shell -- the common case, and the one that
+# makes this useful as "a farm shell I can click on from the sidebar".
+[ $# -gt 0 ] || set -- "${SHELL:-/bin/sh}"
+
+[ -n "$name" ] || name=$(basename "$(pwd)")
+name=$(sanitize "$name")
+[ -n "$name" ] || die "the name is empty after removing characters tmux cannot address"
+
+# Detached: the point is that the row exists without anyone attaching. A hook
+# fires on UserPromptSubmit, not at launch, so a session started and left alone
+# writes nothing and stays invisible.
+if [ "$detach" = yes ]; then
+    if tmux has-session -t "=$name" 2>/dev/null; then
+        say "agb-tmux: '$name' already exists; not starting a second agent in it"
+        say "agb-tmux: attach with  tmux attach -t $name"
+        exit 0
+    fi
+    tmux new-session -d -s "$name" -c "$(pwd)" \
+        sh -c "$PREMINT" agb-tmux "$@"
+    say "agb-tmux: started '$name' detached running: $*"
+    say "agb-tmux: the row is there now; attach from agterm, or with"
+    say "            tmux attach -t $name"
+    # No agent, so nothing to get stuck on a trust prompt -- and nothing to
+    # fire a hook either. See the caveat at the top of this file.
+    exit 0
+fi
+
+# Already inside tmux: a nested session cannot be attached to from the outside,
+# and agbridge would record the OUTER session's name for the inner agent. Making
+# a sibling session and switching to it keeps one agent to one addressable pane.
+if [ -n "${TMUX:-}" ]; then
+    if tmux has-session -t "=$name" 2>/dev/null; then
+        [ $# -gt 0 ] && say "agb-tmux: NOTE '$name' already exists, so it is not being restarted -- these arguments are ignored: $*"
+        say "agb-tmux: switching to existing session '$name'"
+        exec tmux switch-client -t "=$name"
+    fi
+    say "agb-tmux: creating '$name' as a sibling session (you are inside tmux)"
+    tmux new-session -d -s "$name" -c "$(pwd)" sh -c "$PREMINT" agb-tmux "$@"
+    exec tmux switch-client -t "=$name"
+fi
+
+if tmux has-session -t "=$name" 2>/dev/null; then
+    [ $# -gt 0 ] && say "agb-tmux: NOTE '$name' already exists, so it is not being restarted -- these arguments are ignored: $*"
+    say "agb-tmux: attaching to existing session '$name'"
+    exec tmux attach-session -t "=$name"
+fi
+
+say "agb-tmux: starting your command in tmux session '$name'"
+exec tmux new-session -s "$name" -c "$(pwd)" sh -c "$PREMINT" agb-tmux "$@"
