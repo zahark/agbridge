@@ -98,6 +98,34 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-peer relay` silently discarded every message addressed to a participant whose agent had
+  not started yet.** The symptom: you name two agents, start only one, send it a message from the
+  other — `agb-peer send` answers `queued for bob as #…` and exits 0, the relay says
+  `dropping a message for 'bob': not a participant`, and nothing ever arrives. The sender is never
+  told, because there are no delivery receipts on this channel by design.
+
+  `cmd_relay` passed **`resolved`** — the names whose row is in agterm's tree *right now* — as
+  `try_deliver`'s `people`, and `try_deliver` used it to answer two different questions at once:
+  *is this a participant?* and *can I reach it?* The second is a good reason to wait; the first is
+  the only one that justifies throwing a message away. Conflated, an agent that had not booted yet
+  was indistinguishable from a typo.
+
+  It has been wrong since the relay existed, and a fixed participant list mostly hid it: you start
+  the relay once the agents are up. It matters now because the roster work makes the opposite
+  ordinary — you list the agents you intend to talk to, and start them when you get to them.
+
+  Membership is now a question about the **roster**, and the two answers differ: a name that is not
+  in it is still **dropped** and named, while a name that is in it but has no row yet is **held**
+  and delivered when the row appears. The hold complains on a ladder rather than every tick, and is
+  **bounded** — ⚠️ 225 ticks, about half an hour at the default interval, and that number is a
+  judgement rather than a measurement. Holding for ever is defensible (the messages are addressed to
+  a real participant and nothing else consumes them) but a name that never resolves would then
+  accumulate mail for the life of the relay.
+
+  ⚠️ **The hold ages by ticks, not by messages.** `try_deliver` runs once per queued message, so
+  three messages for one absent name would otherwise age the hold three times as fast and make the
+  bound depend on how much mail is waiting.
+
 - **An agent launched on another machine with `{env}` reaped every live row on the host it was
   impersonating, then duplicated its own.** The symptom, from the outside: you start one agent
   through `AGB_CLAUDE_CUSTOM` with `{env}`, and every *other* row in the sidebar — agents that are

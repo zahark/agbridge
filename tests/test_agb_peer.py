@@ -1542,3 +1542,128 @@ def test_no_chat_dir_is_reported_rather_than_guessed(peer):
     assert peer.drain(Fetcher(), "pool", "container", peer.NFS_TARGET,
                       said.append, ident="abc12", chat_dir=None) == []
     assert any("--chat-dir" in s for s in said)
+
+
+# ---------------------------------------------------------------------------
+# membership is the roster, not what resolved
+# ---------------------------------------------------------------------------
+#
+# `people` is the RESOLVED map -- names whose row is in agterm's tree right now.
+# Using it to answer "is this a participant?" silently discarded every message
+# addressed to a participant whose agent had not started yet, with the sender
+# seeing `queued for <name>` and exit 0. A fixed participant list masks it (you
+# start the relay once the agents exist); a roster does not.
+
+ROSTER = {"alice", "bob", "carol"}
+CAROL = ("CCCC3333", "left", "local", None)
+
+
+def queued(to, text="hi", ident="m1", sender="alice"):
+    return [(sender, {"id": ident, "to": to, "text": text})]
+
+
+def test_a_message_to_a_roster_member_with_no_row_is_held(peer):
+    ctl = RelayCtl(panes())
+    pending = queued("carol")
+    peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                    notes={}, members=ROSTER)
+    assert len(pending) == 1, "held means still queued, not delivered or dropped"
+    assert ctl.typed == []
+    assert any("no row yet" in s for s in ctl.said), ctl.said
+
+
+def test_a_held_message_is_delivered_once_the_row_appears(peer):
+    """The companion. Without it, a hold is only a slower drop and the test
+    above would pass against a relay that never delivers anything."""
+    notes, pending = {}, queued("carol")
+    first = RelayCtl(panes())
+    peer.relay_tick(first, PEOPLE, {}, pending, 500, first.say, Fetcher(),
+                    notes=notes, members=ROSTER)
+    assert len(pending) == 1, "precondition: it was held"
+
+    surfaces = panes()
+    surfaces[CAROL[0]] = COMPOSER
+    later = RelayCtl(surfaces)
+    peer.relay_tick(later, dict(PEOPLE, carol=CAROL), {}, pending, 500,
+                    later.say, Fetcher(), notes=notes, members=ROSTER)
+    assert pending == [], "delivered, so no longer queued"
+    assert [t for (_, _, t) in later.typed if t != "\n"] == [
+        "[chat from alice] hi"]
+
+
+def test_a_message_to_a_name_outside_the_roster_is_still_dropped(peer):
+    """The other half of the distinction: not in the roster is a typo or a name
+    nobody added, and holding those for ever would be the opposite mistake."""
+    ctl = RelayCtl(panes())
+    pending = queued("nobody")
+    peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                    notes={}, members=ROSTER)
+    assert pending == [], "dropped"
+    assert any("not a participant" in s for s in ctl.said), ctl.said
+
+
+def test_without_members_the_resolved_map_still_answers(peer):
+    """`members=None` keeps every existing caller -- and the direct one-shot
+    path, which has no roster at all -- on the old behaviour."""
+    ctl = RelayCtl(panes())
+    pending = queued("carol")
+    peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                    notes={})
+    assert pending == [], "no roster to consult, so carol is not a participant"
+    assert any("not a participant" in s for s in ctl.said), ctl.said
+
+
+def test_the_hold_complaint_is_throttled(peer):
+    ctl = RelayCtl(panes())
+    notes, pending = {}, queued("carol")
+    for _ in range(100):
+        peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                        notes=notes, members=ROSTER)
+    holds = [s for s in ctl.said if "no row yet" in s]
+    assert len(pending) == 1, "still held at 100 ticks, well inside the bound"
+    assert holds, "non-vacuous: it complained at least once"
+    assert len(holds) <= 6, "100 ticks, a ladder, not a line every tick: %r" % (
+        holds,)
+
+
+def test_the_hold_ages_by_ticks_not_by_messages(peer):
+    """Three messages for one absent name must not age the hold three times as
+    fast -- the bound would then depend on how much mail is queued."""
+    ctl = RelayCtl(panes())
+    notes = {}
+    pending = (queued("carol", ident="m1") + queued("carol", ident="m2")
+               + queued("carol", ident="m3"))
+    peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                    notes=notes, members=ROSTER)
+    assert len(pending) == 3, "all three held"
+    count, _tick = notes[("held", "carol")]
+    assert count == 1, "one tick is one tick, whatever the queue depth"
+    assert len([s for s in ctl.said if "no row yet" in s]) == 1, ctl.said
+
+
+def test_the_hold_is_bounded_and_says_so_when_it_gives_up(peer):
+    """Unbounded, a name that never resolves accumulates mail for the life of
+    the relay with only the ladder to say so."""
+    ctl = RelayCtl(panes())
+    notes, pending = {}, queued("carol")
+    for _ in range(peer.HOLD_TICKS_MAX + 1):
+        peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                        notes=notes, members=ROSTER)
+    assert pending == [], "the bound expired, so it was dropped"
+    assert any("giving up" in s for s in ctl.said), ctl.said
+
+
+def test_every_message_for_a_given_up_name_goes_in_the_same_tick(peer):
+    """The note is deliberately NOT popped when the bound expires: popping it
+    restarts the count at 1 for the second message and holds it another half
+    hour."""
+    ctl = RelayCtl(panes())
+    notes = {}
+    pending = (queued("carol", ident="m1") + queued("carol", ident="m2")
+               + queued("carol", ident="m3"))
+    for _ in range(peer.HOLD_TICKS_MAX + 1):
+        peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                        notes=notes, members=ROSTER)
+    assert pending == [], "all three, not just the first"
+    assert len([s for s in ctl.said if "giving up" in s]) == 1, \
+        "said once for the name, not once per message"

@@ -1223,8 +1223,58 @@ def drain(fetch, name, target, pane, say, ident=None,
     return messages
 
 
+# How many TICKS a message may wait for a roster participant whose row has not
+# appeared yet. ⚠️ **A judgement, not a measurement**: at the default 8 s
+# interval this is about half an hour, picked to outlast a scheduler queue and a
+# container start. Holding for ever is defensible too -- the messages are
+# addressed to a real participant and nothing else consumes them -- but a name
+# that never resolves would then accumulate mail for the life of the relay with
+# only the ladder below to say so.
+HOLD_TICKS_MAX = 225
+
+
+def _hold_unresolved(recipient, notes, say):
+    """False (hold) while a roster participant's row has not appeared yet.
+
+    ⚠️ **Counted per TICK, not per message.** `try_deliver` runs once per
+    pending message, so three messages for one absent name would otherwise age
+    the hold three times as fast and make the bound depend on queue depth.
+    `relay_tick` stamps `notes["tick"]`; the count moves only when that does.
+
+    With no `notes` there is nowhere to count, so the hold is unbounded and
+    unthrottled -- the same way the `("said", ...)` throttle already degrades.
+    Only the relay passes `notes`, and only the relay holds anything.
+    """
+    if notes is None:
+        say("%s has no row yet -- holding the message" % (recipient,))
+        return False
+    tick = notes.get("tick")
+    entry = notes.get(("held", recipient))
+    if entry is None:
+        count, fresh = 1, True
+    else:
+        count, seen_at = entry
+        fresh = seen_at != tick
+        count = count + 1 if fresh else count
+    if fresh:
+        notes[("held", recipient)] = (count, tick)
+    if count > HOLD_TICKS_MAX:
+        # ⚠️ The note is NOT popped here. Every other message queued for this
+        # name must reach the same verdict on this tick, and a popped note
+        # would restart the count at 1 for the second one and hold it.
+        if fresh:
+            say("giving up on %r after %d ticks with no row -- dropping its "
+                "queued messages. It is in the roster, so nothing else will."
+                % (recipient, HOLD_TICKS_MAX))
+        return True
+    if fresh and (count == 1 or count == 3 or count % 30 == 0):
+        say("%s is in the roster but has no row yet -- holding (%d/%d)"
+            % (recipient, count, HOLD_TICKS_MAX))
+    return False
+
+
 def try_deliver(ctl, sessions, people, sender, message, lines, say,
-                notes=None):
+                notes=None, members=None):
     """One delivery attempt. True = done with it, False = try again next tick.
 
     ⚠️ **A relay must not block.** The direct command waits out a busy peer for
@@ -1234,11 +1284,31 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
     ⚠️ **Exit 4 is dropped, not retried.** It means the text WAS typed and could
     not be verified -- typing it again would leave two copies in the composer,
     which is a worse outcome than one lost message and a loud line.
+
+    ⚠️ **MEMBERSHIP IS A QUESTION ABOUT THE ROSTER, NOT ABOUT WHAT RESOLVED.**
+    `people` is the RESOLVED map -- names whose row is in agterm's tree right
+    now -- and using it to answer "is this a participant?" silently discarded
+    every message addressed to a participant whose agent had not started yet.
+    With a fixed participant list that is masked, because you start the relay
+    once the agents exist; with a roster you list three agents while two are
+    up, and the third one's mail is thrown away with the sender seeing
+    `queued for <name>` and exit 0.
+
+    So `members` is the roster, and the two answers are different questions:
+    not in the roster is a DROP (a typo, or a name nobody ever added), while
+    in the roster but unresolved is a HOLD (a row that has not appeared yet).
+    `members=None` means "use `people`", which keeps every existing caller --
+    and the direct one-shot path, which has no roster at all -- unchanged.
     """
     recipient = message.get("to")
-    if recipient not in people:
+    members = people if members is None else members
+    if recipient not in members:
         say("dropping a message for %r: not a participant" % (recipient,))
         return True
+    if recipient not in people:
+        return _hold_unresolved(recipient, notes, say)
+    if notes is not None:
+        notes.pop(("held", recipient), None)
     if recipient == sender:
         say("dropping a message %r addressed to itself" % (sender,))
         return True
@@ -1274,7 +1344,7 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
 
 
 def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
-               deliver_new=True, notes=None, chat_dir=None):
+               deliver_new=True, notes=None, chat_dir=None, members=None):
     """One pass: watch every doorbell, drain what rang, then drain the queue.
 
     `deliver_new=False` is the PRIMING pass. It still FETCHES -- and discards.
@@ -1283,6 +1353,9 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
     honest move is to clear them and say how many.
     """
     notes = {} if notes is None else notes
+    # Stamped once per tick so `_hold_unresolved` can age a hold by ticks
+    # rather than by messages -- see its docstring.
+    notes["tick"] = notes.get("tick", 0) + 1
     sessions = {}
     for session in sessions_of(ctl.tree()):
         sessions[session["id"]] = session
@@ -1357,7 +1430,7 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
     held = []
     for sender, message in pending:
         if not try_deliver(ctl, sessions, people, sender, message, lines, say,
-                           notes):
+                           notes, members):
             held.append((sender, message))
     pending[:] = held
     return len(pending)
@@ -1414,12 +1487,16 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
             if dashboard and len(resolved) > 1:
                 # Re-opened on every move for the same reason the ids are
                 # re-resolved: a grid built on dead ids shows dead cells.
-                members = ["%s:%s" % (resolved[n][0], resolved[n][1])
-                           for n in sorted(resolved)]
-                ok, why = ctl.dashboard(members)
+                grid_cells = ["%s:%s" % (resolved[n][0], resolved[n][1])
+                              for n in sorted(resolved)]
+                ok, why = ctl.dashboard(grid_cells)
                 say("dashboard: %s" % ("open" if ok else why))
+        # ⚠️ `spec`, not `resolved`: membership is what the operator asked for,
+        # and a participant whose row has not appeared yet must have its mail
+        # HELD rather than dropped. See try_deliver.
         relay_tick(ctl, resolved, seen, pending, lines, say, fetch,
-                   deliver_new=not priming, notes=notes, chat_dir=chat_dir)
+                   deliver_new=not priming, notes=notes, chat_dir=chat_dir,
+                   members=set(spec))
         if priming:
             say("primed on %d doorbell(s); relaying every %ss -- Ctrl-C to stop"
                 % (len(seen), interval))
