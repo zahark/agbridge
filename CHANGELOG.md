@@ -231,6 +231,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   model and neither does the skill, now that its description says "Claude Code or Codex" rather than
   assuming.
 
+- ✅ **VERIFIED LIVE: a two-way conversation with an agent on an unreachable machine.** A Codex on a
+  compute-pool node — picked at random, mounting the same NFS, with the Mac unable to ssh it at all —
+  received a message and **replied**. Outbound took the path this release adds: a file on NFS, a
+  doorbell echoed to its own screen, the relay reading that screen for free, and one `ssh` to the
+  **container** to `cat` the file. Nothing touched the pool machine's network or its tmux.
+
+  That is Codex↔Claude, across machines, with one end unreachable — and it is worth noting how much
+  of it was already there: delivery needed no change at all, the doorbell needed no new parsing, and
+  the only new code was "notice the socket is missing" plus "read a file instead of a tmux option".
+
 - **A peer on a machine you cannot ssh to.** A job on a compute pool mounts the same NFS and the Mac
   cannot reach it. Two of the three legs turned out not to need that ssh at all.
 
