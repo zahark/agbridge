@@ -203,11 +203,11 @@ BUSY_STATUSES = ("active", "blocked")
 PEER_FLAGS = ("--stdin", "--no-send", "--no-arm", "--dry-run", "--list",
               "--force", "--version", "--once", "--dashboard")
 PEER_VALUE_ARGS = ("--to", "--pane", "--from", "--retries", "--interval",
-                   "--lines")
+                   "--lines", "--chat-dir")
 
 USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
        agb-peer send --to <name> <message>          # tmux only; no agtermctl
-       agb-peer relay a=<label> b=<label>[:pane][@host] [--dashboard]
+       agb-peer relay a=<label> b=<label>[:pane][@host[:nfs]] [--dashboard]
        agb-peer --list
 
   --to <peer>        row id, id prefix, or a substring of the row's title
@@ -483,6 +483,111 @@ def message_id(now=None):
         value, digit = divmod(value, 36)
         out = alphabet[digit] + out
     return out or "0"
+
+
+# --------------------------------------------------------------------------
+# the NFS fallback -- for an agent whose tmux is on another machine
+# --------------------------------------------------------------------------
+#
+# A job on a compute pool mounts the same NFS as everything else and the Mac
+# cannot ssh it. Two of the three legs still work: an `agb-tmux` row on a
+# REACHABLE host, with the pool session opened outward from inside it, carries
+# keystrokes all the way down -- so delivery is unchanged. What breaks is
+# sending, and it breaks in a way no permission fixes:
+#
+#   * `$TMUX` and `$TMUX_PANE` ARE inherited through the job submission, so the
+#     agent believes it is `%99` of `/tmp/tmux-100000/default`;
+#   * `/tmp` is local to each machine, so that socket is simply not there;
+#   * ⚠️ and putting the socket on NFS does not help -- MEASURED. A
+#     `tmux -S /home/user/.agb-sock/test` server accepts connections and holds
+#     pane options locally, and from the pool machine, with that server alive
+#     and the socket file plainly visible on the shared mount, tmux answers
+#     `no server running`. A unix socket is a local kernel rendezvous, not a
+#     filesystem object NFS carries.
+#
+# So the fallback uses the two things that DO cross: a file on NFS, and the
+# agent's own screen.
+#
+#   doorbell   an echoed `[peer #id]` line -- `read_doorbell` already scans the
+#              whole pane, so this needs no new parsing at all
+#   content    `<statedir>/chat/<id>.msg`, an ordinary file
+#   fetch      `ssh <reachable host> cat <path>` -- to the CONTAINER, never to
+#              the pool, and only when the doorbell changes
+#
+# ⚠️ **This only works for an agent that renders command output on its screen.**
+# MEASURED: Codex does (`└ <output>` under each `Ran …`); Claude Code does not
+# render tool output at all, which is what killed the original screen-as-content
+# design. A Claude on such a pool would need something else again.
+CHAT_SUBDIR = "chat"
+
+
+def socket_is_missing(env=None):
+    """True when `$TMUX` names a socket that is not on this machine.
+
+    ⚠️ **The discriminator, and it has to be a positive one.** Three different
+    failures reach the same `rc != 0`, and only one of them means "use the file
+    transport" -- all three were measured this week:
+
+      * `Operation not permitted` -- Codex's sandbox refusing the socket. The
+        socket is right there; falling back would hide a permissions problem.
+      * a timeout -- a wedged agterm client blocking every tmux command that
+        must notify it. Transient; falling back would silently move messages to
+        a transport nobody is reading, and they would vanish.
+      * `No such file or directory` -- the pool case. `$TMUX` and `$TMUX_PANE`
+        were inherited through a job submission and the socket is on another
+        machine's `/tmp`. This is the one, and it is checkable directly rather
+        than inferred from an error string.
+
+    `$TMUX` unset at all is NOT this case: we cannot tell, so the caller
+    refuses, which is the same answer it gave before any of this existed.
+    """
+    env = os.environ if env is None else env
+    tmux = env.get("TMUX")
+    if not tmux:
+        return False
+    return not os.path.exists(tmux.split(",")[0])
+
+
+def statedir(env=None):
+    """`$AGB_STATEDIR`, then the config's `statedir`, then `~/.agbridge`.
+
+    ⚠️ A cross-file agreement with `agb.statedir()` (CLAUDE.md invariant 14):
+    `agb-peer` cannot import `agb`, so it spells the same resolution itself. A
+    disagreement puts the message where nothing looks for it, silently.
+    """
+    env = os.environ if env is None else env
+    explicit = env.get("AGB_STATEDIR")
+    if explicit:
+        return explicit
+    path = os.path.join(os.path.expanduser("~"), ".config", "agbridge",
+                        "config")
+    try:
+        with open(path) as handle:
+            for line in handle:
+                key, sep, value = line.partition("=")
+                if sep and key.strip() == "statedir" and value.strip():
+                    return value.strip()
+    except (IOError, OSError):
+        pass
+    return os.path.join(os.path.expanduser("~"), ".agbridge")
+
+
+def chat_path(ident, sd=None, env=None):
+    return os.path.join(sd or statedir(env), CHAT_SUBDIR, "%s.msg" % (ident,))
+
+
+def write_chat_file(path, recipient, text):
+    """The message, as an ordinary file. Same two-part shape as the tmux option
+    -- recipient on the first line, message on the rest -- so one parser reads
+    both, and temp+rename because a torn read is a real possibility on NFS."""
+    directory = os.path.dirname(path)
+    if not os.path.isdir(directory):
+        os.makedirs(directory)
+    temp = path + ".tmp"
+    with open(temp, "w") as handle:
+        handle.write(option_value(recipient, text))
+    os.rename(temp, path)
+    return path
 
 
 def option_value(recipient, text):
@@ -971,7 +1076,6 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
                         "and if the mode read were wrong it would close or "
                         "split the row rather than reach the agent" % (flat,))
     ident = message_id(now)
-
     exe = tmux_binary(env)
 
     def tmux(args):
@@ -982,9 +1086,26 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
 
     rc, base, err = run([exe, "show-options", "-pqv", "-t", pane,
                          OPTION_BASE])
-    if rc != 0:
+    if rc != 0 and not socket_is_missing(env):
         raise PeerError("cannot read tmux options for %s: %s"
                         % (pane, err.strip() or rc))
+    if rc != 0:
+        # ⚠️ **The fallback, and it is NOT a silent one.** tmux being
+        # unreachable is the normal state for an agent on a compute pool: it
+        # inherited `$TMUX_PANE` through the job submission and the socket is
+        # on another machine's `/tmp`. The message goes to a file on NFS and
+        # the doorbell is echoed to this agent's own screen, which is the other
+        # thing that crosses. Both the path and the reason are printed, because
+        # a fallback nobody is told about is how a message quietly stops
+        # arriving.
+        path = write_chat_file(chat_path(ident, env=env), recipient, flat)
+        out.write("agb-peer: tmux is unreachable (%s)\n"
+                  % (err.strip() or rc,))
+        out.write("agb-peer: wrote %s\n" % (path,))
+        out.write("%s\n" % (DOORBELL % (ident,),))
+        out.write("agb-peer: queued for %s as #%s (via file)\n"
+                  % (recipient, ident))
+        return 0
     base = base.strip()
     if not base:
         rc, base, err = run([exe, "display-message", "-p", "-t", pane,
@@ -1015,7 +1136,64 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
     return 0
 
 
-def drain(fetch, name, target, pane, say):
+# The tmux target that means "this participant's messages are files on NFS,
+# not tmux options". A word rather than a flag, because it goes exactly where a
+# tmux target would and answers the same question: where do I look.
+NFS_TARGET = "nfs"
+
+# Where the sender puts them, on the FAR side. An absolute path, because the
+# statedir is not under `$HOME` here and `~` would expand to the wrong place:
+# measured, the two routinely differ.
+DEFAULT_CHAT_DIR = None
+
+
+def file_argv(chat_dir, ident):
+    """`cat <chat dir>/<id>.msg`. Pure argv, no shell.
+
+    ⚠️ Same reason as `list_argv`: `ssh <host> <cmd>` hands the command to the
+    remote LOGIN shell, which on a farm host is often tcsh, and a POSIX script
+    quoted through it is a losing game. The doorbell carries the id, so exactly
+    one file is named and no globbing or listing is needed.
+    """
+    return ["cat", "%s/%s.msg" % (chat_dir.rstrip("/"), ident)]
+
+
+def unlink_argv(chat_dir, ident):
+    return ["rm", "-f", "%s/%s.msg" % (chat_dir.rstrip("/"), ident)]
+
+
+def drain_files(fetch, name, target, ident, chat_dir, say):
+    """One message, named by the doorbell, read over ssh to a REACHABLE host.
+
+    Never to the machine the agent is on -- that is the whole point. The file
+    is on NFS, so any host mounting it will do, and the container that carries
+    the row is one.
+    """
+    if not chat_dir:
+        say("%s: no --chat-dir given, so a file-transport participant cannot "
+            "be read" % (name,))
+        return []
+    if not ident:
+        say("%s: no message id in the doorbell" % (name,))
+        return []
+    rc, out, err = fetch(ssh_argv(target, file_argv(chat_dir, ident)))
+    if rc != 0:
+        say("%s: cannot read %s/%s.msg: %s"
+            % (name, chat_dir, ident, (err or "").strip() or rc))
+        return []
+    parsed = parse_option_value(out)
+    if not parsed:
+        say("%s: %s.msg is not a message" % (name, ident))
+        return []
+    rc, _out, err = fetch(ssh_argv(target, unlink_argv(chat_dir, ident)))
+    if rc != 0:
+        say("%s: could not remove %s.msg (%s) -- it may be fetched again"
+            % (name, ident, (err or "").strip() or rc))
+    return [{"id": ident, "key": ident, "to": parsed[0], "text": parsed[1]}]
+
+
+def drain(fetch, name, target, pane, say, ident=None,
+          chat_dir=None):
     """Everything pending in one participant's tmux, or [] and a reason said.
 
     ⚠️ `fetch` defaults to the real runner when it is None. It did not, and the
@@ -1027,6 +1205,8 @@ def drain(fetch, name, target, pane, say):
     if not pane:
         say("%s: no tmux pane recorded for that row -- cannot fetch" % (name,))
         return []
+    if pane == NFS_TARGET:
+        return drain_files(fetch, name, target, ident, chat_dir, say)
     rc, out, err = fetch(ssh_argv(target, list_argv(pane)))
     if rc != 0:
         say("%s: fetch failed: %s" % (name, (err or "").strip() or rc))
@@ -1094,7 +1274,7 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
 
 
 def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
-               deliver_new=True, notes=None):
+               deliver_new=True, notes=None, chat_dir=None):
     """One pass: watch every doorbell, drain what rang, then drain the queue.
 
     `deliver_new=False` is the PRIMING pass. It still FETCHES -- and discards.
@@ -1154,7 +1334,8 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
                                                    "--pane")
         host = target or pane_argv_field(session.get("foreground"), "--host")
         done = notes.setdefault("delivered", set())
-        for message in drain(fetch, name, host, tmux_pane, say):
+        for message in drain(fetch, name, host, tmux_pane, say, ident,
+                             chat_dir):
             if (name, message["id"]) in done:
                 # An option the far side would not let us unset comes back on
                 # the next ring. Fetching it twice is harmless; DELIVERING it
@@ -1207,7 +1388,7 @@ def resolve_all(ctl, spec, say, previous=None):
 
 
 def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
-              fetch=None):
+              fetch=None, chat_dir=None):
     """Watch every participant's doorbell and carry messages between them."""
     spec = parse_participants(words)
 
@@ -1238,7 +1419,7 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                 ok, why = ctl.dashboard(members)
                 say("dashboard: %s" % ("open" if ok else why))
         relay_tick(ctl, resolved, seen, pending, lines, say, fetch,
-                   deliver_new=not priming, notes=notes)
+                   deliver_new=not priming, notes=notes, chat_dir=chat_dir)
         if priming:
             say("primed on %d doorbell(s); relaying every %ss -- Ctrl-C to stop"
                 % (len(seen), interval))
@@ -1281,7 +1462,8 @@ def main(argv, out=None, ctl=None):
                          positive_int(opts["lines"], "--lines"),
                          positive_int(opts["interval"], "--interval"),
                          bool(opts.get("once")), out,
-                         dashboard=bool(opts.get("dashboard")))
+                         dashboard=bool(opts.get("dashboard")),
+                         chat_dir=opts.get("chat_dir"))
     opts = parse_args(argv)
     if opts.get("version"):
         out.write("agb-peer %s\n" % (VERSION,))

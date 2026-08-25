@@ -481,7 +481,10 @@ class Fetcher(object):
 
     def __call__(self, argv):
         self.calls.append(argv)
-        if "show-options" in argv:
+        # `show-options` is the tmux transport, `cat` the file one. Both are
+        # reads and both answer with the canned output; everything else is a
+        # write (`set -pu`, `rm`) and answers like one.
+        if "show-options" in argv or "cat" in argv:
             return self.rc, self.output, ""
         return self.unset_rc, "", "refused" if self.unset_rc else ""
 
@@ -1424,3 +1427,118 @@ def test_text_that_truly_never_arrived_is_still_refused(peer):
         peer.deliver(ctl, session(), "left", "[chat from alice] hello there",
                      True, 500, lambda m: None)
     assert caught.value.code == 4
+
+
+# =========================================================================
+# the NFS fallback -- an agent whose tmux is on another machine
+# =========================================================================
+
+def test_the_socket_check_is_a_positive_signal(peer, tmp_path):
+    """Three failures reach the same rc != 0 and only one means "use files".
+
+    MEASURED, all three: a sandbox answers `Operation not permitted` with the
+    socket right there; a wedged agterm client answers with a timeout; and a
+    pool machine answers `No such file or directory` because `$TMUX` was
+    inherited through a job submission and the socket is on another machine's
+    /tmp. Only the last may fall back, and it is checked directly rather than
+    inferred from an error string.
+    """
+    live = tmp_path / "sock"
+    live.write_text("")
+    assert peer.socket_is_missing({"TMUX": str(live) + ",1,0"}) is False
+    assert peer.socket_is_missing({"TMUX": "/no/such/sock,1,0"}) is True
+
+
+def test_no_TMUX_at_all_is_not_the_pool_case(peer):
+    """We cannot tell, so the caller refuses -- the answer it gave before any
+    of this existed."""
+    assert peer.socket_is_missing({}) is False
+
+
+def test_a_missing_socket_writes_a_file_and_echoes_a_doorbell(peer, tmp_path):
+    run = LocalRun()
+    run.__class__ = type("Failing", (LocalRun,), {
+        "__call__": lambda self, argv: (self.calls.append(argv), (1, "", "No such file or directory"))[1]})
+    out = io.StringIO()
+    env = {"TMUX_PANE": "%99", "TMUX": "/no/such/sock,1,99",
+           "AGB_STATEDIR": str(tmp_path)}
+    peer.cmd_send("bob", "hello from the pool", run, out, now=1.0, env=env)
+    body = out.getvalue()
+    assert "via file" in body
+    assert peer.read_doorbell(body), "the doorbell must be echoed to the screen"
+    written = list((tmp_path / "chat").iterdir())
+    assert len(written) == 1, written
+    assert written[0].read_text() == "bob\nhello from the pool"
+
+
+def test_the_fallback_is_announced_not_silent(peer, tmp_path):
+    """A fallback nobody is told about is how a message quietly stops
+    arriving."""
+    run = type("Failing", (LocalRun,), {
+        "__call__": lambda self, argv: (self.calls.append(argv), (1, "", "No such file or directory"))[1]})()
+    out = io.StringIO()
+    peer.cmd_send("bob", "hi", run, out, now=1.0,
+                  env={"TMUX_PANE": "%99", "TMUX": "/no/such/sock,1,99",
+                       "AGB_STATEDIR": str(tmp_path)})
+    assert "tmux is unreachable" in out.getvalue()
+    assert str(tmp_path) in out.getvalue(), "it must say where it put the file"
+
+
+def test_the_file_is_written_temp_then_renamed(peer, tmp_path):
+    """A torn read is a real possibility on NFS."""
+    import ast
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    fn = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "write_chat_file"]
+    assert fn, "write_chat_file is gone"
+    # ⚠️ An actual CALL, not a substring of the AST dump. The first version of
+    # this guard checked `"rename" in ast.dump(fn)` and passed against the
+    # DOCSTRING, which says "temp+rename" -- a structural test matching its own
+    # explanation, which is the failure CLAUDE.md warns about and the third of
+    # its kind today.
+    calls = [n for n in ast.walk(fn[0]) if isinstance(n, ast.Call)]
+    names = [n.func.attr for n in calls if isinstance(n.func, ast.Attribute)]
+    assert "rename" in names, "it must temp+rename, not write in place: %s" % (
+        names,)
+
+
+# ------------------------------------------------------------ the file drain
+
+def test_a_file_participant_is_read_over_ssh_to_a_REACHABLE_host(peer):
+    """Never to the machine the agent is on -- that is the whole point."""
+    fetch = Fetcher()
+    fetch.output = "bob\nhello from the pool"
+    got = peer.drain(fetch, "pool", "container", peer.NFS_TARGET, lambda m: None,
+                     ident="k3n9x2", chat_dir="/home/user/.agbridge/chat")
+    assert got == [{"id": "k3n9x2", "key": "k3n9x2", "to": "bob",
+                    "text": "hello from the pool"}]
+    assert fetch.calls[0][0] == "ssh" and "container" in fetch.calls[0]
+    assert "cat" in fetch.calls[0]
+
+
+def test_the_file_drain_names_exactly_one_file(peer):
+    """The doorbell carries the id, so no listing and no globbing -- which also
+    keeps it argv-only, because `ssh <host> <cmd>` hands the command to the
+    remote LOGIN shell and a farm login shell is often tcsh."""
+    argv = peer.file_argv("/s/chat", "abc12")
+    assert argv == ["cat", "/s/chat/abc12.msg"]
+    for word in argv:
+        assert not any(c in word for c in "$();|&<>*?"), word
+
+
+def test_the_file_is_removed_after_it_is_read(peer):
+    fetch = Fetcher()
+    fetch.output = "bob\nhi"
+    peer.drain(fetch, "pool", "container", peer.NFS_TARGET, lambda m: None,
+               ident="abc12", chat_dir="/s/chat")
+    assert any("rm" in a for a in fetch.calls), fetch.calls
+
+
+def test_no_chat_dir_is_reported_rather_than_guessed(peer):
+    """The statedir is not under $HOME here -- measured, $HOME is
+    /home/exampleuser while the statedir is /home/user/.agbridge -- so `~` would
+    expand to the wrong place on the far side."""
+    said = []
+    assert peer.drain(Fetcher(), "pool", "container", peer.NFS_TARGET,
+                      said.append, ident="abc12", chat_dir=None) == []
+    assert any("--chat-dir" in s for s in said)

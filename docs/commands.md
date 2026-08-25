@@ -1474,6 +1474,47 @@ away, correctly and by design. The line naming what it dropped is the only warni
 swept up by the first real message's drain and delivered as if new. The first pass clears them and
 says how many.
 
+### A participant on a machine you cannot ssh to
+
+```
+agb-peer relay me=<label>@<host> pool=<label>@<reachable host>:nfs \
+    --chat-dir /abs/path/to/<statedir>/chat
+```
+
+For a job on a compute pool: it mounts the same NFS, and the Mac cannot ssh it. **Delivery is
+unchanged** — start `agb-tmux` on a host you *can* reach, submit the interactive pool job from inside
+that shell, and start the agent there; `session type` types into the pane and the pane is connected
+all the way down. Nothing ever connects *into* the pool, which is why it works.
+
+**Sending falls back to a file**, because the tmux socket cannot travel: `$TMUX`/`$TMUX_PANE` are
+inherited through the job submission, `/tmp` is local to each machine, and ⚠️ **putting the socket on
+NFS does not help — MEASURED.** A `tmux -S <nfs path>` server accepts connections and holds pane
+options locally; from another machine, with that server alive and the socket file plainly visible on
+the shared mount, tmux answers `no server running`. A unix socket is a local kernel rendezvous, not
+a filesystem object NFS carries.
+
+So the fallback uses the two things that do cross:
+
+| | |
+|---|---|
+| doorbell | an echoed `[peer #id]` line — `read_doorbell` already scans the whole pane, so this needed no new parsing |
+| content | `<statedir>/chat/<id>.msg`, temp+renamed because a torn read on NFS is real |
+| fetch | `ssh <reachable host> cat …` — to the **container**, never the pool, and only when the doorbell changes |
+
+⚠️ **The fallback needs a POSITIVE signal, not just a failure.** Three different failures reach the
+same error, and only one means "use files" — all three measured: a sandbox answers `Operation not
+permitted` with the socket right there; a wedged agterm client answers with a timeout; a pool machine
+answers `No such file or directory`. Only the last falls back, and it is checked by looking at the
+socket path directly rather than by matching an error string. `$TMUX` unset at all is *not* the pool
+case — we cannot tell, so it refuses.
+
+⚠️ **It only works for an agent that renders command output on its screen.** MEASURED: Codex does;
+Claude Code does not render tool output at all, which is what killed the original screen-as-content
+design. A Claude on such a pool would need something else again.
+
+⚠️ `--chat-dir` must be **absolute**. The statedir is not under `$HOME` here — `$HOME` and the statedir routinely differ — so a `~` would expand to the wrong
+place on the far side.
+
 ### Surviving `agb-refresh`
 
 A refresh closes and re-mints every row, so **every row id changes** — observed twice in one

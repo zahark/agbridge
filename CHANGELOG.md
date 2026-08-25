@@ -231,6 +231,47 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   model and neither does the skill, now that its description says "Claude Code or Codex" rather than
   assuming.
 
+- **A peer on a machine you cannot ssh to.** A job on a compute pool mounts the same NFS and the Mac
+  cannot reach it. Two of the three legs turned out not to need that ssh at all.
+
+  ✅ **Delivery is unchanged**, and the trick is the user's: start `agb-tmux` on a host you *can*
+  reach, submit the interactive pool job from inside that shell, start the agent there.
+  `session type` types into the pane and the pane is connected all the way down. **Nothing ever
+  connects into the pool** — the same shape as agbridge's founding constraint. Verified live against
+  a Codex on a pool node.
+
+  ❌ **Sending could not use tmux**, and no permission fixes it: `$TMUX`/`$TMUX_PANE` *are* inherited
+  through the job submission, `/tmp` is local to each machine, and ⚠️ **putting the socket on NFS
+  does not help — MEASURED.** A `tmux -S <nfs path>` server accepts connections and holds pane
+  options locally; from the pool, with that server still alive and the socket file plainly visible on
+  the shared mount, tmux answers `no server running`. A unix socket is a local kernel rendezvous, not
+  a filesystem object NFS carries. That is a structural no rather than another permissions fight,
+  which is the more useful kind of answer.
+
+  So sending falls back to **a file on NFS plus an echoed doorbell** — the two things that do cross.
+  The doorbell needed **no new parsing at all**: `read_doorbell` already scans the whole pane, so an
+  echoed `[peer #id]` line matches the same regex as a tmux status bar. Content is
+  `<statedir>/chat/<id>.msg`, temp+renamed because a torn read on NFS is real, fetched with one
+  `ssh <reachable host> cat` — to the container, never the pool, and only when the doorbell changes.
+  Watching stays free, so this is still not polling.
+
+  ⚠️ **The fallback needs a POSITIVE signal, not merely a failure**, and that distinction is the
+  whole safety of it. Three failures reach the same error and only one means "use files", all three
+  measured this week: a sandbox answers `Operation not permitted` with the socket right there; a
+  wedged agterm client answers with a timeout; a pool machine answers `No such file or directory`.
+  Falling back on any of them would have moved messages to a transport nobody was reading during a
+  transient stall. The socket path is checked directly rather than an error string matched, and
+  `$TMUX` unset at all is deliberately *not* the pool case.
+
+  ⚠️ **It only works for an agent that renders command output on its screen** — Codex does, Claude
+  Code does not, which is exactly what killed the original screen-as-content design. A Claude on such
+  a pool needs something else again.
+
+  ⚠️ And one of the six mutation checks caught a **vacuous guard of mine**: the temp+rename test
+  matched `"rename"` in an AST dump, which includes the **docstring** saying "temp+rename". A
+  structural test passing against its own explanation — the third of that kind today, and precisely
+  what `CLAUDE.md` warns about. It asserts an actual call node now.
+
 - **`agb-tmux` — a row for any command, not just an agent.** The general case of the family:
   `agb-tmux -d shellrow` gives you a farm shell you can click on from the sidebar, and
   `agb-tmux -d build -- make -j8` gives a long build a row of its own. `agb-claude` and `agb-codex`
