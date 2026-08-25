@@ -131,6 +131,10 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
     that opens, execs nothing, and closes again — which, for a wrapper whose whole job is to make a
     row exist, is the failure that looks most like the tool being broken.
 
+  Verified live: two sessions started this way, each minting its own row, and each landing on a
+  **different pool node** — which is the point of submitting a job rather than running a program,
+  and is also why the row's identity has to be the launcher rather than the agent.
+
   The pre-mint is untouched and still correct: `exec` keeps the pid and starttime of the pane's own
   process, which is now the launcher, and that is the process whose death should reap the row — even
   though the agent itself ends up on another machine entirely. Seven new tests, each
@@ -744,9 +748,14 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   ⚠️ **Whether an already-running agent picks this up turns on when its skills are read, and the
   two ends need not agree.** MEASURED for Claude Code: re-invoking the skill returns the file from
   **disk**, so an edit applies on the next invocation with no restart — only the one-line description
-  used to decide relevance is loaded at session start. For Codex this is **unverified**, which is
-  what the next live round is for. Until it is, tell a running agent directly. And note what is
-  *not* claimed: the transport was never broken. Nothing in
+  used to decide relevance is loaded at session start. MEASURED for Codex as well, but only in the
+  weaker form: a session started **after** an edit reads the file and follows the rule unprompted —
+  its `~/.codex/skills/agb-peer` is a symlink into the checkout, one inode, and three round trips
+  succeeded, including one on a completely fresh context with no hint from the other end. Whether a
+  **running** Codex notices a mid-session edit is still untested, because in every round so far the
+  edit preceded the restart, which makes a session-start read and an on-invoke read
+  indistinguishable. Until someone edits the file under a live session, tell a running agent
+  directly. And note what is *not* claimed: the transport was never broken. Nothing in
   `agb-peer` changed — this is a rule about what has to be on a screen, which is the one thing the
   relay cannot arrange for itself.
 
