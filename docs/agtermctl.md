@@ -882,6 +882,58 @@ Constraints, all measured:
   session's uuid printed `Queued message …` exactly as for a live one. So the command's success is
   **not a delivery receipt**, and anything that needs one must still read the pane afterwards.
 
+## An agent on a machine you cannot ssh to — MEASURED 2026-08-25
+
+A pool of compute machines, jobs land on one at random, they mount the same NFS as everything else,
+and **the Mac cannot ssh to them**. All three legs of `agb-peer` looked like they needed that ssh.
+Two of them turned out not to.
+
+### ✅ Inbound works, via a chain opened from the reachable side
+
+```
+Mac → ssh → container host → tmux (an `agb-tmux` row) → pool session → codex
+```
+
+Start `agb-tmux` on a host you *can* reach, and inside that shell submit the interactive pool job and
+start the agent there. `agtermctl session type` types into the pane, and the pane is connected all
+the way down. **Nothing ever connects INTO the pool**, which is the whole reason it works — the same
+shape as agbridge's founding constraint, that the Mac pulls and nothing pushes to the farm.
+
+Verified live: a message reached a Codex on `compute-node-example` and it acted on it.
+
+### ✅ The pool's permissions remove the sandbox blocker
+
+Codex there starts in **`permissions: YOLO mode`** — the bypass that org policy refuses on the
+container is allowed on that pool. The failure moved accordingly, from `Operation not permitted`
+(the sandbox refusing the socket) to `No such file or directory` (no socket to refuse).
+
+### ❌ But the tmux socket does not travel, and NFS cannot carry one
+
+`$TMUX` and `$TMUX_PANE` **are inherited** through the job submission — the pool agent knows it is
+`%99` of `/tmp/tmux-100000/default`. That path is on the container; `/tmp` is local to each machine,
+so from the pool it does not exist.
+
+⚠️ **Putting the socket on NFS does not help — MEASURED, not assumed.** `tmux -S /home/user/.agb-sock/test`
+creates a working server: it accepts connections and holds pane options, everything the doorbell
+needs. From the pool machine, with the server still alive and the socket file plainly present on the
+shared mount, `tmux -S … list-sessions` answers **`no server running`**. A unix socket is a local
+kernel rendezvous, not a filesystem object NFS knows how to carry.
+
+So a pool agent can be **sent to** and cannot **send** — for a third distinct reason, after Codex's
+sandbox and the missing socket.
+
+### What would close it
+
+Outbound needs a surface that crosses NFS, which means ordinary file operations:
+
+- **the doorbell** becomes `agb rename "<base> [peer #id]"` — it writes the record on NFS, rides the
+  feed that already exists, and lands in the row's **title**, which the relay reads from `tree` on
+  every tick anyway. Watching stays free.
+- **the content** becomes a file in the statedir, fetched with one `ssh <feed-host> cat` — ssh to the
+  **container**, which is reachable, never to the pool.
+
+Every piece of that is already measured to work. None of it is built.
+
 ## Decisions this file settles
 
 ### `--blink`: adopted for `active`, **transitions only**
