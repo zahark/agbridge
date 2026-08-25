@@ -36,10 +36,37 @@ your message here, as one paragraph
 CHAT
 ```
 
-It prints one confirmation line — `queued for <peer> as #<id>` — and nothing else.
-The message itself does **not** go on your screen; it is stashed where the relay can
-fetch it. So you do not need to worry about scrolling, about printing afterwards, or
+It normally prints one confirmation line — `queued for <peer> as #<id>` — and nothing
+else. The message itself does **not** go on your screen; it is stashed where the relay
+can fetch it. So you do not need to worry about scrolling, about printing afterwards, or
 about how long the message is.
+
+### ⚠️ If it says `(via file)`, repeat the `[peer #…]` line in your visible answer
+
+On a machine whose tmux cannot be reached — a batch pool, a locked-down sandbox — `send`
+falls back to writing the message as a file on shared storage, and says so:
+
+```
+agb-peer: tmux is unreachable (error connecting to /tmp/tmux-…/default)
+agb-peer: wrote …/chat/mt8ft3qq.msg
+[peer #mt8ft3qq]
+agb-peer: queued for pool as #mt8ft3qq (via file)
+```
+
+**When you see that, put the `[peer #<id>]` line into the reply you write to your user,
+exactly as printed.** Not a paraphrase, not the id on its own — that literal line.
+
+The reason is worth knowing, because nothing warns you. The relay finds your message by
+reading your **screen** for that marker. On the normal path the marker is a tmux window
+name, which the status bar puts on screen for you; on the file path there is no window to
+rename, so it is *printed* instead — and printed output is exactly what an agent UI
+collapses behind a `ran N commands` summary. The send succeeds, the file is written
+correctly, and the message then sits unread for ever with no error on either side. That
+has happened; it is why this section exists.
+
+Your own answer text **is** on the screen, so repeating the one line is the whole fix.
+Repeating a marker the relay has already collected costs nothing — it tracks the last id
+it took from you and skips a repeat — so when in doubt, repeat it.
 
 - **You must be running inside tmux.** If `$TMUX_PANE` is not set, `send` refuses and
   says so. Start agents with `agb-claude <name>` or `agb-codex <name>`.

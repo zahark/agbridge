@@ -726,6 +726,30 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A peer whose tmux is unreachable could answer you and never be heard.** MEASURED, live: a Codex
+  agent on a batch pool replied, `agb-peer send` correctly took the file transport, wrote the
+  message, and it then sat in the spool unread for 25 minutes with no error at either end.
+
+  The relay finds a message by reading `[peer #<id>]` off the peer's **visible screen**. On the tmux
+  path that marker is a window name and the status bar renders it for free. On the file path there
+  is no window to rename, so `agb-peer` *prints* it — and printed output is exactly what an agent UI
+  folds behind a `ran N commands` summary. `drain_files` then bails at `no message id in the
+  doorbell`, which is a correct report of a question nobody could answer.
+
+  `skills/agb-peer/SKILL.md` now tells the sending agent to copy the printed `[peer #…]` line into
+  its **visible answer** when `send` reports `(via file)` — an agent's own reply text is on the
+  screen even when its command output is not. Verified by the same peer, on the same stuck message:
+  the marker went on screen, the relay drained the file, and the reply arrived.
+
+  ⚠️ **Whether an already-running agent picks this up turns on when its skills are read, and the
+  two ends need not agree.** MEASURED for Claude Code: re-invoking the skill returns the file from
+  **disk**, so an edit applies on the next invocation with no restart — only the one-line description
+  used to decide relevance is loaded at session start. For Codex this is **unverified**, which is
+  what the next live round is for. Until it is, tell a running agent directly. And note what is
+  *not* claimed: the transport was never broken. Nothing in
+  `agb-peer` changed — this is a rule about what has to be on a screen, which is the one thing the
+  relay cannot arrange for itself.
+
 - **`docs/agtermctl.md` promised `session restore` as the structural fix for a row dying when its
   command exits. It is not, and building it would have fixed nothing that hurts.** The symptom is
   the familiar one: type `q` at the `agb pane` prompt and a live agent's row disappears, because
