@@ -1273,6 +1273,48 @@ Wiring Codex's own hooks to `agb hook` would fix the first and is unexplored.
 first hook, so the wrapper only makes it *earlier*. Codex never would, so without this the row would
 not exist at all.
 
+### `AGB_CODEX_CUSTOM` — the codex command line, replaced wholesale
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AGB_CODEX_CUSTOM` | unset | a shell command line run **instead of** `codex`, `eval`ed inside the session |
+
+```sh
+export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo"'
+agb-codex -d pool
+```
+
+The interesting Codex is often not the one on this host — it may live behind a batch scheduler, in a
+container, or on a pool machine picked at submit time. That launcher is **site-specific**, so it
+cannot live in a file that ships publicly; this variable is the seam, and everything about the shape
+of it follows from that one fact.
+
+The value is a **shell command line**, not a program name: it is `eval`ed, so its own quoting is
+honoured. That is what lets the agent be an *argument* to the launcher (`-I "codex --yolo"`) rather
+than the program being run — and word-splitting it instead would hand the launcher `"codex` and
+`--yolo`, which no downstream error message would explain.
+
+⚠️ **`--` passthrough args and `--greet` are refused while it is set**, rather than appended. With an
+opaque launcher there is no position this wrapper could append at that is not a guess: the agent is
+inside somebody else's argument, so a trailing word lands on the *launcher*. Put them in the
+variable.
+
+⚠️ **It is embedded in the command tmux is handed, never inherited.** A session created against an
+already-running tmux server takes its environment from the **server's**, plus `update-environment` —
+so a variable exported in your shell a moment ago is simply not there, and a version that relied on
+inheritance would exec nothing at all on every machine where a server was already up.
+
+The first word is checked against `$PATH` and a missing one is refused, which turns a typo into an
+error here rather than a session that opens, execs nothing and closes again. Only the first word —
+the rest is the launcher's business — so that word must *be* the program: an inline assignment or a
+redirect in front of it reads as a missing command.
+
+The pre-mint is unchanged, and still correct: `exec` keeps the pid and starttime of the pane's own
+process, which is now the launcher. That is the right process to record, because its death is what
+should reap the row even when the agent itself ends up on another machine. The consequence is the
+one already true of every Codex row — the glyph never moves — plus one more: `agb-peer` reads that
+pane, so a peer started this way is reachable exactly as far as the pane is.
+
 ## `agb-claude [name]` — farm, a convenience
 
 ```

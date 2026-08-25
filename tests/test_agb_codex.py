@@ -39,6 +39,15 @@ def wrapper(tmp_path):
         "case \"$1\" in has-session) exit ${AGBC_HAS_SESSION:-1} ;; esac\n"
         "exit 0\n")
     (binder / "codex").write_text("#!/bin/sh\nexit 0\n")
+    # A stand-in launcher for AGB_CODEX_CUSTOM, recording its argv so a test
+    # can assert what the eval'ed command line actually resolved to -- the
+    # quoting is the whole point of that feature and a string comparison
+    # against the pre-mint would not see it.
+    submit_log = tmp_path / "submit.log"
+    (binder / "submit").write_text(
+        "#!/bin/sh\n"
+        "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; }"
+        " >> \"" + str(submit_log) + "\"\nexit 0\n")
     # An `agb` that records being called. The wrapper must NEVER reach it: the
     # pre-mint belongs inside the new session, where the pane anchor is right.
     agb_log = tmp_path / "agb.log"
@@ -46,16 +55,23 @@ def wrapper(tmp_path):
         "#!/bin/sh\n"
         "{ for a in \"$@\"; do printf '%s\\037' \"$a\"; done; printf '\\n'; }"
         " >> \"" + str(agb_log) + "\"\nexit 0\n")
-    for name in ("tmux", "codex", "agb"):
+    for name in ("tmux", "codex", "agb", "submit"):
         os.chmod(str(binder / name), 0o755)
 
     class Wrapper(object):
         cwd = str(work)
 
         def run(self, args, inside_tmux=False, has_session=False,
-                no_codex=False):
+                no_codex=False, custom=None):
             env = dict(os.environ)
             env["PATH"] = str(binder) + os.pathsep + env.get("PATH", "")
+            # ⚠️ Popped unconditionally, not merely left alone. A developer who
+            # actually uses AGB_CODEX_CUSTOM would otherwise take it into every
+            # test in this file, and the ones that pin the DEFAULT path would
+            # fail on their machine and nowhere else.
+            env.pop("AGB_CODEX_CUSTOM", None)
+            if custom is not None:
+                env["AGB_CODEX_CUSTOM"] = custom
             env["TMUX"] = "/tmp/fake,1,0" if inside_tmux else ""
             env["AGBC_HAS_SESSION"] = "0" if has_session else "1"
             if no_codex:
@@ -88,6 +104,30 @@ def wrapper(tmp_path):
                 return []
             return [line.split("\037")[:-1]
                     for line in agb_log.read_text().splitlines() if line]
+
+        def premint(self):
+            call = self.new_session()[0]
+            return [w for w in call if "agb hook" in w][0]
+
+        def run_premint(self):
+            """Actually execute the command tmux was handed, and return the
+            argv the launcher received.
+
+            A string assertion on the pre-mint cannot see whether the quoting
+            survives -- that is decided by `eval`, at run time, in the session.
+            """
+            env = dict(os.environ)
+            env["PATH"] = str(binder) + os.pathsep + env.get("PATH", "")
+            proc = subprocess.Popen(["sh", "-c", self.premint(), "agb-codex"],
+                                    cwd=str(work), env=env,
+                                    stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+            conftest.communicate(proc, b"")
+            if not submit_log.exists():
+                return []
+            return [line.split("\037")[:-1]
+                    for line in submit_log.read_text().splitlines() if line]
 
     return Wrapper()
 
@@ -166,3 +206,115 @@ def test_it_refuses_when_codex_is_missing(wrapper, tmp_path):
     code, _out, err = wrapper.run(["-d", "bot"], no_codex=True)
     assert code != 0
     assert "codex is not installed" in err
+
+
+# --------------------------------------------------------------------------
+# AGB_CODEX_CUSTOM -- the codex command line, replaced wholesale.
+#
+# It exists because the interesting Codex is often not the one on this host: it
+# may live behind a batch scheduler or on a pool machine picked at submit time,
+# and that launcher is site-specific, so it cannot live in a file that ships
+# publicly. The variable is the seam, and these pin its edges.
+# --------------------------------------------------------------------------
+
+CUSTOM = 'submit -q big -I "codex --yolo"'
+
+
+def test_a_custom_command_replaces_codex_entirely(wrapper):
+    wrapper.run(["-d", "bot"], custom=CUSTOM)
+    premint = wrapper.premint()
+    assert "exec codex" not in premint, premint
+    assert "eval exec" in premint, premint
+
+
+def test_the_custom_command_is_embedded_not_inherited(wrapper):
+    """⚠️ It reaches the session as part of the command tmux is HANDED, never
+    through the environment. A session created against an already-running tmux
+    server takes its environment from the SERVER's, plus `update-environment` --
+    so a variable exported in the caller's shell a moment ago is not there, and
+    a version of this that relied on inheritance would exec nothing at all on
+    every machine where a tmux server was already up."""
+    wrapper.run(["-d", "bot"], custom=CUSTOM)
+    assert CUSTOM in " ".join(wrapper.new_session()[0])
+
+
+def test_the_custom_commands_own_quoting_survives_to_the_launcher(wrapper):
+    """The point of `eval`, and the reason a string assertion is not enough:
+    `-I "codex --yolo"` must reach the launcher as ONE argument. Word-splitting
+    it would hand the launcher `"codex` and `--yolo"`, which is not a mistake
+    any downstream error message would explain."""
+    wrapper.run(["-d", "bot"], custom=CUSTOM)
+    assert wrapper.run_premint() == [["-q", "big", "-I", "codex --yolo"]]
+
+
+def test_a_single_quote_in_the_custom_command_survives(wrapper):
+    """The value is embedded as a single-quoted shell literal, so a `'` in it
+    is the one character that can end the quoting early and turn the rest of
+    the command line into something else."""
+    wrapper.run(["-d", "bot"], custom="""submit -I "codex 'a b'\"""")
+    assert wrapper.run_premint() == [["-I", "codex 'a b'"]]
+
+
+def test_passthrough_args_are_refused_with_a_custom_command(wrapper):
+    """There is no honest place to append them: with `-I "codex --yolo"` the
+    agent is inside somebody else's argument, so a trailing word lands on the
+    launcher instead. Refusing says so; appending would be a silent guess."""
+    code, _out, err = wrapper.run(["-d", "bot", "--", "--model", "x"],
+                                  custom=CUSTOM)
+    assert code != 0
+    assert "AGB_CODEX_CUSTOM is set" in err and "--model x" in err
+    assert wrapper.new_session() == []
+
+
+def test_greet_is_refused_with_a_custom_command(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot", "--greet", "hi"], custom=CUSTOM)
+    assert code != 0
+    assert "--greet has nowhere to go" in err
+    assert wrapper.new_session() == []
+
+
+def test_a_custom_command_whose_program_is_missing_is_refused(wrapper):
+    """Only the first word can be checked -- the rest is the launcher's own
+    business -- but checking it turns a typo into an error here rather than a
+    session that opens, execs nothing and closes again."""
+    code, _out, err = wrapper.run(["-d", "bot"], custom="nosuchlauncher -I x")
+    assert code != 0
+    assert "nosuchlauncher" in err and "not on $PATH" in err
+    assert wrapper.new_session() == []
+
+
+def test_a_custom_command_that_names_no_command_is_refused(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot"], custom="   ")
+    assert code != 0
+    assert "names no command" in err
+
+
+def test_an_empty_variable_is_the_default_path(wrapper):
+    """`${AGB_CODEX_CUSTOM:-}`, so an exported-but-empty variable -- what you
+    get from `export AGB_CODEX_CUSTOM=` to turn it off for one shell -- behaves
+    exactly as unset rather than as a custom command naming nothing."""
+    code, _out, err = wrapper.run(["-d", "bot"], custom="")
+    assert code == 0, err
+    assert "exec codex" in wrapper.premint()
+
+
+def test_the_premint_is_unchanged_by_a_custom_command(wrapper):
+    """Everything the pre-mint exists for still holds: it runs first, inside
+    the new session, carrying its own pid, best-effort, and `completed`. The
+    launcher is now the pane's own process -- which is the RIGHT one to record,
+    since its death is what should reap the row even when the agent itself is
+    running on another machine."""
+    wrapper.run(["-d", "bot"], custom=CUSTOM)
+    premint = wrapper.premint()
+    assert premint.startswith("AGB_AGENT_PID=$$ agb hook completed"), premint
+    assert "&&" not in premint and "2>/dev/null" in premint, premint
+    assert "agb hook active" not in premint, premint
+    assert wrapper.agb_calls() == [], wrapper.agb_calls()
+
+
+def test_the_custom_seam_is_documented_where_it_is_looked_for(wrapper):
+    """A variable nothing on the command line mentions is invisible: `--help`
+    is where somebody goes to find out that it exists at all."""
+    code, _out, err = wrapper.run(["--help"])
+    assert code == 0
+    assert "AGB_CODEX_CUSTOM" in err

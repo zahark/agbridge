@@ -61,6 +61,34 @@
 # security decision belonging to the human -- the same reasoning that stops
 # `agb-claude` answering Claude's "is this a project you trust?" prompt.
 #
+# ⚠️ **`AGB_CODEX_CUSTOM` REPLACES THE WHOLE CODEX COMMAND LINE.** Set it
+# and the session runs that instead of `codex`; leave it unset and nothing here
+# changes. It exists because the interesting Codex is often not the one on this
+# host -- it may live behind a batch scheduler, a container, or a pool machine
+# picked at submit time -- and the launcher for that is site-specific, so it
+# does not belong in a file that ships publicly. The variable is the seam:
+#
+#     export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo"'
+#     agb-codex -d pool
+#
+# The value is a SHELL COMMAND LINE, `eval`ed inside the session, so its own
+# quoting is honoured -- which is what lets the agent be an *argument* to the
+# launcher rather than the program being run.
+#
+# Three consequences, each with a refusal or a comment behind it:
+#
+#   * `--` passthrough args and `--greet` are REFUSED while it is set. This
+#     wrapper cannot know which word of an opaque command line is the agent, so
+#     it has nowhere honest to append. Put them inside the variable.
+#   * it is EMBEDDED in the command tmux is given, never inherited. A session
+#     created against an already-running tmux server takes its environment from
+#     the SERVER's, plus `update-environment` -- so a variable exported in your
+#     shell a moment ago is simply not there.
+#   * the pre-mint is unchanged, and still correct: `exec` keeps the pid and
+#     starttime of the pane's own process, which is now the launcher. That is
+#     the process whose death should reap the row, even when the agent itself
+#     ends up running on another machine.
+#
 #   agb-codex                  # session named after the current directory
 #   agb-codex api-refactor     # session named explicitly
 #   agb-codex -d api-refactor  # start it detached, with a row already showing
@@ -86,6 +114,12 @@ usage: agb-codex [-d] [name] [-- <codex args>...]
                  default: the row no longer needs one to exist.
 
   -h, --help     this message
+
+Environment:
+  AGB_CODEX_CUSTOM  a shell command line run INSTEAD of `codex`, eval'ed inside
+                    the session -- for starting the agent through a scheduler,
+                    a container or a pool launcher. While it is set, `--` args
+                    and --greet are refused: put them inside the variable.
 
 Re-running with the same name ATTACHES to the existing session rather than
 starting a second agent in it.
@@ -146,9 +180,37 @@ done
 [ "$detach" = yes ] || [ -z "$greet" ] \
     || die "--greet only means something with -d: without it you are about to type in the session anyway"
 
+# ⚠️ AGB_CODEX_CUSTOM -- see the note at the top of this file. Both ways of
+# adding words to a codex command line are REFUSED rather than appended, because
+# with an opaque launcher there is no position this wrapper could append at that
+# is not a guess: `-I "codex --yolo"` puts the agent inside somebody else's
+# argument, so a trailing word lands on the launcher instead.
+custom=${AGB_CODEX_CUSTOM:-}
+if [ -n "$custom" ]; then
+    [ $# -eq 0 ] || die "AGB_CODEX_CUSTOM is set, so there is no codex command line to append to; put these inside the variable: $*"
+    [ -z "$greet" ] || die "AGB_CODEX_CUSTOM is set, so --greet has nowhere to go; put the opening prompt inside the variable"
+    # Embedded as a single-quoted literal rather than passed as a positional or
+    # left in the environment. Positionals would collide with the passthrough
+    # args every launch site below already forwards, and the environment does
+    # not survive the trip into a session on a running tmux server.
+    esc=$(printf '%s' "$custom" | sed "s/'/'\\\\''/g")
+    PREMINT="AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
+fi
+
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
-command -v codex >/dev/null 2>&1 \
-    || die "codex is not installed or not on \$PATH"
+if [ -n "$custom" ]; then
+    # Only the first word can be checked; the rest is the launcher's business.
+    # That word must therefore BE the program -- an inline assignment or a
+    # redirect in front of it reads here as a missing command.
+    head=$(printf '%s\n' "$custom" | awk 'NR==1 {print $1}')
+    [ -n "$head" ] || die "AGB_CODEX_CUSTOM is set but names no command"
+    command -v "$head" >/dev/null 2>&1 \
+        || die "AGB_CODEX_CUSTOM starts with '$head', which is not on \$PATH"
+    say "agb-codex: AGB_CODEX_CUSTOM is set; a new session runs: $custom"
+else
+    command -v codex >/dev/null 2>&1 \
+        || die "codex is not installed or not on \$PATH"
+fi
 
 [ -n "$name" ] || name=$(basename "$(pwd)")
 name=$(sanitize "$name")

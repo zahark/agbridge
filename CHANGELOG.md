@@ -98,6 +98,45 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`AGB_CODEX_CUSTOM` — `agb-codex` can start the agent through a launcher, so the Codex you get a
+  row for need not be the one on this host.** The case that forced it: the Codex worth talking to
+  lives on a batch pool, reached through a scheduler submit command, on a machine picked at submit
+  time. `agb-codex` hard-coded `exec codex`, so the only way to get that was a private fork of a
+  script that ships publicly — and a fork drifts silently from the pre-mint it exists to preserve.
+
+  ```sh
+  export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo"'
+  agb-codex -d pool
+  ```
+
+  Set, it replaces the `codex` command line entirely; unset — the only shape anyone had before —
+  nothing changes. **The launcher itself stays out of the repo**, which is the point: it is
+  site-specific, and a public file is the wrong place for it.
+
+  Four decisions that will each look like an over-reaction until they bite:
+
+  - **The value is a shell command line, `eval`ed, not a program name.** That is what lets the agent
+    be an *argument* to the launcher (`-I "codex --yolo"`). Word-splitting it hands the launcher
+    `"codex` and `--yolo"` instead, and no downstream error message explains that.
+  - **`--` passthrough args and `--greet` are refused while it is set, not appended.** With an opaque
+    launcher there is no position to append at that is not a guess — the agent is inside somebody
+    else's argument, so a trailing word lands on the launcher. The refusal names the variable and
+    what it dropped.
+  - **It is embedded in the command `tmux` is handed, never inherited.** A session created against an
+    already-running tmux server takes its environment from the **server's**, plus
+    `update-environment`; a variable exported in your shell a moment ago is not there. The version
+    that read it from the environment inside the session would have exec'd nothing on any machine
+    with a server already up — i.e. everywhere except a first run.
+  - **The first word is checked against `$PATH`.** A typo becomes an error here instead of a session
+    that opens, execs nothing, and closes again — which, for a wrapper whose whole job is to make a
+    row exist, is the failure that looks most like the tool being broken.
+
+  The pre-mint is untouched and still correct: `exec` keeps the pid and starttime of the pane's own
+  process, which is now the launcher, and that is the process whose death should reap the row — even
+  though the agent itself ends up on another machine entirely. Seven new tests, each
+  mutation-checked; the quoting one runs the generated command for real rather than asserting on the
+  string, because `eval` is what decides it and a string comparison cannot see that.
+
 - **`notify_on_new_row` also takes a list of states, so the Dock stops bouncing for every `claude`
   on the cluster.** The symptom: a Mac raising a banner and bouncing the Dock every single time a
   bare `claude` started on a farm host — a session opened in a VNC desktop the user was already
