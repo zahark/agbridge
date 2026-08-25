@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (1944 tests, ~70 s)
+python3 -m pytest tests/ -q                                    # full suite (2141 tests, ~80 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -52,6 +52,26 @@ and every Claude ralphex spawns inherits `$TMUX_PANE`, so a marker sharing that 
 the first task that hooks and its closing hook mints a *new* row instead of closing its own —
 measured, not assumed. It also proves `agb hook` needs no Claude: it is a command that writes a state
 file, and nothing about the wire cares what produced it.
+
+Two more launchers copy that recipe, and each is worth knowing for what it proves. **`agb-codex`**
+does it for Codex — which fires **no** agbridge hooks at all, so the pre-mint is not merely earlier
+than the first hook, it is the *only* thing that ever gives that agent a row, and the row never
+leaves `completed`. ⚠️ **`AGB_CODEX_CUSTOM` replaces its `codex` command line entirely**, so the
+agent can be started through a scheduler or pool launcher whose spelling is site-specific and does
+not belong in a public file; it is embedded in the argv tmux is *handed*, never inherited, because a
+session created against an already-running tmux server takes its environment from the **server's**.
+**`agb-tmux`** does it for a bare shell or any command, which is how a long build gets a row.
+
+And **`agb-peer`** — two agents talking to each other. ⚠️ **It is not on the wire, and that is the
+thing to hold on to**: it never reads or writes a session record. It reuses agterm rows as
+*terminals* — a Mac-side `relay` reads each participant's screen and types into the other's, while a
+farm-side `agb-peer send` stashes the message in a **tmux pane option** and rings a doorbell, the
+pane's **window name**, which the relay already sees in the status bar it is reading anyway. It
+touches the statedir only when the peer's tmux is unreachable: `<statedir>/chat/<id>.msg` plus a
+*printed* doorbell, there being no window to rename. ⚠️ **That printed marker has to reach the
+agent's visible screen**, which is why `skills/agb-peer/SKILL.md` tells the sender to repeat it in
+its own answer — an agent UI folds command output behind a `ran N commands` summary, and the message
+then sits unread with no error at either end. Measured, twice.
 
 `agb hook` runs on **every Claude Code tool call**, over a network filesystem. `agb` has no `.py`
 extension and runs as `__main__`, so **CPython caches no bytecode for it** — the whole file is
@@ -356,7 +376,7 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Five cross-file agreements have no single source of truth, and all fail silently.** `agb` is
+14. **Six cross-file agreements have no single source of truth, and all fail silently.** `agb` is
     Python under a character cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
@@ -392,10 +412,18 @@ These are not style preferences. Each one has a test, and most were re-learned t
       "carries none to adopt", and the operator sent after `--statedir`. The only one of the five
       that is a **number**, which is also why it is the easiest to get wrong quietly.
 
+    - **`agb-peer`'s `PANE_WORDS` is the union of `agb_ops`' `PANE_QUIT_WORDS`, `PANE_SPLIT_WORDS`
+      and `PANE_DRAWER_WORDS`** — the words `agb pane`'s menu acts on. The relay must refuse to
+      *deliver* a message that reduces to one of them, because a detached row shows that menu and
+      `q` would **close the row of a live agent**. `agb-peer` is a standalone script that cannot
+      import `agb_ops`, so it spells the union itself; a word added there and not here is a message
+      that silently destroys a row instead of arriving.
+
     The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
     resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — the
-    third by `tests/test_agb_refresh.py`, and the fourth and fifth beside the first two in
-    `tests/test_install_pkg.py`.
+    third by `tests/test_agb_refresh.py`, the fourth and fifth beside the first two in
+    `tests/test_install_pkg.py`, and the sixth by `tests/test_agb_peer.py`, which compares against
+    the three tuples themselves rather than a copy of their contents.
 
 ## Testing conventions
 
@@ -534,6 +562,16 @@ environment — several are version- or mount-specific.
 
 ## Where the project is (2026-08-01)
 
+⚠️ **Newer than this section's date and not yet released (2026-08-24/25): agent-to-agent chat.**
+`agb-peer`, with `agb-codex` and `agb-tmux` beside it — described above, in full in
+[`docs/commands.md`](docs/commands.md), and for the *agent's* side in `skills/agb-peer/SKILL.md`.
+Verified live in every combination tried: Claude↔Claude on the farm, Claude↔Mac, and Claude↔Codex on
+a batch-pool node **the Mac cannot ssh at all**, both directions. ⚠️ That last case shaped the
+design. Its tmux socket is unreachable — a unix socket is a local kernel rendezvous, not a
+filesystem object NFS carries, **measured** — so *sending* falls back to a file plus a printed
+doorbell, while *delivery* needed no change whatever, because the pane is connected all the way
+down from a host you can reach. `AGB_CODEX_CUSTOM` is what starts an agent there.
+
 Released **0.5.0** — **instances**: a machine that shares no disk with the first is now an install
 (`install.sh mac --instance <name> --statedir …`), one independent bridge per machine, all rendering
 into the same sidebar. One flag, `--config`, carries it everywhere: bridge, `close-done`,
@@ -615,7 +653,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 1944 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2141 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

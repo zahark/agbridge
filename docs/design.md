@@ -2270,6 +2270,54 @@ past roughly four machines.
 
 ## Resolved design questions
 
+## 6. Agent-to-agent chat, and why it is **not** on this wire
+
+`agb-peer` lets two agents send each other messages. Everything above describes a wire that carries
+**state about** agents; this carries **text between** them, and the two are deliberately separate.
+
+Nothing in `agb-peer` reads or writes a session record. A message is not a state transition, it has
+no liveness meaning, and putting it on the wire would give every hook a second thing to be correct
+about — on the hot path, in the file whose size is capped. The channel instead reuses what the
+bridge has already built: a row is a **terminal**, and a terminal can be read and typed into.
+
+- **Delivery** is the Mac-side `relay` calling `agtermctl session text` to read a participant's
+  screen and `session type` to write to the other's. It is gated: `classify` refuses a peer that is
+  mid-turn, that is showing `agb pane`'s menu, or whose composer is not empty. ⚠️ It also refuses a
+  message that reduces to one of `agb pane`'s own menu words — `q` on a detached row **closes the
+  row of a live agent**. That list is a cross-file agreement with `agb_ops` (CLAUDE.md invariant 14).
+- **Announcement** is a doorbell: the sending pane's tmux **window name** becomes
+  `<base> [peer #<id>]`, and the relay sees it in the status bar it is already capturing. No polling
+  is added — the screen read was happening anyway.
+- **Content** is a tmux **pane option**, not screen text. Screen text was the original design and it
+  failed: Claude Code renders no command output onto its pane, and a long message wraps and
+  paste-collapses. An option is exact, 3 KB, and survives scrolling.
+
+### The unreachable peer
+
+A peer may be somewhere neither the Mac nor the relay can reach — a batch-pool node picked at submit
+time. Two of the three legs need no change at all. **Delivery already works**, because the pane
+belongs to a host you *can* reach and is connected all the way down; nothing ever connects *into* the
+pool, which is agbridge's founding constraint restated.
+
+**Sending** cannot use tmux, and no permission fixes it: `$TMUX`/`$TMUX_PANE` *are* inherited through
+job submission, but `/tmp` is per-machine, and putting the socket on the shared mount does not help —
+MEASURED, a `tmux -S <shared path>` server accepts connections locally and answers `no server
+running` from the pool. A unix socket is a local kernel rendezvous, not a filesystem object NFS
+carries.
+
+So that one leg falls back to the statedir after all: `<statedir>/chat/<id>.msg`, temp+renamed like
+every other record here because a torn read on NFS is real, fetched by one `ssh <reachable host> cat`
+and then removed. ⚠️ **The fallback needs a positive signal, not merely a failure** — the socket path
+is checked directly rather than an error string matched, because three different failures produce the
+same error and only one means "use files".
+
+⚠️ **And the doorbell has to be *printed*, since there is no reachable window to rename** — which
+makes it the sending agent's problem rather than the tool's. The relay reads a **screen**; an agent
+UI folds command output behind a `ran N commands` summary; a correct message then sits unread with no
+error at either end. `skills/agb-peer/SKILL.md` is the fix — it tells the sender to repeat that
+`[peer #…]` line in its own answer, which *is* on the screen. This is the one part of the channel
+that cannot be made structural, and it cost a 25-minute silent failure to find.
+
 The three questions this document left open are now answered by the implementation:
 
 - **Install/ops** — `install.sh` (`mac` / `farm` roles), `agb install-hooks`, `agb install-config`,

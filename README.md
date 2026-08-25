@@ -172,6 +172,9 @@ agb doctor          # probes, not existence checks — see below
 | `agb version` | both | load-bearing: both installers probe with it |
 | `agb-claude [name]` | cluster | helper: starts Claude Code in a **named tmux session**, so its row is attachable — and mints the row **before Claude starts**, so it exists even while Claude sits on a trust prompt. `-d` starts it in the background |
 | `agb-ralphex <plan>` | cluster | helper: runs [ralphex](https://github.com/umputun/ralphex) under **one** row for the whole plan, so the Mac banners once when it finishes rather than once per task |
+| `agb-codex [name]` | cluster | helper: the same for [Codex](https://github.com/openai/codex). ⚠️ Codex fires no agbridge hooks, so the row it mints never leaves `completed`. `AGB_CODEX_CUSTOM` replaces the `codex` command line, for starting the agent through a scheduler, container or pool launcher |
+| `agb-tmux [name]` | cluster | helper: a plain shell — or any command — in a named session, so a long build gets a row of its own. **Deliberately not an `agb-peer` participant**: a shell would *execute* what it was sent |
+| `agb-peer …` | both | two agents talking to each other. `relay` on the Mac reads each row's screen and types into the other; `send` on a cluster host queues a message for it. See [the skill](skills/agb-peer/SKILL.md) |
 | `agb-host-line` | cluster | helper: prints the `host_<name>` line a new cluster host needs, **and** a Mac-side command that appends it to the config of the instance actually watching this statedir — not blindly the default one |
 | `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows — a close, a reset, a reinstall, **a Mac reboot**, or an upgrade of the Mac's files |
 
@@ -303,13 +306,14 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 | [`docs/tmux.md`](docs/tmux.md) | the status-line segment and its achievable resolution |
 | [`docs/agtermctl.md`](docs/agtermctl.md) | the `agtermctl` contract the bridge codes against |
 | [`docs/cookbook.md`](docs/cookbook.md) | **start here** — step-by-step onboarding and troubleshooting |
+| [`skills/agb-peer/SKILL.md`](skills/agb-peer/SKILL.md) | what an *agent* needs to know to talk to a peer — symlink it into `~/.claude/skills/` or `~/.codex/skills/` |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release, and why |
 | [`CLAUDE.md`](CLAUDE.md) | architecture and invariants, for working on this codebase |
 
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 1944 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 2141 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check

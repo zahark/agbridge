@@ -1,6 +1,6 @@
 ---
 name: agbridge
-description: How to use, configure and troubleshoot agbridge — Claude Code agent status from remote hosts in agterm's sidebar. Use for adding a cluster host, adding a machine that shares no disk (a second statedir, feed and bridge — the --instance install), running a second Mac, removing a host, rows that are missing/stale/duplicated/blank, notifications, workspaces, attaching to an agent, or any "how do I …" about agb, agb-refresh, agb-claude, the bridge, the feed or the statedir.
+description: How to use, configure and troubleshoot agbridge — Claude Code agent status from remote hosts in agterm's sidebar. Use for adding a cluster host, adding a machine that shares no disk (a second statedir, feed and bridge — the --instance install), running a second Mac, removing a host, rows that are missing/stale/duplicated/blank, notifications, workspaces, attaching to an agent, making two agents talk to each other, or any "how do I …" about agb, agb-refresh, agb-claude, agb-codex, agb-tmux, agb-peer, the bridge, the feed or the statedir.
 allowed-tools: Read, Grep, Glob, Bash
 ---
 
@@ -346,6 +346,64 @@ agb-claude -d my-task         # detached; the row is there, no prompt is sent
 agb-claude work -- --resume <id>    # anything after -- goes to claude
 ```
 
+### Start something that is not Claude
+
+Same wrapper, same pre-mint, three flavours — and the differences are not cosmetic:
+
+```sh
+agb-codex review              # Codex in a named session
+agb-tmux -d build -- make -j8 # any command; a long build gets a row of its own
+agb-ralphex docs/plans/x.md   # ONE row for a whole ralphex plan, not one per task
+```
+
+⚠️ **Codex fires no agbridge hooks**, so its row is minted `completed` and stays there for ever.
+Real, attachable, addressable — but the glyph never moves, so it tells you nothing about whether
+that agent is working or blocked.
+
+⚠️ **`AGB_CODEX_CUSTOM` replaces `agb-codex`'s command line entirely**, for starting the agent
+through a scheduler, container or pool launcher. The value is a shell command line, `eval`ed, so the
+agent can be an *argument* to the launcher; with it set, `--` args and `--greet` are refused rather
+than appended, because there is no position this wrapper could guess at.
+
+```sh
+export AGB_CODEX_CUSTOM='submit -q big -I "codex --yolo"'
+agb-codex -d pool
+```
+
+### Make two agents talk to each other
+
+`agb-peer`. The **relay** runs on the Mac and needs both participants named; each name is what the
+other addresses:
+
+```sh
+agb-peer relay me=<row label> peer=<row label>[@<ssh alias>[:nfs]]
+```
+
+Then, **inside the agent's own session** on a cluster host:
+
+```sh
+agb-peer send --to peer --stdin <<'CHAT'
+your message
+CHAT
+```
+
+⚠️ **A message only travels while a relay is running.** `send` succeeds either way, the message
+waits, and the next relay to start discards it as stale — that is the first thing to check when a
+peer never answered.
+
+⚠️ **`agb-tmux` is deliberately not a valid participant.** The relay classifies a bare shell as
+`unknown` and will never type into it, which is right: a shell would *execute* what it was sent.
+
+The `:nfs` suffix is for a peer whose tmux you cannot reach — a batch-pool node, a locked-down
+sandbox. Its messages become files under `<statedir>/chat/`, fetched with one ssh to a **reachable**
+host that mounts the same disk; nothing ever connects into the unreachable machine. ⚠️ Such a peer
+announces its message by **printing** the doorbell rather than renaming a window, so it has to put
+that `[peer #…]` line on its **visible screen** — `skills/agb-peer/SKILL.md` is what tells the agent
+to do that, and without it a perfectly-written message sits unread with no error anywhere.
+
+The agent's own instructions live in `skills/agb-peer/SKILL.md`; symlink it into
+`~/.claude/skills/agb-peer` or `~/.codex/skills/agb-peer` so both ends read the same file.
+
 ### Working with a row
 
 Click it and `agb pane` offers:
@@ -468,6 +526,7 @@ them.
 | [`docs/design.md`](../../../docs/design.md) | the authority on *why* — state model, liveness, wire, failure modes |
 | [`docs/agtermctl.md`](../../../docs/agtermctl.md) | what agterm's CLI does, each clause tagged CONFIRMED or ASSUMED |
 | [`docs/tmux.md`](../../../docs/tmux.md) | the `bridge:UP` status-line segment |
+| [`skills/agb-peer/SKILL.md`](../../../skills/agb-peer/SKILL.md) | what an **agent** needs to talk to a peer — the file both ends symlink |
 | [`CLAUDE.md`](../../../CLAUDE.md) | invariants, conventions, current state — read before changing code |
 | [`CHANGELOG.md`](../../../CHANGELOG.md) | every change with the reason it was made |
 

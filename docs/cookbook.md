@@ -651,3 +651,6 @@ Moving `rows` and `placements` next to the config *before* reinstalling avoids i
 - [`commands.md`](commands.md) — every command and flag
 - [`tmux.md`](tmux.md) — the `bridge:UP`/`bridge:DOWN` status-line segment
 - [`design.md`](design.md) — why liveness is proven rather than inferred, and the rest of the design
+- [`../skills/agb-peer/SKILL.md`](../skills/agb-peer/SKILL.md) — making two agents talk to each
+  other: `agb-peer relay` on the Mac, `agb-peer send` inside an agent's session. Symlink that file
+  into `~/.claude/skills/` or `~/.codex/skills/` so both ends read the same instructions
