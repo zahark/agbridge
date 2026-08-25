@@ -336,6 +336,64 @@ The sweep's **own-host precondition is a `raise`, not an `assert`** — `assert`
 `python -O`, and the one guard standing between this tool and another host's live sessions must not
 be an interpreter flag away from vanishing.
 
+### The host you *are* and the host you *say* — `own_host()` is not adjudicable
+
+That precondition compares the entry's host against `own_host()`, and `own_host()` honours
+`$AGB_HOST`. So for its whole life it was written in terms of a value the caller supplies, and the
+override it most needed to notice sat on **both sides of the comparison**. It could not fail.
+
+That is not theoretical. Measured 2026-08-25, on this project's own farm:
+
+```
+12:30:01.895  a remotely launched agent's first hook writes its state       (adopts its row: correct)
+12:30:01.908  reaped: agent pid 3326337 ... is gone      ┐
+   ...        nine more                                  │  eleven live agents on a machine
+12:30:01.941  reaped: agent pid 425636 ... is gone       ┘  this process had never been on
+12:30:01.943  sweep: dropped idx <host>-406994-%0  (key is gone)
+   ...        twelve more, including its own anchor
+12:30:03.900  minted key ...-%106                        ← the duplicate row
+```
+
+One `agb hook`. `agb-claude`'s `{env}` had set `AGB_HOST=<container>` so the agent — running on a
+batch node, via `qsub -Is` — would report the row it belonged to. `own_host()` duly returned the
+container, `maybe_sweep` swept `sessions/<container>/`, and `os.kill(pid, 0)` answered about the
+batch node: `ESRCH` for every one of that container's live agents, which `liveness()` reads as
+positive proof of death. `sweep_idx` then asked whether tmux server pid `406994` was alive, got the
+same answer, and unlinked every anchor — including the impersonating agent's own, which is why the
+hook two seconds later found none and minted a second row.
+
+Proof the reaps were false rather than merely unlucky: pid `1409148` was reaped at 11:34:02, and at
+11:41:36 a **new key was minted recording the same pid**, which only happens when `resolve_agent()`
+walks the ppid chain and finds that process alive.
+
+The survivors say the same thing from the other side. Exactly the pid-less records lived — the ones
+`{env}` had written with `AGB_AGENT_PID=none` — because `liveness(None, …)` is `UNKNOWN`, and
+`UNKNOWN` is skipped. Every record carrying a real pid was destroyed. The three-valued verdict held
+perfectly; it was answering about the wrong machine.
+
+**The fix is to stop conflating two questions that had shared one function:**
+
+| | question | overridable |
+|---|---|---|
+| `own_host()` | what name do my entries get written under? | **yes** — an *identity*, and a remote agent must be able to assert one |
+| `real_host()` | whose pid namespace can I interrogate? | **no** — an *observation*, `uname` only |
+
+`host_is_observed()` is where they meet, and both destructive paths consult it: `maybe_sweep`
+returns before any I/O, and `_require_own_host` — which guards `reap_entry`, the single unlink
+authority — refuses with a message naming the machine it is actually speaking from.
+
+⚠️ **The opt-in points the way it does on purpose.** `AGB_HOST_LOCAL=1` re-enables adjudication for
+an override that really does name this machine; there is no flag for the reverse. A process cannot
+tell "I am standing in for another host" from "I have been renamed" by looking at itself — the test
+suite's simulated hosts and a `{env}` agent are byte-identical from the inside — so an explicit
+statement is unavoidable, and it must be the *dangerous* direction that has to be typed. Saying
+nothing gets you the safe answer. The suite's `set_host` fixture sets it; `{env}` deliberately does
+not.
+
+⚠️ **Constraint #11 is therefore narrower than it read.** "Only the owning host may sweep its own
+entries" was enforced by a name comparison, and a name is not evidence. What it always meant, and
+now says, is: *only a host whose pid namespace backs those entries may adjudicate them.*
+
 ### The rest of the sweep
 
 The same 60 s pass also reaps, all own-host only and all after the session pass (so "does this key

@@ -1388,6 +1388,16 @@ machine.** Every hook rewrites the record's pid, so the entry becomes pid-less a
 reaped by proof of death: when the job ends the row sits at its last state until `agb prune`.
 Liveness is proven, never inferred — nothing will tidy it up for you.
 
+⚠️ **An agent started with `{env}` also stops sweeping**, and that is the fix for a real failure
+rather than a limitation. Because `AGB_HOST` makes `own_host()` an *assertion*, such an agent used
+to sweep the statedir of the host it was impersonating and adjudicate that host's pids against its
+own machine — `ESRCH` for every live one, read as proof of death. Measured: eleven live rows reaped
+by one hook, plus a duplicate of the agent's own row when the same sweep dropped its anchor.
+`host_is_observed()` now refuses, so **something genuinely local must run the sweep for that host**
+— which is normally true (its own agents' hooks, and the feed), but is worth knowing if every agent
+on a host is remotely launched. `AGB_HOST_LOCAL=1` is the opt-in for an override that really does
+name this machine, and `{env}` deliberately does not set it. `docs/design.md` §2 has the trace.
+
 ⚠️ **`{env}` spells `own_host()`'s resolution in shell** (`$AGB_HOST`, else `uname -n`, domain
 stripped). That is a cross-file agreement with `agb` (CLAUDE.md invariant 14), pinned by a test that
 compares against `agb.own_host()` itself — a disagreement produces a second row, not an error.

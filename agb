@@ -49,26 +49,60 @@ class AgbError(Exception):
 # identity
 # --------------------------------------------------------------------------
 
+def _uname_host():
+    """What the kernel says we are; not overridable.
+
+    `os.uname()[1]` rather than `import socket`: on POSIX `gethostname(2)`
+    returns `uname.nodename` -- verified identical here, pinned by a test --
+    while importing `socket` costs ~5.5 ms on every hook.
+    """
+    try:
+        return os.uname()[1]
+    except AttributeError:  # non-POSIX; not a supported platform, but be safe
+        import socket
+        return socket.gethostname()
+
+
 def own_host():
-    """The short hostname of the machine we are running on.
+    """The name this agent's entries are written under; `AGB_HOST` wins.
 
     One helper, used by writers and sweepers alike: if the two ever disagreed,
     entries would be written under one name and swept under another, i.e. never
-    swept at all (constraint #13).
+    swept at all (constraint #13). An FQDN is common, hence the split.
 
-    `socket.gethostname()` returns an FQDN here, hence the split. We read
-    `os.uname()[1]` instead of importing `socket`, because on POSIX
-    `gethostname(2)` returns `uname.nodename` -- verified identical on this box,
-    and pinned by a test -- while `import socket` costs ~5.5 ms on every hook.
+    ⚠️ An **identity**, and asserted. What may be *adjudicated* is
+    `real_host()`; `host_is_observed()` is where the two meet.
     """
-    name = os.environ.get("AGB_HOST")
-    if not name:
-        try:
-            name = os.uname()[1]
-        except AttributeError:  # non-POSIX; not a supported platform, but be safe
-            import socket
-            name = socket.gethostname()
-    return name.split(".")[0]
+    return (os.environ.get("AGB_HOST") or _uname_host()).split(".")[0]
+
+
+def real_host():
+    """The machine this process is actually on; never `AGB_HOST`.
+
+    An **observation**: the pid namespace `liveness()` interrogates is this
+    one's, whatever `own_host()` reports.
+    """
+    return _uname_host().split(".")[0]
+
+
+def host_is_observed():
+    """True when the host we write as is the host we may adjudicate.
+
+    `AGB_HOST` makes `own_host()` an assertion -- a remotely launched agent
+    naming the row it belongs to (`agb-claude`'s `{env}`), or the suite standing
+    in for another machine. The pids under `sessions/<own_host()>/` are then
+    another machine's, while `os.kill(pid, 0)` answers about this one: `ESRCH`
+    for every live entry, which `liveness()` reads as proof of death. Measured
+    2026-08-25 -- one `{env}` agent's first hook reaped eleven live sessions on
+    the host it impersonated, then dropped every idx anchor, so the next hook
+    minted a duplicate row. `_require_own_host` could not catch it, being
+    spelled in terms of `own_host()`: the override sat on both sides of its
+    comparison. Full trace in `docs/design.md`.
+
+    Opt-**in**, because that failure is silent, remote and destructive: the safe
+    answer must be the one you get by saying nothing.
+    """
+    return own_host() == real_host() or bool(os.environ.get("AGB_HOST_LOCAL"))
 
 
 # --------------------------------------------------------------------------
@@ -1343,6 +1377,12 @@ def _require_own_host(host, what):
             "%s refused: %s is not this host (%s). Only the owning host may "
             "sweep its own entries (constraint #11); `agb prune` is the "
             "operator path for a foreign host." % (what, host, mine))
+    if not host_is_observed():
+        raise AgbError(
+            "%s refused: this process runs on %s and only claims to be %s, so "
+            "no pid it can see says anything about that host's agents. Set "
+            "AGB_HOST_LOCAL=1 if the override really names this machine."
+            % (what, real_host(), mine))
     return mine
 
 
@@ -1807,7 +1847,13 @@ def maybe_sweep(sd, host=None, now=None):
     cannot spin once per transition. A sweep that fails is breadcrumbed and
     swallowed: it is a maintenance pass, and a hook that reported a state
     successfully must not go on to fail because of it.
+
+    An unadjudicable host returns before any I/O: `_require_own_host` refuses a
+    moment later anyway, but that costs a marker write and a breadcrumb every
+    60 s per remote agent, for a deliberate configuration rather than a fault.
     """
+    if not host_is_observed():
+        return False
     if host is None:
         host = own_host()
     if now is None:

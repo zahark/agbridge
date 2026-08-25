@@ -169,11 +169,16 @@ def test_own_host_matches_socket_gethostname(agb):
 
 
 def test_own_host_is_the_only_hostname_source(all_trees):
-    """Constraint #13: one helper. A second gethostname() call site is how a
-    writer and a sweeper come to disagree, silently -- and entries written under
-    one name and swept under another are simply never swept.
+    """Constraint #13: one syscall site. A second gethostname() call site is how
+    a writer and a sweeper come to disagree, silently -- and entries written
+    under one name and swept under another are simply never swept.
 
-    Across both files: a second source in `agb_mac` would be just as silent."""
+    Across both files: a second source in `agb_mac` would be just as silent.
+
+    `own_host` and `real_host` are deliberately two *questions* (identity vs
+    observation) over this one *answer*: the split is what `host_is_observed`
+    adjudicates, and routing both through `_uname_host` is what keeps them from
+    drifting into two different notions of the same machine."""
     holders = set()
     total = 0
     for name, node in conftest.functions(*all_trees).items():
@@ -181,8 +186,59 @@ def test_own_host_is_the_only_hostname_source(all_trees):
             if attr in ("uname", "gethostname"):
                 holders.add(name)
                 total += 1
-    assert holders == set(["own_host"])
+    assert holders == set(["_uname_host"])
     assert total == 2  # os.uname() plus the non-POSIX socket fallback
+
+
+def test_host_is_observed_only_where_the_name_is_not_merely_claimed(
+        agb, monkeypatch):
+    """Four states, walked in order, because the interesting one is third.
+
+    `real_host()` is read from the implementation rather than hardcoded: the
+    box's actual name is not knowable here, and a literal would make the second
+    case assert something else entirely."""
+    monkeypatch.delenv("AGB_HOST", raising=False)
+    monkeypatch.delenv("AGB_HOST_LOCAL", raising=False)
+    assert agb.host_is_observed() is True          # no override at all
+
+    monkeypatch.setenv("AGB_HOST", agb.real_host())
+    assert agb.host_is_observed() is True          # an override naming this box
+
+    monkeypatch.setenv("AGB_HOST", agb.real_host() + "-elsewhere")
+    assert agb.host_is_observed() is False         # ...and naming another
+
+    monkeypatch.setenv("AGB_HOST_LOCAL", "1")
+    assert agb.host_is_observed() is True          # vouched for
+
+
+def test_agb_host_never_reaches_real_host(agb, monkeypatch):
+    """The point of the split: an observation cannot be overridden."""
+    monkeypatch.setenv("AGB_HOST", "somewhere-else")
+    assert agb.own_host() == "somewhere-else"
+    assert agb.real_host() == socket.gethostname().split(".")[0]
+
+
+def test_both_host_questions_go_through_the_one_source(agb, all_trees):
+    """...and neither reads the environment behind the other's back.
+
+    Non-vacuity: the walk must actually have found both functions, or a rename
+    makes this pass while covering nothing."""
+    funcs = conftest.functions(*all_trees)
+    for name in ("own_host", "real_host"):
+        assert name in funcs, name
+        called = set(attr for _base, attr in conftest.calls(funcs[name]))
+        assert "_uname_host" in called, name
+
+    # real_host() is an *observation*, so it reads no environment at all.
+    #
+    # ⚠️ Asserted on the AST, not by searching the source text: the first
+    # spelling of this looked for "AGB_HOST" and matched the docstring saying
+    # it is never read -- the same defect this repo's conventions warn about,
+    # arriving from the other side (a guard that FAILS on its own comment
+    # rather than passing on it).
+    real = conftest.functions(*all_trees)["real_host"]
+    assert [n for n in ast.walk(real)
+            if isinstance(n, ast.Attribute) and n.attr == "environ"] == []
 
 
 # ---------------------------------------------------------------------------

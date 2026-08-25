@@ -189,6 +189,109 @@ def test_the_sweep_lists_only_the_directories_this_host_owns(agb, sd,
 
 
 # ---------------------------------------------------------------------------
+# the same danger wearing this host's name: an AGB_HOST the process only claims
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def impersonated(agb, sd, monkeypatch):
+    """`sd`, with the host override no longer vouched for as naming this box.
+
+    Production's shape, not a contrivance: `agb-claude`'s `{env}` sets
+    `AGB_HOST` so a remotely launched agent reports the row it belongs to, and
+    the agent then runs on another machine entirely. `sd`'s `set_host` opts in
+    on the suite's behalf, so a test *about* the guard has to opt back out.
+
+    The asserts are non-vacuity: if this box were really called `box2` the
+    override would name it truthfully and every test below would pass while
+    exercising nothing.
+    """
+    monkeypatch.delenv("AGB_HOST_LOCAL", raising=False)
+    assert agb.own_host() == HOST
+    assert agb.real_host() != HOST
+    assert agb.host_is_observed() is False
+    return sd
+
+
+def test_an_impersonated_host_is_never_swept(agb, impersonated):
+    """The 2026-08-25 regression, at full size.
+
+    One `{env}` agent's first hook reaped eleven live sessions on the host it
+    was impersonating, then dropped every idx anchor -- so the hook two seconds
+    later found none and minted a duplicate row. Those pids belong to that
+    machine; `os.kill(pid, 0)` answers about this one, and `ESRCH` is what
+    `liveness()` reads as positive proof of death.
+
+    Every artefact here is dead *locally* and would be reaped on sight if this
+    process really were the host it claims to be -- which is exactly what the
+    companion test below asserts, so that this one cannot pass by facing a
+    sweep that could never reap anything at all.
+    """
+    sd = impersonated
+    dead_pid, dead_start = conftest.dead_agent()
+    key = write_session(agb, sd, HOST, "a3f9c1e0", dead_pid, dead_start)
+    idx = write_idx(agb, sd, HOST, dead_pid, "%24", "a3f9c1e0",
+                    dead_pid, dead_start, age=600)
+
+    assert agb.maybe_sweep(sd, HOST) is False
+
+    assert exists(agb.state_path(sd, key, HOST))
+    assert exists(agb.record_path(sd, key, HOST))
+    assert exists(idx)
+    assert marker_keys(agb, sd) == ["a3f9c1e0"]
+
+
+def test_the_opt_in_is_the_only_difference(agb, sd):
+    """The companion, differing from the test above in `AGB_HOST_LOCAL` alone.
+
+    A test asserting that nothing happened needs one of these or it passes
+    against a feature that can never fire, for any reason at all.
+    """
+    dead_pid, dead_start = conftest.dead_agent()
+    key = write_session(agb, sd, HOST, "a3f9c1e0", dead_pid, dead_start)
+    idx = write_idx(agb, sd, HOST, dead_pid, "%24", "a3f9c1e0",
+                    dead_pid, dead_start, age=600)
+
+    assert agb.host_is_observed() is True      # set_host vouched for it
+    assert agb.maybe_sweep(sd, HOST) is True
+
+    assert not exists(agb.state_path(sd, key, HOST))
+    assert not exists(idx)
+
+
+def test_an_impersonated_sweep_claims_no_throttle_window(agb, impersonated):
+    """It returns before any I/O, which is two claims at once: a later, real
+    sweep is not suppressed for 60 s by this one, and an agent that is not on
+    this machine writes nothing into that machine's statedir."""
+    sd = impersonated
+    assert agb.maybe_sweep(sd, HOST) is False
+    assert not exists(agb.sweep_marker_path(sd, HOST))
+
+
+def test_the_impersonation_refusal_names_the_real_host_and_the_way_out(
+        agb, impersonated):
+    """`maybe_sweep` swallows this, but `agb sweep` and the tests do not, and a
+    refusal that does not say which machine it is speaking from is unactionable
+    -- both hostnames are plausible and only one of them is observed."""
+    with pytest.raises(agb.AgbError) as excinfo:
+        agb.sweep_host(impersonated, HOST)
+    message = str(excinfo.value)
+    assert agb.real_host() in message
+    assert HOST in message
+    assert "AGB_HOST_LOCAL" in message
+
+
+def test_reap_entry_itself_refuses_an_impersonated_host(agb, impersonated):
+    """The guard belongs on the unlink authority, not only on the pass that
+    usually calls it. `reap_entry` is one of the two unlink sites in the tool;
+    anything reaching it by another route owes the same precondition."""
+    sd = impersonated
+    key = write_session(agb, sd, HOST, "a3f9c1e0", *conftest.dead_agent())
+    with pytest.raises(agb.AgbError):
+        agb.reap_entry(sd, HOST, key, "test")
+    assert exists(agb.state_path(sd, key, HOST))
+
+
+# ---------------------------------------------------------------------------
 # the revision-1 regression: a live agent's own record survives its own hook
 # ---------------------------------------------------------------------------
 

@@ -64,16 +64,28 @@ AGB_ARGV = [sys.executable, "-S", "-E", AGB_PATH]
 #     ms post-change vs 5.9 ms prior -- different machine, not a real delta).
 #     Size: 103135 chars. Headroom at 103200: 65 chars.
 #
-# ⚠️ AND 63 OF THOSE 65 ARE ALREADY SPENT -- `agb` is 103198, headroom **2**.
+# ⚠️ AND 63 OF THOSE 65 ARE ALREADY SPENT -- `agb` was 103198, headroom **2**.
 # Swapping `agb-refresh`'s reader for `agb instances` found `cmd_instances`
 # catching `(ImportError, AttributeError)` where a tree with no `agb_mac` raises
 # `FileNotFoundError`, so the catch had to widen and the reason had to be
 # written down. It was NOT paid for by raising this again: the code delta is
 # ~10 chars and the rest was prose, which moved into
 # `agb_mac.run_instances`' docstring -- the sibling is not capped, and "pay for
-# new code by moving other code out" applies to comments too. Anything further
-# in `agb` needs the same treatment or a third measured raise.
-AGB_PARSE_BUDGET = 103200
+# new code by moving other code out" applies to comments too.
+#
+#   +2100 chars (measured), the third raise: `real_host()`/`host_is_observed()`
+#     and the two gates that stop a remotely launched agent (`{env}`) reaping
+#     the host it impersonates. This one could NOT be paid the usual way and
+#     could not go in a sibling: `maybe_sweep` is on the transition path, and
+#     the hook must never load `agb_mac`/`agb_ops` (invariant, test_mac_split).
+#     Roughly 1400 of it is the reason -- why the override is an assertion, why
+#     the old guard could not see it, why the opt-in points the way it does --
+#     and the full trace moved to `docs/design.md` rather than living here.
+#     Hot path unchanged: `real_host()` is reached only from `maybe_sweep` and
+#     `_require_own_host`, never on the no-change path. 5.0 ms hook, against
+#     4.9 ms before -- inside the noise on this box.
+#     Size: 105269 chars. Headroom at 105300: 30 chars.
+AGB_PARSE_BUDGET = 105300
 
 # Nothing here may block forever. A regression that makes a subprocess stop
 # answering must fail the run, not hang it: an unbounded `communicate()` turns
@@ -364,7 +376,7 @@ def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    for name in ("AGB_STATEDIR", "AGB_HOST", "AGB_AGENT_PID",
+    for name in ("AGB_STATEDIR", "AGB_HOST", "AGB_HOST_LOCAL", "AGB_AGENT_PID",
                  "TMUX", "TMUX_PANE"):
         monkeypatch.delenv(name, raising=False)
     return home
@@ -546,9 +558,20 @@ def statedir(agb, statedir_path):
 
 @pytest.fixture
 def set_host(monkeypatch):
-    """Override own_host(), including across a subprocess boundary."""
+    """Override own_host(), including across a subprocess boundary.
+
+    `AGB_HOST_LOCAL` comes with it: an overridden host is unadjudicable by
+    default (`agb.host_is_observed`), and the suite's whole model of "another
+    machine" is a different `host` written by *this* process, whose forked
+    agents really are local pids. Without the opt-in every sweep test would
+    silently stop sweeping and pass by proving nothing.
+
+    ⚠️ A test *about* the guard must set `AGB_HOST` on its own rather than take
+    this fixture, or it opts straight out of the thing it is checking.
+    """
     def apply(name):
         monkeypatch.setenv("AGB_HOST", name)
+        monkeypatch.setenv("AGB_HOST_LOCAL", "1")
         return name
     return apply
 

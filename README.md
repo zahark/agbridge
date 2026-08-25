@@ -218,7 +218,8 @@ the next click with no restart.
 | Variable | Effect |
 |---|---|
 | `AGB_STATEDIR` | overrides `statedir`. Baked into the hook command at install time, which is what lets the hot path skip reading the config |
-| `AGB_HOST` | overrides the short hostname used for `sessions/<host>/` and for the sweep's own-host check. **Test seam** — setting it in a live shell orphans entries |
+| `AGB_HOST` | overrides the short hostname used for `sessions/<host>/`. **Test seam** — setting it in a live shell orphans entries. It no longer confers the right to *sweep* that host: an overridden host is unadjudicable, because the pids there are another machine's and `kill(pid, 0)` answers about this one |
+| `AGB_HOST_LOCAL` | states that an overridden `AGB_HOST` really does name **this** machine, restoring the sweep. Opt-in on purpose, and there is no opt-out: saying nothing gets the safe answer. `agb-claude`/`agb-codex`'s `{env}` does not set it |
 | `AGB_AGENT_PID` | overrides agent-pid resolution; `-`/`none`/`0` mean "no pid". **Test seam** |
 
 ### Where rows live

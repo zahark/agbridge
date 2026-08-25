@@ -96,6 +96,52 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   one still offering to re-render it. That refusal also said "which config uses" — with a hole where
   the instance name goes — on every run that did not type one.
 
+### Fixed
+
+- **An agent launched on another machine with `{env}` reaped every live row on the host it was
+  impersonating, then duplicated its own.** The symptom, from the outside: you start one agent
+  through `AGB_CLAUDE_CUSTOM` with `{env}`, and every *other* row in the sidebar — agents that are
+  running fine, on a machine you never touched — goes `[done]` at once. Seconds later the agent you
+  did start appears **twice**. Both halves are one `agb hook`.
+
+  `{env}` sets `AGB_HOST` so a remotely launched agent reports the row it belongs to. `own_host()`
+  honours it, `maybe_sweep` sweeps `sessions/<own_host()>/`, and `os.kill(pid, 0)` then answers
+  about the machine the agent is *actually* on. Every pid belonging to the impersonated host comes
+  back `ESRCH`, which `liveness()` reads as positive proof of death — so the sweep reaps sessions
+  it has no standing to judge, and `sweep_idx` unlinks their anchors for the same reason. One of
+  those anchors is the agent's own, so its next hook finds none and mints a second key: the
+  duplicate row.
+
+  Measured on this project's farm: eleven live sessions reaped and thirteen anchors dropped inside
+  40 ms, followed two seconds later by the duplicate. That a reap was *false* rather than unlucky is
+  provable from the breadcrumbs — a pid reaped as "gone" at 11:34:02 was recorded again by a mint at
+  11:41:36, which only happens for a process `resolve_agent()` finds alive.
+
+  `_require_own_host` is the guard that should have caught this, and could not: it compares against
+  `own_host()`, so the override was on both sides of its comparison. The fix splits the question it
+  was really asking. `own_host()` stays the **identity** — what name entries are written under,
+  overridable, because a remote agent has to be able to assert one. `real_host()` is the new
+  **observation** — `uname` only, never `AGB_HOST` — and answers whose pid namespace this process
+  may interrogate. `host_is_observed()` is where they meet; `maybe_sweep` returns before any I/O
+  when they disagree, and `_require_own_host` refuses with a message naming the machine it is
+  actually speaking from.
+
+  ⚠️ **`AGB_HOST_LOCAL=1` is the opt-in, and there is deliberately no opt-out.** A process cannot
+  distinguish "I am standing in for another host" from "I have been renamed" by looking at itself,
+  so an explicit statement is unavoidable — and the direction that has to be typed is the dangerous
+  one. Say nothing and you get the safe answer. Set it only where an overridden `AGB_HOST` genuinely
+  names the machine you are on; `{env}` does not set it, and must not.
+
+  ⚠️ **If you have run `{env}` already, the reaped entries are gone** — they were unlinked, not
+  hidden, so no `agb-refresh` brings them back. Those agents are still running and each mints a
+  **new** key on its next tool call, so the rows return under new identities; `agb close-done`
+  clears the `[done]` remains.
+
+  This does not change the other cost of `{env}`, which is unchanged and still worth knowing:
+  `AGB_AGENT_PID=none` makes such a row unreapable by proof of death, so it outlives its job until
+  `agb prune`. That property is also what limited the blast radius here — the pid-less records were
+  the only ones the bogus sweep skipped.
+
 ### Added
 
 - **`AGB_CLAUDE_CUSTOM`, and two placeholders so a custom launcher can still take per-run flags.**

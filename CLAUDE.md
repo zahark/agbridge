@@ -214,6 +214,17 @@ These are not style preferences. Each one has a test, and most were re-learned t
 3. **There are exactly two session unlink sites**: `reap_entry` (lexically gated by
    `proof_of_death`, own-host only, enforced by a raise not an `assert` — `python -O` strips
    asserts) and `prune_remove` (gated by a human typing a key). A structural test pins this list.
+   ⚠️ **"Own-host" is `real_host()`, not `own_host()`, and the difference cost eleven live rows.**
+   `own_host()` honours `$AGB_HOST` — an *identity*, asserted, and legitimately so, since a remotely
+   launched agent (`agb-claude`'s `{env}`) has to report the row it belongs to. But the guard was
+   spelled in terms of it, so the override sat on **both sides of the comparison** and could never
+   fire: a `{env}` agent swept the statedir of the host it was impersonating, adjudicated that
+   host's pids against its own machine's namespace, got `ESRCH` for every live one, and reaped them
+   all — then dropped their idx anchors, including its own, so its next hook minted a duplicate row.
+   `real_host()` (`uname`, unoverridable) answers *whose pid namespace is this*, and
+   `host_is_observed()` is the gate. `AGB_HOST_LOCAL` is an opt-**in** with no opposite, because a
+   process cannot tell "standing in for another host" from "renamed" by looking at itself — so the
+   dangerous direction is the one you have to type. `docs/design.md` §2 has the measured trace.
 4. **The hot path touches exactly two files** on a no-change invocation and imports no `json`. The
    `json` import lives inside the transition branch. Config is never read on the hot path.
 5. **The hook never writes to stdout** — Claude Code injects `UserPromptSubmit` stdout into the
