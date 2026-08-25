@@ -1667,3 +1667,65 @@ def test_every_message_for_a_given_up_name_goes_in_the_same_tick(peer):
     assert pending == [], "all three, not just the first"
     assert len([s for s in ctl.said if "giving up" in s]) == 1, \
         "said once for the name, not once per message"
+
+
+# ---------------------------------------------------------------------------
+# a drain says whether it FETCHED, not just what it found
+# ---------------------------------------------------------------------------
+#
+# `[]` means two different things -- "the fetch failed" and "the fetch worked
+# and nothing was pending" -- and priming a joiner treats them oppositely. A
+# failure leaves us still not knowing what is on that pane; an empty success
+# says there is nothing stale to discard.
+
+
+def test_a_successful_empty_drain_is_not_a_failure(peer):
+    outcome = {}
+    assert peer.drain(Fetcher(), "alice", "farmbox", "%7", lambda m: None,
+                      outcome=outcome) == []
+    assert outcome["fetch"] == peer.FETCH_OK
+
+
+def test_a_failed_drain_says_so(peer):
+    """The companion, and the one that matters: same [] return, opposite fact."""
+    outcome = {}
+    assert peer.drain(Fetcher(rc=1), "alice", "farmbox", "%7", lambda m: None,
+                      outcome=outcome) == []
+    assert outcome["fetch"] == peer.FETCH_FAILED
+
+
+def test_a_drain_that_found_messages_is_ok(peer):
+    outcome = {}
+    got = peer.drain(Fetcher(framed(("aaa", "bob", "hello"))), "alice",
+                     "farmbox", "%7", lambda m: None, outcome=outcome)
+    assert len(got) == 1, "non-vacuous: it really did find one"
+    assert outcome["fetch"] == peer.FETCH_OK
+
+
+def test_a_missing_pane_is_a_failed_fetch(peer):
+    outcome = {}
+    assert peer.drain(Fetcher(), "alice", "farmbox", "", lambda m: None,
+                      outcome=outcome) == []
+    assert outcome["fetch"] == peer.FETCH_FAILED
+
+
+def test_the_file_transport_reports_its_outcome_too(peer):
+    outcome = {}
+    got = peer.drain(Fetcher(framed(("aaa", "bob", "pooled"))), "pool",
+                     "container", peer.NFS_TARGET, lambda m: None,
+                     ident="aaa", chat_dir="/s/chat", outcome=outcome)
+    assert len(got) == 1, "non-vacuous"
+    assert outcome["fetch"] == peer.FETCH_OK
+    failed = {}
+    assert peer.drain(Fetcher(), "pool", "container", peer.NFS_TARGET,
+                      lambda m: None, ident="aaa", chat_dir=None,
+                      outcome=failed) == []
+    assert failed["fetch"] == peer.FETCH_FAILED
+
+
+def test_a_caller_that_asks_for_no_outcome_is_unchanged(peer):
+    """The seam must stay invisible: seven tests assert on drain's return."""
+    said = []
+    assert peer.drain(Fetcher(rc=1), "alice", "farmbox", "%7",
+                      said.append) == []
+    assert any("fetch failed" in s for s in said), said

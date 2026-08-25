@@ -1162,7 +1162,27 @@ def unlink_argv(chat_dir, ident):
     return ["rm", "-f", "%s/%s.msg" % (chat_dir.rstrip("/"), ident)]
 
 
-def drain_files(fetch, name, target, ident, chat_dir, say):
+# What a drain attempt learned. ⚠️ These are about the FETCH, not about what it
+# found: FETCH_OK with no messages means "the pane was read and nothing was
+# pending", which is a fact, while FETCH_FAILED means we still know nothing.
+# Priming a joiner turns on exactly that distinction.
+FETCH_OK = "ok"
+FETCH_FAILED = "failed"
+
+
+def _drained(outcome, result, messages=None):
+    """Record the fetch outcome, if the caller asked for it, and return.
+
+    An out-parameter rather than a second return value: seven existing tests
+    assert on `drain`'s return, and a tuple would break all of them for a
+    signal only the prime path reads.
+    """
+    if outcome is not None:
+        outcome["fetch"] = result
+    return [] if messages is None else messages
+
+
+def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None):
     """One message, named by the doorbell, read over ssh to a REACHABLE host.
 
     Never to the machine the agent is on -- that is the whole point. The file
@@ -1172,45 +1192,55 @@ def drain_files(fetch, name, target, ident, chat_dir, say):
     if not chat_dir:
         say("%s: no --chat-dir given, so a file-transport participant cannot "
             "be read" % (name,))
-        return []
+        return _drained(outcome, FETCH_FAILED)
     if not ident:
         say("%s: no message id in the doorbell" % (name,))
-        return []
+        return _drained(outcome, FETCH_FAILED)
     rc, out, err = fetch(ssh_argv(target, file_argv(chat_dir, ident)))
     if rc != 0:
         say("%s: cannot read %s/%s.msg: %s"
             % (name, chat_dir, ident, (err or "").strip() or rc))
-        return []
+        return _drained(outcome, FETCH_FAILED)
     parsed = parse_option_value(out)
     if not parsed:
         say("%s: %s.msg is not a message" % (name, ident))
-        return []
+        return _drained(outcome, FETCH_FAILED)
     rc, _out, err = fetch(ssh_argv(target, unlink_argv(chat_dir, ident)))
     if rc != 0:
         say("%s: could not remove %s.msg (%s) -- it may be fetched again"
             % (name, ident, (err or "").strip() or rc))
-    return [{"id": ident, "key": ident, "to": parsed[0], "text": parsed[1]}]
+    return _drained(outcome, FETCH_OK,
+                    [{"id": ident, "key": ident,
+                      "to": parsed[0], "text": parsed[1]}])
 
 
 def drain(fetch, name, target, pane, say, ident=None,
-          chat_dir=None):
+          chat_dir=None, outcome=None):
     """Everything pending in one participant's tmux, or [] and a reason said.
 
     ⚠️ `fetch` defaults to the real runner when it is None. It did not, and the
     first live relay died with `'NoneType' object is not callable` -- every
     test injected a fake, so the PRODUCTION default was the one path nothing
     exercised. Same shape as `--all`/`--lines`: a seam only the tests filled in.
+
+    ⚠️ **`[]` MEANS TWO DIFFERENT THINGS, AND THE CALLER HAS TO TELL THEM
+    APART.** "The fetch failed" and "the fetch worked and nothing was pending"
+    are the same return value, and priming a joiner must treat them oppositely:
+    a failure means we still do not know what is on that pane, while an empty
+    success means there is nothing stale to discard. `outcome` is an
+    out-parameter rather than a second return value because seven existing
+    tests assert on the return, and widening it would break every one.
     """
     fetch = fetch or run_local
     if not pane:
         say("%s: no tmux pane recorded for that row -- cannot fetch" % (name,))
-        return []
+        return _drained(outcome, FETCH_FAILED)
     if pane == NFS_TARGET:
-        return drain_files(fetch, name, target, ident, chat_dir, say)
+        return drain_files(fetch, name, target, ident, chat_dir, say, outcome)
     rc, out, err = fetch(ssh_argv(target, list_argv(pane)))
     if rc != 0:
         say("%s: fetch failed: %s" % (name, (err or "").strip() or rc))
-        return []
+        return _drained(outcome, FETCH_FAILED)
     messages = parse_show_options(out)
     for message in messages:
         rc, _out, err = fetch(ssh_argv(target, unset_argv(pane, message["key"])))
@@ -1220,7 +1250,7 @@ def drain(fetch, name, target, pane, say, ident=None,
             # becoming a second delivery.
             say("%s: could not clear %s (%s) -- it may be fetched again"
                 % (name, message["key"], (err or "").strip() or rc))
-    return messages
+    return _drained(outcome, FETCH_OK, messages)
 
 
 # How many TICKS a message may wait for a roster participant whose row has not
