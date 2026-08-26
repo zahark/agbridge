@@ -686,9 +686,16 @@ The message arrives in bob's composer as `[chat from alice] …`. ⚠️ **A mes
 relay is running** — `send` succeeds either way and the message waits, and the next relay to start
 discards it as stale. That is the first thing to check when a peer never answered.
 
-⚠️ **`agb-tmux` shells are deliberately not valid participants.** The relay classifies a bare shell
-as `unknown` and will never type into one — a shell would *execute* what it was sent. Use
-`agb-claude` or `agb-codex`.
+⚠️ **The agent runs `send` itself — there is no shell prompt in its session to type at.** The
+doorbell is written onto `$TMUX_PANE`, the pane the command runs in, and the relay reads the pane
+recorded in that row. A split, another window or a second session is a *different pane*, and a
+message sent from one is invisible. `skills/agb-peer/SKILL.md` is what tells the agent to do this —
+symlink it into `~/.claude/skills/` or `~/.codex/skills/` on every participant.
+
+⚠️ **An `agb-tmux` shell can SEND but will never RECEIVE.** The relay classifies a bare shell as
+`unknown` and refuses to type into it, deliberately: a shell would *execute* what it was sent. Its
+doorbell is read normally though, so a shell is a perfectly good one-way participant — useful for a
+script that wants to announce something into a conversation.
 
 ### Add or remove an agent while it runs
 
