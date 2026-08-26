@@ -144,6 +144,33 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A long message delivered to a Codex peer was typed but never submitted.** It sat in the composer
+  as `› [Pasted Content 1461 chars]` waiting for a human to press Return, and the relay reported
+  `typed, but '…' never appeared in the peer's pane, so it was NOT sent`.
+
+  `deliver` verifies that what it typed actually rendered before pressing Return, and a long, fast
+  injection is collapsed by the agent into a placeholder — so the placeholder is what it looks for.
+  ⚠️ **The two agents spell it differently**: Codex says `[Pasted Content 1461 chars]`, Claude says
+  `[Pasted text #1]`. Only Claude's spelling was known, so the check found neither the body nor a
+  mark and refused. Exit 4 is **dropped rather than retried** on purpose — typing again would leave
+  two copies in the composer — so the message was lost as far as the relay was concerned.
+
+  🔴 **The reason it shipped that way is worth more than the fix.** `docs/agtermctl.md` recorded,
+  *measured on a live pane*, that a ~900-character injection is rendered in full by Codex rather than
+  collapsed — and concluded that a Claude-shaped mark was a harmless no-op there, which made Codex
+  "the easier case". That was one sample at one length. At 1461 characters Codex collapses like
+  Claude. The project's standing rule is *run it, do not read it*; this is the corollary it did not
+  have: **a per-agent rendering read off one sample is a sample, not a constant.** Both the constant
+  and the doc now say so.
+
+  `PASTE_MARK` is `PASTE_MARKS`, a tuple, and each spelling is compared on **its own** count rather
+  than on a total — a total could stay level while one placeholder appeared and another was cleared.
+
+  ⚠️ **Matched case-insensitively, for the same reason one level down.** `cat -A` on the live pane
+  read `[Pasted Content 1461 chars]`; the operator watching that same row read `[Pasted content …]`.
+  Two readings of one screen, disagreeing on one letter. Case distinguishes nothing on a composer, so
+  betting on it buys nothing and can only lose a message; the count still has to go **up**.
+
 - **Two messages sent between one relay tick lost the earlier one, on the file transport.** The
   doorbell shows only the newest id and `drain_files` fetched exactly that one, so the first message
   was orphaned in the chat directory for ever, silently.

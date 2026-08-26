@@ -789,19 +789,34 @@ cookbook's preference between the two.
 Everything below was run against `codex-cli 0.149.1`, not read. It matters for `agb-peer`, whose
 delivery half is the only part of that tool that is agent-specific at all.
 
-### The TUI differs in exactly ONE constant
+### The TUI differs in exactly TWO constants
 
 | | Claude Code | Codex |
 |---|---|---|
 | composer glyph | `❯` | **`›`** |
 | empty-composer caret column | 2 | **2** |
 | submit key | Enter | **Enter** |
-| a ~900-char fast injection | collapses to `[Pasted text #1]` | **rendered in full, wrapped** |
+| a ~900-char fast injection | collapses to `[Pasted text #1]` | rendered in full, wrapped |
+| a ~1500-char fast injection | collapses to `[Pasted text #1]` | **collapses to `[Pasted Content 1461 chars]`** |
 
-So a Codex peer needs no profile worth the name: `classify` accepting either glyph covers it, the
-caret gate is unchanged, and Codex is the *easier* case for verification because nothing is hidden
-behind a placeholder. ⚠️ agterm's own cookbook says "Tab for Codex" — that is about **queueing while
+So a Codex peer needs no profile worth the name: `classify` accepting either glyph covers it and the
+caret gate is unchanged — but it needs **both paste spellings**, `[Pasted text` and
+`[Pasted Content`. ⚠️ agterm's own cookbook says "Tab for Codex" — that is about **queueing while
 busy**, not submitting; Enter submits an idle composer.
+
+🔴 **The fourth row said "rendered in full" and this page concluded from it that Codex was the
+*easier* case, nothing being hidden behind a placeholder. That conclusion was WRONG, and the way it
+was wrong is the reusable part.** It was measured once, at one length. MEASURED 2026-08-26 on a live
+Codex row: a **1461-character** delivery collapsed to `› [Pasted Content 1461 chars]` — a
+placeholder after all, spelled differently. The threshold is somewhere between the two lengths and is
+not worth pinning; what matters is that the row was a fact about the message tested, not about Codex.
+
+Downstream, `agb-peer`'s `deliver` found neither the body (collapsed) nor a paste mark (wrong
+spelling), raised exit 4 — which the relay **drops rather than retries**, on purpose — and a real
+message sat in Codex's composer waiting for a human to press Return. `PASTE_MARK` is `PASTE_MARKS`
+now, and matched **case-insensitively**: `cat -A` on the pane read `Content`, the operator watching
+the same row read `content`, and case distinguishes nothing here worth losing a message over. **A per-agent rendering read off one sample is a sample, not a constant**; this page's own rule
+about running rather than reading does not protect against running it once.
 
 ⚠️ **A submit key sent immediately after the text is LOST.** Measured twice: text then Enter with no
 gap left the line sitting in the composer; text, one second, Enter submitted it. `agb-peer`'s

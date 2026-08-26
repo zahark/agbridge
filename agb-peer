@@ -81,15 +81,30 @@ MENU_MARKER = "[enter] attach"
 #
 # MEASURED 2026-08-24, Claude Code vs codex-cli 0.149.1, on a live pane each:
 #
-#   composer glyph        `❯` vs `›`      <- the ONLY difference
+#   composer glyph        `❯` vs `›`      <- differs
 #   EMPTY_COLUMN          2 vs 2          same
 #   submit key            Enter vs Enter  same
 #   ~900-char injection   Claude collapses to `[Pasted text #1]`;
 #                         Codex renders it in full
 #
-# So `COMPOSER_GLYPHS` is a list and everything else is shared. `PASTE_MARK`
-# stays Claude-shaped and simply never fires for Codex, which makes Codex the
-# EASIER case for the delivery verification rather than the harder one.
+# ⚠️ **That last row was measured at ~900 characters and does NOT generalise,
+# which is the second time this block has been too confident.** MEASURED
+# 2026-08-26 on a live Codex row: a 1461-character delivery collapsed to
+# `› [Pasted Content 1461 chars]` -- a placeholder after all, and spelled
+# DIFFERENTLY from Claude's. The threshold sits somewhere between the two
+# lengths and is not worth pinning; what matters is that "renders it in full"
+# was a fact about the message tested, not about Codex.
+#
+# The conclusion drawn from it -- `PASTE_MARK` stays Claude-shaped and simply
+# never fires for Codex, so Codex is the EASIER case -- cost a real message.
+# `deliver` found neither the body (collapsed) nor a paste mark (wrong
+# spelling), raised exit 4, and exit 4 is DROPPED rather than retried on
+# purpose. The text sat in Codex's composer waiting for a human to press
+# Return, which is the exact symptom the paste mark was added to remove.
+#
+# So `COMPOSER_GLYPHS` and `PASTE_MARKS` are both lists now, for the same
+# reason -- and the pattern is the lesson: a per-agent rendering read off ONE
+# sample is a sample, not a constant.
 #
 # ⚠️ **Do not add a third entry from documentation.** Both of these were read
 # off a running agent; this project has twice been wrong about agterm by
@@ -123,14 +138,29 @@ MENU_MARKER = "[enter] attach"
 # for the day the interrupt-vs-queue difference actually bites.
 COMPOSER_GLYPHS = ("❯", "›")
 
-# ⚠️ Claude Code COLLAPSES a long, fast injection into a placeholder --
-# `❯ [Pasted text #1]` / `paste again to expand` -- so the body is simply not
-# on the screen to verify against. MEASURED: 843 characters pasted, and Return
-# submitted it fine. The Return was never the problem; the verification was,
-# and it refused to press it. agterm's own cookbook checks for "a
-# pasted-content indicator" for exactly this reason, and this file had read
-# that sentence and not carried it over.
-PASTE_MARK = "[Pasted text"
+# ⚠️ Both agents COLLAPSE a long, fast injection into a placeholder -- so the
+# body is simply not on the screen to verify against. MEASURED: Claude at 843
+# characters draws `❯ [Pasted text #1]` / `paste again to expand`, and Return
+# submitted it fine; Codex at 1461 draws `› [Pasted Content 1461 chars]`. The
+# Return was never the problem; the verification was, and it refused to press
+# it. agterm's own cookbook checks for "a pasted-content indicator" for exactly
+# this reason, and this file had read that sentence and not carried it over.
+#
+# ⚠️ **A TUPLE, and the two spellings are not interchangeable.** Codex says
+# `Content` where Claude says `text`, so a single Claude-shaped mark never
+# fires for Codex -- which is not the harmless no-op the block above assumed,
+# because a collapsed body cannot be verified any other way. Each mark is
+# compared on its OWN count rather than on a total: a total could stay level
+# while one placeholder appeared and another was cleared.
+#
+# ⚠️ **Matched CASE-INSENSITIVELY, and that is not tidiness.** `cat -A` on the
+# live pane read `[Pasted Content 1461 chars]`; the operator watching the same
+# row read `[Pasted content ...]`. Two readings of one screen, disagreeing on
+# one letter -- which is the same one-sample problem as the block above, one
+# level down. Case is not what distinguishes a paste placeholder from anything
+# else on a composer, so nothing is bought by betting on it, and the count
+# still has to GO UP for it to be evidence.
+PASTE_MARKS = ("[Pasted text", "[Pasted Content")
 
 # MEASURED: an empty Claude composer reports zero-based cursor column 2, the
 # same value agterm's own cookbook checks for a local agent. ⚠️ It is a SIGNAL,
@@ -1358,8 +1388,9 @@ def deliver(ctl, session, pane, body, send, lines, say):
     # ⚠️ Two different things defeat a naive match, and fixing only the first
     # left every wrapped message needing a human to press Enter:
     #
-    #   * **pasted** -- Claude Code collapses a long, fast injection into
-    #     `[Pasted text #1]` and the body is not on screen at all;
+    #   * **pasted** -- both agents collapse a long, fast injection into a
+    #     placeholder (`[Pasted text #1]`, `[Pasted Content 1461 chars]`) and
+    #     the body is not on screen at all;
     #   * **wrapped** -- the body IS on screen, but agterm has broken it across
     #     lines, so a 40-character probe straddles the wrap and matches
     #     nothing. Stripping whitespace makes the comparison wrap-immune, which
@@ -1372,7 +1403,9 @@ def deliver(ctl, session, pane, body, send, lines, say):
     probe = body[-40:] if len(body) > 40 else body
     flat_probe = "".join(probe.split())
     flat_text = "".join((text or "").split())
-    pasted = text.count(PASTE_MARK) > (before or "").count(PASTE_MARK)
+    was, now = (before or "").lower(), (text or "").lower()
+    pasted = any(now.count(mark.lower()) > was.count(mark.lower())
+                 for mark in PASTE_MARKS)
     if flat_probe not in flat_text and not pasted:
         raise PeerError("typed, but %r never appeared in the peer's pane, so it "
                         "was NOT sent. Look at that row before retrying."

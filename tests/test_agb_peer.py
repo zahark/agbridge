@@ -1042,7 +1042,7 @@ def test_the_agent_specific_surface_is_recorded_as_measured(peer):
     body = io.open(PEER_PATH, encoding="utf-8").read()
     head = body[:body.index("COMPOSER_GLYPHS = (")]
     assert "measured, not assumed" in head
-    for name in ("EMPTY_COLUMN", "submit key", "PASTE_MARK"):
+    for name in ("EMPTY_COLUMN", "submit key", "PASTE_MARKS"):
         assert name in head, name
 
 
@@ -1384,6 +1384,102 @@ def test_a_pasted_message_still_gets_its_return(peer):
     ctl = Pasting(panes())
     peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
     assert ctl.typed[-1][2] == "\n", "a pasted message must still be submitted"
+
+
+def test_a_codex_paste_placeholder_still_gets_its_return(peer):
+    """MEASURED 2026-08-26 on a live Codex row: a 1461-character delivery
+    collapsed to `› [Pasted Content 1461 chars]`.
+
+    ⚠️ The companion above is the SAME test for Claude, and the pair is the
+    point: the block at the top of `agb-peer` had recorded (at ~900 characters)
+    that Codex renders a long injection in full, concluded that a Claude-shaped
+    mark was a harmless no-op there, and so shipped a `deliver` that found
+    neither the body nor a mark. Exit 4 is dropped rather than retried, so the
+    message sat in the composer for a human to submit.
+    """
+    body = "[chat from alice] " + ("x" * 1443)
+
+    class Pasting(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            if text != "\n":
+                self.current[target] = (
+                    "\n\u203a [Pasted Content 1461 chars]\n[host:codex 14:05]\n")
+            return True
+
+    ctl = Pasting(panes())
+    peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert ctl.typed[-1][2] == "\n", "a pasted message must still be submitted"
+
+
+def test_a_stale_codex_placeholder_is_not_evidence_either(peer):
+    """The Codex half of the stale-placeholder guard. Without it the mark could
+    be added and the count comparison dropped, and every failed delivery to a
+    Codex that had ever received a long message would read as a success."""
+    body = "[chat from alice] " + ("x" * 1443)
+    stale = "\n\u203a [Pasted Content 900 chars]\n[host:codex 14:05]\n"
+
+    class Swallowing(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            return True
+
+    ctl = Swallowing({"AAAA1111": stale, "BBBB2222": COMPOSER})
+    with pytest.raises(peer.PeerError) as caught:
+        peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert caught.value.code == 4
+    assert [x[2] for x in ctl.typed] == [body], \
+        "it must not press Return on a placeholder that was already there"
+
+
+def test_the_placeholder_is_matched_whatever_its_case(peer):
+    """⚠️ `cat -A` on the live pane read `[Pasted Content 1461 chars]`; the
+    operator watching that same row read `[Pasted content ...]`. Two readings of
+    one screen disagreeing on one letter -- the same one-sample problem as the
+    mark itself, one level down. Case distinguishes nothing here, so betting on
+    it buys nothing and can only lose a message."""
+    body = "[chat from alice] " + ("x" * 1443)
+
+    for rendering in ("[Pasted Content 1461 chars]",
+                      "[Pasted content 1461 chars]",
+                      "[PASTED CONTENT 1461 CHARS]",
+                      "[Pasted Text #1]"):
+
+        class Pasting(RelayCtl):
+            mark = rendering
+
+            def type(self, target, pane, text):
+                self.typed.append((target, pane, text))
+                if text != "\n":
+                    self.current[target] = (
+                        "\n\u203a " + self.mark + "\n[host:codex 14:05]\n")
+                return True
+
+        ctl = Pasting(panes())
+        peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+        assert ctl.typed[-1][2] == "\n", rendering
+
+
+def test_each_mark_is_counted_on_its_own(peer):
+    """⚠️ Not a total. A total can stay level while one placeholder appears and
+    another is cleared, and the delivery would then read as swallowed. The two
+    spellings are independent evidence, so they are compared independently."""
+    body = "[chat from alice] " + ("x" * 1443)
+
+    class Swapping(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            if text != "\n":
+                self.current[target] = (
+                    "\n\u203a [Pasted Content 1461 chars]\n[host:codex 14:05]\n")
+            return True
+
+    # Before: a Claude-shaped mark. After: a Codex-shaped one, and no Claude
+    # one. Total placeholders: 1 -> 1.
+    ctl = Swapping({"AAAA1111": COMPOSER + "\u276f [Pasted text #1]\n",
+                    "BBBB2222": COMPOSER})
+    peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert ctl.typed[-1][2] == "\n", "the new mark is evidence on its own"
 
 
 def test_a_stale_paste_placeholder_is_not_evidence(peer):

@@ -1718,7 +1718,7 @@ row's own `agb pane --host`, read out of agterm's `foreground` field — the sam
 useless for mode detection is exactly right for this.
 
 ⚠️ **TWO things defeat the delivery check, and fixing one leaves the other.** A message that was
-**pasted** is not on screen at all (`[Pasted text #1]`); a message that was **wrapped** is on screen,
+**pasted** is not on screen at all (`[Pasted text #1]`, `[Pasted Content 1461 chars]`); a message that was **wrapped** is on screen,
 but agterm broke it across lines so a 40-character tail probe straddles the break and matches
 nothing. The check strips all whitespace from both sides, which makes it wrap-immune — the same
 reasoning the wire format uses, and which this check did not inherit for an embarrassing number of
@@ -1754,12 +1754,24 @@ verifiable one way and invisible the other — a local pane is the harsher case,
 of what you would guess. And the collapse is a **hybrid**: the head is typed literally and only the
 tail becomes the placeholder, so a check matching the message's *tail* is exactly the one that fails.
 
-⚠️ **Claude Code collapses a long, fast injection into `[Pasted text #1]`** — the body is simply not
-on the screen to verify against. MEASURED at 843 characters, and **Return submits it fine**: the
-Return was never the problem, the verification was, and it refused to press it. So every long
-message needed a human to hit Enter, in both directions. `deliver` accepts a paste placeholder as
-evidence — but only one that **was not there before typing**, or a single earlier long message would
-make every later failure look like a success. agterm's own cookbook checks for the same indicator.
+⚠️ **Both agents collapse a long, fast injection into a placeholder** — the body is simply not
+on the screen to verify against. MEASURED: Claude at 843 characters draws `[Pasted text #1]`, and
+**Return submits it fine**: the Return was never the problem, the verification was, and it refused to
+press it. So every long message needed a human to hit Enter, in both directions. `deliver` accepts a
+paste placeholder as evidence — but only one that **was not there before typing**, or a single
+earlier long message would make every later failure look like a success. agterm's own cookbook checks
+for the same indicator.
+
+⚠️ **The two agents spell the placeholder DIFFERENTLY, and that cost a real message.** Codex draws
+`[Pasted Content 1461 chars]` where Claude draws `[Pasted text #1]`. `docs/agtermctl.md` had recorded
+— measured, at ~900 characters — that Codex renders a long injection *in full*, and concluded that a
+Claude-shaped mark was a harmless no-op there. At 1461 characters it is not: `deliver` found neither
+the body nor a mark, raised exit 4, and **the relay drops exit 4 rather than retrying** (typing again
+would leave two copies in the composer). The message sat in Codex's composer waiting for a human.
+`PASTE_MARKS` holds both spellings, each compared on its own count and **case-insensitively** —
+`cat -A` on the pane read `Content` while the operator watching the same row read `content`, and case
+distinguishes nothing on a composer. **A per-agent rendering read off one sample is a sample, not a
+constant.**
 
 ⚠️ **A wedged agterm client wedges tmux, and `agb-peer` times out rather than hanging.** MEASURED:
 while a `dashboard` had an unresponsive view-only client attached, `tmux list-clients` answered
