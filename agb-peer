@@ -784,7 +784,7 @@ def prime_joiners(ctl, sessions, needs_prime, people, seen, lines, say,
 def _name_notes(name):
     return (("gone", name), ("menu", name), ("said", name), ("held", name),
             ("prime", name), ("said", ("fetch", name)),
-            ("said", ("read", name)))
+            ("said", ("read", name)), ("said", ("gone-row", name)))
 
 
 def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
@@ -1619,8 +1619,16 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
     row, pane, _target, _tmux = people[recipient]
     session = sessions.get(row)
     if session is None:
-        say("%s's row is gone from the tree -- holding the message" % (recipient,))
+        # ⚠️ Throttled: this HOLDS, so it is re-reached every tick for as long
+        # as the row is missing -- and `resolve_all` deliberately keeps a stale
+        # binding across a re-mint, so "missing" can last. It was the one
+        # holding path in this file still saying its reason every tick.
+        _throttled(say, notes, ("gone-row", recipient))(
+            "%s's row is gone from the tree -- holding the message"
+            % (recipient,))
         return False
+    if notes is not None:
+        notes.pop(("said", ("gone-row", recipient)), None)
     # The sender is the pane the marker was FOUND in, never the `from` field.
     # A pane is a place, and an agent cannot print into another agent's pane,
     # so the place is the only part of this that cannot be misstated.

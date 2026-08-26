@@ -2191,7 +2191,8 @@ def test_a_drop_to_one_participant_is_announced_not_refused(peer, tmp_path):
 # back, and ("prime", name) would make its next join give up early.
 LEAVE_CLEARS_NOTES = [
     ("gone", "bob"), ("menu", "bob"), ("said", "bob"), ("held", "bob"),
-    ("prime", "bob"), ("said", ("fetch", "bob")), ("said", ("read", "bob"))]
+    ("prime", "bob"), ("said", ("fetch", "bob")), ("said", ("read", "bob")),
+    ("said", ("gone-row", "bob"))]
 
 
 def test_the_per_name_notes_list_is_complete(peer):
@@ -2595,3 +2596,18 @@ def test_a_rebind_stops_routing_to_the_old_row(peer, tmp_path):
         "bob moved; nothing may be typed into the row he left: %s"
         % (out.getvalue(),))
     assert "bob is in the roster but has no row yet" in out.getvalue()
+
+
+def test_a_held_message_for_a_vanished_row_says_it_once(peer):
+    """⚠️ The last holding path in this file that still spoke every tick. It
+    returns False, so it is re-reached on every tick -- and `resolve_all`
+    deliberately keeps a stale binding across a re-mint, so "missing" lasts."""
+    ctl = RelayCtl({})
+    pending = [("alice", {"id": "m1", "to": "bob", "text": "hi"})]
+    notes = {}
+    for _ in range(20):
+        peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                        notes=notes, members={"alice", "bob"})
+    gone = [s for s in ctl.said if "row is gone from the tree" in s]
+    assert len(pending) == 1, "non-vacuous: it really was held every tick"
+    assert len(gone) == 1, gone
