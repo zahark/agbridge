@@ -144,6 +144,30 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A file-transport doorbell that outlived its message made the relay re-fetch it every tick, for
+  ever.** After a relay restart you saw one line —
+  `pool: cannot read <chat-dir>/<id>.msg: No such file or directory` — and then silence, while the
+  relay kept issuing an ssh at the relay interval for the life of the process.
+
+  The file transport names its file by the doorbell id, and the relay **deletes** that file once it
+  has read it — but it cannot clear the doorbell, because that transport exists precisely because the
+  agent's tmux is unreachable. So the doorbell outlives the file, and every later relay primes on a
+  stale id. Reported as a fetch *failure*, `seen` never advanced, so the retry re-fired for ever and
+  `_throttled` hid it after the first complaint.
+
+  A fetch now has three outcomes, not two: **the command ran and there is nothing to fetch** is
+  distinct from **we could not ask**. The first advances `seen` and stops; the second still retries.
+
+  ⚠️ **The discriminator is the exit status, not the error text.** `ssh` reserves **255** for its own
+  failures; anything else non-zero means the remote command ran and failed. Measured: `cat` on a
+  missing file exits 1, `ssh` to an unresolvable host exits 255. Matching *"No such file or
+  directory"* would have been the error-string guess `socket_is_missing` exists to avoid.
+
+  ⚠️ **The cost, stated rather than hidden:** a file that is momentarily unreadable — a permissions
+  repair, an NFS hiccup — is now given up on rather than waited out, so one message could be lost.
+  That is a real weakening of *"a short read is no information"*, taken because the measured
+  alternative was an ssh every two seconds, silent, indefinitely.
+
 - **`agb-peer who` crashed in a plain login shell, after it had already sent the request.** A warning
   glyph in its output raised `UnicodeEncodeError: 'ascii' codec can't encode characters` — so the
   message went out, the relay answered it, and the command reported a traceback.

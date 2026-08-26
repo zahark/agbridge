@@ -3084,3 +3084,79 @@ def test_the_docstrings_are_allowed_to_be_non_ascii(peer):
     rich = [n for n in ast.walk(tree)
             if isinstance(n, ast.Str) and any(ord(c) > 127 for c in n.s)]
     assert len(rich) > 10, "the file's own warnings should still be there"
+
+
+# ---------------------------------------------------------------------------
+# a doorbell that outlives its file
+# ---------------------------------------------------------------------------
+#
+# ⚠️ Found live. The file transport names its file by the doorbell id, and the
+# relay DELETES that file once it has read it -- but it cannot clear the
+# doorbell, because that transport exists precisely because the tmux is
+# unreachable. So every later relay primes on a stale id and fetches something
+# rightly gone. Treated as a failure, `seen` never advanced and the retry
+# re-fired at the relay interval for ever.
+
+
+class RcFetcher(object):
+    """A fetch fake that answers reads with a chosen exit status."""
+
+    def __init__(self, rc):
+        self.rc, self.calls = rc, []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(argv)
+        if "cat" in argv:
+            return self.rc, "", "boom"
+        return 0, "", ""
+
+
+def test_a_missing_file_is_gone_not_failed(peer):
+    outcome, said = {}, []
+    assert peer.drain(RcFetcher(1), "pool", "box", peer.NFS_TARGET, said.append,
+                      ident="aaa", chat_dir="/s/chat", outcome=outcome) == []
+    assert outcome["fetch"] == peer.FETCH_GONE
+    assert any("already collected" in s for s in said), said
+
+
+def test_an_unreachable_host_is_still_a_failure(peer):
+    """⚠️ The companion, and the whole point of using the exit status: ssh's own
+    255 must stay retryable, or a network blip would discard a real message."""
+    outcome, said = {}, []
+    assert peer.drain(RcFetcher(255), "pool", "box", peer.NFS_TARGET,
+                      said.append, ident="aaa", chat_dir="/s/chat",
+                      outcome=outcome) == []
+    assert outcome["fetch"] == peer.FETCH_FAILED
+    assert any("cannot reach" in s for s in said), said
+
+
+def test_a_gone_doorbell_stops_the_relay_re_asking(peer):
+    """The behaviour that matters: `seen` advances, so the next tick does not
+    fetch again. Measured live as an ssh every two seconds, for ever."""
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    people = {"alice": ("AAAA1111", "left", "box", peer.NFS_TARGET),
+              "bob": PEOPLE["bob"]}
+    seen, notes = {}, {}
+    fetch = RcFetcher(1)
+    for _ in range(5):
+        peer.relay_tick(ctl, people, seen, [], 500, ctl.say, fetch,
+                        notes=notes, chat_dir="/s/chat")
+    reads = [c for c in fetch.calls if "cat" in c]
+    assert seen.get("alice") == "aaa", "the doorbell must be marked handled"
+    assert len(reads) == 1, "five ticks, one fetch: %r" % (reads,)
+
+
+def test_an_unreachable_host_keeps_retrying(peer):
+    """The companion to the one above -- without it, "stops re-asking" would
+    pass against a relay that gave up on everything."""
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    people = {"alice": ("AAAA1111", "left", "box", peer.NFS_TARGET),
+              "bob": PEOPLE["bob"]}
+    seen, notes = {}, {}
+    fetch = RcFetcher(255)
+    for _ in range(5):
+        peer.relay_tick(ctl, people, seen, [], 500, ctl.say, fetch,
+                        notes=notes, chat_dir="/s/chat")
+    reads = [c for c in fetch.calls if "cat" in c]
+    assert "alice" not in seen, "a transport failure must not be recorded as read"
+    assert len(reads) == 5, "five ticks, five retries: %r" % (reads,)

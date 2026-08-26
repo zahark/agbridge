@@ -1538,6 +1538,27 @@ def unlink_argv(chat_dir, ident):
 # Priming a joiner turns on exactly that distinction.
 FETCH_OK = "ok"
 FETCH_FAILED = "failed"
+# ⚠️ **THE COMMAND RAN AND THERE IS NOTHING TO FETCH -- EVER.** Distinct from
+# FETCH_FAILED, which means we could not ask. The file transport names its file
+# by the doorbell id, and the relay DELETES that file once it has read it -- but
+# it cannot clear the doorbell, because the whole premise of that transport is
+# that its tmux is unreachable. So a doorbell outlives its file, and every later
+# relay primes on a stale id and fetches something that is rightly gone.
+#
+# Treated as FETCH_FAILED that was an ssh EVERY TICK, FOR EVER: `seen` never
+# advanced, so the retry re-fired at the relay interval and `_throttled` hid it
+# after the first line. Measured live at `--interval 2`.
+#
+# ⚠️ The discriminator is the EXIT STATUS, not the error text. `ssh` reserves
+# **255** for its own failures; anything else non-zero means the remote command
+# ran and failed. Measured: `cat` on a missing file exits 1, `ssh` to an
+# unresolvable host exits 255. Matching "No such file or directory" would be the
+# error-string guess this project keeps getting burned by -- see
+# `socket_is_missing`, which exists to avoid exactly that.
+FETCH_GONE = "gone"
+
+# ssh's own failure code. Anything else non-zero came from the remote command.
+SSH_FAILED_RC = 255
 
 
 def _drained(outcome, result, messages=None):
@@ -1567,10 +1588,24 @@ def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None):
         say("%s: no message id in the doorbell" % (name,))
         return _drained(outcome, FETCH_FAILED)
     rc, out, err = fetch(ssh_argv(target, file_argv(chat_dir, ident)))
-    if rc != 0:
-        say("%s: cannot read %s/%s.msg: %s"
-            % (name, chat_dir, ident, (err or "").strip() or rc))
+    if rc == SSH_FAILED_RC:
+        # We could not ask. Retryable, and worth retrying.
+        say("%s: cannot reach %s to read %s.msg: %s"
+            % (name, target, ident, (err or "").strip() or rc))
         return _drained(outcome, FETCH_FAILED)
+    if rc != 0:
+        # ⚠️ The command RAN and could not produce the file. Retrying cannot
+        # help: the doorbell names one fixed id, and that file will not come
+        # back. Almost always this relay's predecessor read it and removed it.
+        # ⚠️ The cost, stated rather than hidden: a file that is momentarily
+        # unreadable -- a permissions repair, an NFS hiccup -- is given up on
+        # rather than waited out, so one message could be lost. The alternative
+        # measured worse: an ssh every tick for the life of the relay, silent
+        # after the first complaint.
+        say("%s: nothing to read at %s/%s.msg (%s) -- treating that doorbell "
+            "as already collected. This is normal after a relay restart."
+            % (name, chat_dir, ident, (err or "").strip() or rc))
+        return _drained(outcome, FETCH_GONE)
     parsed = parse_option_value(out)
     if not parsed:
         say("%s: %s.msg is not a message" % (name, ident))
@@ -1851,8 +1886,10 @@ def scan_participant(ctl, sessions, name, binding, seen, lines, say,
     messages = drain(fetch, name, host, tmux_pane,
                      _throttled(say, notes, ("fetch", name)), ident,
                      chat_dir, outcome)
-    if outcome.get("fetch") != FETCH_OK:
+    if outcome.get("fetch") == FETCH_FAILED:
         return SCAN_FETCH_FAILED, []
+    # ⚠️ FETCH_GONE advances `seen` exactly as FETCH_OK does, and that is the
+    # point: the doorbell has been dealt with, so the relay stops re-asking.
     seen[name] = ident
     notes.pop(("said", ("fetch", name)), None)
     return SCAN_FETCHED, messages
