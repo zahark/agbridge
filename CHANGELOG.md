@@ -144,6 +144,31 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **Nothing delivered to a Codex peer was ever submitted — the Return arrived as a newline.** The
+  message was typed, verified, and the Return went out; Codex put a newline in its composer and sat
+  there. Every message to a Codex row has needed a human to press Enter since Codex support was
+  added, in every length and every direction.
+
+  MEASURED 2026-08-26, on live panes:
+
+  | what arrives at the pane | Claude | Codex |
+  |---|---|---|
+  | raw `0x0A` (LF) | newline **inserted** | newline **inserted** |
+  | raw `0x0D` (CR) | *not run* | **submitted** |
+  | agterm `session type "\n"` | **submits** (verified since 0.3.0) | newline **inserted** |
+
+  ⚠️ **The third row was read by counting blank lines** — an empty Codex composer renders one above
+  the model line, the loaded one rendered two — which is why this looked for so long like a Return
+  that was never sent. It was sent, and it arrived. What agterm puts on the wire for `"\n"` is not
+  observable from the farm side and does not need to be: `\r` is what a real Return key sends, and it
+  is the only one of the two that both TUIs agree about. `SUBMIT_KEY` is `"\r"`.
+
+  ⚠️ **`agb pane`'s menu still gets a literal `"\n"`, and unifying them would break it silently.**
+  That prompt is a shell `read` on a tty in **canonical** mode, where `ICRNL` makes CR and LF
+  equivalent; a TUI puts the tty in **raw** mode and decodes keys itself, so it does not. Same
+  keystroke, two readers, and only the raw-mode one is picky. A structural test pins the asymmetry,
+  and a mutation that merges them fails it by name.
+
 - **A long message was given up on while the pane was still rendering it.** The delivery check typed
   the body, slept **one second**, read the pane **once**, and treated "not there yet" as "swallowed".
 

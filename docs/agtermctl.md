@@ -796,6 +796,7 @@ delivery half is the only part of that tool that is agent-specific at all.
 | composer glyph | `❯` | **`›`** |
 | empty-composer caret column | 2 | **2** |
 | submit key | Enter | **Enter** |
+| what `session type` must send to submit | `\n` **or** `\r` | **`\r` only — `\n` inserts a newline** |
 | a ~900-char fast injection | collapses to `[Pasted text #1]` | rendered in full, wrapped |
 | a ~1500-char fast injection | collapses to `[Pasted text #1]` | **collapses to `[Pasted Content 1461 chars]`** |
 
@@ -821,6 +822,31 @@ about running rather than reading does not protect against running it once.
 ⚠️ **A submit key sent immediately after the text is LOST.** Measured twice: text then Enter with no
 gap left the line sitting in the composer; text, one second, Enter submitted it. `agb-peer`'s
 `deliver` already sleeps between the two, for an unrelated reason, and is not exposed.
+
+### 🔴 `session type "\n"` submits Claude and does NOT submit Codex
+
+MEASURED 2026-08-26, after a Codex peer spent an evening receiving messages it never acted on:
+
+| what arrives at the pane | Claude | Codex |
+|---|---|---|
+| raw `0x0A` (LF) | newline **inserted** | newline **inserted** |
+| raw `0x0D` (CR) | *not run* | **submitted** |
+| agterm `session type "\n"` | **submits** (verified since 0.3.0) | newline **inserted** |
+
+The third row is the one that cost the messages, and it was read by **counting blank lines**: an
+empty Codex composer renders one blank line above the model line, and the loaded one rendered two.
+So the Return *was* going out and *was* arriving — as a newline. That is why the symptom read as
+"the Return is never sent" for so long: the relay had done its part.
+
+What agterm actually puts on the wire for `"\n"` is **not observable from the farm side**, and it
+does not matter: `\r` is what a real Return key sends and it is the only one of the two both TUIs
+agree about. `agb-peer`'s `SUBMIT_KEY` is `"\r"`.
+
+⚠️ **`agb pane`'s menu still gets a literal `"\n"`, and merging the two would break it silently.**
+That prompt is a shell `read` on a tty in **canonical** mode, where the line discipline's `ICRNL`
+makes CR and LF equivalent — and that path is verified as it stands. A TUI puts the tty in **raw**
+mode and decodes keys itself, so the equivalence does not hold there. Same keystroke, two readers;
+only the raw-mode one is picky. A structural test pins the asymmetry.
 
 ### ⚠️ A sandboxed Codex is RECEIVE-ONLY
 

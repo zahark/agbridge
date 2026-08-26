@@ -317,7 +317,7 @@ def test_the_return_is_a_second_call_after_verification(peer):
     body = "[chat from alpha] hello"
     ctl = FakeCtl(texts=[COMPOSER + body])
     peer.deliver(ctl, session(), "left", body, True, 40, lambda m: None)
-    assert ctl.typed == [body, "\n"]
+    assert ctl.typed == [body, "\r"]
 
 
 def test_no_send_types_but_never_presses_return(peer):
@@ -339,13 +339,52 @@ def test_text_that_never_rendered_is_never_submitted(peer):
     assert ctl.typed == [body], "it must not press Return after a failed verify"
 
 
+def test_the_submit_key_is_a_carriage_return(peer):
+    """⚠️ MEASURED 2026-08-26 on live panes, after a Codex peer spent an evening
+    receiving messages it never acted on:
+
+        raw 0x0A into Codex   -> a newline is INSERTED
+        raw 0x0A into Claude  -> a newline is INSERTED
+        raw 0x0D into Codex   -> SUBMITTED
+        agterm `type "\n"`    -> Claude submits; Codex INSERTS A NEWLINE
+
+    The last row was read by counting blank lines: an empty Codex composer
+    renders one above the model line, the loaded one rendered two. So the Return
+    was going out and arriving -- as a newline. CR is what a real Return key
+    sends, and it is the only one of the two both TUIs agree about.
+
+    Asserted against a literal rather than against the constant: reading
+    `peer.SUBMIT_KEY` here would make the test say only that the code equals
+    itself.
+    """
+    assert peer.SUBMIT_KEY == "\r"
+
+
+def test_the_menu_is_armed_with_a_newline_not_the_submit_key(peer):
+    """⚠️ The asymmetry is deliberate and a merge would break it silently.
+
+    `agb pane`'s menu is a shell `read` on a tty in CANONICAL mode, where the
+    line discipline's ICRNL makes CR and LF equivalent -- and that path is
+    verified as it stands. A TUI puts the tty in RAW mode and decodes keys
+    itself, so the equivalence does not hold there. Same keystroke, two readers;
+    only the raw-mode one is picky.
+    """
+    body = io.open(PEER_PATH, encoding="utf-8").read()
+    assert body.count('ctl.type(target, pane, SUBMIT_KEY)') == 1, \
+        "exactly one composer submit"
+    assert body.count('ctl.type(target, pane, "\\n")') == 1, \
+        "the menu attach must still be a literal newline"
+    assert body.count('ctl.type(row, pane, "\\n")') == 1, \
+        "and so must the relay's own menu attach"
+
+
 def test_a_wrapped_long_line_still_verifies(peer):
     # agterm wraps; the whole body is then never a single substring. Matching
     # on the tail is what keeps a long message from failing verification.
     body = "[chat from alpha] " + ("x" * 200) + "END-OF-MESSAGE"
     ctl = FakeCtl(texts=[COMPOSER + body[-40:]])
     peer.deliver(ctl, session(), "left", body, True, 40, lambda m: None)
-    assert ctl.typed[-1] == "\n"
+    assert ctl.typed[-1] == "\r"
 
 
 # ----------------------------------------------------------------------- main
@@ -377,7 +416,7 @@ def test_the_whole_flow_types_then_sends(peer):
     rc = peer.main(["--to", "AAAA", "--from", "alpha", "hello"], io.StringIO(),
                    ctl)
     assert rc == 0
-    assert ctl.typed == [body, "\n"]
+    assert ctl.typed == [body, "\r"]
 
 
 # ---------------------------------------------------------------- the listing
@@ -766,7 +805,7 @@ def test_a_new_doorbell_triggers_a_fetch_and_a_delivery(peer):
     fetch = Fetcher(framed(("aaa", "bob", "hello")))
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, fetch)
     assert fetch.calls, "the doorbell rang and nothing was fetched"
-    bodies = [t for (_, _, t) in ctl.typed if t != "\n"]
+    bodies = [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")]
     assert bodies == ["[chat from alice] hello"]
 
 
@@ -807,7 +846,7 @@ def test_the_sender_is_the_pane_the_doorbell_rang_in(peer):
     ctl = RelayCtl(panes(alice=bell("aaa")))
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                     Fetcher(framed(("aaa", "bob", "trust me"))))
-    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
         "[chat from alice] trust me"]
 
 
@@ -883,7 +922,7 @@ def test_a_busy_recipient_holds_the_message_instead_of_blocking(peer):
     assert peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch) == 1
     assert ctl.typed == []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch)
-    assert [t for (_, _, t) in ctl.typed if t != "\n"] == ["[chat from alice] held"]
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == ["[chat from alice] held"]
 
 
 def test_a_message_to_a_stranger_is_dropped_with_a_reason(peer):
@@ -1198,7 +1237,7 @@ def test_a_message_is_never_delivered_twice(peer):
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch, notes=notes)
     listings = [a for a in fetch.calls if "show-options" in a]
     assert len(listings) == 2, "both rings must have fetched"
-    bodies = [t for (_, _, t) in ctl.typed if t != "\n"]
+    bodies = [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")]
     assert bodies == ["[chat from alice] only once"], bodies
 
 
@@ -1383,7 +1422,7 @@ def test_a_pasted_message_still_gets_its_return(peer):
 
     ctl = Pasting(panes())
     peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert ctl.typed[-1][2] == "\n", "a pasted message must still be submitted"
+    assert ctl.typed[-1][2] == "\r", "a pasted message must still be submitted"
 
 
 class SlowRender(RelayCtl):
@@ -1423,7 +1462,7 @@ def test_a_slow_render_is_waited_out(peer):
     # The first read is the `before` baseline, so the body lands on read 4.
     ctl = SlowRender(panes(), 3, "\n" + body + "\n")
     peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert ctl.typed[-1][2] == "\n", "a slow render must still be submitted"
+    assert ctl.typed[-1][2] == "\r", "a slow render must still be submitted"
 
 
 def test_a_render_that_never_arrives_is_still_refused(peer):
@@ -1472,7 +1511,7 @@ def test_a_codex_paste_placeholder_still_gets_its_return(peer):
 
     ctl = Pasting(panes())
     peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert ctl.typed[-1][2] == "\n", "a pasted message must still be submitted"
+    assert ctl.typed[-1][2] == "\r", "a pasted message must still be submitted"
 
 
 def test_a_stale_codex_placeholder_is_not_evidence_either(peer):
@@ -1520,7 +1559,7 @@ def test_the_placeholder_is_matched_whatever_its_case(peer):
 
         ctl = Pasting(panes())
         peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-        assert ctl.typed[-1][2] == "\n", rendering
+        assert ctl.typed[-1][2] == "\r", rendering
 
 
 def test_each_mark_is_counted_on_its_own(peer):
@@ -1542,7 +1581,7 @@ def test_each_mark_is_counted_on_its_own(peer):
     ctl = Swapping({"AAAA1111": COMPOSER + "\u276f [Pasted text #1]\n",
                     "BBBB2222": COMPOSER})
     peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert ctl.typed[-1][2] == "\n", "the new mark is evidence on its own"
+    assert ctl.typed[-1][2] == "\r", "the new mark is evidence on its own"
 
 
 def test_a_stale_paste_placeholder_is_not_evidence(peer):
@@ -1610,14 +1649,14 @@ def test_a_wrapped_message_still_gets_its_return(peer):
     class Wrapping(RelayCtl):
         def type(self, target, pane, text):
             self.typed.append((target, pane, text))
-            if text != "\n":
+            if text not in ("\n", "\r"):
                 wrapped = "\n".join(text[i:i + 24] for i in range(0, len(text), 24))
                 self.current[target] = COMPOSER + wrapped
             return True
 
     ctl = Wrapping(panes())
     peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert ctl.typed[-1][2] == "\n", "a wrapped message must still be submitted"
+    assert ctl.typed[-1][2] == "\r", "a wrapped message must still be submitted"
 
 
 def test_text_that_truly_never_arrived_is_still_refused(peer):
@@ -1792,7 +1831,7 @@ def test_a_held_message_is_delivered_once_the_row_appears(peer):
     peer.relay_tick(later, dict(PEOPLE, carol=CAROL), {}, pending, 500,
                     later.say, Fetcher(), notes=notes, members=ROSTER)
     assert pending == [], "delivered, so no longer queued"
-    assert [t for (_, _, t) in later.typed if t != "\n"] == [
+    assert [t for (_, _, t) in later.typed if t not in ("\n", "\r")] == [
         "[chat from alice] hi"]
 
 
@@ -1976,7 +2015,7 @@ def test_a_failed_fetch_is_retried_on_the_next_tick(peer):
     # ⚠️ Asserted on what was TYPED, not on `pending`: a tick that fetches also
     # delivers, so a delivered message leaves `pending` empty -- the same value
     # a lost one leaves.
-    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
         "[chat from alice] hello"], \
         "the doorbell never moved; only the retry can have found this"
 
@@ -2650,7 +2689,7 @@ def test_a_joiners_backlog_is_not_delivered_by_the_loop(peer, tmp_path):
     # `resolve_all` would leave it unresolved that tick and cost another.
     peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=2,
                    fetch=Fetcher(framed(("old", "bob", "ancient"))))
-    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [], out.getvalue()
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [], out.getvalue()
     assert "predate a join" in out.getvalue(), out.getvalue()
 
 
@@ -2719,7 +2758,7 @@ def test_a_name_still_being_primed_can_still_receive(peer):
     peer.relay_tick(ctl, {"alice": PEOPLE["alice"]}, {}, pending, 500, ctl.say,
                     Fetcher(), notes={}, members={"alice", "bob"},
                     deliver_to=PEOPLE)
-    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
         "[chat from alice] hi"]
     assert pending == []
 
@@ -2775,7 +2814,7 @@ def test_a_rebind_keeps_its_queued_mail_through_the_loop(peer, tmp_path):
     out = io.StringIO()
     peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3,
                    fetch=Fetcher(framed(("aaa", "ghost", "still for you"))))
-    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
         "[chat from alice] still for you"], out.getvalue()
     assert "will not be delivered" not in out.getvalue(), out.getvalue()
 
@@ -2797,7 +2836,7 @@ def test_a_rebind_stops_routing_to_the_old_row(peer, tmp_path):
     out = io.StringIO()
     peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=2,
                    fetch=Fetcher(framed(("aaa", "bob", "wrong pane"))))
-    assert [t for (t_, p, t) in ctl.typed if t != "\n"] == [], (
+    assert [t for (t_, p, t) in ctl.typed if t not in ("\n", "\r")] == [], (
         "bob moved; nothing may be typed into the row he left: %s"
         % (out.getvalue(),))
     assert "bob is in the roster but has no row yet" in out.getvalue()
@@ -2920,7 +2959,7 @@ def test_a_who_request_is_answered_to_the_asker(peer):
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                     Fetcher(who_from("alice")), notes={},
                     members={"alice", "bob"})
-    typed = [(t, body) for (t, _p, body) in ctl.typed if body != "\n"]
+    typed = [(t, body) for (t, _p, body) in ctl.typed if body not in ("\n", "\r")]
     assert len(typed) == 1, typed
     target, body = typed[0]
     assert target == PEOPLE["alice"][0], "the answer goes to the asker"
@@ -2948,7 +2987,7 @@ def test_the_answer_carries_the_relay_prefix(peer):
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                     Fetcher(who_from("alice")), notes={},
                     members={"alice", "bob"})
-    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    bodies = [b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r")]
     assert bodies and bodies[0].startswith("[chat from relay] "), bodies
 
 
@@ -2979,7 +3018,7 @@ def test_each_asker_gets_its_own_you(peer):
 
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, TwoAskers(),
                     notes={}, members={"alice", "bob"})
-    bodies = sorted(b for (_t, _p, b) in ctl.typed if b != "\n")
+    bodies = sorted(b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r"))
     assert len(bodies) == 2, bodies
     assert bodies[0] == "[chat from relay] you=alice peer=bob", bodies
     assert bodies[1] == "[chat from relay] you=bob peer=alice", bodies
@@ -3016,7 +3055,7 @@ def test_a_who_survives_the_members_default(peer):
     ctl = RelayCtl(panes(alice=bell("w1")))
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                     Fetcher(who_from("alice")), notes={})
-    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    bodies = [b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r")]
     assert bodies == ["[chat from relay] you=alice peer=bob"], bodies
 
 
@@ -3027,7 +3066,7 @@ def test_the_answer_lists_the_roster_not_the_resolved_set(peer):
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                     Fetcher(who_from("alice")), notes={},
                     members={"alice", "bob", "carol"})
-    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    bodies = [b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r")]
     assert bodies == ["[chat from relay] you=alice peer=bob peer=carol"], bodies
 
 
@@ -3040,7 +3079,7 @@ def test_a_refetched_who_is_answered_once(peer):
         peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                         Fetcher(who_from("alice")), notes=notes,
                         members={"alice", "bob"})
-    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    bodies = [b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r")]
     assert len(bodies) == 1, bodies
 
 
@@ -3051,7 +3090,7 @@ def test_an_ordinary_message_is_still_routed(peer):
     peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
                     Fetcher(framed(("m1", "bob", "hello"))), notes={},
                     members={"alice", "bob"})
-    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    bodies = [b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r")]
     assert bodies == ["[chat from alice] hello"], bodies
 
 
@@ -3439,6 +3478,6 @@ def test_the_relay_reads_both_doorbells_off_a_pane(peer):
     pending = []
     peer.relay_tick(ctl, people, {}, pending, 500, ctl.say, fetch,
                     notes={}, chat_dir="/s/chat", members={"alice", "bob"})
-    bodies = sorted(b for (_t, _p, b) in ctl.typed if b != "\n")
+    bodies = sorted(b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r"))
     assert bodies == ["[chat from alice] first",
                       "[chat from alice] second"], bodies

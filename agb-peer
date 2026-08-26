@@ -1380,6 +1380,30 @@ def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
 # not be.
 VERIFY_READS = 4
 
+# ⚠️ **What submits a composer: CR (`\r`), NOT LF (`\n`).** MEASURED 2026-08-26
+# on live panes, after a Codex peer spent an evening receiving messages it never
+# acted on:
+#
+#   raw 0x0A into Codex   -> a newline is INSERTED in the composer
+#   raw 0x0A into Claude  -> a newline is INSERTED in the composer
+#   raw 0x0D into Codex   -> SUBMITTED
+#   agterm `type "\n"`    -> Claude submits; Codex INSERTS A NEWLINE
+#
+# The last row is the one that cost the messages, and it was measured by
+# counting blank lines: an empty Codex composer renders ONE blank line above the
+# model line and the loaded one rendered TWO. So the Return was going out and
+# arriving -- as a newline. Whatever agterm does with `\n` on the way (the byte
+# it puts on the wire is not observable from the farm side), the two TUIs
+# disagree about the result, and CR is the byte a real Return key sends.
+#
+# ⚠️ **The `agb pane` MENU still gets a literal `"\n"`, and that is not an
+# oversight.** That prompt is a shell `read` on a tty in canonical mode, where
+# the line discipline's ICRNL makes CR and LF equivalent -- and that path is
+# verified as it stands. A TUI puts the tty in raw mode and decodes keys itself,
+# so the equivalence simply does not hold there. Same keystroke, two different
+# readers; only the raw-mode one is picky.
+SUBMIT_KEY = "\r"
+
 
 def rendered(before, text, probe):
     """Did the body we typed actually reach the pane? Compared on its TAIL,
@@ -1441,7 +1465,7 @@ def deliver(ctl, session, pane, body, send, lines, say):
     if not send:
         say("typed, not sent (--no-send). It is sitting in the composer.")
         return
-    ctl.type(target, pane, "\n")
+    ctl.type(target, pane, SUBMIT_KEY)
     say("delivered")
 
 
