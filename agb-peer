@@ -203,11 +203,12 @@ BUSY_STATUSES = ("active", "blocked")
 PEER_FLAGS = ("--stdin", "--no-send", "--no-arm", "--dry-run", "--list",
               "--force", "--version", "--once", "--dashboard")
 PEER_VALUE_ARGS = ("--to", "--pane", "--from", "--retries", "--interval",
-                   "--lines", "--chat-dir")
+                   "--lines", "--chat-dir", "--roster")
 
 USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
        agb-peer send --to <name> <message>          # tmux only; no agtermctl
        agb-peer relay a=<label> b=<label>[:pane][@host[:nfs]] [--dashboard]
+       agb-peer relay --roster <file>               # the same, re-read as it changes
        agb-peer --list
 
   --to <peer>        row id, id prefix, or a substring of the row's title
@@ -220,6 +221,7 @@ USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
   --retries <n>      times to re-check a busy peer (default 5)
   --interval <secs>  seconds between those checks (default 8)
   --lines <n>        lines of pane text to read (default 40)
+  --roster <file>    participants from a file, re-read while the relay runs
   --dry-run          say what would happen; touch nothing
   --list             show candidate rows and their status
 """
@@ -704,6 +706,53 @@ def parse_show_options(text):
     return messages
 
 
+def read_roster_file(path):
+    """The roster file's raw BYTES, or a PeerError naming what stopped us.
+
+    Bytes rather than text because the change gate compares them: decoding
+    first would mean a file that is not UTF-8 could not even be compared, and
+    the runtime path's whole job is to survive a bad read rather than raise
+    through it.
+    """
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except (IOError, OSError) as exc:
+        raise PeerError("cannot read the roster %s: %s" % (path, exc))
+
+
+def parse_roster_text(data, minimum=2):
+    """A roster file's participants. Same grammar as the positional form.
+
+    Handing the words to `parse_participants` is the point: the file grammar
+    cannot drift from the command-line one, because there is only one.
+
+    ⚠️ **A `#` comment is a WHOLE LINE, never a trailing one.** `<row>` is a
+    row-title substring and may contain anything a title does, `#` included, so
+    stripping from the first `#` would silently truncate a legitimate spec.
+    """
+    if isinstance(data, bytes):
+        try:
+            data = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # ⚠️ A ValueError, not an OSError. A caller guarding this with a
+            # bare `except IOError` lets it through, and at runtime that kills
+            # the relay over a half-written file.
+            raise PeerError("the roster is not UTF-8: %s" % (exc,))
+    words = []
+    for line in data.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            words.extend(line.split())
+    if not words:
+        # ⚠️ Its own message, and not "0 participants". An empty read is what a
+        # file being rewritten in place looks like for a millisecond, and the
+        # runtime path has to treat it as NO INFORMATION rather than as
+        # everybody leaving -- so the reason has to survive to the caller.
+        raise PeerError("the roster is empty")
+    return parse_participants(words, minimum=minimum)
+
+
 # ⚠️ **A POSITIVE LIST, and it applies to the NAME only -- the text left of the
 # `=`.** `<row>` is a row-title SUBSTRING and legitimately contains `/`, since
 # the default `row_fields` renders `cwd` unshortened: `bob=/home/you/agbridge`
@@ -722,7 +771,7 @@ def valid_participant_name(name):
     return bool(name) and not (set(name) - NAME_ALPHABET)
 
 
-def parse_participants(words):
+def parse_participants(words, minimum=2):
     """`name=<row>` or `name=<row>:<pane>` -> {name: (row, pane)}.
 
     An optional `@<ssh target>` says where that agent's tmux lives; `@local`
@@ -768,8 +817,14 @@ def parse_participants(words):
         # participant, which needs no ssh and is otherwise identical. Absent,
         # the target is taken from the row's own `agb pane --host`.
         people[name] = (row, pane, target or None, tmux_target or None)
-    if len(people) < 2:
-        raise PeerError("a relay needs at least two participants")
+    if len(people) < minimum:
+        # ⚠️ `minimum` exists because startup and runtime disagree on purpose.
+        # A relay cannot START with one participant -- there is nobody to talk
+        # to -- but a running one can legitimately drop to one when somebody
+        # leaves, and refusing that would mean a roster edit could not remove a
+        # participant without also stopping the relay.
+        raise PeerError("a relay needs at least %d participant%s"
+                        % (minimum, "" if minimum == 1 else "s"))
     return people
 
 
@@ -1593,9 +1648,21 @@ def resolve_all(ctl, spec, say, previous=None):
 
 
 def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
-              fetch=None, chat_dir=None):
+              fetch=None, chat_dir=None, roster=None):
     """Watch every participant's doorbell and carry messages between them."""
-    spec = parse_participants(words)
+    if roster and words:
+        raise PeerError("give participants OR --roster, not both: with two "
+                        "sources of truth there is no answer to 'who is in "
+                        "this conversation' that does not depend on which one "
+                        "you read")
+    # ⚠️ **Startup REFUSES where the running relay would hold.** Every reason a
+    # runtime re-read holds -- unreadable, missing, empty, malformed, too few --
+    # is a refusal here, because holding means keeping the roster you already
+    # had and at startup there is none. It is also the only place the
+    # two-participant minimum can be enforced: a relay may DROP to one when
+    # somebody leaves, but it cannot begin with nobody to talk to.
+    spec = (parse_roster_text(read_roster_file(roster)) if roster
+            else parse_participants(words))
 
     def say(message):
         out.write("agb-peer: %s\n" % (message,))
@@ -1672,7 +1739,8 @@ def main(argv, out=None, ctl=None):
                          positive_int(opts["interval"], "--interval"),
                          bool(opts.get("once")), out,
                          dashboard=bool(opts.get("dashboard")),
-                         chat_dir=opts.get("chat_dir"))
+                         chat_dir=opts.get("chat_dir"),
+                         roster=opts.get("roster"))
     opts = parse_args(argv)
     if opts.get("version"):
         out.write("agb-peer %s\n" % (VERSION,))

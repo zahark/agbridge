@@ -100,6 +100,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`agb-peer relay --roster <file>`** — participants from a file instead of the command line, so
+  the set can change without restarting the relay. Same grammar as the positional form, because the
+  file's words are handed to the same parser: there is one grammar, read from two places.
+  `#` comments and blank lines are ignored.
+
+  ⚠️ **A `#` comment is a whole line, never a trailing one.** `<row>` is a row-title substring and
+  may contain `#`, so stripping from the first one would silently truncate a legitimate spec.
+
+  ⚠️ **`--roster` and positional participants together are refused.** With two sources of truth
+  there is no answer to *who is in this conversation* that does not depend on which one you read.
+
+  Startup **refuses** where a running relay will hold — unreadable, missing, empty, malformed, or
+  fewer than two participants — because holding means keeping the roster you already had, and at
+  startup there is none. It is also the only place the two-participant minimum can be enforced: a
+  relay may *drop* to one when somebody leaves, but it cannot begin with nobody to talk to.
+
 - **`agb-peer` participant names are now letters, digits, dot, underscore and hyphen** — refused at
   `agb-peer relay`, with the reason named. ⚠️ **The rule applies to the *name* only**, the text left
   of the `=`: `<row>` is a row-title *substring* and legitimately contains `/`, because the default

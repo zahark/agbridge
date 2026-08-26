@@ -1968,3 +1968,88 @@ def test_an_equals_in_a_name_is_unreachable_not_refused(peer):
     that never fires. Whitespace is the same: relay words come from `.split()`."""
     people = peer.parse_participants(["a=b=R1", "c=R2"])
     assert people["a"][0] == "b=R1", "the second = landed in the ROW"
+
+
+# ---------------------------------------------------------------------------
+# --roster: the file, and the refusals that only apply at startup
+# ---------------------------------------------------------------------------
+
+
+def roster_file(tmp_path, text):
+    path = tmp_path / "peers"
+    path.write_text(text)
+    return str(path)
+
+
+def test_a_roster_line_parses_exactly_like_a_positional(peer, tmp_path):
+    """The whole reason the file hands its words to parse_participants: one
+    grammar, read from two places, so it cannot drift."""
+    spec = "alice=agbridge bob=api@box:nfs"
+    from_file = peer.parse_roster_text(spec)
+    assert from_file == peer.parse_participants(spec.split())
+
+
+def test_comments_and_blank_lines_are_ignored(peer):
+    people = peer.parse_roster_text(
+        "# who is in this chat\n\nalice=RowA\n\n   # indented comment\nbob=RowB\n")
+    assert sorted(people) == ["alice", "bob"]
+
+
+def test_a_hash_inside_a_row_is_not_a_comment(peer):
+    """⚠️ `<row>` is a row-title substring and may contain `#`. Stripping from
+    the first one would silently truncate a legitimate spec."""
+    people = peer.parse_roster_text("alice=build#7\nbob=RowB\n")
+    assert people["alice"][0] == "build#7"
+
+
+def test_the_startup_refusals_are_distinguishable(peer, tmp_path):
+    missing = str(tmp_path / "nope")
+    with pytest.raises(peer.PeerError) as gone:
+        peer.read_roster_file(missing)
+    assert "cannot read the roster" in str(gone.value)
+
+    with pytest.raises(peer.PeerError) as empty:
+        peer.parse_roster_text("# nothing but a comment\n")
+    assert "empty" in str(empty.value)
+
+    with pytest.raises(peer.PeerError) as junk:
+        peer.parse_roster_text("this is not a participant\nb=R2\n")
+    assert "participants are name=" in str(junk.value)
+
+    with pytest.raises(peer.PeerError) as thin:
+        peer.parse_roster_text("alice=RowA\n")
+    assert "at least 2 participants" in str(thin.value)
+
+
+def test_a_roster_that_is_not_utf8_is_a_peer_error_not_a_crash(peer):
+    """⚠️ UnicodeDecodeError is a ValueError, not an OSError, so a caller
+    guarding the read with `except IOError` lets it through -- and at runtime
+    that kills the relay over a half-written file."""
+    with pytest.raises(peer.PeerError) as caught:
+        peer.parse_roster_text(b"alice=\xff\xfe\n")
+    assert "not UTF-8" in str(caught.value)
+
+
+def test_the_runtime_minimum_allows_one_participant(peer):
+    """A relay may not START with one, but it may DROP to one -- otherwise a
+    roster edit could not remove a participant without stopping the relay."""
+    people = peer.parse_roster_text("alice=RowA\n", minimum=1)
+    assert sorted(people) == ["alice"]
+
+
+def test_a_roster_and_positional_participants_are_refused_together(peer,
+                                                                   tmp_path):
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    ctl = RelayCtl(panes())
+    with pytest.raises(peer.PeerError) as caught:
+        peer.cmd_relay(ctl, ["c=R3", "d=R4"], 500, 8, True, io.StringIO(),
+                       roster=path)
+    assert "not both" in str(caught.value)
+
+
+def test_a_relay_reads_its_participants_from_the_roster(peer, tmp_path):
+    path = roster_file(tmp_path, "# the chat\nalice=AAAA1111\nbob=BBBB2222\n")
+    ctl = RelayCtl(panes())
+    out = io.StringIO()
+    assert peer.cmd_relay(ctl, [], 500, 8, True, out, roster=path) == 0
+    assert "alice" in out.getvalue() and "bob" in out.getvalue()
