@@ -14,6 +14,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Changed, and it is a breaking change
 
+- **`relay` is now a reserved participant name in `agb-peer relay`.** A roster line naming a
+  participant `relay` is refused, because that is how an agent addresses **the relay itself** —
+  `agb-peer who` sends to it, and a participant of that name would shadow it.
+
+  ⚠️ **The reservation is exact and case-sensitive, and that is deliberate rather than lazy.**
+  `Relay`, `RELAY` and `relayed` stay ordinary, addressable participants. The refusal and the
+  intercept that answers a request have to *agree*: a case-insensitive refusal paired with an exact
+  intercept would accept `Relay` into a roster and then never intercept it — a name you can add and
+  can never address.
+
 - **`sh install.sh mac --feed-host … --agb-remote-path …` now exits 1 and installs nothing.** The
   command in the README, in the cookbook and in your shell history is refused: `--instance <name>`
   is required, and so is `--statedir` the first time you name an instance. Nothing is copied, no

@@ -2611,3 +2611,39 @@ def test_a_held_message_for_a_vanished_row_says_it_once(peer):
     gone = [s for s in ctl.said if "row is gone from the tree" in s]
     assert len(pending) == 1, "non-vacuous: it really was held every tick"
     assert len(gone) == 1, gone
+
+
+# ---------------------------------------------------------------------------
+# `relay` is reserved, and the reservation is exact
+# ---------------------------------------------------------------------------
+#
+# `agb-peer who` sends WHO_REQUEST to RELAY_NAME, so a participant of that name
+# would shadow the relay itself. ⚠️ Both comparisons -- this refusal and the
+# intercept that answers -- are exact and case-sensitive, and they must AGREE: a
+# case-insensitive refusal with an exact intercept would accept `Relay` and then
+# never intercept it, leaving a name that can be rostered and never addressed.
+
+
+def test_the_relay_name_is_refused_as_a_participant(peer):
+    with pytest.raises(peer.PeerError) as caught:
+        peer.parse_participants(["%s=RowR" % (peer.RELAY_NAME,), "a=RowA"])
+    assert "reserved" in str(caught.value)
+    assert "who" in str(caught.value), "the message must say what claims it"
+
+
+@pytest.mark.parametrize("name", ["Relay", "RELAY", "relayed", "prerelay"])
+def test_a_near_miss_is_an_ordinary_participant(peer, name):
+    """⚠️ The companion that is actually at risk. "an ordinary name still works"
+    would prove nothing -- a blanket refusal already fails ~15 roster tests --
+    but a case-folding or substring refusal fails only these."""
+    people = peer.parse_participants(["%s=RowR" % (name,), "a=RowA"])
+    assert sorted(people) == sorted([name, "a"])
+
+
+def test_the_reserved_name_and_the_request_token_are_distinct_constants(peer):
+    """Read once here so a later task cannot quietly conflate them: the token is
+    what stops the reply loop, the name is what routes to the relay."""
+    assert peer.RELAY_NAME == "relay"
+    assert peer.WHO_REQUEST == "who"
+    assert peer.WHO_REQUEST not in peer.PANE_WORDS, (
+        "cmd_send refuses PANE_WORDS, so a token in that set could never be sent")

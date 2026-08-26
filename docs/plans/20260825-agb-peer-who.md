@@ -141,22 +141,22 @@ Verified on `main` at plan time:
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add `RELAY_NAME = "relay"` (the recipient meaning *the relay itself*) and `WHO_REQUEST = "who"`
+- [x] add `RELAY_NAME = "relay"` (the recipient meaning *the relay itself*) and `WHO_REQUEST = "who"`
       (the only text it answers)
-- [ ] make `parse_participants` refuse `RELAY_NAME` as a participant name, saying why
-- [ ] ⚠️ **The decision, stated rather than reasoned about: both comparisons are exact and
+- [x] make `parse_participants` refuse `RELAY_NAME` as a participant name, saying why
+- [x] ⚠️ **The decision, stated rather than reasoned about: both comparisons are exact and
       case-sensitive.** So `Relay=<row>` is a legal, addressable participant and `WHO_REQUEST` is
       matched as the literal `"who"`. The hazard to avoid is the *mismatched* pairing — a
       case-insensitive refusal with an exact intercept would accept `Relay` and then never
       intercept it, leaving a participant that cannot be addressed
-- [ ] write a test that `relay=<row>` is refused
-- [ ] ⚠️ write the companion as a **near miss**: `relayed=<row>` and `Relay=<row>` must both be
+- [x] write a test that `relay=<row>` is refused
+- [x] ⚠️ write the companion as a **near miss**: `relayed=<row>` and `Relay=<row>` must both be
       **accepted**, per the decision above. An "ordinary name still works" companion adds nothing —
       a blanket refusal would already fail ~15 existing roster tests, so it is not at risk
-- [ ] ⚠️ this is a **breaking** roster change (a name that parsed yesterday is refused today), so the
+- [x] ⚠️ this is a **breaking** roster change (a name that parsed yesterday is refused today), so the
       CHANGELOG entry goes under `### Changed`, as Plan A's name-charset change did. Verified: no
       test in the repo uses `relay` as a participant name
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: Compose the answer
 

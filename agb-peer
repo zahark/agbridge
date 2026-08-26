@@ -964,6 +964,26 @@ NAME_ALPHABET = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 NAME_RULE = "letters, digits, dot, underscore and hyphen"
 
+# ⚠️ **The recipient that means THE RELAY ITSELF, and the only text it answers.**
+# `agb-peer who` sends `WHO_REQUEST` to `RELAY_NAME`; the relay intercepts it
+# while draining and replies with the roster.
+#
+# ⚠️ **The token exists to stop a reply loop, not to validate input.**
+# `SKILL.md` tells an agent that anything arriving as `[chat from <name>]` is a
+# peer talking to it and to reply -- so an answer signed `[chat from relay]`
+# would be replied to, and the reply is another message to `relay`, for ever.
+# Answering ONLY the exact token means a polite "thanks" is not a request and
+# the loop cannot start. The skill also says the answer needs no reply, but that
+# is a rule an agent may ignore; this is one it cannot.
+#
+# ⚠️ **Both comparisons are exact and case-sensitive**, deliberately and
+# together. A case-INSENSITIVE refusal here with an exact intercept below would
+# accept `Relay` as a participant and then never intercept it -- a name that can
+# be added to a roster and never addressed. Matching the two is what makes
+# `Relay` an ordinary, working participant instead.
+RELAY_NAME = "relay"
+WHO_REQUEST = "who"
+
 
 def valid_participant_name(name):
     return bool(name) and not (set(name) - NAME_ALPHABET)
@@ -998,6 +1018,13 @@ def parse_participants(words, minimum=2):
         if not valid_participant_name(name):
             raise PeerError("%r is not a usable participant name: %s"
                             % (name, NAME_RULE))
+        if name == RELAY_NAME:
+            # Exact match: `Relay` and `relayed` are ordinary names. See the
+            # comment on RELAY_NAME for why the two comparisons must agree.
+            raise PeerError("%r is reserved: it is how an agent addresses the "
+                            "relay itself, which is what `agb-peer who` sends "
+                            "to. Pick another name for the participant."
+                            % (RELAY_NAME,))
         where, at, target = where.partition("@")
         target, _sep3, tmux_target = target.partition(":")
         row, sep2, pane = where.partition(":")
