@@ -2848,3 +2848,103 @@ def test_an_ordinary_message_is_still_routed(peer):
                     members={"alice", "bob"})
     bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
     assert bodies == ["[chat from alice] hello"], bodies
+
+
+# ---------------------------------------------------------------------------
+# `agb-peer who` -- the agent side
+# ---------------------------------------------------------------------------
+
+
+class Recorder(object):
+    """A `run` fake for cmd_who. Records argv; answers tmux like a live one."""
+
+    def __init__(self, base="claude"):
+        self.calls, self.options = [], {}
+        self.base = base
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(argv)
+        if "show-options" in argv:
+            return 0, self.options.get(argv[-1], ""), ""
+        if "display-message" in argv:
+            return 0, self.base, ""
+        return 0, "", ""
+
+
+def test_who_asks_the_relay_with_the_token(peer):
+    run, out = Recorder(), io.StringIO()
+    assert peer.cmd_who(run, out, env={"TMUX_PANE": "%7"}) == 0
+    sets = [c for c in run.calls if c[1:2] == ["set"] and "-p" in c]
+    assert sets, run.calls
+    value = sets[-1][-1]
+    assert value.split("\n")[0] == peer.RELAY_NAME
+    assert value.split("\n")[1] == peer.WHO_REQUEST
+
+
+def test_who_says_the_answer_arrives_later(peer):
+    """The whole ergonomic risk of an asynchronous command: a reader who thinks
+    the roster should have printed here will call it broken."""
+    out = io.StringIO()
+    peer.cmd_who(Recorder(), out, env={"TMUX_PANE": "%7"})
+    assert "later turn" in out.getvalue()
+    assert "no relay is running" in out.getvalue()
+
+
+def test_who_refuses_outside_tmux_in_its_own_words(peer):
+    """⚠️ cmd_send's message begins "send must run inside tmux", which reads as
+    nonsense from `who`. Delegating first is what would leak it."""
+    with pytest.raises(peer.PeerError) as caught:
+        peer.cmd_who(Recorder(), io.StringIO(), env={})
+    assert str(caught.value).startswith("who must run inside tmux")
+
+
+def test_who_makes_no_agtermctl_call(peer, monkeypatch):
+    """It runs on the agent's host, where agterm does not exist."""
+    seen = []
+    monkeypatch.setattr(peer, "run_ctl",
+                        lambda *a, **k: seen.append(a) or (0, "", ""))
+    peer.cmd_who(Recorder(), io.StringIO(), env={"TMUX_PANE": "%7"})
+    assert seen == []
+
+
+def test_the_agtermctl_tripwire_would_have_fired(peer, monkeypatch):
+    """The companion. Without it the test above passes against a fake that can
+    never record anything."""
+    seen = []
+    monkeypatch.setattr(peer, "run_ctl",
+                        lambda *a, **k: seen.append(a) or (0, "", ""))
+    peer.run_ctl(["tree", "--json"])
+    assert seen, "the tripwire must be able to fire"
+
+
+def test_who_is_dispatched_by_main(peer, monkeypatch):
+    """⚠️ Not spelled as `pytest.raises(PeerError)`: an UNdispatched `who` would
+    raise too, via `--to is required`, so that shape passes with cmd_who
+    deleted. Assert who's OWN message instead."""
+    tripwire = []
+    monkeypatch.setattr(peer, "os", peer.os)
+    monkeypatch.setattr(peer.os, "environ", {}, raising=False)
+    monkeypatch.setattr(peer, "run_local",
+                        lambda *a, **k: tripwire.append(a) or (0, "", ""))
+    with pytest.raises(peer.PeerError) as caught:
+        peer.main(["who"], io.StringIO(), None)
+    assert str(caught.value).startswith("who must run inside tmux"), caught.value
+    assert tripwire == [], "it must refuse before running anything"
+
+
+def test_usage_lists_every_verb_main_dispatches(peer):
+    """⚠️ Passes before this change too -- `send` and `relay` were already
+    listed. Its value is prospective: it fails when a verb is added and its
+    USAGE line is not. Kept deliberately, not free-on-branch dead weight."""
+    import ast
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    main = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    verbs = set()
+    for node in ast.walk(main):
+        if (isinstance(node, ast.Compare) and node.comparators
+                and isinstance(node.comparators[0], ast.Str)):
+            verbs.add(node.comparators[0].s)
+    assert verbs, "non-vacuous: the walk must find some"
+    for verb in verbs:
+        assert "agb-peer %s" % (verb,) in peer.USAGE, verb

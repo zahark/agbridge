@@ -209,6 +209,7 @@ USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
        agb-peer send --to <name> <message>          # tmux only; no agtermctl
        agb-peer relay a=<label> b=<label>[:pane][@host[:nfs]] [--dashboard]
        agb-peer relay --roster <file>               # the same, re-read as it changes
+       agb-peer who                                 # ask the relay who is here
        agb-peer --list
 
   --to <peer>        row id, id prefix, or a substring of the row's title
@@ -1351,6 +1352,34 @@ def deliver(ctl, session, pane, body, send, lines, say):
     say("delivered")
 
 
+def cmd_who(run, out, env=None):
+    """Ask the relay who is in this conversation. -> exit status.
+
+    ⚠️ **The answer does not come back here.** It arrives later, as an ordinary
+    message typed into this agent's composer, because there is no channel from
+    the relay back to a command that has already exited. This prints only that
+    the question was asked.
+
+    ⚠️ **`TMUX_PANE` is checked HERE, before delegating.** `cmd_send` raises
+    "send must run inside tmux", which reads as nonsense from `who` -- the same
+    phrasing leak `wait_ready`'s `retries=0` note records. Resolve the
+    environment, refuse in this command's own words, and only then delegate.
+    """
+    env = os.environ if env is None else env
+    if not env.get("TMUX_PANE"):
+        raise PeerError("who must run inside tmux: $TMUX_PANE is not set, so "
+                        "the relay has no pane to answer into. Start the agent "
+                        "with `agb-claude <name>`, or inside "
+                        "`tmux new -A -s <name> <the agent>`.")
+    status = cmd_send(RELAY_NAME, WHO_REQUEST, run, out, env=env)
+    out.write("agb-peer: asked the relay who is here. ⚠️ The answer arrives as "
+              "a MESSAGE on a later turn, not here.\n")
+    out.write("agb-peer: no answer at all means no relay is running, or this "
+              "pane is not one of its participants. Neither is worth "
+              "retrying.\n")
+    return status
+
+
 def cmd_list(ctl, pane, lines, out):
     """Candidate rows, with the two things that decide whether one is usable.
 
@@ -2125,6 +2154,8 @@ def main(argv, out=None, ctl=None):
                             "the pane it was sent from, which is the only "
                             "part of it that cannot be misstated")
         return cmd_send(recipient, message, run_local, out)
+    if argv and argv[0] == "who":
+        return cmd_who(run_local, out)
     if argv and argv[0] == "relay":
         opts = parse_args(argv[1:])
         ctl = ctl or Ctl()

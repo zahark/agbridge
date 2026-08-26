@@ -230,38 +230,38 @@ The whole mechanism. Every behaviour here has a placement that is easy to get wr
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add `cmd_who(run, out, env=None)` ⚠️ **with the same seams `cmd_send` has** — all twelve
+- [x] add `cmd_who(run, out, env=None)` ⚠️ **with the same seams `cmd_send` has** — all twelve
       existing `cmd_send` tests inject `run` and `out`, and without them a test shells out to real
       tmux and, on the file fallback, writes into the developer's real `~/.agbridge`
-- [ ] send `WHO_REQUEST` to `RELAY_NAME` through the **`cmd_send` path** — no new transport, and the
+- [x] send `WHO_REQUEST` to `RELAY_NAME` through the **`cmd_send` path** — no new transport, and the
       file fallback comes free
-- [ ] print that the relay was asked and that **the answer arrives as a message**, not here
-- [ ] print that **no answer means no relay is running, or this pane is not a participant**, and that
+- [x] print that the relay was asked and that **the answer arrives as a message**, not here
+- [x] print that **no answer means no relay is running, or this pane is not a participant**, and that
       neither is worth retrying
-- [ ] ⚠️ **ordering, or the refusal is unreachable:** resolve `env = os.environ if env is None else
+- [x] ⚠️ **ordering, or the refusal is unreachable:** resolve `env = os.environ if env is None else
       env`, check `TMUX_PANE` **itself**, refuse in `who`'s own words, and only then call
       `cmd_send(RELAY_NAME, WHO_REQUEST, run, out, env=env)`. Delegate first and `cmd_send:1341`
       raises *"send must run inside tmux"* — the phrasing leak this project already fixed once in
       `wait_ready`'s `retries=0` note, and what walkthrough check 9 marks as a failure
-- [ ] add `who` to `USAGE`
-- [ ] add the guard that does not exist today: **`USAGE` lists every verb `main` dispatches**, via
+- [x] add `who` to `USAGE`
+- [x] add the guard that does not exist today: **`USAGE` lists every verb `main` dispatches**, via
       `ast` over the peer tree alone. ⚠️ Not `assert VERSION == "0.3.0"`, which is the
       read-the-constant-back tautology this plan's own approach bans
-- [ ] write a test that `who` makes **no agtermctl call**, with the companion showing the fake would
+- [x] write a test that `who` makes **no agtermctl call**, with the companion showing the fake would
       have recorded one
-- [ ] write a test that the request is addressed to `RELAY_NAME` with body `WHO_REQUEST`
-- [ ] write a test that `who` refuses outside tmux, asserting **its own** message
-- [ ] ⚠️ write the dispatch guard: patch `peer.os.environ` to a dict **without** `TMUX_PANE`, patch
+- [x] write a test that the request is addressed to `RELAY_NAME` with body `WHO_REQUEST`
+- [x] write a test that `who` refuses outside tmux, asserting **its own** message
+- [x] ⚠️ write the dispatch guard: patch `peer.os.environ` to a dict **without** `TMUX_PANE`, patch
       `peer.run_local` as a tripwire that must record nothing, call `main(["who"], io.StringIO(),
       None)` and assert **`who`'s own message** — which is what distinguishes a dispatched `who`
       from the undispatched `--to is required`. ⚠️ `main` has no `env`/`run` seam, so patching the
       module globals is the only route. *(The twelve `cmd_send` tests inject `env=` directly; that
       is not available here, and nothing in the repo patches `peer.os.environ` today.)*
-- [ ] add the CHANGELOG entry
-- [ ] ⚠️ **audit this task's tests now.** The `USAGE`-lists-every-verb guard **passes before this
+- [x] add the CHANGELOG entry
+- [x] ⚠️ **audit this task's tests now.** The `USAGE`-lists-every-verb guard **passes before this
       change too** (`send` and `relay` are already listed); its value is prospective and it is
       deliberately kept — do not delete it as free
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: `skills/agb-peer/SKILL.md` — the trigger
 

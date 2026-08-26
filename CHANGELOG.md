@@ -108,6 +108,17 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`agb-peer who`** — an agent asks who is in the conversation. It sends the request and prints
+  that it did; ⚠️ **the answer arrives as a MESSAGE on a later turn, not on this command's output**,
+  because there is no channel from the relay back to a command that has already exited.
+
+  It also prints what silence means: **no relay is running, or this pane is not one of its
+  participants** — indistinguishable, and neither worth retrying.
+
+  ⚠️ **It checks `$TMUX_PANE` itself rather than letting `send` do it.** Delegating first would
+  raise *"send must run inside tmux"*, which reads as nonsense from `who` — the same phrasing leak
+  `wait_ready`'s `retries=0` note records.
+
 - **The relay answers `who`.** An agent addresses a message to the reserved name `relay` with the
   single word `who`, and the relay replies with the membership —
   `[chat from relay] you=alice peer=bob peer=carol` — delivered like any other message.
