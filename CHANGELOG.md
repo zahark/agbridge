@@ -169,6 +169,17 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   keystroke, two readers, and only the raw-mode one is picky. A structural test pins the asymmetry,
   and a mutation that merges them fails it by name.
 
+  ✅ **VERIFIED LIVE 2026-08-26, both directions**: a message typed into Codex submitted itself,
+  Codex replied unprompted, and Claude received the reply and answered. No human touched either
+  composer.
+
+  ⚠️ **`delivered` in the relay's log was never evidence that anything was submitted** — it means the
+  Return went out, which had been true all along. Three separate real bugs were found and fixed
+  between the symptom and the cause (a lost doorbell, a paste placeholder spelled differently, a pane
+  read before it finished rendering), and each one looked like it might be the explanation. The thing
+  that finally separated them was **counting blank lines in the composer**, which is the only
+  observation that distinguished "the Return never arrived" from "the Return arrived as a newline".
+
 - **A long message was given up on while the pane was still rendering it.** The delivery check typed
   the body, slept **one second**, read the pane **once**, and treated "not there yet" as "swallowed".
 

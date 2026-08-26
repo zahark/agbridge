@@ -832,6 +832,7 @@ MEASURED 2026-08-26, after a Codex peer spent an evening receiving messages it n
 | raw `0x0A` (LF) | newline **inserted** | newline **inserted** |
 | raw `0x0D` (CR) | *not run* | **submitted** |
 | agterm `session type "\n"` | **submits** (verified since 0.3.0) | newline **inserted** |
+| agterm `session type "\r"` | **submits** | **submits** — ✅ verified live 2026-08-26 |
 
 The third row is the one that cost the messages, and it was read by **counting blank lines**: an
 empty Codex composer renders one blank line above the model line, and the loaded one rendered two.
