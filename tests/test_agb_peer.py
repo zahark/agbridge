@@ -976,6 +976,34 @@ def test_the_verbs_the_skill_names_are_dispatched(peer):
     # verb would be read as the message and refused for having no --to.
     with pytest.raises(peer.PeerError):
         peer.main(["send", "hi"], io.StringIO(), None)
+    # ⚠️ `who` CANNOT use the same shape. An undispatched `who` raises too, via
+    # `--to is required`, so `pytest.raises` alone passes with cmd_who deleted.
+    # The distinguishing evidence is the message. See
+    # test_who_is_dispatched_by_main for the hermetic version.
+    assert "agb-peer who" in body, "the skill must tell an agent how to ask"
+
+
+def test_the_skill_says_a_relay_answer_needs_no_reply(peer):
+    """⚠️ The loop mitigation. `## Receiving` tells the agent to reply to
+    anything shaped `[chat from <name>]`, and the answer is shaped exactly like
+    that. The relay's token match is the mechanism; this is the instruction."""
+    body = " ".join(io.open(SKILL_PATH, encoding="utf-8").read().split())
+    assert "is NOT a peer talking to you, and needs no reply" in body
+
+
+def test_the_skill_says_silence_is_not_an_error(peer):
+    """The one way an asynchronous command goes wrong: an agent that retries."""
+    body = " ".join(io.open(SKILL_PATH, encoding="utf-8").read().split())
+    assert "No answer at all is not an error" in body
+    assert "neither is worth retrying" in body
+
+
+def test_the_skill_extends_the_file_doorbell_rule_to_who(peer):
+    """`who` travels the same path as `send`, so on an unreachable machine it
+    prints the same marker -- and the relay never sees the question unless the
+    agent repeats it. The rule was written about `send` only."""
+    body = " ".join(io.open(SKILL_PATH, encoding="utf-8").read().split())
+    assert "applies to `agb-peer who` exactly as it does to `send`" in body
 
 
 def test_the_skill_carries_the_deadlock_rule(peer):

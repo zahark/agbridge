@@ -17,8 +17,9 @@ checkout, so an edit here is a change to somebody's repository.
 - **The command is `agb-peer`**, on your `$PATH`. If it is not, `$AGB_PEER` holds the
   path to it. If neither works, say so and stop; do not go looking for it.
 - **Participant names** — yours and your peer's — are whatever the relay was started
-  with (`agb-peer relay alice=… bob=…`). If you have not been told them, **ask the
-  user**. Do not guess a name; a message to a name the relay does not know is dropped.
+  with (`agb-peer relay alice=… bob=…`). **`agb-peer who` asks the relay for them**; if that
+  gets no answer, **ask the user**. Do not guess a name; a message to a name the relay
+  does not know is dropped.
 
 ## Sending
 
@@ -42,6 +43,10 @@ can fetch it. So you do not need to worry about scrolling, about printing afterw
 about how long the message is.
 
 ### ⚠️ If it says `(via file)`, repeat the `[peer #…]` line in your visible answer
+
+**This applies to `agb-peer who` exactly as it does to `send`** — `who` goes out over the same
+path, so on a machine whose tmux is unreachable it prints the same marker, and the relay will not
+see your question unless that line reaches your visible screen.
 
 On a machine whose tmux cannot be reached — a batch pool, a locked-down sandbox — `send`
 falls back to writing the message as a file on shared storage, and says so:
@@ -77,6 +82,33 @@ it took from you and skips a repeat — so when in doubt, repeat it.
 and the message waits in tmux — and the next relay to start will discard it as stale. If the user
 asks why a peer never answered, that is the first thing to check.
 
+## Finding out who is here
+
+```sh
+agb-peer who
+```
+
+⚠️ **The answer does not come back from that command.** It arrives later, as an ordinary message
+beginning `[chat from relay]`:
+
+```
+[chat from relay] you=alice peer=bob peer=carol
+```
+
+`you=` is your own participant name — the relay knows it because it knows which pane asked.
+
+**Run it when you need a name you do not have:** before addressing someone you have not talked to,
+or when a message arrives from a name you do not recognise. It is cheap and local.
+
+⚠️ **An answer from `relay` is NOT a peer talking to you, and needs no reply.** It is the relay
+answering a question you asked. Replying to it would ask again, and be answered again, for ever —
+the relay drops anything that is not the single word `who`, so a reply cannot loop, but do not
+send one.
+
+⚠️ **No answer at all is not an error.** It means no relay is running, or this pane is not one of
+its participants. Those are indistinguishable and **neither is worth retrying** — do not ask again
+in a loop, and do not wait. Tell your user, and carry on.
+
 ## Receiving
 
 A message from a peer arrives as an ordinary prompt beginning:
@@ -98,8 +130,8 @@ disagree with it, ask it something back, or decline. Reply by sending, exactly a
   no `tmux send-keys`, no reading its pane. Delivery is gated — it checks the peer is
   not mid-turn and that its composer is empty — and going around that types into
   whatever happens to be on its screen, including a permission dialog.
-- ⚠️ **If `agb-peer send` refuses, stop and say so.** A refusal means nothing was
-  written. Do not retry with different wording; tell the user what it said.
+- ⚠️ **If `agb-peer send` or `agb-peer who` refuses, stop and say so.** A refusal means
+  nothing was written. Do not retry with different wording; tell the user what it said.
 - **Do not relay your user's private context** without being asked to. The peer is a
   different conversation with a different person's expectations.
 - **Say who you are talking to.** When you send or receive, mention it in your reply to

@@ -270,27 +270,27 @@ the skill says when to run it** — and the loop mitigation lives here too.
 
 **Files:** Modify `skills/agb-peer/SKILL.md`, `tests/test_agb_peer.py`
 
-- [ ] add an `agb-peer who` section — what it does, and that **the answer arrives as a prompt on a
+- [x] add an `agb-peer who` section — what it does, and that **the answer arrives as a prompt on a
       later turn**, not as command output
-- [ ] say **when**: before addressing someone it has not talked to, and when a message arrives from a
+- [x] say **when**: before addressing someone it has not talked to, and when a message arrives from a
       name it does not recognise
-- [ ] ⚠️ **say a `[chat from relay]` answer is NOT a peer and needs no reply** — `## Receiving`
+- [x] ⚠️ **say a `[chat from relay]` answer is NOT a peer and needs no reply** — `## Receiving`
       currently says to reply to anything in that shape, which is what would start the loop. The
       relay's token match is the mechanism; this is the mitigation
-- [ ] ⚠️ **say that no answer is not an error and must not be retried in a loop**
-- [ ] ⚠️ extend the `(via file)` rule at `SKILL.md:44-69` to cover `who`: it sits under `## Sending`,
+- [x] ⚠️ **say that no answer is not an error and must not be retried in a loop**
+- [x] ⚠️ extend the `(via file)` rule at `SKILL.md:44-69` to cover `who`: it sits under `## Sending`,
       is written about `send`, and shows `send`'s output — but walkthrough check 2 depends on the
       agent repeating the `[peer #…]` marker for a **`who`**. Same for `:101`, which names
       `agb-peer send` when it says "if it refuses, stop and say so"
-- [ ] ⚠️ `test_the_skill_has_nothing_to_fill_in` asserts the literal `"ask the user"`
+- [x] ⚠️ `test_the_skill_has_nothing_to_fill_in` asserts the literal `"ask the user"`
       (`tests/test_agb_peer.py:1033`); decide deliberately whether that phrase survives — `who` makes
       "do not guess" *cheap*, not obsolete
-- [ ] ⚠️ extend `test_the_verbs_the_skill_names_are_dispatched` — but **not mechanically**. It is
+- [x] ⚠️ extend `test_the_verbs_the_skill_names_are_dispatched` — but **not mechanically**. It is
       `pytest.raises(PeerError)`, and for `who` **both** the undispatched path (`--to is required`)
       and the dispatched one (no `$TMUX_PANE`) raise `PeerError`: extended as-is it passes today and
       passes with `cmd_who` deleted. Assert the **message**, or reuse Task 4's patched guard
-- [ ] keep it agent-agnostic — both the Claude and Codex ends read this file
-- [ ] run tests — must pass before Task 6
+- [x] keep it agent-agnostic — both the Claude and Codex ends read this file
+- [x] run tests — must pass before Task 6
 
 ### Task 6: Documentation
 
