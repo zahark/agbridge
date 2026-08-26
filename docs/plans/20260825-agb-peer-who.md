@@ -296,20 +296,20 @@ the skill says when to run it** — and the loop mitigation lives here too.
 
 **Files:** Modify `docs/design.md`, `docs/commands.md`, `docs/cookbook.md`, `CHANGELOG.md`
 
-- [ ] extend §6 with the ask-and-be-told model, the token match, and **why publishing was abandoned**
+- [x] extend §6 with the ask-and-be-told model, the token match, and **why publishing was abandoned**
       — three rounds, one root cause, no per-agent identity on the file transport. A future reader
       will otherwise reinvent it
-- [ ] ⚠️ **delete `agb-peer who` from §6's *Deferred, with reasons*** (`docs/design.md:2452`)
-- [ ] ⚠️ **replace** `docs/cookbook.md:770`'s *"An agent cannot yet ask who is in the chat"*, and
+- [x] ⚠️ **delete `agb-peer who` from §6's *Deferred, with reasons*** (`docs/design.md:2452`)
+- [x] ⚠️ **replace** `docs/cookbook.md:770`'s *"An agent cannot yet ask who is in the chat"*, and
       **add two rows to the diagnosis table** at `:757`: the answered-request line, **and the
       drop line for a non-token message to `relay`** — the loop guard's only operator-visible
       evidence, and what walkthrough check 5 is read off
-- [ ] give `who` a real entry in `docs/commands.md` beside `send` and `relay`; qualify the heading
+- [x] give `who` a real entry in `docs/commands.md` beside `send` and `relay`; qualify the heading
       *"`agb-peer` — Mac, not installed by default"*, since `who` runs on the agent's machine
-- [ ] record the limitations: the answer **costs a turn**; a lost request is **silent**; and the
+- [x] record the limitations: the answer **costs a turn**; a lost request is **silent**; and the
       answer is composed at drain time, so it can be **held behind a busy composer** and arrive
       slightly stale — the same argument that refused a status snapshot
-- [ ] run tests — must pass before Task 7
+- [x] run tests — must pass before Task 7
 
 ### Task 7: [Final] Version, counts, and filing
 

@@ -2449,8 +2449,43 @@ left — and only a name that *was* resolved exhibits it.
   turn. Behind a flag, off by default, if ever.
 - **Per-participant `--chat-dir`.** It is relay-wide, so two *unreachable* agents on two *different*
   mounts cannot both be served.
-- **`agb-peer who`.** After this, attaching an agent changes routing and nothing else: the agent has
-  no way to discover who is in the conversation. That is a named gap, not an oversight.
+
+### Asking who is here
+
+`agb-peer who` is request/response over the channel that already exists: the agent sends the single
+word `who` to the reserved recipient `relay`, the relay intercepts it while draining and queues a
+reply to the asker, and the ordinary `pending` path delivers it with the same composer gate, holding
+and throttles as any other message.
+
+⚠️ **The asker is the pane the doorbell rang in** — `try_deliver`'s existing rule — which is why this
+needs no identity of its own. An agent cannot print into another agent's pane, so the place is the
+only part of a message that cannot be misstated.
+
+⚠️ **Publishing was tried three times and abandoned, and this is why.** The relay would have written
+the roster to each participant — a tmux pane option where tmux was reachable, a file under
+`--chat-dir` where it was not — and each attempt failed on the same missing thing: **there is no
+per-agent identity on the file transport.** The message path never needed one, because the id is in
+the filename and the recipient is inside the file; `who` was the first thing that had to answer
+*"which one are **you**"*. The three attempts were `$AGB_PEER_FROM` (read in one place, in the legacy
+one-shot form, and exported by nothing), a per-participant file keyed on the spec's target (which for
+`:nfs` is a sentinel string, not a pane), and a per-pane filename (pane ids are unique per tmux
+*server*, and `--chat-dir` is relay-wide). Asking makes the question go away.
+
+⚠️ **The answer must not invite a reply.** `SKILL.md` tells an agent that anything arriving as
+`[chat from <name>]` is a peer talking to it and to reply — so an answer signed `[chat from relay]`
+would be replied to, and the reply is another message to `relay`, for ever. The relay therefore
+answers **only** the exact token and drops anything else with a line. This is the two-party case of
+the feedback loop this document already refuses broadcast over.
+
+**Membership only, and no timestamp.** The answer is composed when the request is *drained* and
+delivered when the composer is free, so anything time-shaped would be a snapshot from one moment read
+as truth at another — and `agb-peer` has no heartbeat by design. ⚠️ The peer list is the roster
+**spec**, never what resolved: a row is routinely absent for a moment while `agb-refresh` re-mints
+it, and deriving the list from resolvable participants would report that as *left the chat*.
+
+**The costs, stated:** the answer takes a turn; a lost request is silent, and *no relay running* is
+indistinguishable from *this pane is not a participant*; and an answer held behind a busy composer
+can arrive slightly stale.
 
 ### Still true, and still unfixed
 

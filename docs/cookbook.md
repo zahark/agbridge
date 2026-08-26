@@ -766,9 +766,29 @@ The relay's output is the diagnosis. The lines that matter:
 | `bob is detached -- attaching it so its doorbell can be seen` | routine after `agb-refresh`; it fixes itself |
 | `… -- keeping the N participant(s) already running` | the roster file could not be read or parsed. **The conversation is unaffected** — fix the file |
 | `the roster is down to 1 participant(s)` | nothing can be delivered until another joins |
+| `alice asked who is here` | an agent ran `agb-peer who`; the roster was sent back to it |
+| `alice sent 'thanks' to relay, which is not 'who'` | something was addressed to the relay that is not a request. Dropped on purpose — see below |
 
-⚠️ **An agent cannot yet ask who is in the chat.** Tell it the participant names, or it will not know
-who to address — `skills/agb-peer/SKILL.md` tells it to ask you rather than guess.
+### An agent can ask who is here
+
+`agb-peer who`, run by the agent in its own session, sends the relay a request; the relay answers by
+typing the membership back:
+
+```
+[chat from relay] you=alice peer=bob peer=carol
+```
+
+⚠️ **The answer arrives on a later turn, not as that command's output** — there is no way back to a
+command that has already exited. `skills/agb-peer/SKILL.md` tells the agent this, and tells it that
+**silence is not an error**: it means no relay is running, or that pane is not a participant, and
+neither is worth retrying.
+
+⚠️ **The relay answers only the single word `who`.** Anything else addressed to `relay` is dropped
+and logged. That is a loop guard, not fussiness: the skill tells an agent to reply to anything
+arriving as `[chat from …]`, and the answer looks exactly like that — so a polite *"thanks"* would
+be answered, and answered again, for ever.
+
+⚠️ **`relay` is a reserved participant name** for the same reason. `Relay` and `relayed` are fine.
 
 ---
 

@@ -1439,7 +1439,11 @@ attached to from outside, and agbridge would record the outer session's name for
 It exists because the tmux session name is resolved **once**, at the agent's first hook, and never
 refreshed — so naming has to happen before the agent starts, and forgetting is easy.
 
-## `agb-peer` — Mac, not installed by default
+## `agb-peer` — not installed by default
+
+⚠️ **`relay` runs on the Mac; `send` and `who` run on the agent's own machine**, over no ssh and
+with no agterm. All three come from a checkout on both sides — `install.sh` does not install
+`agb-peer`, so the two copies can drift, and `agb-peer --version` is how you tell.
 
 ```
 agb-peer --to <peer> [<message> | --stdin] [options]
@@ -1504,6 +1508,34 @@ dialog.
 screen read and a screen read can be wrong; the cost of being wrong on those nine words is a
 destroyed row rather than a lost message. That list is a cross-file agreement with `agb_ops`'
 `PANE_QUIT_WORDS`/`PANE_SPLIT_WORDS`/`PANE_DRAWER_WORDS`, pinned by a test.
+
+### `agb-peer who` — ask the relay who is in this conversation
+
+```sh
+agb-peer who          # run by the AGENT, inside its own tmux session
+```
+
+Sends the relay a request and prints that it did. ⚠️ **The answer arrives as a message on a later
+turn, not on this command's output** — there is no channel back to a command that has already
+exited. It looks like this:
+
+```
+[chat from relay] you=alice peer=bob peer=carol
+```
+
+`you=` is the asking agent's own participant name; the relay knows it because it knows which pane
+asked, which is `try_deliver`'s rule that a sender is the pane a marker was found in.
+
+| | |
+|---|---|
+| **Silence** | no relay is running, **or** this pane is not one of its participants. Indistinguishable, and neither worth retrying |
+| **Outside tmux** | refused — `$TMUX_PANE` is what the relay answers into |
+| **Unreachable tmux** | takes the file path like `send`, and prints a `[peer #…]` marker the agent must repeat on its visible screen |
+
+⚠️ **The relay answers only the single word `who`.** Anything else addressed to `relay` is dropped
+and logged — a loop guard, because `SKILL.md` tells an agent to reply to anything arriving as
+`[chat from …]` and the answer looks exactly like that. `relay` is a reserved participant name for
+the same reason; `Relay` and `relayed` are ordinary.
 
 ### `agb-peer send` / `agb-peer relay` — one mechanism for all three pairings
 
