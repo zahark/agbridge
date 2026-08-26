@@ -1729,3 +1729,119 @@ def test_a_caller_that_asks_for_no_outcome_is_unchanged(peer):
     assert peer.drain(Fetcher(rc=1), "alice", "farmbox", "%7",
                       said.append) == []
     assert any("fetch failed" in s for s in said), said
+
+
+# ---------------------------------------------------------------------------
+# `seen` records what was READ, so a failed fetch retries
+# ---------------------------------------------------------------------------
+#
+# It used to be written one line ABOVE the fetch, so a fetch that failed left
+# the participant marked caught-up having read nothing: the doorbell guard
+# short-circuited every later tick and those messages were lost until the agent
+# happened to send again and moved the doorbell.
+
+
+class FlakyFetcher(Fetcher):
+    """Fails its first N listings, then behaves. Anything else would test a
+    permanent outage, where "retried" and "never retried" look identical."""
+
+    def __init__(self, output="", fail_first=1):
+        Fetcher.__init__(self, output)
+        self.left = fail_first
+
+    def __call__(self, argv):
+        if ("show-options" in argv or "cat" in argv) and self.left:
+            self.left -= 1
+            self.calls.append(argv)
+            return 1, "", "ssh: connection refused"
+        return Fetcher.__call__(self, argv)
+
+
+def test_a_failed_fetch_is_retried_on_the_next_tick(peer):
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    fetch = FlakyFetcher(framed(("aaa", "bob", "hello")), fail_first=1)
+    seen, pending, notes = {}, [], {}
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch,
+                    notes=notes)
+    assert ctl.typed == [], "precondition: the first fetch failed"
+    assert seen == {}, "nothing was read, so nothing may be recorded as read"
+
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch,
+                    notes=notes)
+    # ⚠️ Asserted on what was TYPED, not on `pending`: a tick that fetches also
+    # delivers, so a delivered message leaves `pending` empty -- the same value
+    # a lost one leaves.
+    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+        "[chat from alice] hello"], \
+        "the doorbell never moved; only the retry can have found this"
+
+
+def test_a_successful_fetch_is_not_re_drained(peer):
+    """The companion. Without it the test above passes against a relay that
+    re-fetches every tick for ever, which is what the doorbell exists to stop."""
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    fetch = Fetcher(framed(("aaa", "bob", "hello")))
+    seen, pending, notes = {}, [], {}
+    for _ in range(4):
+        peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch,
+                        notes=notes)
+    listings = [a for a in fetch.calls if "show-options" in a]
+    assert len(listings) == 1, "four ticks, one ring, one listing"
+    assert seen == {"alice": "aaa"}
+
+
+def test_a_persistent_fetch_failure_says_it_once(peer):
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    fetch = Fetcher(framed(("aaa", "bob", "hello")), rc=1)
+    seen, pending, notes = {}, [], {}
+    for _ in range(20):
+        peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say, fetch,
+                        notes=notes)
+    complaints = [s for s in ctl.said if "fetch failed" in s]
+    assert len([a for a in fetch.calls if "show-options" in a]) == 20, \
+        "non-vacuous: it really did retry every tick"
+    assert len(complaints) == 1, "20 retries, one line: %r" % (complaints,)
+
+
+def test_a_healthy_participant_never_complains(peer):
+    """The companion to the throttle: a test counting lines needs a case where
+    the count is zero, or it passes against a relay that never says anything."""
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    seen, pending, notes = {}, [], {}
+    for _ in range(20):
+        peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say,
+                        Fetcher(framed(("aaa", "bob", "hi"))), notes=notes)
+    assert [s for s in ctl.said if "fetch failed" in s] == []
+
+
+def test_the_complaint_returns_after_a_recovery(peer):
+    """Said once per unchanged reason, not once per relay: a failure that
+    recovers and fails again is new information."""
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    seen, pending, notes = {}, [], {}
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say,
+                    Fetcher(framed(("aaa", "bob", "hi")), rc=1), notes=notes)
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say,
+                    Fetcher(framed(("aaa", "bob", "hi"))), notes=notes)
+    ctl.current["AAAA1111"] = COMPOSER + bell("bbb")
+    peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say,
+                    Fetcher(framed(("bbb", "bob", "hi again")), rc=1),
+                    notes=notes)
+    assert len([s for s in ctl.said if "fetch failed" in s]) == 2
+
+
+def test_an_unreadable_pane_says_it_once(peer):
+    """The pre-existing unthrottled path beside the new one. It always fired
+    every tick; moving the `seen` write only made the shape obvious."""
+
+    class Unreadable(RelayCtl):
+        def text(self, target, pane, lines, whole=False):
+            return "", "agterm: no such session"
+
+    ctl = Unreadable(panes())
+    notes = {}
+    for _ in range(20):
+        peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, Fetcher(),
+                        notes=notes)
+    per_name = [s for s in ctl.said if "cannot read alice" in s]
+    assert len(per_name) == 1, "20 ticks, one line per name: %r" % (per_name,)

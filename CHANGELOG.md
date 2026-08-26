@@ -98,6 +98,21 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A failed fetch lost the messages it could not read, until the agent happened to send again.**
+  `relay_tick` recorded `seen[name] = ident` one line *above* the fetch, so an ssh that failed left
+  the participant marked caught-up having read nothing. The doorbell guard then short-circuited every
+  later tick — the doorbell had not moved, and the relay believed it had already handled it — so
+  those messages sat in tmux until the agent sent something new and moved the marker. A transient
+  network blip was enough.
+
+  `seen` now records what was actually **read**: it is written after the drain, and only when the
+  drain reports that the fetch succeeded. The retry is then automatic and needs no extra state.
+
+  ⚠️ **The cost is that a persistent failure now complains every tick rather than once**, which is
+  the same shape this project has fixed twice before. Both the fetch complaint and the pre-existing
+  `cannot read <name>` one are now said **once per unchanged reason** and again after a recovery, so
+  a real change of state is still visible while a stuck one is not repeated.
+
 - **`agb-peer relay` silently discarded every message addressed to a participant whose agent had
   not started yet.** The symptom: you name two agents, start only one, send it a message from the
   other — `agb-peer send` answers `queued for bob as #…` and exits 0, the relay says
