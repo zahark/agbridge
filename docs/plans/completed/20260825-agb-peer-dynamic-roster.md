@@ -488,23 +488,76 @@ Sequenced first because it stands alone: it needs no roster, and it is wrong tod
 - [x] update `CLAUDE.md` if a new invariant emerged
 - [x] move this plan to `docs/plans/completed/`
 
-## Post-Completion
+## Post-Completion — the live acceptance procedure
 
-⚠️ **Two of the last four features here passed every test and still needed a fix after live use.**
+⚠️ **Nothing below has been run.** Two of the last four features in this project passed every test
+and still needed a fix after live use, so this is the gate, not a formality.
 
-- **list an agent in the roster before starting it, and message it** — confirm the message is
-  **held and then delivered**, not discarded (the Task 1 fix, and the one most likely to matter)
-- add a third agent mid-conversation; confirm it joins **without a restart** and its backlog is
-  discarded
-- add an agent that has **never sent anything**, then have it send: confirm that first message
-  **arrives** — the inverse failure, invisible to a green suite if the state machine is subtly wrong
-- **detach a participant's row** (or `agb-refresh` mid-join) so it shows `agb pane`'s menu, then
-  attach it — confirm the backlog is still discarded, i.e. `MODE_MENU` kept it pending
-- rebind a participant to a label that **does not exist yet**; confirm it stops routing to the old
-  row and that messages queued to it survive
-- edit the file into a syntax error, `mv` it away, and truncate it to zero bytes: confirm the
-  conversation survives all three and each complaint is said **once**
-- leave a mistyped label in the roster for ten minutes and confirm the log is still readable
+⚠️ **Three commits changed behaviour for people who never touch a roster** — messages to an
+unresolved participant are now *held* rather than dropped, `seen` means *read* rather than
+*intended*, and several complaint paths became say-once. **Check 0 is therefore the most important
+one on the list**, and it is a regression check, not a feature check.
 
-**Known limitation for the release notes:** attaching an agent gives it no way to discover the
-roster; that arrives with `agb-peer who` (Plan B).
+### Setup
+
+Two Claude agents on the farm, each started with `agb-claude <name>` so it has a row and is a valid
+participant. ⚠️ `agb-tmux` shells are **not** valid participants — the relay classifies a bare shell
+as `unknown` and will never type into one, which is deliberate: a shell would *execute* what it was
+sent.
+
+On the Mac, a roster file and a relay in a **visible terminal** — its stdout is the instrument for
+almost every check below:
+
+```sh
+cat > ~/peers <<'EOF'
+alice=<row label of agent 1>
+bob=<row label of agent 2>
+EOF
+agb-peer relay --roster ~/peers --interval 2      # 2s, so a tick is observable
+```
+
+Sending, from inside an agent's own tmux session:
+
+```sh
+agb-peer send --to bob --stdin <<'CHAT'
+hello
+CHAT
+```
+
+### Must pass — blocking
+
+| # | Do | Expect | Failure looks like |
+|---|---|---|---|
+| **0** | **Regression.** With just alice and bob, send alice → bob. | `alice -> bob: delivered`, and `[chat from alice] hello` in bob's composer. | Nothing arrives, or `dropping a message for 'bob': not a participant`. **This is the check that says whether the branch broke the existing feature.** |
+| **1** | **Held, not dropped.** Add `carol=<label>` for an agent **not yet started**. Send alice → carol. Then start that agent. | `carol is in the roster but has no row yet -- holding (1/225)`, then on start `alice -> carol: delivered`. | `dropping a message for 'carol': not a participant` at send time — that is the pre-existing bug, unfixed. |
+| **3** | **Join discards the backlog.** From an agent **not** in the roster, `agb-peer send --to alice "old"`. Then add it to the roster. | `roster: +dave` and `discarded 1 message(s) that predate a join: #<id> (dave -> alice)`. | alice actually receives `old`. |
+| **4** | **The inverse failure.** Start a fresh agent that has **never** run `agb-peer send`. Add it to the roster. Then send from it. | `roster: +erin`, **no** `discarded` line, then `erin -> alice: delivered`. | Its first message is swallowed as `discarded … predate a join`. ⚠️ **No test in the suite can reach this**; it is why the rule is "nothing announced clears the prime". |
+
+### Should pass
+
+| # | Do | Expect |
+|---|---|---|
+| 2 | Leave an unresolvable name in the roster for ~2 minutes. | The hold ladders — `(1/225)`, `(3/225)`, `(30/225)` — **not** a line every tick. Same for `no row matches that label, N ticks running`. |
+| 6 | Remove a name while a message is queued for it. | `carol left, so 1 queued message(s) will not be delivered: #<id> …` then `roster: -carol`. |
+| 7 | Repoint a name: `bob=<label1>` → `bob=<label2>` where label2 does not resolve yet. | `roster: ~bob`, then `bob is in the roster but has no row yet`. ⚠️ **Nothing may be typed into label1's row** — that is `resolve_all`'s keep-previous, and it is the subtlest bug in the branch. |
+| 8 | Write garbage into the roster. | `… -- keeping the 2 participant(s) already running`, **said once**, and the chat keeps working. |
+| 9 | `mv ~/peers /tmp/` then restore it. | Survives, says it once, and applies the change on restore. |
+| 10 | `: > ~/peers` (truncate to empty). | `the roster is empty -- keeping the 2 participant(s) already running`. ⚠️ The conversation must **not** dissolve. |
+| 11 | Reduce the roster to one name. | `the roster is down to 1 participant(s): nothing can be delivered until another joins`, relay stays up. |
+
+### Opportunistic — stage them if convenient
+
+| # | Do | Expect |
+|---|---|---|
+| 5 | Add a participant whose row is **detached** (showing `agb pane`'s menu), or run `agb-refresh` mid-join. | `is detached -- attaching it so its doorbell can be seen`, and once attached the backlog is still **discarded**, not delivered. ⚠️ This is the case the whole `SCAN_DETACHED` distinction exists for. |
+| 12 | Point two roster names at the same row. | `X and Y both resolve to row Z -- ignoring Y …`. |
+| 13 | Break ssh to a farm host briefly (VPN off) while a message is in flight. | `fetch failed` said **once**, then the message arrives when ssh returns — the `seen`-records-what-was-read fix. Hard to stage cleanly; skip rather than fake it. |
+
+### Known limitations — do not report these as bugs
+
+- A read truncated at a **line boundary** is indistinguishable from a real removal. Write the roster
+  atomically (`mv` into place); the window is ~1 ms against a tick.
+- Attaching an agent gives it **no way to discover the roster**. That is Plan B.
+- Two *unreachable* agents on two *different* mounts cannot both be served (`--chat-dir` is
+  relay-wide). Never run.
+
