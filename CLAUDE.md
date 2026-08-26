@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (2141 tests, ~80 s)
+python3 -m pytest tests/ -q                                    # full suite (2254 tests, ~80 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -82,6 +82,18 @@ touches the statedir only when the peer's tmux is unreachable: `<statedir>/chat/
 agent's visible screen**, which is why `skills/agb-peer/SKILL.md` tells the sender to repeat it in
 its own answer — an agent UI folds command output behind a `ran N commands` summary, and the message
 then sits unread with no error at either end. Measured, twice.
+
+⚠️ **Its participants can be a FILE, re-read while it runs** (`--roster`), which is what makes
+attaching and detaching an agent possible without a restart. Three rules from it are worth carrying,
+because each was a bug first. **Membership is a question about the roster, not about what currently
+resolves** — a name with no row yet has its mail *held*, and using the resolved map to answer it
+silently discarded every message to an agent that had not booted. **`seen` records what was read**,
+not what was intended, so a failed fetch retries instead of marking a participant caught-up having
+read nothing. And **a joiner is *primed***: its pane's existing content is discarded rather than
+delivered. ⚠️ In that last one, *detached* is not *nothing announced* — a menu hides the status bar,
+so a doorbell can be **invisible rather than absent**, and every `agb-refresh`-re-minted row comes
+back detached, which makes it the ordinary case rather than a corner. `docs/design.md` §6 has the
+rest, including why the prime retry is bounded and why giving up **delivers**.
 
 `agb hook` runs on **every Claude Code tool call**, over a network filesystem. `agb` has no `.py`
 extension and runs as `__main__`, so **CPython caches no bytecode for it** — the whole file is
@@ -682,7 +694,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2141 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2254 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

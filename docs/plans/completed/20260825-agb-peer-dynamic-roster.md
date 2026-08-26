@@ -105,6 +105,30 @@ Verified against source across review rounds 3 and 4:
   short-circuits before `seen.get(name)`. Any reordering there fails with a bare `AttributeError`.
 - Baseline **2169** tests.
 
+
+## Outcome — what actually happened
+
+All thirteen tasks landed. 2254 tests (from 2169), 48 mutations, every one caught by a named test.
+Three deviations from the plan, recorded because a ticked box that quietly meant something else is
+worse than an unticked one:
+
+1. **Two guards turned out to be defensive, not load-bearing, and say so in the source.** Skipping
+   pending joiners in the scan sits behind `seen`, which a successful prime already writes; and
+   `deliver_to` at the loop level converts a delay into an immediate delivery rather than preventing
+   a loss. Neither can fail a test on its own. The `deliver_to` *property* is pinned on `relay_tick`,
+   where it is observable.
+2. **The Task 10 structural guard was dropped rather than written.** The plan already suspected it:
+   a reachability edge exists whenever the feature works at all, so its mutation could never be shown
+   load-bearing. The tick-budget test (`ticks=2`) is the real assertion about ordering.
+3. **One extra fix, not in the plan.** An audit of every `say()` reachable from the relay loop found
+   `try_deliver`'s vanished-row hold still speaking every tick — a holding path that predates this
+   work and that the new holds made conspicuous.
+
+Two of my own tests were wrong in ways the mutation checks caught, which is the argument for running
+them: one asserted on `pending` where a delivered message and a lost one leave the same value, and
+one read its expected note keys out of the implementation, so *shrinking* that list shrank the
+expectation and the test stayed green.
+
 ## Development Approach
 
 - **testing approach**: **Regular** (code first, then tests)
@@ -214,34 +238,34 @@ Sequenced first because it stands alone: it needs no roster, and it is wrong tod
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] pass the applied **spec** membership to `try_deliver` alongside `resolved`
-- [ ] **hold** (return False) when the recipient is in the spec but not resolved — it is a
+- [x] pass the applied **spec** membership to `try_deliver` alongside `resolved`
+- [x] **hold** (return False) when the recipient is in the spec but not resolved — it is a
       participant whose row has not appeared yet; **drop** only when it is not in the spec at all
-- [ ] complain about a held recipient on a **ladder** (the `relay_tick:1300` `gone == 3 or
+- [x] complain about a held recipient on a **ladder** (the `relay_tick:1300` `gone == 3 or
       gone % 30` shape), not every tick
-- [ ] **bound the hold**: after N ticks, drop and say so loudly and by name — an unbounded hold grows
+- [x] **bound the hold**: after N ticks, drop and say so loudly and by name — an unbounded hold grows
       `pending` for ever for an agent that never starts. State the chosen N and that it is a
       judgement, not a measurement.
-- [ ] write tests: a message to a spec member with no row is **held**, then delivered when the row
+- [x] write tests: a message to a spec member with no row is **held**, then delivered when the row
       appears; a message to a non-member is dropped and named; the ladder complains a bounded number
       of times across many ticks; the bound eventually drops with its own message
-- [ ] add the CHANGELOG entry naming the **symptom** — "messages to a participant whose agent had
+- [x] add the CHANGELOG entry naming the **symptom** — "messages to a participant whose agent had
       not started yet were silently discarded"
-- [ ] run tests — must pass before Task 2
+- [x] run tests — must pass before Task 2
 
 ### Task 2: `drain` reports whether the fetch succeeded
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
 
-- [ ] add an optional trailing `outcome=None` out-parameter to `drain`, recording **success** or
+- [x] add an optional trailing `outcome=None` out-parameter to `drain`, recording **success** or
       **failure** — two outcomes only. ⚠️ "No doorbell" is *not* one of them: `:1330` short-circuits
       before `drain` is reached, so that case belongs to Task 4's function.
-- [ ] do the same for `drain_files`
-- [ ] leave both return shapes unchanged — seven existing tests assert on them
-- [ ] write tests that success and failure are distinguishable, including the case that makes it
+- [x] do the same for `drain_files`
+- [x] leave both return shapes unchanged — seven existing tests assert on them
+- [x] write tests that success and failure are distinguishable, including the case that makes it
       necessary: `drain` returning `[]` for **both** "fetch failed" and "nothing pending"
-- [ ] write the companion proving a caller passing no `outcome` sees byte-identical behaviour
-- [ ] run tests — must pass before Task 3
+- [x] write the companion proving a caller passing no `outcome` sees byte-identical behaviour
+- [x] run tests — must pass before Task 3
 
 ### Task 3: Move the `seen` write after a successful fetch, and throttle what that unleashes
 
@@ -249,220 +273,220 @@ Sequenced first because it stands alone: it needs no roster, and it is wrong tod
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] move `seen[name] = ident` (`:1332`) to **after** a successful drain, so a failed fetch is
+- [x] move `seen[name] = ident` (`:1332`) to **after** a successful drain, so a failed fetch is
       retried rather than silently marking the participant caught-up having read nothing
-- [ ] ⚠️ throttle the complaint paths this makes repeat: `drain`'s `fetch failed` (`:1212`),
+- [x] ⚠️ throttle the complaint paths this makes repeat: `drain`'s `fetch failed` (`:1212`),
       `drain_files`' four `say`s (`:1173`–`:1191`), and `relay_tick:1308`'s `cannot read %s`. Before
       this change each fired once per doorbell; after it they fire every tick until the fetch
       succeeds — the exact shape this file has already fixed twice.
-- [ ] write the test that a failed fetch is **retried on the next tick** and the messages arrive,
+- [x] write the test that a failed fetch is **retried on the next tick** and the messages arrive,
       with the companion that a successful fetch is not re-drained
-- [ ] write the throttle tests: a persistently failing fetch complains a bounded number of times
+- [x] write the throttle tests: a persistently failing fetch complains a bounded number of times
       across many ticks; companion — a healthy participant never complains
-- [ ] add the CHANGELOG entry naming the symptom (messages lost until the next doorbell)
-- [ ] run tests — must pass before Task 4
+- [x] add the CHANGELOG entry naming the symptom (messages lost until the next doorbell)
+- [x] run tests — must pass before Task 4
 
 ### Task 4: Extract the per-participant block, with its full exit vocabulary
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
 
-- [ ] extract the per-participant body of `relay_tick` into a function callable for **one**
+- [x] extract the per-participant body of `relay_tick` into a function callable for **one**
       participant
-- [ ] ⚠️ **enumerate all five exits** in its returned outcome, keeping them distinct:
+- [x] ⚠️ **enumerate all five exits** in its returned outcome, keeping them distinct:
       `session is None`, `ctl.text` error, `MODE_MENU`, `no doorbell`, `already caught up` — plus
       Task 2's drain success/failure. **The default is "we did not read the pane".**
-- [ ] ⚠️ **pin the signature and return shape here**, including who owns `seen[name]` (Task 3 moved
+- [x] ⚠️ **pin the signature and return shape here**, including who owns `seen[name]` (Task 3 moved
       it) and how `discarded` is returned. `relay_tick` has ~20 positional call sites; any new
       parameter is additive.
-- [ ] accept a pre-built `sessions` map so `cmd_relay` can build it once per tick from one
+- [x] accept a pre-built `sessions` map so `cmd_relay` can build it once per tick from one
       `ctl.tree()` — priming (step 4) runs outside `relay_tick` and must not fetch a second tree
-- [ ] keep behaviour otherwise identical; existing relay tests pass unchanged
-- [ ] ⚠️ note in the task that `tests/test_agb_peer.py:1114` passes `set()` as `seen` and survives
+- [x] keep behaviour otherwise identical; existing relay tests pass unchanged
+- [x] ⚠️ note in the task that `tests/test_agb_peer.py:1114` passes `set()` as `seen` and survives
       only because `if not ident` short-circuits first — a reordering fails it with a bare
       `AttributeError`, not a readable assertion
-- [ ] write a test for **each** of the five exits, asserting they are distinguishable — `MODE_MENU`
+- [x] write a test for **each** of the five exits, asserting they are distinguishable — `MODE_MENU`
       in particular must be distinct from `no doorbell`
-- [ ] run tests — must pass before Task 5
+- [x] run tests — must pass before Task 5
 
 ### Task 5: Participant name charset, and the version bump
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] restrict participant names to `[A-Za-z0-9._-]`, non-empty, **left of `=` only** — Plan B's
+- [x] restrict participant names to `[A-Za-z0-9._-]`, non-empty, **left of `=` only** — Plan B's
       roster encoding must survive `ssh … tmux set`, and tightening a refusal later is the breaking
       direction
-- [ ] bump `agb-peer`'s `VERSION` — ⚠️ the justification is `--roster`, a new relay flag; it is
+- [x] bump `agb-peer`'s `VERSION` — ⚠️ the justification is `--roster`, a new relay flag; it is
       **not** the wire, since the room reader and emitter are both cut and nothing here changes what
       crosses between the two copies
-- [ ] write charset tests for the reachable refusals — `/`, `,`, `@`, `:`, non-ASCII
-- [ ] ⚠️ note `=` and whitespace as **unreachable** through either front door (`partition("=")`
+- [x] write charset tests for the reachable refusals — `/`, `,`, `@`, `:`, non-ASCII
+- [x] ⚠️ note `=` and whitespace as **unreachable** through either front door (`partition("=")`
       takes the first `=`; relay words come from `.split()`), so a reader does not mistake those
       cases for reachable refusals
-- [ ] write the positive companion: `bob=/home/you/agbridge` still parses
-- [ ] add the CHANGELOG entry, in this commit
-- [ ] run tests — must pass before Task 6
+- [x] write the positive companion: `bob=/home/you/agbridge` still parses
+- [x] add the CHANGELOG entry, in this commit
+- [x] run tests — must pass before Task 6
 
 ### Task 6: `--roster` — reading the file, parsing it, and the startup refusals
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add a `minimum=2` parameter to `parse_participants`; one production call site, all test call
+- [x] add a `minimum=2` parameter to `parse_participants`; one production call site, all test call
       sites positional single-argument
-- [ ] add `read_roster_file(path)` returning bytes, and `parse_roster_text(text, minimum)` — strip
+- [x] add `read_roster_file(path)` returning bytes, and `parse_roster_text(text, minimum)` — strip
       `#` comments and blank lines, hand the words to `parse_participants` so the grammar cannot
       drift. ⚠️ Task 7 reuses `read_roster_file`; defining it here is what makes these refusals
       testable.
-- [ ] add `--roster` to `PEER_VALUE_ARGS` and thread it from `main`'s `relay` branch into
+- [x] add `--roster` to `PEER_VALUE_ARGS` and thread it from `main`'s `relay` branch into
       `cmd_relay`; refuse it together with positional participants, somewhere that sees both; say
       whether the other two argv forms silently accept and ignore it (`parse_args` is shared)
-- [ ] **startup refuses** on: unreadable file, missing file, **empty file**, bad parse, fewer than
+- [x] **startup refuses** on: unreadable file, missing file, **empty file**, bad parse, fewer than
       two participants — five distinguishable messages
-- [ ] update `USAGE`
-- [ ] write tests: comments and blanks ignored; a line parses identically to the positional form;
+- [x] update `USAGE`
+- [x] write tests: comments and blanks ignored; a line parses identically to the positional form;
       both forms refused; each of the five startup refusals named
-- [ ] add the CHANGELOG entry, in this commit
-- [ ] run tests — must pass before Task 7
+- [x] add the CHANGELOG entry, in this commit
+- [x] run tests — must pass before Task 7
 
 ### Task 7: The runtime reader — byte gate and the holds
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] compare **bytes** to the previous read, re-parsing only on a difference — simpler and cheaper
+- [x] compare **bytes** to the previous read, re-parsing only on a difference — simpler and cheaper
       than a stat key for a handful of lines, and invariant-6 clean by construction
-- [ ] ⚠️ keep **two** pieces of state: the last bytes read (the gate) and the last **successfully
+- [x] ⚠️ keep **two** pieces of state: the last bytes read (the gate) and the last **successfully
       applied** spec (the diff base). Across a hold they diverge, and diffing against a failed parse
       loses the join.
-- [ ] decode explicitly and treat `UnicodeDecodeError` as a hold — it is a `ValueError`, not an
+- [x] decode explicitly and treat `UnicodeDecodeError` as a hold — it is a `ValueError`, not an
       `OSError`, so a naive `except IOError` lets it kill the relay
-- [ ] hold, saying **once per unchanged reason** via `notes`, on: bad parse; missing or unreadable
+- [x] hold, saying **once per unchanged reason** via `notes`, on: bad parse; missing or unreadable
       file; ⚠️ **an empty read** — a truncated read is no information, never "everybody left"
-- [ ] use `minimum=1` at runtime, announcing a drop below two once
-- [ ] write tests: unchanged bytes do not re-parse (count the parses), companion that changed bytes
+- [x] use `minimum=1` at runtime, announcing a drop below two once
+- [x] write tests: unchanged bytes do not re-parse (count the parses), companion that changed bytes
       do; bad parse holds and says **once across many ticks**; file removed holds; **empty file
       holds**; recovery when restored; a hold followed by a valid edit still sees the join (the
       two-state property)
-- [ ] mutation-check the gate both ways, deleting `__pycache__/agb-peercpython-36.pyc` each time
-- [ ] add the CHANGELOG entry, in this commit
-- [ ] run tests — must pass before Task 8
+- [x] mutation-check the gate both ways, deleting `__pycache__/agb-peercpython-36.pyc` each time
+- [x] add the CHANGELOG entry, in this commit
+- [x] run tests — must pass before Task 8
 
 ### Task 8: Apply leaves
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
 
-- [ ] add `apply_leaves(left, rebound, …)` clearing, per the table above: `seen`, the three `notes`
+- [x] add `apply_leaves(left, rebound, …)` clearing, per the table above: `seen`, the three `notes`
       keys, that name's `delivered` entries, ⚠️ `resolved[name]`, and ⚠️ `needs_prime` membership
-- [ ] drop pending messages **to** a true leaver and **name** them — ⚠️ load-bearing after Task 1,
+- [x] drop pending messages **to** a true leaver and **name** them — ⚠️ load-bearing after Task 1,
       which makes `try_deliver` *hold* for spec members rather than drop
-- [ ] ⚠️ for a **rebind**, keep `pending` to that name, and **re-add** it to `needs_prime`
-- [ ] write tests: leave clears all six things and drops to-messages (named) while keeping
+- [x] ⚠️ for a **rebind**, keep `pending` to that name, and **re-add** it to `needs_prime`
+- [x] write tests: leave clears all six things and drops to-messages (named) while keeping
       from-messages
-- [ ] write the rebind tests: `resolved[name]` dropped, `needs_prime` re-added, and `pending` to that
+- [x] write the rebind tests: `resolved[name]` dropped, `needs_prime` re-added, and `pending` to that
       name **survives** — the three that distinguish a rebind from a leave
-- [ ] run tests — must pass before Task 9
+- [x] run tests — must pass before Task 9
 
 ### Task 9: Prime joiners
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add `needs_prime`, a set that **survives ticks**; ⚠️ **startup is not a join** — the existing
+- [x] add `needs_prime`, a set that **survives ticks**; ⚠️ **startup is not a join** — the existing
       `deliver_new=False` pass handles the initial roster
-- [ ] `prime_joiners(...)` iterates a **copy** (it removes from the set it walks), calls Task 4's
+- [x] `prime_joiners(...)` iterates a **copy** (it removes from the set it walks), calls Task 4's
       function, discards what it finds and **names** it, and clears a name per the meaning table:
       **drain succeeded** or **pane read with no doorbell** → clear; every not-read exit and a
       **failed drain** → keep
-- [ ] use `resolved.get(name)`, not `resolved[name]` — a name can be in `needs_prime` and absent
+- [x] use `resolved.get(name)`, not `resolved[name]` — a name can be in `needs_prime` and absent
       from `resolved`; that must skip and keep, never `KeyError` the relay dead
-- [ ] ⚠️ **bound the attempts**: after N, clear the name **without discarding** and say so loudly.
+- [x] ⚠️ **bound the attempts**: after N, clear the name **without discarding** and say so loudly.
       While pending, a participant's drains are discarded, so an unbounded retry destroys every
       message it sends meanwhile — worse than delivering one stale backlog.
-- [ ] write tests: a **failed drain** keeps the name pending and its backlog is discarded on the
+- [x] write tests: a **failed drain** keeps the name pending and its backlog is discarded on the
       later tick when the drain succeeds; **`MODE_MENU`** keeps it pending (the ordinary
       `agb-refresh` path); **no doorbell** clears it immediately; an unresolved row keeps it and is
       primed on a later tick with no second file edit; the bound clears without discarding
-- [ ] add the CHANGELOG entry, in this commit
-- [ ] run tests — must pass before Task 10
+- [x] add the CHANGELOG entry, in this commit
+- [x] run tests — must pass before Task 10
 
 ### Task 10: Wire it into `cmd_relay`
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add an **additive** tick-limit seam — ⚠️ `once` is passed positionally as the 5th argument by
+- [x] add an **additive** tick-limit seam — ⚠️ `once` is passed positionally as the 5th argument by
       three tests and by `main:1461`; it must keep its meaning, and the new limit is a keyword after
       `chat_dir`. Note the roster file is mutated from a `sleep` override (`RelayCtl.sleep` exists).
-- [ ] build `sessions` once per tick from one `ctl.tree()` and pass it to both priming and the scan
-- [ ] implement the ordering: read → leaves → `resolve_all(new spec)` → prime → scan **skipping
+- [x] build `sessions` once per tick from one `ctl.tree()` and pass it to both priming and the scan
+- [x] implement the ordering: read → leaves → `resolve_all(new spec)` → prime → scan **skipping
       `needs_prime`** → ⚠️ **delivery for everyone, including pending names**
-- [ ] ⚠️ throttle `resolve_all`'s unresolvable-entry `say` (add `notes=` — existing calls are
+- [x] ⚠️ throttle `resolve_all`'s unresolvable-entry `say` (add `notes=` — existing calls are
       positional up to `previous`): today a startup typo the operator Ctrl-Cs, with a roster a
       permanent every-8s line, and the `("gone", name)` ladder cannot help because an unresolved name
       never reaches `resolved`
-- [ ] ⚠️ detect **two names resolving to the same row id** — `resolve` refuses an ambiguous label but
+- [x] ⚠️ detect **two names resolving to the same row id** — `resolve` refuses an ambiguous label but
       nothing cross-checks the map, and a roster edit makes this reachable. Two names on one pane
       both drain it, and `try_deliver`'s self-guard is by **name**, so a message can be typed into
       the sender's own composer. Keep the first binding by sorted order, name the one dropped,
       complain throttled.
-- [ ] fix two wrong-cause messages: `row ids moved -- re-resolved (an agb-refresh re-mints…)`, which
+- [x] fix two wrong-cause messages: `row ids moved -- re-resolved (an agb-refresh re-mints…)`, which
       now also fires on membership change, and `relay_tick:1354`'s "queued before this relay
       **started**", false for a joiner
-- [ ] decide and implement what a membership change does to the **dashboard** — `:1403` re-opens it
+- [x] decide and implement what a membership change does to the **dashboard** — `:1403` re-opens it
       on every `fresh != resolved`, which now includes every join and leave, and a drop below two
       leaves a stale grid open behind the `len(resolved) > 1` gate
-- [ ] write the end-to-end multi-tick tests: a participant added mid-run joins and receives; one
+- [x] write the end-to-end multi-tick tests: a participant added mid-run joins and receives; one
       removed stops receiving; a joiner added on tick N is resolved **and primed on tick N**
-- [ ] write the test whose other half lives in Task 9: a joiner with **no doorbell** has its **first
+- [x] write the test whose other half lives in Task 9: a joiner with **no doorbell** has its **first
       real message delivered, not discarded** — this is the scan-skip property, so it belongs here
-- [ ] write a test that a name stuck in `needs_prime` can still **receive**
-- [ ] write a test that the loop still works with **positional** participants and never reads a
+- [x] write a test that a name stuck in `needs_prime` can still **receive**
+- [x] write a test that the loop still works with **positional** participants and never reads a
       roster file
-- [ ] if a structural guard is added, make it assert **ordering** (the roster-read node precedes the
+- [x] if a structural guard is added, make it assert **ordering** (the roster-read node precedes the
       `resolve_all` node in `cmd_relay`'s body) — a plain reachability guard proves an edge that
       exists whenever the feature works, so its mutation could never be shown load-bearing
-- [ ] add the CHANGELOG entry, in this commit
-- [ ] run tests — must pass before Task 11
+- [x] add the CHANGELOG entry, in this commit
+- [x] run tests — must pass before Task 11
 
 ### Task 11: Design documentation and the deferred list
 
 **Files:** Modify `docs/design.md`, `docs/commands.md`
 
-- [ ] extend §6 with the roster, the startup/runtime refusal split, the tick ordering, and
+- [x] extend §6 with the roster, the startup/runtime refusal split, the tick ordering, and
       **`needs_prime` stated by its meaning** — including why "no doorbell" clears it, why
       `MODE_MENU` does not, and why the retry is bounded
-- [ ] record the Task 1 fix as a **behaviour change**: messages to a not-yet-started participant are
+- [x] record the Task 1 fix as a **behaviour change**: messages to a not-yet-started participant are
       now held, not discarded
-- [ ] record the **named gap**: attaching an agent changes routing only; discovery is Plan B
-- [ ] record the deferred items with reasons: broadcast (`--to all`) — a reply-all among 3+ agents is
+- [x] record the **named gap**: attaching an agent changes routing only; discovery is Plan B
+- [x] record the deferred items with reasons: broadcast (`--to all`) — a reply-all among 3+ agents is
       a feedback loop with no natural stop, which `SKILL.md`'s "send, then finish your turn" does not
       cover; rooms (and why *both* halves were cut: adding a reader later breaks nothing, and rooms
       get implemented in the relay anyway); proactive join/leave announcements; per-participant
       `--chat-dir`
-- [ ] record the accepted risks: the line-boundary truncation window, and the alias collision being
+- [x] record the accepted risks: the line-boundary truncation window, and the alias collision being
       *detected* rather than prevented
-- [ ] record the lingering-option hole: a value failing `parse_option_value` is neither unset nor
+- [x] record the lingering-option hole: a value failing `parse_option_value` is neither unset nor
       reported
-- [ ] record **CONFIRMED / ASSUMED**: reachable + no shared disk (Mac ↔ farm) **CONFIRMED**;
+- [x] record **CONFIRMED / ASSUMED**: reachable + no shared disk (Mac ↔ farm) **CONFIRMED**;
       unreachable + shares a mount with its reachable neighbour **CONFIRMED**; unreachable + on a
       *different* mount from the other unreachable agents **NEVER RUN**
-- [ ] add `--roster` to `docs/commands.md`, ⚠️ **saying the file must be written atomically** (`mv`
+- [x] add `--roster` to `docs/commands.md`, ⚠️ **saying the file must be written atomically** (`mv`
       into place), since an in-place rewrite can be read truncated
-- [ ] run tests — must pass before Task 12
+- [x] run tests — must pass before Task 12
 
 ### Task 12: Verify acceptance criteria
 
-- [ ] verify every requirement in the Overview is implemented
-- [ ] verify a relay with **positional** participants is unchanged apart from the two named fixes
-- [ ] verify the five startup refusals and the four runtime holds are reachable and distinct
-- [ ] ⚠️ **audit every task's tests for the two shapes all four review rounds caught**: a test that
+- [x] verify every requirement in the Overview is implemented
+- [x] verify a relay with **positional** participants is unchanged apart from the two named fixes
+- [x] verify the five startup refusals and the four runtime holds are reachable and distinct
+- [x] ⚠️ **audit every task's tests for the two shapes all four review rounds caught**: a test that
       cannot pass until a later task, and a test asserting a property already free on its branch
-- [ ] verify **no complaint path can fire unthrottled every tick** — Tasks 1, 3, 7, 10 each added or
+- [x] verify **no complaint path can fire unthrottled every tick** — Tasks 1, 3, 7, 10 each added or
       changed one
-- [ ] re-run every mutation check (Tasks 7, 10), deleting `__pycache__/agb-peercpython-36.pyc`
-- [ ] run the full suite: `python3 -m pytest tests/ -q` — 2169 before this plan
+- [x] re-run every mutation check (Tasks 7, 10), deleting `__pycache__/agb-peercpython-36.pyc`
+- [x] run the full suite: `python3 -m pytest tests/ -q` — 2169 before this plan
 
 ### Task 13: [Final] Update documentation
 
-- [ ] correct `CLAUDE.md`'s stale test count (2141 → the new number)
-- [ ] update `CLAUDE.md` if a new invariant emerged
-- [ ] move this plan to `docs/plans/completed/`
+- [x] correct `CLAUDE.md`'s stale test count (2141 → the new number)
+- [x] update `CLAUDE.md` if a new invariant emerged
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 
