@@ -100,6 +100,14 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+> ⚠️ **The roster work below was verified live** — real agents on a farm host, a relay on a Mac,
+> messages crossing both ways — after the tests were green. Two cases were **not** run and are
+> flagged in `README.md`: two roster names resolving to the same row, and a joiner whose row is
+> detached at the moment it joins. Five defects turned up during that run and **every one was in the
+> documentation**, not the code: nested session names, a missing `@<ssh alias>`, `AGB_CLAUDE_CUSTOM`
+> meaning `agb-claude` starts no local agent, `agb-claude -d` silently no-opping on an existing
+> session, and a bash heredoc hanging in tcsh.
+
 - **Participants can now be added, removed and repointed while the relay runs.** A roster edit is
   applied on the next tick: joiners are primed, leavers are forgotten, and a name whose row changed
   is treated as neither.

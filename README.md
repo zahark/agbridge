@@ -354,6 +354,14 @@ Verified in real use, not just in tests:
 | a finished agent's row goes `[done]`, stays visible | ✅ |
 | `agb close-done` → `agtermctl session close` | ✅ |
 | automatic reap of dead own-host agents | ✅ |
+| `agb-peer relay --roster` — adding and removing participants live | ✅ run against real agents on a farm host |
+| a message to a rostered agent that has **not started yet** | ✅ held, then delivered when its row appeared |
+| a joiner's pre-existing pane content discarded, not delivered | ✅ |
+| a joiner that has **never sent** — its first message arrives | ✅ the inverse failure; no unit test can reach it |
+| repointing a name at a different row mid-run | ✅ stopped routing to the row it left |
+| a corrupt / missing / empty roster file | ✅ conversation survived all three, complaint said once |
+| two roster names resolving to the **same row** | ⬜ not yet run |
+| a joiner whose row is **detached** at the moment it joins | ⬜ not yet run |
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 
 **Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except
