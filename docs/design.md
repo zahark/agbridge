@@ -2376,6 +2376,95 @@ error at either end. `skills/agb-peer/SKILL.md` is the fix — it tells the send
 `[peer #…]` line in its own answer, which *is* on the screen. This is the one part of the channel
 that cannot be made structural, and it cost a 25-minute silent failure to find.
 
+### A roster that changes while the relay runs
+
+Participants started as a command line and are now optionally a **file**, re-read each tick. The
+mechanism is small; the reasoning is where the cost is.
+
+**Membership is a question about the roster, not about what resolved.** `try_deliver` used the
+*resolved* map to answer both *is this a participant?* and *can I reach it?*, so a message to an
+agent that had not booted yet was indistinguishable from a typo and was discarded. The second
+question is a reason to wait; only the first justifies throwing a message away. A name in the roster
+with no row is **held** — on a ladder, and bounded, because an unbounded hold accumulates mail for
+the life of the relay.
+
+**`seen` records what was READ.** It used to be written one line above the fetch, so an ssh that
+failed marked the participant caught-up having read nothing and the doorbell guard suppressed every
+retry. Recording the truth rather than the intention makes the retry fall out; the cost is that a
+persistent failure repeats, which is what the say-once throttles are for.
+
+**Priming is state that survives ticks, and it is defined by its meaning:** *there may be content on
+this pane that predates the join, so the next successful drain must be discarded.* Every rule
+follows from that sentence rather than a list —
+
+| | |
+|---|---|
+| the pane was read (drained, or nothing announced) | **clear it** |
+| the pane was not read (no row, unreadable, **detached**, drain failed) | **keep it**, retry |
+
+⚠️ **`detached` is the one that looks like the first and is the second.** A detached row shows
+`agb pane`'s menu, which hides the status bar, so its doorbell is not *visible* — not *absent*. Every
+row `agb-refresh` re-mints comes back detached, so folding it into "nothing announced" delivers a
+backlog on the **ordinary** path, not in a corner.
+
+⚠️ **And "nothing announced" must clear it**, which is the inverse failure and the harder one to see.
+A fresh joiner has never sent anything, so it has no doorbell at all; treating that as *not yet
+primed* leaves it pending until the bound and throws away its **first real message** as a backlog.
+Discarding a live message is worse than delivering a stale one — that asymmetry is the whole of the
+rule, and it is also why the retry is **bounded**: while a name is pending the ordinary scan skips
+it, so persisting longer destroys more real mail. Giving up clears the name *without* draining, so
+the backlog is delivered instead. Visible, and the lesser failure.
+
+**Reads are held, never believed.** Unreadable, missing, not UTF-8, malformed, empty: at runtime none
+is evidence that anybody left. The dangerous one is not obvious garbage — it is a **truncated** read,
+which is what a file being rewritten in place looks like for a millisecond and which parses *cleanly*
+as a shorter roster. Treating a short answer as authoritative applies a leave nobody asked for. This
+is invariant 2 in its own words. ⚠️ It does not fully close: a read truncated at a *line boundary* is
+indistinguishable from a real removal, so `docs/commands.md` says to write the file atomically. The
+window is ~1 ms against an ~8 s tick, and that is a judgement recorded rather than a gap overlooked.
+
+**Startup refuses where runtime holds**, because holding means keeping the roster you already had and
+at startup there is none. It is also the only place the two-participant minimum can live: a relay may
+*drop* to one when somebody leaves, but it cannot begin with nobody to talk to.
+
+**A rebind is not a leave.** Both forget the pane-specific state; only a leave drops the queued mail,
+because a rebound participant moved rather than went and those messages exist nowhere else. ⚠️ A
+rebind must also drop `resolved[name]`, or `resolve_all`'s keep-previous routes to the row it just
+left — and only a name that *was* resolved exhibits it.
+
+### Deferred, with reasons
+
+- **Broadcast (`--to all`).** Not free: with three or more agents a reply-all is a feedback loop with
+  no natural stop, and `SKILL.md`'s anti-deadlock rule — *send, then finish your turn* — does not
+  cover it, because every participant answering once is already the storm.
+- **Rooms.** Both halves were cut, in two steps. The *emitter* first: a new sender writing
+  `default/bob` into an older relay is dropped while the sender sees `queued` and exit 0. The
+  *reader* second, on re-examination: adding a reader later breaks nothing in either direction, and
+  the only case it would help is a room-aware **sender** against a room-unaware **relay**, which
+  cannot arise because rooms get implemented *in the relay*. When rooms are built, reader and emitter
+  land together. ⚠️ And they will need an age-based complaint: once a relay claims only its own
+  room's options, a message for a room whose relay is not running sits on the pane for ever, re-read
+  every ring and never reported — today's `not a participant` line is what catches that.
+- **Proactive join/leave announcements.** They work, but each one wakes every agent and costs it a
+  turn. Behind a flag, off by default, if ever.
+- **Per-participant `--chat-dir`.** It is relay-wide, so two *unreachable* agents on two *different*
+  mounts cannot both be served.
+- **`agb-peer who`.** After this, attaching an agent changes routing and nothing else: the agent has
+  no way to discover who is in the conversation. That is a named gap, not an oversight.
+
+### Still true, and still unfixed
+
+⚠️ **An option that fails `parse_option_value` is neither unset nor reported.** `parse_show_options`
+drops it before `drain` sees it, so it lingers silently on the pane for ever.
+
+Verification status, in this project's vocabulary:
+
+| | |
+|---|---|
+| reachable + no shared disk (Mac ↔ farm) | **CONFIRMED**, verified live |
+| unreachable + shares a mount with its reachable neighbour (the pool) | **CONFIRMED**, verified live |
+| unreachable + on a *different* mount from the other unreachable agents | **NEVER RUN** |
+
 The three questions this document left open are now answered by the implementation:
 
 - **Install/ops** — `install.sh` (`mac` / `farm` roles), `agb install-hooks`, `agb install-config`,

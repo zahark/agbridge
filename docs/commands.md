@@ -1636,7 +1636,27 @@ only symptom would be silence.
 
 ```
 agb-peer relay alice=<label>[:pane][@<ssh target>] bob=<label> [--dashboard]
+agb-peer relay --roster <file> [--dashboard]     # the same, re-read as it changes
 ```
+
+**`--roster <file>`** takes the participants from a file instead of the command line, one per line,
+same grammar, `#` comments and blank lines ignored. It is re-read every tick, so agents can be added
+and removed **without restarting the relay**. ⚠️ A `#` comment is a *whole line*, never a trailing
+one: `<row>` is a row-title substring and may contain `#`.
+
+⚠️ **Write the file atomically — edit a copy and `mv` it into place.** A file rewritten in place can
+be read half-written, and a read truncated at a line boundary parses *cleanly* as a shorter roster,
+which is indistinguishable from a real removal. An empty read is refused as no-information, but a
+line boundary cannot be; the window is about a millisecond against an eight-second tick, and `mv`
+closes it entirely.
+
+⚠️ **`--roster` and positional participants together are refused** — two sources of truth have no
+answer to *who is in this conversation* that does not depend on which one you read.
+
+At **startup** an unreadable, missing, empty or malformed roster, or one naming fewer than two
+participants, is a refusal. While **running**, every one of those *holds* the roster already in use
+and says so once: at runtime none of them is evidence that anybody left. A drop to one participant is
+allowed and announced, because people do leave.
 
 Three consequences that are easy to miss, each with a test:
 
