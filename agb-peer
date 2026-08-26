@@ -706,6 +706,76 @@ def parse_show_options(text):
     return messages
 
 
+# How many ticks to keep trying to prime a joiner before giving up. ⚠️ **Short
+# on purpose, and the reason runs the other way from the message hold.** While a
+# name is pending, the ordinary scan skips it, so anything it sends piles up on
+# its pane and is DISCARDED by the prime that finally succeeds. The longer we
+# persist, the more live messages a successful prime throws away. Giving up
+# early risks delivering one stale backlog; giving up late destroys real mail,
+# and this project's rule is that discarding a real message is the worse
+# failure. Three arming attempts fit inside this, since `scan_participant` arms
+# a detached row every tenth try.
+PRIME_ATTEMPTS_MAX = 30
+
+
+def prime_joiners(ctl, sessions, needs_prime, people, seen, lines, say,
+                  fetch=None, notes=None, chat_dir=None):
+    """Discard whatever was on a joiner's pane before it joined.
+
+    ⚠️ **`needs_prime` MEANS: there may be content on this pane that predates
+    the join, so the next successful drain must be discarded rather than
+    delivered.** Every rule here is that sentence, not a list to memorise:
+
+      * the pane was read -- drained, or read with nothing announced -- so
+        there is nothing stale left: **clear it**;
+      * the pane was NOT read -- no row, unreadable, detached, or the drain
+        failed -- so we still do not know: **keep it**, and try next tick.
+
+    ⚠️ `SCAN_DETACHED` is the one that looks like the first and is the second.
+    A detached row shows `agb pane`'s menu, which hides the status bar, so its
+    doorbell is not *visible* -- not *absent*. Every row `agb-refresh` re-mints
+    comes back detached, so getting this wrong delivers a backlog on the
+    ordinary path rather than in a corner.
+    """
+    notes = {} if notes is None else notes
+    discarded = []
+    # ⚠️ A copy: the loop removes from the set it is walking.
+    for name in sorted(needs_prime):
+        binding = people.get(name)
+        if binding is None:
+            # Not resolved this tick -- a row is briefly absent while it is
+            # re-minted. Keep it pending and say nothing; scan_participant's
+            # own ladder is what reports a row that never comes back.
+            continue
+        tries = notes.get(("prime", name), 0) + 1
+        notes[("prime", name)] = tries
+        result, messages = scan_participant(ctl, sessions, name, binding, seen,
+                                            lines, say, fetch, notes, chat_dir)
+        if result in SCAN_PANE_IS_CLEAN:
+            needs_prime.discard(name)
+            notes.pop(("prime", name), None)
+            for message in messages:
+                # ⚠️ Named, not counted: an operator who queued something a
+                # moment earlier needs to see that THIS is what went.
+                discarded.append("#%s (%s -> %s)"
+                                 % (message["id"], name, message["to"]))
+        elif tries >= PRIME_ATTEMPTS_MAX:
+            # ⚠️ Cleared WITHOUT discarding. We never managed to read the pane,
+            # so we do not know what is on it -- and holding on means every
+            # message this participant sends meanwhile is thrown away by the
+            # prime that eventually works. Letting a stale backlog through is
+            # the lesser failure, and it is at least visible.
+            needs_prime.discard(name)
+            notes.pop(("prime", name), None)
+            say("gave up priming %s after %d ticks (%s): whatever is on its "
+                "pane will be DELIVERED rather than discarded, so an old "
+                "message may arrive" % (name, tries, result))
+    if discarded:
+        say("discarded %d message(s) that predate a join: %s"
+            % (len(discarded), ", ".join(discarded)))
+    return discarded
+
+
 # Every note this file keys on a participant name. ⚠️ **A list, not a pattern,
 # and it has to grow when a new per-name note appears.** A note left behind
 # after a leave is not cosmetic: `("held", name)` would resume a half-hour hold
@@ -713,7 +783,8 @@ def parse_show_options(text):
 # complaint about the new pane.
 def _name_notes(name):
     return (("gone", name), ("menu", name), ("said", name), ("held", name),
-            ("said", ("fetch", name)), ("said", ("read", name)))
+            ("prime", name), ("said", ("fetch", name)),
+            ("said", ("read", name)))
 
 
 def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
@@ -1592,8 +1663,12 @@ SCAN_CAUGHT_UP = "caught-up"
 SCAN_FETCHED = "fetched"
 SCAN_FETCH_FAILED = "fetch-failed"
 
-# The outcomes that prove the pane was read and nothing is waiting on it.
-SCAN_PANE_IS_CLEAN = (SCAN_FETCHED, SCAN_NO_DOORBELL)
+# The outcomes that prove the pane WAS READ. ⚠️ That is the question priming
+# asks -- not "was anything found". `SCAN_NO_DOORBELL` belongs here because
+# reading a pane and seeing nothing announced is a FACT about it, while
+# `SCAN_DETACHED` does not, because a menu hides the status bar and the
+# doorbell may be sitting there unseen.
+SCAN_PANE_IS_CLEAN = (SCAN_FETCHED, SCAN_NO_DOORBELL, SCAN_CAUGHT_UP)
 
 
 def scan_participant(ctl, sessions, name, binding, seen, lines, say,

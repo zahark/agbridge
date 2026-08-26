@@ -2185,15 +2185,27 @@ def test_a_drop_to_one_participant_is_announced_not_refused(peer, tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ⚠️ Kept beside the implementation's own list rather than read from it, and
+# compared against it below. A note left behind after a leave is not cosmetic:
+# ("held", name) would resume a half-hour message hold for a name that came
+# back, and ("prime", name) would make its next join give up early.
+LEAVE_CLEARS_NOTES = [
+    ("gone", "bob"), ("menu", "bob"), ("said", "bob"), ("held", "bob"),
+    ("prime", "bob"), ("said", ("fetch", "bob")), ("said", ("read", "bob"))]
+
+
+def test_the_per_name_notes_list_is_complete(peer):
+    assert set(peer._name_notes("bob")) == set(LEAVE_CLEARS_NOTES)
+
+
 def leave_state(peer, extra_notes=None):
     seen = {"alice": "aaa", "bob": "bbb"}
     pending = [("alice", {"id": "m1", "to": "bob", "text": "for bob"}),
                ("bob", {"id": "m2", "to": "alice", "text": "from bob"})]
     resolved = dict(PEOPLE)
-    notes = {"delivered": {("bob", "m9"), ("alice", "m8")},
-             ("gone", "bob"): 4, ("menu", "bob"): 2, ("said", "bob"): "x",
-             ("held", "bob"): (3, 1), ("said", ("fetch", "bob")): "y",
-             ("said", ("read", "bob")): "z"}
+    notes = {"delivered": {("bob", "m9"), ("alice", "m8")}}
+    for index, key in enumerate(LEAVE_CLEARS_NOTES):
+        notes[key] = index + 1
     notes.update(extra_notes or {})
     return seen, pending, resolved, set(), notes
 
@@ -2205,7 +2217,11 @@ def test_a_leave_forgets_everything_pane_specific(peer):
                       notes, said.append)
     assert "bob" not in seen
     assert "bob" not in resolved, "or resolve_all keeps the old row"
-    assert [k for k in peer._name_notes("bob") if k in notes] == []
+    # ⚠️ A LITERAL, not `peer._name_notes("bob")`. Reading the constant out of
+    # the implementation makes this a tautology -- whatever the code purges,
+    # purges -- and widening or shrinking that list is exactly what such a test
+    # stops seeing.
+    assert [k for k in LEAVE_CLEARS_NOTES if k in notes] == []
     assert notes["delivered"] == {("alice", "m8")}, "only bob's ids go"
 
 
@@ -2271,3 +2287,107 @@ def test_a_leave_touches_nobody_else(peer):
     peer.apply_leaves({"bob"}, set(), seen, pending, resolved, needs_prime,
                       notes, lambda m: None)
     assert seen == {"alice": "aaa"} and "alice" in resolved
+
+
+# ---------------------------------------------------------------------------
+# priming a joiner: needs_prime as state that survives ticks
+# ---------------------------------------------------------------------------
+#
+# needs_prime MEANS: there may be content on this pane that predates the join,
+# so the next successful drain must be discarded rather than delivered. Every
+# rule below is that sentence.
+
+
+def prime(peer, ctl, needs_prime, people=None, seen=None, fetch=None,
+          notes=None):
+    sessions = {}
+    for s in peer.sessions_of(ctl.tree()):
+        sessions[s["id"]] = s
+    return peer.prime_joiners(
+        ctl, sessions, needs_prime, PEOPLE if people is None else people,
+        {} if seen is None else seen, 500, ctl.say, fetch or Fetcher(),
+        {} if notes is None else notes)
+
+
+def test_a_joiners_backlog_is_discarded_not_delivered(peer):
+    ctl = RelayCtl(panes(alice=bell("old")))
+    needs_prime = {"alice"}
+    discarded = prime(peer, ctl, needs_prime,
+                      fetch=Fetcher(framed(("old", "bob", "stale"))))
+    assert ctl.typed == [], "priming must deliver none of it"
+    assert any("#old" in d for d in discarded), discarded
+    assert needs_prime == set(), "read, so no longer suspect"
+
+
+def test_a_joiner_with_no_doorbell_is_primed_immediately(peer):
+    """⚠️ The inverse failure. A fresh joiner has never sent anything, so there
+    is no doorbell -- and treating that as "not yet primed" would leave it
+    pending until the bound, throwing away its FIRST REAL MESSAGE as a backlog."""
+    ctl = RelayCtl(panes())
+    needs_prime = {"alice"}
+    assert prime(peer, ctl, needs_prime) == []
+    assert needs_prime == set(), "the pane was read; there is nothing stale"
+
+
+def test_a_detached_joiner_stays_pending(peer):
+    """⚠️ The one that must NOT clear. A menu hides the status bar, so the
+    doorbell is not visible -- not absent -- and every row `agb-refresh`
+    re-mints comes back detached."""
+    ctl = RelayCtl(dict(panes(), AAAA1111=MENU))
+    needs_prime = {"alice"}
+    prime(peer, ctl, needs_prime)
+    assert needs_prime == {"alice"}
+
+
+def test_a_failed_drain_keeps_the_joiner_pending_then_discards(peer):
+    """The retry, across ticks, with no second roster edit."""
+    ctl = RelayCtl(panes(alice=bell("old")))
+    needs_prime, seen, notes = {"alice"}, {}, {}
+    prime(peer, ctl, needs_prime, seen=seen, fetch=Fetcher(rc=1), notes=notes)
+    assert needs_prime == {"alice"}, "the fetch failed; we still do not know"
+    discarded = prime(peer, ctl, needs_prime, seen=seen, notes=notes,
+                      fetch=Fetcher(framed(("old", "bob", "stale"))))
+    assert needs_prime == set()
+    assert any("#old" in d for d in discarded), discarded
+
+
+def test_an_unresolved_joiner_is_primed_on_a_later_tick(peer):
+    """No second roster edit is needed: needs_prime survives ticks."""
+    absent = RelayCtl({})
+    needs_prime, seen, notes = {"alice"}, {}, {}
+    prime(peer, absent, needs_prime, people={}, seen=seen, notes=notes)
+    assert needs_prime == {"alice"}
+    ctl = RelayCtl(panes(alice=bell("old")))
+    prime(peer, ctl, needs_prime, seen=seen, notes=notes,
+          fetch=Fetcher(framed(("old", "bob", "stale"))))
+    assert needs_prime == set()
+
+
+def test_priming_gives_up_without_discarding(peer):
+    """⚠️ Bounded, and cleared WITHOUT a drain. While pending, the ordinary scan
+    skips this name, so persisting for ever means every message it sends is
+    thrown away by the prime that finally works."""
+    ctl = RelayCtl(dict(panes(), AAAA1111=MENU))
+    needs_prime, notes, seen = {"alice"}, {}, {}
+    for _ in range(peer.PRIME_ATTEMPTS_MAX):
+        prime(peer, ctl, needs_prime, seen=seen, notes=notes)
+    assert needs_prime == set(), "gave up"
+    assert any("gave up priming alice" in s for s in ctl.said), ctl.said
+    assert any("DELIVERED rather than discarded" in s for s in ctl.said)
+
+
+def test_an_unresolved_joiner_does_not_burn_its_attempts(peer):
+    """The companion to the bound: a row that is merely absent must not use up
+    the budget meant for a pane we could actually look at."""
+    needs_prime, notes, seen = {"alice"}, {}, {}
+    for _ in range(peer.PRIME_ATTEMPTS_MAX * 2):
+        prime(peer, RelayCtl({}), needs_prime, people={}, seen=seen, notes=notes)
+    assert needs_prime == {"alice"}
+
+
+def test_priming_walks_a_copy_of_the_set(peer):
+    """It removes from the set it is iterating."""
+    ctl = RelayCtl(panes())
+    needs_prime = {"alice", "bob"}
+    prime(peer, ctl, needs_prime)
+    assert needs_prime == set()
