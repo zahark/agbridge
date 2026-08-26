@@ -103,6 +103,18 @@ the pane it was sent from, which is the only part of it that cannot be misstated
 self-asserted `you` was precisely what `send` had been hardened against. The per-pane file removes
 the dependency instead of documenting around it.
 
+⚠️ **A PANE ID IS UNIQUE PER TMUX SERVER, NOT PER FLEET, AND `--chat-dir` IS RELAY-WIDE.** Two NFS
+participants launched from two different containers can both be `%3`, and both would write
+`roster.%3` — a *confidently wrong* `you=`, which is the failure the per-pane key exists to prevent,
+displaced rather than removed. There is no key both sides know that is globally unique: the relay
+knows the row id and the ssh alias, the agent knows neither; the agent knows `$TMUX`'s socket and
+server pid, the relay knows neither.
+
+So it is made **loud instead of silent**: the relay knows every participant's pane, so it **detects
+the collision at publish time and refuses both**, naming them — the same shape as
+`_one_name_per_row`, which already does exactly this for the analogous row collision. It stays a
+named limitation, but not a silent one.
+
 ⚠️ **The assumption this rests on, stated rather than discovered:** the row's `agb pane --pane` must
 equal the agent's inherited `$TMUX_PANE`. It should, since the row was minted for that pane — but
 say so in the docs, alongside finding 13.
@@ -162,11 +174,15 @@ recorded so the next author does not rediscover them.
    `sorted(people)`**, before the scan.
 6. ⚠️ **Publishing must not be gated on membership change alone if any target was held.** A
    participant whose row is briefly unresolvable is skipped; if publishing only fires on membership
-   change, it is skipped **forever**. Either retry while any target is owed (the `FeedState.owed`
-   shape in `agb`) or re-resolve before publishing. Note that a participant given explicitly as
-   `bob=<row>@host:%9` or `pool=<row>@container:nfs` needs **no** resolved row at all — both the
-   host and the target come from the spec — so holding those is over-broad, and it is the NFS
-   participant that it holds unnecessarily.
+   change it is skipped **forever**.
+   🔴 **PARTIALLY RETRACTED by the per-pane redesign.** This finding went on to say a participant
+   given as `pool=<row>@container:nfs` *"needs no resolved row at all — both the host and the target
+   come from the spec"*. **False for an NFS participant.** Its spec "target" is the literal sentinel
+   `nfs` (`parse_participants` stores `tmux_target = "nfs"`), which only routes the drain — it is
+   **not a pane**. Exempting it yields `roster.nfs`, one shared file for everybody: the exact defect
+   the redesign removed. **An NFS participant can never be exempt** — its file key comes from
+   `resolved` → `sessions[row]` → `foreground`. The exemption is sound only for a **tmux**
+   participant carrying a real `:%N`.
 7. ⚠️ **Room namespacing on the roster key is NOT worth taking now.** Putting the room in
    `@agbpeer_roster_<room>` prevents two relays sharing a pane from overwriting each other — but the
    agent is told nothing about rooms and has no `--room` flag, so `who` would hardcode `default`
@@ -185,10 +201,13 @@ recorded so the next author does not rediscover them.
    otherwise every test must monkeypatch `run_local`, and the "makes no agtermctl call" companion is
    awkward to write.
 10. ⚠️ **A `stdin` seam is required in `_spawn`** for `ssh … tee` — `Popen` currently passes no
-    stdin, and the helper was deliberately hardened in `44f436a`. Widening it also changes the
-    **`fetch` seam**, whose contract is one positional argument, which means updating **every** fake
-    in `tests/test_agb_peer.py` — the `Fetcher` class, the ad-hoc lambdas, **and the `run_local`
-    monkeypatches**. That is a test-file-wide change and belongs in its own task.
+    stdin, and the helper was deliberately hardened in `44f436a`.
+    🔴 **NARROWED.** This finding went on to call the `fetch` widening "a test-file-wide change"
+    touching every fake and both `run_local` monkeypatches. Measured: only **two** of the five
+    `__call__(self, argv)` sites are `fetch` fakes (`Fetcher`, `FlakyFetcher`). `LocalRun`,
+    `Failing` and `EmptyThenFailing` are `run` fakes for `cmd_send`, which keeps its one-positional
+    contract, and both `run_local` monkeypatches back drain-path tests. Task 4 makes the narrow
+    change; do not make the broad one.
 11. ⚠️ **`publish_roster` needs `fetch = fetch or run_local`.** `drain`'s own docstring records that
     omitting this default killed the first live relay: every test injected a fake, so the production
     path was the one thing nothing exercised. Write the test that exercises the default.
@@ -311,61 +330,68 @@ not** touch the `fetch` fakes, which Task 4 does when it has a caller for them.
 
 ### Task 3: Derive the publish targets in their own loop
 
+⚠️ **Citation key for this plan:** `[R1-n]` = the round-1 review; `[R2-n]` = round 2; a bare
+"finding n" always means **this document's own numbered list**. An earlier draft mixed all three and
+collided on six numbers.
+
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
 
-- [ ] add `publish_targets(sessions, spec, resolved)` → `{name: (host, tmux_pane, is_nfs)}`.
-      ⚠️ **Both inputs, and the rule is explicit** (finding 3): membership and any *explicit*
-      `@host` / `:pane` come from **`spec`**; the row→session lookup goes through **`resolved`**,
-      because `spec[name][0]` is a row-title *label*, not an id
-- [ ] ⚠️ for an NFS participant, compute the pane with `pane_argv_field(session["foreground"],
-      "--pane")` **even though the drain uses `NFS_TARGET`** — that pane id is the file key
-- [ ] comment why this is a separate loop: the same derivation inside `scan_participant` sits behind
-      five returns, the last being `SCAN_CAUGHT_UP`, which fires on nearly every steady-state tick
-- [ ] a name absent from `resolved` yields **no target** and is reported as *owed*, unless its host
-      and pane both came from `spec`
-- [ ] write a test that a spec-explicit participant yields a target with **no session in the tree**
-- [ ] write the companion: a derived participant with no session is **absent** and marked owed
-- [ ] add a structural guard — **peer tree alone** — that `publish_targets` is **not** reachable from
-      `scan_participant`; mutation-check it. ⚠️ This replaces an earlier "steady-state tick yields a
-      full map" checkbox, which was **vacuous here**: `publish_targets` is a pure function and
-      "everyone caught up" is a property of `seen`, not of its inputs. The behavioural form of that
-      test lives in Task 5, where a tick exists
+- [ ] add `publish_targets(sessions, spec, resolved)` → `({name: (host, pane, is_nfs)}, owed_set)`.
+      Membership and any *explicit* `@host` / `:%N` come from **`spec`**; the row→session lookup goes
+      through **`resolved`**, because `spec[name][0]` is a row-title *label*, not an id
+- [ ] ⚠️ **an NFS participant is NEVER exempt from resolution** (finding 6, retracted half): its spec
+      "target" is the sentinel string `nfs`, not a pane. Its file key must come from
+      `pane_argv_field(session["foreground"], "--pane")`, which needs `resolved` → `sessions[row]`.
+      The spec-exemption applies **only** to a tmux participant carrying a real `:%N`
+- [ ] a name with no target goes into the returned **owed** set — an explicit second return value,
+      not an out-parameter
+- [ ] ⚠️ **detect two participants resolving to the same pane** and refuse **both**, naming them —
+      the shape of `_one_name_per_row`. Pane ids are unique per tmux *server*, and `--chat-dir` is
+      relay-wide, so two NFS agents on two containers can collide and hand each other a wrong `you=`
+- [ ] a row that resolves but whose `foreground` carries **no `--pane`** (an agent minted outside
+      tmux) yields no target and is **reported**, not silently skipped [R2-min-6]
+- [ ] write a test that a spec-explicit **tmux** participant yields a target with no session in the
+      tree, and the companion that an **NFS** one in the same position does **not**
+- [ ] write a test that two participants on one pane are both refused and both named
+- [ ] write a test that a derived participant with no session lands in `owed`
 - [ ] run tests — must pass before Task 4
+
+*(An earlier draft had a structural guard here — "`publish_targets` is not reachable from
+`scan_participant`" — cut as near-vacuous [R2-11]: no plausible implementation violates it, and the
+defect it was aimed at is the* absence *of the function, which no reachability check can see.)*
 
 ### Task 4: `publish_roster` and `unpublish_roster`
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] `publish_roster(fetch, targets, members, say, notes=None, chat_dir=None)` — ⚠️ **`notes` is
-      required for throttling** (finding 8 of the review): `_throttled` needs it, and this loops over
-      several names so it needs a **per-name** key. `notes=None` degrades to unthrottled, as
-      `_throttled` already does
-- [ ] ⚠️ `members` is the **roster spec**, never the resolved set: a row absent for a moment while
-      `agb-refresh` re-mints it must not read as *left the chat* on everyone else's `who`
-- [ ] ⚠️ `fetch = fetch or run_local` (finding 11) — `drain`'s docstring records that omitting this
-      killed the first live relay
+- [ ] `publish_roster(fetch, targets, members, say, notes=None, chat_dir=None)` — `notes` is required
+      for per-name throttling; `notes=None` degrades to unthrottled as `_throttled` already does
+- [ ] ⚠️ `members` is the **roster spec**, never the resolved set; `peers = members - {name}`
+- [ ] ⚠️ `fetch = fetch or run_local` — `drain`'s docstring records that omitting this killed the
+      first live relay
 - [ ] branch as `drain` does: NFS → `mkdir -p` + `tee` + `mv` to `roster.<pane>`; otherwise the pane
-      option through `ssh_argv`
-- [ ] ⚠️ **report a non-zero rc from every leg**, throttled: `_spawn` raises only on a missing binary,
-      so a failed `tmux set`, a `tee` into a missing directory or a lost `mv` race all return rc≠0
-      **with no exception** — and the roster then goes stale while `who` prints old membership
-- [ ] `unpublish_roster(fetch, target, say, notes=None, chat_dir=None)` — ⚠️ **takes ONE
-      pre-resolved target**, not a name (finding 4): `apply_leaves` does `resolved.pop(name)` and its
-      test asserts it, so by the time the leave path runs there is no binding left to look up. The
-      caller captures the target **before** `apply_leaves` mutates anything
-- [ ] unset the pane option; for NFS **delete `roster.<pane>`** — per-pane files make this clean,
-      and no other participant is touched
-- [ ] update the `Fetcher` and `FlakyFetcher` fakes for `stdin_data` — ⚠️ **only those two**
-      (finding 9): `LocalRun`, `Failing` and `EmptyThenFailing` are `run` fakes for `cmd_send`, which
-      keeps its one-positional contract
-- [ ] write a test that a `@local` participant produces a **local** tmux call with no `ssh`, and a
-      farm one produces an `ssh` call
-- [ ] write a test that an NFS participant produces `mkdir` + `tee` + `mv` naming `roster.<pane>`,
-      and **no** tmux call
-- [ ] write a test that two NFS participants produce **two different files** — the per-pane key
+      option through `ssh_argv`. ⚠️ **`argv[0]` must stay the literal `"tmux"`** [R2-18] —
+      `ssh_argv` rewrites it only when it is exactly that, and only on the local branch; building it
+      as `[tmux_binary(), …]` breaks both directions and passes any test that only inspects its own
+      argv
+- [ ] ⚠️ **report a non-zero rc from every leg**, throttled per name, and **`notes.pop` the key on
+      success** [R2-min-3] — every existing site does, and without it a failure recurring after an
+      intervening success is swallowed
+- [ ] ⚠️ **add the publish key to `_name_notes` AND to the `LEAVE_CLEARS_NOTES` literal** in
+      `tests/test_agb_peer.py` — `test_the_per_name_notes_list_is_complete` compares them. Without
+      it, a stale `("said", …)` survives a rebind and swallows the first complaint about the new pane
+- [ ] define the behaviour when `chat_dir` is `None` and an NFS target exists — say it once per name,
+      as `drain_files` does [R2-min-4]
+- [ ] `unpublish_roster(fetch, target, say, notes=None, chat_dir=None)` — takes **one pre-resolved
+      target**, not a name
+- [ ] unset the pane option; for NFS **delete `roster.<pane>`**
+- [ ] update **only** the `Fetcher` and `FlakyFetcher` fakes for `stdin_data` (finding 10, narrowed)
+- [ ] write tests: `@local` → local tmux call, no ssh; farm → ssh call; NFS → `mkdir`+`tee`+`mv`
+      naming `roster.<pane>` and **no** tmux call
+- [ ] write a test that a **one-participant** roster publishes `you=alice` with no peers [R2-min-2]
 - [ ] write a test that the peer list comes from `members`, with a resolved-set that **differs**
-- [ ] write a test that a failing leg is reported **once across many calls**, with a companion that
-      success is quiet
+- [ ] write a test that a failing leg is reported **once across many calls**, its companion that
+      success is quiet, and a third that a failure **after** a success is reported again
 - [ ] write the test that exercises the `fetch or run_local` default
 - [ ] add the CHANGELOG entry
 - [ ] run tests — must pass before Task 5
@@ -374,32 +400,42 @@ not** touch the `fetch` fakes, which Task 4 does when it has a caller for them.
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] ⚠️ **build `sessions` once at loop top** and pass it to priming, publishing and `relay_tick`
-      (finding 10): `cmd_relay` has no such map today and calls `ctl.tree()` twice already. A third
-      call per tick is both waste and a new failure mode — `Ctl.tree()` **raises `PeerError`**, which
-      is unhandled at loop level and would kill the relay
-- [ ] publish on the **first tick** unconditionally — ⚠️ *not* "before the loop": `resolve_all` runs
-      inside it, so there is no `resolved` until then. Comment the NFS negative-dentry reason
-- [ ] ⚠️ the publish gate is **`joined or left or rebound or owed`** (finding 5). A **rebind** leaves
-      `set(spec)` unchanged, so it is *not* a membership change — but it points the name at a
-      different pane, which carries no roster option. Plan A's own walkthrough check 7 is a rebind,
-      so this is routine, not a corner
-- [ ] ⚠️ store *owed* in a **plain set in `cmd_relay`**, not in `notes` (finding 14): `_name_notes`
-      is purged by `apply_leaves` for `left` **and `rebound`** — and for a rebind you want owed
-      **set**, not cleared. The two cases pull opposite ways and `_name_notes` cannot express it. Do
-      **not** add a per-name note here
-- [ ] capture departing targets **before** `apply_leaves`, then call `unpublish_roster` for each
+- [ ] ⚠️ **build `sessions` immediately AFTER `resolve_all`, not at the loop top** [R2-6]. Hoisting
+      to the top inverts the freshness ordering — `relay_tick`'s tree is currently fetched *after*
+      `resolve_all`, so it is at least as fresh as `resolved`; invert it and `try_deliver` sees
+      `session is None` and holds for a tick during exactly the `agb-refresh` re-mint this design is
+      hardened against. *(Two justifications in the earlier draft were wrong and are withdrawn:
+      `cmd_relay` does not call `ctl.tree()` twice — `resolve_all` calls it per name — and the
+      unguarded raise is pre-existing at `:1799` and `:1975`, not new.)*
+- [ ] ⚠️ `relay_tick` gains `sessions=None` that **rebuilds when absent** [R2-7]: it has ~45 direct
+      call sites in the test file, none of which may change
+- [ ] publish on the **first tick** unconditionally — not before the loop; `resolve_all` runs inside
+      it, so there is no `resolved` until then
+- [ ] ⚠️ **name both insertion points in the documented tick ordering** [R2-13] — read roster →
+      *capture departing targets* → leaves → `resolve_all` → **publish/unpublish** → prime → scan →
+      deliver. Plan A's worst defect was an ordering one; do not leave these relative
+- [ ] ⚠️ the gate is `joined or left or rebound or (owed & set(targets))` [R2-3] — **satisfy and
+      clear**, which is what `FeedState.owed` actually does (`state.owed = not state.complete` after
+      the emit). A bare `or owed` publishes **every tick for ever** whenever a name never resolves —
+      three ssh calls per NFS participant at `--interval 2`, reachable from this plan's own
+      walkthrough check 2
+- [ ] `owed` is a plain set in `cmd_relay`. ⚠️ **Do not put `owed` in `_name_notes`** — `apply_leaves`
+      purges those for `left` **and `rebound`**, and a rebind wants owed *set*. (This prohibition
+      applies to `owed` only; the publish-failure key of Task 4 **must** go in `_name_notes`)
+- [ ] ⚠️ **capture departing targets before `spec = arrived`** [R2-4], using the **old** spec and the
+      previous tick's `resolved` — not "before `apply_leaves`". The two lines are adjacent
+      (`:1939`, `:1940`) and `spec` is reassigned **first**, so the wrong one leaves every departing
+      name already absent and nothing is ever unpublished
+- [ ] ⚠️ extend `RelayCtl` with **per-row foregrounds** and a tree a test can mutate between ticks
+      [R2-12] — it hardcodes `--pane %7` for every row, so a rebind test with the stock fake has both
+      panes identical and passes while proving nothing
 - [ ] write a test that the first tick publishes even with an unchanged roster
-- [ ] write a test that a **rebind** publishes to the new pane and unsets the old one
-- [ ] write a test that a participant unresolvable at join is published to on a **later** tick with
-      no second roster edit (the *owed* retry)
-- [ ] ⚠️ write the companion at **`ticks=2`**, counting publishes on the **second** tick only
-      (finding 15): a tick with no change and nothing owed publishes nothing. At `ticks=1` the
-      unconditional startup publish makes this unwritable, and `once=True` — which every existing
-      `cmd_relay` test uses — is exactly the form that fails
-- [ ] ⚠️ give the new tests **per-row foregrounds** (finding 20): `RelayCtl.tree()` gives every row
-      the same `FOREGROUND` (`--host buildbox01 --pane %7`), so a publish test over `PEOPLE` would
-      address two participants at one pane and the second `set` would overwrite the first
+- [ ] write a test that a **rebind** publishes to the new pane and unsets the **old** one
+- [ ] write a test that a participant unresolvable at join is published to on a later tick
+- [ ] ⚠️ write the storm companion: a name that **never** resolves must not publish on every tick —
+      count publishes across ten ticks and assert a bound
+- [ ] write the quiet companion at **`ticks=2`**, counting publishes on the second tick only
+- [ ] write a test that a **tmux** leaver's pane option is unset
 - [ ] add the structural guard that `publish_roster` is reachable from `cmd_relay`; mutation-check
       it, deleting `__pycache__/agb-peercpython-36.pyc`
 - [ ] add the CHANGELOG entry
@@ -409,49 +445,48 @@ not** touch the `fetch` fakes, which Task 4 does when it has a caller for them.
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add a `who` verb in `main`, beside `send` — needs **no agtermctl**
-- [ ] ⚠️ **`who` PRINTS its state and exits 0 in all five cases; it does not raise** (finding 6).
-      This is what "name five states" implies, and it is also what makes the dispatch guard in Task 8
-      writable at all
-- [ ] ⚠️ **resolve tmux through `tmux_binary(env)`** (finding 1 of the inherited list): `who` does not
-      go through `ssh_argv`, so nothing rewrites `argv[0]`, and on a cluster host `/usr/bin/tmux` is
-      2.7 — no `show-options -p`, answers `unknown option -- p`, then **blocks**
-- [ ] ⚠️ give it injectable `run=` **and `env=`** seams as `cmd_send` has (finding 9), so a test is
-      hermetic rather than reading the real environment — which differs depending on whether pytest
-      was launched inside tmux
-- [ ] read the option; on failure use `socket_is_missing()` — the existing **positive**
-      discriminator — to decide the file fallback, never an error-string match
-- [ ] on the file path, read `<statedir>/chat/roster.$TMUX_PANE` with `open()`, never `os.stat`
-- [ ] ⚠️ **name five states**: published; nothing published (*no relay running* **or** *this pane is
-      not a participant* — both, never one); `$TMUX_PANE` unset; `$TMUX` unset; **tmux reachable but
-      would not answer, with the reason**
-- [ ] ⚠️ **print the path or option it looked at, and the tmux binary it resolved** — the relay writes
-      at `--chat-dir` and the agent reads at its own `statedir()/chat`, and a mismatch produces **no
-      error anywhere**. Printing the tmux path also makes walkthrough check 4 a comparison rather
-      than a stopwatch (finding 21)
+- [ ] add a `who` verb in `main`, beside `send`; give `cmd_who` injectable `run=` and `env=` seams
+- [ ] ⚠️ **`who` prints its state and exits 0 — it never raises** [R2-9]. That includes catching the
+      `PeerError` `_spawn` raises on `OSError` from `Popen`, i.e. **tmux missing or not executable**,
+      which `TMUX_CANDIDATES`' own comment says is the environment it exists for (agterm's
+      `bash --noprofile --norc`). That is a **sixth** state, distinct from "tmux would not answer"
+- [ ] ⚠️ **resolve tmux through `tmux_binary(env)`** — `who` does not go through `ssh_argv`, so
+      nothing rewrites `argv[0]`, and on a cluster host `/usr/bin/tmux` is 2.7: no
+      `show-options -p`, answers `unknown option -- p`, then **blocks**
+- [ ] use `socket_is_missing()` — the existing **positive** discriminator — to decide the file
+      fallback, never an error-string match
+- [ ] ⚠️ read the file through the **same `roster_file_name(pane)` helper the relay writes with**
+      [R2-19] — one spelling, one place, or a `%`-stripping decision made on one side only produces
+      a blank `who` with no error at either end
+- [ ] read it with `open()`, never `os.stat`
+- [ ] name the six states: published; nothing published (*no relay running* **or** *this pane is not
+      a participant* — both); `$TMUX_PANE` unset; `$TMUX` unset; tmux would not answer, with the
+      reason; **tmux could not be executed**
+- [ ] print the path or option it looked at, **and the tmux binary it resolved**
+- [ ] ⚠️ refuse `--chat-dir` on `who`, or say why it is accepted [R2-min-5] — it is in
+      `PEER_VALUE_ARGS`, so it parses today and would be silently ignored, in the one command whose
+      whole diagnostic purpose is a chat-dir mismatch
 - [ ] add `who` to `USAGE`
-- [ ] write a test for **each** of the five states
+- [ ] write a test for **each** of the six states
 - [ ] write a test that `who` makes **no agtermctl call**, with the companion showing the fake would
-      have recorded one had it been made
+      have recorded one
 - [ ] write a test that a stripped `$PATH` plus `$AGB_TMUX` is honoured
 - [ ] add the CHANGELOG entry
 - [ ] run tests — must pass before Task 7
 
 ### Task 7: Say where the relay publishes
 
-⚠️ Reduced deliberately. An earlier draft **refused** at startup when an NFS participant existed with
-no `--chat-dir`; that is a breaking change to behaviour that today merely complains per fetch
-(`drain_files`), and the printed line below buys the same diagnosability for nothing (review's
-over-engineering note).
+**Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-**Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
-
-- [ ] say once at startup the **absolute chat dir** the relay will publish to, so it can be compared
-      against what `who` prints on the far side
-- [ ] warn once at startup — not refuse — if an NFS participant exists and `--chat-dir` is absent,
-      naming the participant
-- [ ] write a test that the startup line names the resolved absolute path
+- [ ] say once at startup the chat dir the relay will publish to — ⚠️ **printed as given, not
+      `abspath`ed** [R2-10]: the path is interpolated into `ssh <host> tee …` and interpreted on the
+      **far side**, so resolving it against the relay's cwd would ship a Mac path to the farm.
+      Refuse a relative value instead
+- [ ] warn once at startup — not refuse — if an NFS participant exists and `--chat-dir` is absent
+- [ ] write a test that the startup line names the path **as given**, and one that a relative value
+      is refused
 - [ ] write a test for the warning, with a companion that a roster with no NFS participant is quiet
+- [ ] add the CHANGELOG entry [R2-min-7]
 - [ ] run tests — must pass before Task 8
 
 ### Task 8: `skills/agb-peer/SKILL.md` — the trigger
@@ -462,42 +497,43 @@ run it.**
 **Files:** Modify `skills/agb-peer/SKILL.md`, `tests/test_agb_peer.py`
 
 - [ ] add a short `agb-peer who` section — what it prints, that it is local and instant
-- [ ] say **when**: before addressing someone it has not talked to, and when a message arrives from
-      a name it does not recognise
-- [ ] ⚠️ **`test_the_skill_has_nothing_to_fill_in` asserts the literal `"ask the user"` is present**
-      (`tests/test_agb_peer.py:1032`), so a revision that removes that phrase fails it and the
-      failure reads as an unrelated regression. Decide deliberately: keep the phrase (`who` makes
-      "do not guess" *cheap*, not obsolete) or amend the test and state the new invariant
-- [ ] say that a blank answer means *no relay is running* **or** *this pane is not a participant*
-- [ ] keep it agent-agnostic — both the Claude and Codex ends read this file
-- [ ] ⚠️ extend `test_the_verbs_the_skill_names_are_dispatched` (finding 12). Note **there is no
-      unknown-command path**: `main` falls through to `parse_args`, a bare word becomes
-      `opts["message"]`, and it dies at `--to is required` — so `main(["who"])` **already raises
-      today**. The guard must assert `who` reaches `cmd_who` (exit 0 with a known state under
-      injected `env=`/`run=`), not that it fails to raise
+- [ ] say **when**: before addressing someone it has not talked to, and when a message arrives from a
+      name it does not recognise
+- [ ] ⚠️ say that an NFS agent may read **blank for up to 60 s after the relay starts** [R2-16] — a
+      negative dentry cached from a `who` run before the file existed. Not a failure; wait and retry
+      once
+- [ ] ⚠️ `test_the_skill_has_nothing_to_fill_in` asserts the literal `"ask the user"` is present
+      (`tests/test_agb_peer.py:1032`); decide deliberately whether the phrase survives (`who` makes
+      "do not guess" *cheap*, not obsolete) or the test is amended with a stated new invariant
+- [ ] ⚠️ **the dispatch guard is a monkeypatch of `peer.os.environ`** [R2-8], not injected seams:
+      `main`'s signature is `main(argv, out=None, ctl=None)` and there is nowhere to pass `env`/`run`.
+      Assert `main(["who"], out, None)` returns 0 and prints a known state. There is **no
+      unknown-command path** — `main(["who"])` already raises today via `--to is required` — so the
+      guard is "reaches `cmd_who`", not "does not raise"
 - [ ] run tests — must pass before Task 9
 
 ### Task 9: Documentation
 
 **Files:** Modify `docs/design.md`, `docs/commands.md`, `docs/cookbook.md`
 
-- [ ] extend §6 with the pull model, publish-where-they-speak, **membership-only**, and the per-pane
-      file key
-- [ ] ⚠️ **delete `agb-peer who` from §6's *Deferred, with reasons* list** (finding 13) — it is no
-      longer deferred, and a stale "named gap" is worse than none
-- [ ] ⚠️ **replace** `docs/cookbook.md`'s *"An agent cannot yet ask who is in the chat"* (≈`:770`) —
-      do not add a paragraph beside it
-- [ ] ⚠️ `docs/commands.md`'s section heads **"`agb-peer` — Mac, not installed by default"**; `who` is
-      the first subcommand that runs on the **agent's** machine over no ssh. Qualify the heading
-- [ ] record the **deferred** list with reasons: rooms in any form including roster-key namespacing;
-      broadcast (`--to all`); proactive join/leave announcements (they wake every agent and cost each
-      a turn); per-participant `--chat-dir`
-- [ ] ⚠️ record the **stopped-relay staleness** (finding 7): a pane option outlives the process that
-      set it, and the design refused a timestamp on purpose — so there is no way for `who` to say a
-      roster came from a dead relay. Stale membership reads as current, indefinitely
-- [ ] ⚠️ record two stated assumptions: a `@local` participant's tmux target is a **session name**
-      while `who` reads `$TMUX_PANE` (finding 13); and the row's `--pane` must equal an NFS agent's
-      inherited `$TMUX_PANE`, which is what makes the per-pane file key work
+- [ ] extend §6 with the pull model, publish-where-they-speak, membership-only, and the per-pane key
+- [ ] ⚠️ **delete `agb-peer who` from §6's *Deferred, with reasons*** — a stale "named gap" is worse
+      than none
+- [ ] ⚠️ **replace** `docs/cookbook.md:770`'s *"An agent cannot yet ask who is in the chat"* — do not
+      add a paragraph beside it
+- [ ] ⚠️ give `who` a **real entry** in `docs/commands.md` beside `send` and `relay` [R2-20], not just
+      a qualified heading; that file is the reference, because `agb <cmd> --help` does not exist
+- [ ] qualify the section heading **"`agb-peer` — Mac, not installed by default"**: `who` is the
+      first subcommand that runs on the **agent's** machine over no ssh
+- [ ] record the deferred list with reasons: rooms in any form; broadcast; proactive join/leave
+      announcements; per-participant `--chat-dir`
+- [ ] record the **stopped-relay staleness**: a pane option outlives the process that set it, and the
+      design refused a timestamp, so stale membership reads as current indefinitely
+- [ ] record the **pane-id collision** limitation and that it is detected, not silent
+- [ ] record the **60 s negative-dentry window** for a first `who` before the relay started
+- [ ] record two stated assumptions: a `@local` participant's tmux target is a **session name** while
+      `who` reads `$TMUX_PANE`; and an NFS agent's inherited `$TMUX_PANE` must equal its row's
+      `agb pane --pane`
 - [ ] run tests — must pass before Task 10
 
 ### Task 10: Verify acceptance criteria
@@ -560,6 +596,13 @@ tmux new -d -s macside
 ```
 
 ```sh
+# farm -- a SPARE row that is NOT a participant, so check 4 has somewhere to
+# repoint to. Without it, repointing at another participant's row trips
+# _one_name_per_row and you get an alias refusal instead of a rebind.
+agb-tmux -d spare
+```
+
+```sh
 # Mac -- ~/peers ; every name is unique and none is a prefix of another
 alice=peer-a@<alias>
 bob=peer-b@<alias>
@@ -582,10 +625,12 @@ Note the relay's startup line naming the **absolute chat dir** — checks 5 and 
 | **1** | Prompt an agent to run `agb-peer who`. | its own name, and every other participant | its name missing, or a peer missing |
 | **2** | Add a participant; re-run `who` in **another** agent. | the new name appears | stale — the on-change publish did not fire |
 | **3** | Remove one; re-run `who` elsewhere. | the name is gone | stale |
-| **4** | ⭐ **Repoint** a participant at a different row; run `who` in its **new** pane. | full membership | blank — a rebind is not a membership change, so the gate must include `rebound` |
+| **4** | ⭐ **Repoint** `sender` at the `spare` row; run `who` in the **new** pane. | full membership | blank — a rebind is not a membership change, so the gate must include `rebound` |
+| **4b** | ⭐ Then run `who` in the **old** pane (`sender`'s original). | blank — it was unpublished | it still shows the roster: the unpublish never fired, most likely captured **after** `spec = arrived` |
+| **4c** | Remove a **tmux** participant; run `who` in its pane. | blank | stale — same cause as 4b |
 | **5** | ⭐ `who` on a **farm** host. | instant, and it **prints the tmux path it resolved** | a ~30 s stall, or a path under `/usr/bin` — it found tmux 2.7 |
 | **6** | ⭐ `who` on the **pool/NFS** agent. | membership **and its own `you` name** | no `you`, or nothing published — compare its printed path against the relay's startup line |
-| **7** | ⭐ Restart the relay with a `--chat-dir` whose directory does **not** exist, then `who` on the pool agent. | it works — `mkdir -p` made it | nothing published: the startup write failed silently, and that write exists to beat a 60 s cached `ENOENT` |
+| **7** | ⭐ Restart the relay with a `--chat-dir` whose directory does **not** exist, then `who` on the pool agent. ⚠️ **Do not run `who` there first** — a cached negative dentry would make this non-deterministic for up to 60 s. | it works — `mkdir -p` made it | nothing published: the startup write failed silently, and that write exists to beat a 60 s cached `ENOENT` |
 | **8** | `who` in a tmux pane that is **not a participant**. | *no relay is running, **or** this pane is not a participant* — **both** | only one named |
 | **9** | `who` outside tmux entirely. | `$TMUX_PANE` unset, named as its own state | folded into "nothing published" |
 | **10** | `who` on the **Mac-side** `@local` participant. | membership | ⚠️ if blank, suspect the session-name/`$TMUX_PANE` assumption below |
@@ -604,6 +649,11 @@ and send you hunting a bug that is not there.
 - **No rooms**, in any form. Two relays sharing a pane overwrite each other's roster.
 - **`--chat-dir` is relay-wide**, so two unreachable agents on two different mounts cannot both be
   served.
+- ⚠️ **Pane ids are unique per tmux server, not per fleet.** Two NFS participants on two containers
+  can collide on one `roster.<pane>` filename. The relay **detects and refuses both**, naming them,
+  so it is loud — but it is a refusal, not a repair.
+- ⚠️ **A first `who` on an NFS agent may read blank for up to 60 s** if it ran before the relay ever
+  wrote the file: the `ENOENT` is cached as a negative dentry. Wait and retry once.
 - **Two stated assumptions**, either of which shows up as a blank `who`: a `@local` participant's
   tmux target is a **session name** while `who` reads `$TMUX_PANE`, so an agent outside the
   session's active pane reads a different pane than the relay wrote; and an NFS agent's inherited
