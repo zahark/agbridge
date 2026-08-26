@@ -72,6 +72,22 @@ finishes; the answer arrives as a prompt on a later turn. `SKILL.md` already for
 or wait, so this is the discipline they are built for — but the skill must say plainly that **no
 answer is not an error**, and must not invite a retry loop.
 
+### ⚠️ The answer must not invite a reply
+
+`SKILL.md` tells an agent that anything arriving as `[chat from <name>] …` is *"a peer talking to
+you"* and to **"Reply by sending, exactly as above."** So an answer signed `[chat from relay]` would
+be replied to, and the reply is another request, and so on — a two-party feedback loop with no
+natural stop. ⚠️ **This plan's own *Known limitations* rejects broadcast for exactly this failure
+class and did not notice it had built the two-party case.**
+
+Stopped **structurally, in the relay**, not by asking the agent nicely:
+
+- the relay answers only a message whose text is the **recognised request token**; anything else
+  addressed to `relay` is dropped with a line saying so. A polite *"thanks!"* is therefore not a
+  request, and the loop cannot start.
+- the skill says separately that a `[chat from relay]` answer **is not a peer and needs no reply**.
+  That is the mitigation, not the mechanism — a rule an agent may ignore, backed by a rule it cannot.
+
 ### Membership only
 
 The reply carries names and nothing else — no liveness, no timestamp. A status would be a snapshot
@@ -89,7 +105,7 @@ doorbell. `who` must name both and neither must invite a retry.
 
 Verified on `main` at plan time:
 
-- `try_deliver` takes the sender from the pane the marker was found in (`agb-peer:1650-1653`), which
+- `try_deliver` takes the sender from the pane the marker was found in (`agb-peer:1632-1635`), which
   is what makes the reply addressable with no new identity.
 - Delivery to an unreachable participant already works — the pane belongs to a host the Mac *can*
   reach. `CLAUDE.md` records the pool case verified live **in both directions**.
@@ -119,82 +135,115 @@ Verified on `main` at plan time:
 
 ## Implementation Steps
 
-### Task 1: Reserve the recipient name
+### Task 1: Reserve the recipient name and the request token
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add `RELAY_NAME = "relay"` — the recipient that means *the relay itself*
-- [ ] make `parse_participants` refuse it as a participant name, saying why
-- [ ] write a test that `relay=<row>` is refused, with the reason
-- [ ] write the companion that an ordinary name is still accepted, so the refusal is not a blanket one
-- [ ] add the CHANGELOG entry
+- [ ] add `RELAY_NAME = "relay"` (the recipient meaning *the relay itself*) and `WHO_REQUEST = "who"`
+      (the only text it answers)
+- [ ] make `parse_participants` refuse `RELAY_NAME` as a participant name, saying why. ⚠️ **Decide
+      case sensitivity explicitly** — the intercept compares `to` exactly, so an accepted `Relay`
+      would be a participant that can never be addressed
+- [ ] write a test that `relay=<row>` is refused
+- [ ] ⚠️ write the companion as a **near miss** — `relayed=<row>` and `Relay=<row>` — not an ordinary
+      name: every roster test in the file already uses `alice`/`bob`, so "an ordinary name still
+      works" is **free on this branch** and would pass against a blanket refusal
+- [ ] ⚠️ this is a **breaking** roster change (a name that parsed yesterday is refused today), so the
+      CHANGELOG entry goes under `### Changed`, as Plan A's name-charset change did. Verified: no
+      test in the repo uses `relay` as a participant name
 - [ ] run tests — must pass before Task 2
 
 ### Task 2: Compose the answer
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
 
-- [ ] add `roster_answer(you, members)` → `you=alice peer=bob peer=carol`, peers sorted, `you`
-      always present. Plain text: it is delivered as a message and read by a human and an agent
-- [ ] ⚠️ `peers = members - {you}` where `members` is the **roster spec**, never the resolved set
-- [ ] write a round-trip-shaped test: the answer names every participant and marks exactly one `you`
-- [ ] write a test for a **one-participant** roster — `you=alice` with no peers, which `RosterReader`
+- [ ] add `roster_answer(you, members)` → `you=alice peer=bob peer=carol`, peers sorted, `you` always
+      present. Plain text: it is delivered as a message and read by an agent and a human
+- [ ] `peers = members - {you}`
+- [ ] write a test that the answer names every member and marks exactly one `you`
+- [ ] write a test for a **one-participant** roster — `you=alice`, no peers, which `RosterReader`
       explicitly permits
-- [ ] write a test that a name absent from the spec but present in `resolved` does **not** appear
+- [ ] write a test that a member not in the set does not appear, and that ordering is stable
 - [ ] run tests — must pass before Task 3
+- [ ] ⚠️ **audit this task's tests now**, not in Task 6: can each pass here, and is any already free
+      on this branch? *(An earlier draft had a "present in `resolved` but not in `spec`" test here —
+      unwritable, because `roster_answer` has no `resolved` parameter. It is a property of the
+      caller and now lives in Task 3.)*
 
 ### Task 3: The relay answers a `who` request
 
+The whole mechanism. Five behaviours, each with a placement that is easy to get wrong.
+
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] in `relay_tick`'s drain loop, a message whose `to` is `RELAY_NAME` is **not routed**: queue a
-      reply to the **sender** — the pane the doorbell rang on — and do not add the request to
-      `pending`
-- [ ] the reply's text is `roster_answer(sender, members)`; `members` is the spec already passed in
-      as `members=`
-- [ ] deliver it through the ordinary `pending` path, so it inherits the composer gate, the holding
-      and the throttles with no new code
-- [ ] ⚠️ sign it so the agent can tell it apart from a peer: it arrives as
-      `[chat from relay] you=…`, which `compose` produces if the reply's sender is `RELAY_NAME`
-- [ ] write a test that a request is answered and the **request itself is never delivered** to
-      anybody — the companion that stops "answered" passing against a relay that also routes it
-- [ ] write a test that the answer goes to the **asker**, with a second participant present that
-      must not receive it
-- [ ] write a test that the `you` in the answer is the asking pane's name, using two askers in one
-      tick to prove it is not a constant
-- [ ] write a test that an ordinary message is still routed normally
+- [ ] ⚠️ **spell the `members is None` fallback that `try_deliver` already has** —
+      `members = people if members is None else members`. `relay_tick`'s signature is `members=None`
+      and ~40 test call sites omit it, so `roster_answer(sender, None)` → `None - {you}` →
+      **`TypeError`**, killing the tick
+- [ ] ⚠️ **put the intercept INSIDE the `if deliver_new:` branch** of the drain loop. Above it, the
+      relay answers a request that predates it *and delivers on the priming tick*, breaking the
+      contract that a startup or joiner backlog is discarded. Inside, a stale request is discarded
+      and named, which is correct
+- [ ] answer only when the text is `WHO_REQUEST`; anything else addressed to `RELAY_NAME` is
+      **dropped with a line naming it** — this is what stops the reply loop
+- [ ] queue the reply to the **sender**, the pane the doorbell rang on, with a real `id` ⚠️ —
+      `apply_leaves` prints dropped mail as `#%s (%s -> %s)`, so a `None` id logs `#None`
+- [ ] deliver through the ordinary `pending` path, inheriting the composer gate, the holding and the
+      throttles with no new code
+- [ ] ⚠️ **`say()` when a request is answered.** `docs/cookbook.md` is a *"the relay's output is the
+      diagnosis"* table, and every other decision this relay makes says so once; an answered request
+      would otherwise produce no line at all and be indistinguishable from one never seen
+- [ ] write a test that a request is answered **and never routed to anybody** — the companion that
+      stops "answered" passing against a relay that does both
+- [ ] write a test that the answer reaches the **asker**, with a second participant present that must
+      not receive it
+- [ ] write a test with **two askers in one tick**, proving `you` is per-pane and not a constant
+- [ ] write a test that a non-token message to `relay` is dropped and named — **the loop guard**
+- [ ] write a test that the request is **discarded, not answered, on the priming pass**
+      (`deliver_new=False`)
+- [ ] write a test that `members=None` does not crash
+- [ ] write a test that the peer list comes from `members` with a `people` that **differs** — the
+      property Task 2 could not express
+- [ ] ⚠️ note that a re-fetched request is answered once, via `notes["delivered"]`, and pin it
 - [ ] add the CHANGELOG entry
 - [ ] run tests — must pass before Task 4
+- [ ] ⚠️ **audit this task's tests now.** *"An ordinary message is still routed"* is free — ~15
+      existing tests cover routing — so keep it only as a labelled regression companion
 
 ### Task 4: `agb-peer who` — the agent side
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] add a `who` verb dispatching to `cmd_who`, which sends `RELAY_NAME` a request through the
-      **same `cmd_send` path** — no new transport, and the file fallback comes free
-- [ ] print what happened: that the relay was asked, and that **the answer will arrive as a
-      message**, not on this command's output
-- [ ] ⚠️ print that **no answer means either no relay is running or this pane is not a participant**,
-      and that neither is worth retrying
-- [ ] ⚠️ on the file fallback, the `[peer #<id>]` doorbell must reach the agent's **visible screen** —
-      the same rule `send` has, for the same measured reason
-- [ ] refuse outside tmux with `send`'s existing message; `$TMUX_PANE` is required
+- [ ] add `cmd_who(run, out, env=None)` ⚠️ **with the same seams `cmd_send` has** — all twelve
+      existing `cmd_send` tests inject `run` and `out`, and without them a test shells out to real
+      tmux and, on the file fallback, writes into the developer's real `~/.agbridge`
+- [ ] send `WHO_REQUEST` to `RELAY_NAME` through the **`cmd_send` path** — no new transport, and the
+      file fallback comes free
+- [ ] print that the relay was asked and that **the answer arrives as a message**, not here
+- [ ] print that **no answer means no relay is running, or this pane is not a participant**, and that
+      neither is worth retrying
+- [ ] refuse outside tmux. ⚠️ `send`'s message begins *"send must run inside tmux"*, which reads as
+      nonsense from `who` — this project fixed that exact class once already (`wait_ready`'s
+      `retries=0` note). Give it its own wording
 - [ ] add `who` to `USAGE`
-- [ ] write a test that `who` makes **no agtermctl call** — it runs on a farm host where agterm does
-      not exist — with the companion showing the fake would have recorded one
-- [ ] write a test that `who` refuses outside tmux
-- [ ] write a test that the request is addressed to `RELAY_NAME`
-- [ ] ⚠️ write the dispatch guard as a **monkeypatch of `peer.os.environ`**: `main` is
-      `main(argv, out=None, ctl=None)` with nowhere to pass `env`/`run`. There is **no
-      unknown-command path** — `main(["who"])` already raises today via `--to is required` — so the
-      guard is "reaches `cmd_who`", not "does not raise"
+- [ ] add the guard that does not exist today: **`USAGE` lists every verb `main` dispatches**, via
+      `ast` over the peer tree alone. ⚠️ Not `assert VERSION == "0.3.0"`, which is the
+      read-the-constant-back tautology this plan's own approach bans
+- [ ] write a test that `who` makes **no agtermctl call**, with the companion showing the fake would
+      have recorded one
+- [ ] write a test that the request is addressed to `RELAY_NAME` with body `WHO_REQUEST`
+- [ ] write a test that `who` refuses outside tmux, asserting **its own** message
+- [ ] ⚠️ write the dispatch guard patching **`peer.os.environ` and `peer.run_local`** — the house
+      convention (`tests/test_agb_peer.py:1131, 1138`). Assert the **message**, not merely that it
+      raises
 - [ ] add the CHANGELOG entry
 - [ ] run tests — must pass before Task 5
+- [ ] ⚠️ **audit this task's tests now**
 
 ### Task 5: `skills/agb-peer/SKILL.md` — the trigger
 
-⚠️ Not optional. An agent has no event loop; it acts on instructions, not events. **`who` is dead
-weight unless the skill says when to run it.**
+⚠️ Not optional. An agent has no event loop; it acts on instructions. **`who` is dead weight unless
+the skill says when to run it** — and the loop mitigation lives here too.
 
 **Files:** Modify `skills/agb-peer/SKILL.md`, `tests/test_agb_peer.py`
 
@@ -202,37 +251,50 @@ weight unless the skill says when to run it.**
       later turn**, not as command output
 - [ ] say **when**: before addressing someone it has not talked to, and when a message arrives from a
       name it does not recognise
-- [ ] ⚠️ **say that no answer is not an error and must not be retried in a loop** — this is the one
-      place the async design can go wrong, and `SKILL.md`'s existing "never poll, never wait" rule is
-      the thing to point at
-- [ ] say the answer arrives as `[chat from relay] …` and is not a peer talking
-- [ ] ⚠️ `test_the_skill_has_nothing_to_fill_in` asserts the literal `"ask the user"` is present
-      (`tests/test_agb_peer.py:1032`); decide deliberately whether that phrase survives — `who` makes
-      "do not guess" *cheap*, not obsolete — or amend the test with a stated new invariant
-- [ ] extend `test_the_verbs_the_skill_names_are_dispatched` to cover `who`
+- [ ] ⚠️ **say a `[chat from relay]` answer is NOT a peer and needs no reply** — `## Receiving`
+      currently says to reply to anything in that shape, which is what would start the loop. The
+      relay's token match is the mechanism; this is the mitigation
+- [ ] ⚠️ **say that no answer is not an error and must not be retried in a loop**
+- [ ] ⚠️ extend the `(via file)` rule at `SKILL.md:44-69` to cover `who`: it sits under `## Sending`,
+      is written about `send`, and shows `send`'s output — but walkthrough check 2 depends on the
+      agent repeating the `[peer #…]` marker for a **`who`**. Same for `:101`, which names
+      `agb-peer send` when it says "if it refuses, stop and say so"
+- [ ] ⚠️ `test_the_skill_has_nothing_to_fill_in` asserts the literal `"ask the user"`
+      (`tests/test_agb_peer.py:1033`); decide deliberately whether that phrase survives — `who` makes
+      "do not guess" *cheap*, not obsolete
+- [ ] ⚠️ extend `test_the_verbs_the_skill_names_are_dispatched` — but **not mechanically**. It is
+      `pytest.raises(PeerError)`, and for `who` **both** the undispatched path (`--to is required`)
+      and the dispatched one (no `$TMUX_PANE`) raise `PeerError`: extended as-is it passes today and
+      passes with `cmd_who` deleted. Assert the **message**, or reuse Task 4's patched guard
 - [ ] keep it agent-agnostic — both the Claude and Codex ends read this file
 - [ ] run tests — must pass before Task 6
 
-### Task 6: Documentation and acceptance
+### Task 6: Documentation
 
-**Files:** Modify `docs/design.md`, `docs/commands.md`, `docs/cookbook.md`
+**Files:** Modify `docs/design.md`, `docs/commands.md`, `docs/cookbook.md`, `CHANGELOG.md`
 
-- [ ] extend §6 with the ask-and-be-told model, **and why publishing was abandoned** — three rounds,
-      one root cause, no per-agent identity on the file transport. A future reader will otherwise
-      reinvent it
-- [ ] ⚠️ **delete `agb-peer who` from §6's *Deferred, with reasons*** — a stale "named gap" is worse
-      than none
-- [ ] ⚠️ **replace** `docs/cookbook.md:770`'s *"An agent cannot yet ask who is in the chat"*
-- [ ] give `who` a real entry in `docs/commands.md` beside `send` and `relay`; qualify the section
-      heading *"`agb-peer` — Mac, not installed by default"*, since `who` runs on the agent's machine
-- [ ] record the limitation: **the answer costs the agent a turn**, and there is no way to know a
-      request was lost
-- [ ] ⚠️ **audit every task's tests for the two banned shapes** — cannot-pass-yet, and free-on-branch
-- [ ] run the full suite — **2254** before this plan
-- [ ] bump `VERSION` 0.2.0 → 0.3.0, and add the guard that does not exist today: nothing asserts
-      `agb-peer`'s `VERSION` or that `USAGE` lists every verb `main` dispatches
+- [ ] extend §6 with the ask-and-be-told model, the token match, and **why publishing was abandoned**
+      — three rounds, one root cause, no per-agent identity on the file transport. A future reader
+      will otherwise reinvent it
+- [ ] ⚠️ **delete `agb-peer who` from §6's *Deferred, with reasons*** (`docs/design.md:2452`)
+- [ ] ⚠️ **replace** `docs/cookbook.md:770`'s *"An agent cannot yet ask who is in the chat"*, and
+      **add a row to the diagnosis table** at `:757` for the answered-request line
+- [ ] give `who` a real entry in `docs/commands.md` beside `send` and `relay`; qualify the heading
+      *"`agb-peer` — Mac, not installed by default"*, since `who` runs on the agent's machine
+- [ ] record the limitations: the answer **costs a turn**; a lost request is **silent**; and the
+      answer is composed at drain time, so it can be **held behind a busy composer** and arrive
+      slightly stale — the same argument that refused a status snapshot
+- [ ] run tests — must pass before Task 7
+
+### Task 7: [Final] Version, counts, and filing
+
+**Files:** Modify `agb-peer`, `CLAUDE.md`, `README.md`
+
+- [ ] bump `VERSION` 0.2.0 → 0.3.0
 - [ ] correct the test counts in all four places: `CLAUDE.md:8`, `CLAUDE.md:697`, `README.md:317`,
       `README.md:329`
+- [ ] update `CLAUDE.md`'s agb-peer paragraph and `README.md`'s verification table
+- [ ] run the full suite — **2254** before this plan
 - [ ] move this plan to `docs/plans/completed/`
 
 ## Post-Completion — the live acceptance walkthrough
@@ -272,20 +334,24 @@ agb-peer relay --roster ~/peers --interval 2 --chat-dir <statedir>/chat
 
 | # | Do | Expect | Failure |
 |---|---|---|---|
-| **0** | **Regression.** Plan A's Check 0 unchanged. | `alice -> bob: delivered` | stop — this branch broke the roster |
+| **0** | **Regression.** Plan A's Check 0, **plus an ordinary `pooled -> alice` send**. | both `delivered` | stop — this branch broke the roster. ⚠️ The pool send is here so a check-2 failure is attributable: a roster over the file transport is coverage nobody had before Plan A |
 | **1** | Prompt `peer-a` to run `agb-peer who`. | it prints *asked the relay*; then a **later turn** brings `[chat from relay] you=alice peer=bob peer=pooled` | no reply — check the relay saw the doorbell |
 | **2** | ⭐ Same on the **pool** agent. | ⚠️ it takes the **file** path and prints `[peer #…]`, which the agent must repeat on its screen; then the reply arrives | no reply: the marker never reached the visible screen — the failure `SKILL.md` exists to prevent |
-| **3** | Add a participant, then `who` again. | the new name is in the answer | stale — the answer is not built from the live spec |
-| **4** | Remove one, then `who` again. | it is gone | stale |
-| **5** | Stop the relay; `who`. | *asked the relay*, then **silence** | anything claiming an answer |
-| **6** | `who` from a tmux pane that is **not** a participant. | same silence | — |
-| **7** | Two agents ask in the same tick. | each gets **its own** `you=` | both get the same name |
-| **8** | `who` outside tmux. | refused, naming `$TMUX_PANE` | — |
+| **3** | Add a participant, then have **`peer-a`** (not the new one) run `who`. | the new name is in the answer | stale — the answer is not built from the live spec |
+| **4** | Remove one, then have **`peer-a`** run `who`. | it is gone | stale |
+| **5** | ⭐ Have `peer-a` reply politely to the answer — e.g. *"thanks"* `--to relay`. | the relay **drops it and says so**; **no second answer** | a second answer: the loop is live, and it will not stop |
+| **6** | Two agents ask in the same tick. | each gets **its own** `you=` | both get the same name |
+| **7** | `who` from a tmux pane that is **not** a participant. | *asked the relay*, then **silence** | anything claiming an answer |
+| **8** | **Now** stop the relay; `who` again. ⚠️ Last, because nothing restarts it. | same silence | — |
+| **9** | `who` outside tmux. | refused in **`who`'s own words**, naming `$TMUX_PANE` | it says *"send must run inside tmux"* — the wrong command's phrasing |
 
 ### Known limitations — not bugs
 
 - **The answer costs a turn.** It arrives as a prompt on a later turn, never as command output.
 - **A lost request is silent.** No relay, or not a participant, and nothing distinguishes them — by
   design, since neither is worth retrying.
+- **The answer can arrive slightly stale.** It is composed when the request is drained and delivered
+  when the composer is free, so a roster edit in between is not reflected — the same argument that
+  refused a status snapshot, applied to membership.
 - **No rooms**, and **no broadcast** (`--to all`): with three or more agents a reply-all is a
   feedback loop with no natural stop, which `SKILL.md`'s anti-deadlock rule does not cover.
