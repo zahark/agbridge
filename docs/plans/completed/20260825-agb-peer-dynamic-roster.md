@@ -500,6 +500,20 @@ the most important item here.**
 
 ### Who runs `agb-peer send`, and why it matters for staging
 
+⚠️ **THE FARM SHELL IS OFTEN tcsh, AND A BASH HEREDOC HANGS IN IT.** `<<'CHAT'` is bash syntax;
+tcsh treats the quoted delimiter differently, so the terminator never matches and you sit at a `?`
+prompt for ever. Ctrl-C, and pass the message as a plain argument instead — `send` takes one:
+
+```sh
+agb-peer send --to bob 'your message here'          # works in any shell
+echo 'your message here' | agb-peer send --to bob --stdin
+```
+
+⚠️ **This applies only to what YOU type.** `skills/agb-peer/SKILL.md` tells agents to prefer a
+quoted heredoc, and that is right for them: an agent runs its commands through **bash**, and prose
+carrying quotes, backticks or `$` is exactly what a heredoc protects. Check 0's prompt keeps the
+heredoc for that reason.
+
 ⚠️ **Inside a Claude session, the AGENT runs it — there is no shell prompt to type at.** `agb-peer
 send` writes its doorbell onto **`$TMUX_PANE`**, the pane it runs in, and the relay reads the pane
 recorded in that row's `agb pane` argv. A split, another window or a second session is a *different
@@ -732,9 +746,7 @@ cp ~/peers ~/peers.new && echo 'carol=peer-c' >> ~/peers.new && mv ~/peers.new ~
 ```sh
 tmux attach -t sender
 # inside that session:
-agb-peer send --to carol --stdin <<'CHAT'
-waiting for you
-CHAT
+agb-peer send --to carol 'waiting for you'
 # then Ctrl-b d to detach
 ```
 
@@ -772,9 +784,7 @@ Scroll back in **T1** over what you just watched.
 
 ```sh
 tmux attach -t stale
-agb-peer send --to alice --stdin <<'CHAT'
-this is old news
-CHAT
+agb-peer send --to alice 'this is old news'
 # Ctrl-b d
 ```
 
@@ -814,9 +824,7 @@ cp ~/peers ~/peers.new && echo 'erin=rookie' >> ~/peers.new && mv ~/peers.new ~/
 
 ```sh
 tmux attach -t rookie
-agb-peer send --to alice --stdin <<'CHAT'
-my first words
-CHAT
+agb-peer send --to alice 'my first words'
 # Ctrl-b d
 ```
 
