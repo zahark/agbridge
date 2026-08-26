@@ -985,6 +985,26 @@ RELAY_NAME = "relay"
 WHO_REQUEST = "who"
 
 
+def roster_answer(you, members):
+    """The text of a `who` answer: `you=alice peer=bob peer=carol`.
+
+    Plain, because it is delivered as an ordinary message and read by an agent
+    and by whoever is watching the pane. Membership only -- no status, no
+    timestamp: the answer is composed when the request is drained and delivered
+    whenever the composer is free, so anything time-shaped in it would be a
+    snapshot from one moment read as truth at another. `agb-peer` has no
+    heartbeat by design, so there is nothing an age could honestly say.
+
+    ⚠️ **`set(members)` is load-bearing and only looks redundant.** `cmd_relay`
+    passes `members=set(spec)`, but `relay_tick`'s `members=None` fallback
+    substitutes `people`, which is a **dict** -- and `{"a": 1} - {"a"}` raises
+    `TypeError`. `try_deliver` survives the identical fallback only because it
+    does `in` tests, which work on both. The path everyone tests is the set one.
+    """
+    peers = sorted(set(members) - set([you]))
+    return " ".join(["you=%s" % (you,)] + ["peer=%s" % (n,) for n in peers])
+
+
 def valid_participant_name(name):
     return bool(name) and not (set(name) - NAME_ALPHABET)
 

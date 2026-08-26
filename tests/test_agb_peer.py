@@ -2647,3 +2647,49 @@ def test_the_reserved_name_and_the_request_token_are_distinct_constants(peer):
     assert peer.WHO_REQUEST == "who"
     assert peer.WHO_REQUEST not in peer.PANE_WORDS, (
         "cmd_send refuses PANE_WORDS, so a token in that set could never be sent")
+
+
+# ---------------------------------------------------------------------------
+# the text of a `who` answer
+# ---------------------------------------------------------------------------
+
+
+def test_the_answer_names_everyone_and_marks_exactly_one_you(peer):
+    got = peer.roster_answer("alice", {"alice", "bob", "carol"})
+    assert got == "you=alice peer=bob peer=carol"
+    assert got.count("you=") == 1
+
+
+def test_a_one_participant_roster_answers_with_no_peers(peer):
+    """`RosterReader` explicitly permits a runtime drop to one, so this is a
+    state the relay reaches rather than a degenerate input."""
+    assert peer.roster_answer("alice", {"alice"}) == "you=alice"
+
+
+def test_the_answer_is_ordered_so_it_can_be_compared(peer):
+    """⚠️ Asserted as a PROPERTY of the output, not against a literal, and with
+    six peers rather than two. `PYTHONHASHSEED` randomises string hashing per
+    process, so an unsorted implementation is FLAKY rather than reliably wrong:
+    a literal comparison passes on whichever runs happen to hash into order, and
+    a mutation check that samples one run reads that as "not caught". Six peers
+    make an accidental pass a 1-in-720 event, and reading the order back out of
+    the answer needs nothing from the implementation."""
+    names = {"me", "zeta", "alpha", "Mid", "beta", "Omega", "delta"}
+    got = peer.roster_answer("me", names)
+    peers = [w.split("=", 1)[1] for w in got.split() if w.startswith("peer=")]
+    assert len(peers) == 6, got
+    assert peers == sorted(peers), got
+
+
+def test_a_name_outside_the_membership_never_appears(peer):
+    got = peer.roster_answer("alice", {"alice", "bob"})
+    assert "carol" not in got
+
+
+def test_the_answer_accepts_a_dict_membership(peer):
+    """⚠️ The path that is NOT the one everyone tests. `relay_tick`'s
+    `members=None` fallback substitutes `people`, a dict -- and a bare
+    `members - {you}` raises TypeError on it. `try_deliver` gets away with the
+    same fallback only because it does `in` tests."""
+    assert peer.roster_answer("alice", {"alice": 1, "bob": 2}) == \
+        "you=alice peer=bob"

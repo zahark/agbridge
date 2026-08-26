@@ -162,21 +162,21 @@ Verified on `main` at plan time:
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`
 
-- [ ] add `roster_answer(you, members)` → `you=alice peer=bob peer=carol`, peers sorted, `you` always
+- [x] add `roster_answer(you, members)` → `you=alice peer=bob peer=carol`, peers sorted, `you` always
       present. Plain text: it is delivered as a message and read by an agent and a human
-- [ ] ⚠️ `peers = sorted(set(members) - {you})` — **`set(...)` is load-bearing.** `cmd_relay` passes
+- [x] ⚠️ `peers = sorted(set(members) - {you})` — **`set(...)` is load-bearing.** `cmd_relay` passes
       `members=set(spec)`, but `relay_tick`'s `members=None` fallback substitutes `people`, which is
       a **dict**: `{'a': 1} - {'a'}` raises `TypeError`. `try_deliver` survives the same fallback
       only because it does `in` tests, which work on both
-- [ ] write a test that the answer names every member and marks exactly one `you`
-- [ ] write a test for a **one-participant** roster — `you=alice`, no peers, which `RosterReader`
+- [x] write a test that the answer names every member and marks exactly one `you`
+- [x] write a test for a **one-participant** roster — `you=alice`, no peers, which `RosterReader`
       explicitly permits
-- [ ] write a test that a member not in the set does not appear, and that ordering is stable
-- [ ] ⚠️ **audit this task's tests now**, before the gate below: can each pass here, and is any already free
+- [x] write a test that a member not in the set does not appear, and that ordering is stable
+- [x] ⚠️ **audit this task's tests now**, before the gate below: can each pass here, and is any already free
       on this branch? *(An earlier draft had a "present in `resolved` but not in `spec`" test here —
       unwritable, because `roster_answer` has no `resolved` parameter. It is a property of the
       caller and now lives in Task 3.)*
-- [ ] run tests — must pass before Task 3
+- [x] run tests — must pass before Task 3
 
 ### Task 3: The relay answers a `who` request
 
