@@ -314,7 +314,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 2254 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 2286 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -326,7 +326,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 2254 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 2286 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:
@@ -362,6 +362,9 @@ Verified in real use, not just in tests:
 | a corrupt / missing / empty roster file | ✅ conversation survived all three, complaint said once |
 | two roster names resolving to the **same row** | ⬜ not yet run |
 | a joiner whose row is **detached** at the moment it joins | ⬜ not yet run |
+| `agb-peer who` — an agent asks the relay who is in the chat | ⬜ not yet run |
+| the same on a pool/NFS agent, over the file path | ⬜ not yet run |
+| a non-token message to `relay` is dropped, so the answer cannot loop | ⬜ not yet run |
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 
 **Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except

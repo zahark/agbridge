@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (2254 tests, ~80 s)
+python3 -m pytest tests/ -q                                    # full suite (2286 tests, ~80 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -82,6 +82,16 @@ touches the statedir only when the peer's tmux is unreachable: `<statedir>/chat/
 agent's visible screen**, which is why `skills/agb-peer/SKILL.md` tells the sender to repeat it in
 its own answer — an agent UI folds command output behind a `ran N commands` summary, and the message
 then sits unread with no error at either end. Measured, twice.
+
+⚠️ **An agent can ask who it is talking to** — `agb-peer who`, answered by the relay over the
+channel that already exists: the agent sends the single word `who` to the reserved name `relay`, and
+the relay types the membership back. ⚠️ **The answer arrives on a LATER TURN**, not as that command's
+output, and silence means either no relay or not-a-participant — indistinguishable, and neither
+worth retrying. ⚠️ **Only that exact word is answered**, which is a loop guard rather than fussiness:
+`SKILL.md` tells an agent to reply to anything arriving as `[chat from …]`, and the answer looks
+exactly like that. Publishing a roster for agents to read was tried three times and abandoned —
+there is no per-agent identity on the file transport, and `try_deliver` already had the primitive
+that removes the question. `docs/design.md` §6.
 
 ⚠️ **Its participants can be a FILE, re-read while it runs** (`--roster`), which is what makes
 attaching and detaching an agent possible without a restart. Three rules from it are worth carrying,
@@ -694,7 +704,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2254 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2286 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

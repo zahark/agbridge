@@ -108,6 +108,10 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`agb-peer` is 0.3.0** — `who` is a new verb, and `--version` is the only way to tell which side
+  of an independently-installed pair is old. ⚠️ `install.sh` does not install `agb-peer`, so both
+  the relay's copy and the agent's come from a checkout and can drift.
+
 - **`agb-peer who`** — an agent asks who is in the conversation. It sends the request and prints
   that it did; ⚠️ **the answer arrives as a MESSAGE on a later turn, not on this command's output**,
   because there is no channel from the relay back to a command that has already exited.

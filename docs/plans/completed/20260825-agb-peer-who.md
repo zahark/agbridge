@@ -315,12 +315,31 @@ the skill says when to run it** — and the loop mitigation lives here too.
 
 **Files:** Modify `agb-peer`, `CLAUDE.md`, `README.md`, `CHANGELOG.md`, `docs/plans/`
 
-- [ ] bump `VERSION` 0.2.0 → 0.3.0, with a CHANGELOG entry saying why, as Plan A did
-- [ ] correct the test counts in all four places: `CLAUDE.md:8`, `CLAUDE.md:697`, `README.md:317`,
+- [x] bump `VERSION` 0.2.0 → 0.3.0, with a CHANGELOG entry saying why, as Plan A did
+- [x] correct the test counts in all four places: `CLAUDE.md:8`, `CLAUDE.md:697`, `README.md:317`,
       `README.md:329`
-- [ ] update `CLAUDE.md`'s agb-peer paragraph and `README.md`'s verification table
-- [ ] run the full suite — **2254** before this plan
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `CLAUDE.md`'s agb-peer paragraph and `README.md`'s verification table
+- [x] run the full suite — **2254** before this plan
+- [x] move this plan to `docs/plans/completed/`
+
+
+## Outcome — what actually happened
+
+All seven tasks landed. **2286 tests** (from 2254), **24 mutations**, every one caught by a named
+test. Two deviations worth recording, both about tests rather than code:
+
+1. **An ordering test could not see its own mutation, because the property is nondeterministic.**
+   `roster_answer`'s sort, asserted first as a literal comparison, passed against an unsorted
+   implementation — `PYTHONHASHSEED` randomises string hashing per process, so unsorted output is
+   *flaky*, not reliably wrong, and a mutation check that samples one run reads that as "not
+   caught". It now asserts the property (peers read back out of the answer are in sorted order) over
+   seven names, and was verified by running the mutation four times.
+2. **A malformed mutation reported the same "NOT CAUGHT" as a missing test.** Phrased against the
+   first line of a two-line string, it left the continuation intact so the assertion still held. The
+   difference is visible only by reading what the mutation actually produced.
+
+`"ask the user"` survived in `SKILL.md`, deliberately: `who` makes it **cheap**, not obsolete — ask
+the relay first, and if nothing answers, ask the human.
 
 ## Post-Completion — the live acceptance walkthrough
 
