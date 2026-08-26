@@ -100,6 +100,26 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **A running relay re-reads its roster when the file changes**, so participants can be added and
+  removed without restarting it. ⚠️ **Every failed read HOLDS the roster already running** —
+  unreadable, missing, not UTF-8, malformed, empty. At runtime none of those is evidence that
+  anybody left, and a truncated read is exactly what a file being rewritten in place looks like for
+  a millisecond. It parses *cleanly* as a shorter roster, so treating a short answer as
+  authoritative would apply a leave nobody asked for. `mv`ing the file away does not dissolve the
+  conversation.
+
+  Each hold is said **once per unchanged reason**, not every tick.
+
+  ⚠️ **The change gate compares bytes, not a stat key.** The file is a handful of lines, so reading
+  it is cheaper than reasoning about whether `(mtime, size, inode)` can miss a rewrite — and
+  `os.stat` on a network mount is served from the attribute cache, which is what invariant 6 is
+  about. Comparing what was read satisfies that by construction rather than by a comment.
+
+  ⚠️ **Two pieces of state, and they diverge on purpose**: the bytes last *seen* (the gate) and the
+  roster last *applied* (the diff base). A read that parses badly advances the first and not the
+  second, so the next valid edit is still compared against what is really running. Collapsing them
+  loses a join.
+
 - **`agb-peer relay --roster <file>`** — participants from a file instead of the command line, so
   the set can change without restarting the relay. Same grammar as the positional form, because the
   file's words are handed to the same parser: there is one grammar, read from two places.

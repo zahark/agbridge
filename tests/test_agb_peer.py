@@ -2053,3 +2053,128 @@ def test_a_relay_reads_its_participants_from_the_roster(peer, tmp_path):
     out = io.StringIO()
     assert peer.cmd_relay(ctl, [], 500, 8, True, out, roster=path) == 0
     assert "alice" in out.getvalue() and "bob" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# re-reading the roster: the byte gate, and holding on every bad read
+# ---------------------------------------------------------------------------
+
+
+class CountingReader(object):
+    """Wraps a RosterReader and counts how often the file was actually parsed.
+
+    A change gate can only be tested by counting the work it skips; asserting
+    on the RESULT passes whether or not the gate exists.
+    """
+
+    def __init__(self, peer, path, minimum=1):
+        self.reader = peer.RosterReader(path, minimum=minimum)
+        self.peer, self.parses = peer, 0
+        real = peer.parse_roster_text
+
+        def counted(data, minimum=2):
+            self.parses += 1
+            return real(data, minimum=minimum)
+        self.counted = counted
+
+    def poll(self, say, notes=None):
+        real = self.peer.parse_roster_text
+        self.peer.parse_roster_text = self.counted
+        try:
+            return self.reader.poll(say, notes)
+        finally:
+            self.peer.parse_roster_text = real
+
+
+def test_an_unchanged_roster_is_not_re_parsed(peer, tmp_path):
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said = CountingReader(peer, path), []
+    assert reader.poll(said.append, {}) is not None
+    for _ in range(9):
+        assert reader.poll(said.append, {}) is None
+    assert reader.parses == 1, "ten polls, one edit, one parse"
+
+
+def test_changed_bytes_are_re_parsed(peer, tmp_path):
+    """The companion. Without it the gate could refuse everything and pass."""
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said = CountingReader(peer, path), []
+    reader.poll(said.append, {})
+    open(path, "w").write("alice=RowA\nbob=RowB\ncarol=RowC\n")
+    spec = reader.poll(said.append, {})
+    assert sorted(spec) == ["alice", "bob", "carol"]
+    assert reader.parses == 2
+
+
+def test_a_same_size_same_second_rewrite_is_seen(peer, tmp_path):
+    """⚠️ The case a stat key gets wrong. Identical length, written inside the
+    same second, different content -- a (mtime, size) gate would call it
+    unchanged and the join would never be applied."""
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said = CountingReader(peer, path), []
+    reader.poll(said.append, {})
+    open(path, "w").write("alice=RowA\nbob=RowC\n")
+    spec = reader.poll(said.append, {})
+    assert spec is not None and spec["bob"][0] == "RowC"
+
+
+@pytest.mark.parametrize("content,reason", [
+    ("alice=RowA\nthis is not a spec\n", "participants are name="),
+    ("", "empty"),
+    ("# only a comment\n", "empty"),
+])
+def test_a_bad_read_holds_the_roster_already_running(peer, tmp_path,
+                                                     content, reason):
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader = peer.RosterReader(path)
+    said, notes = [], {}
+    assert reader.poll(said.append, notes) is not None
+    open(path, "w").write(content)
+    assert reader.poll(said.append, notes) is None, "held, not applied"
+    assert reader.spec is not None and sorted(reader.spec) == ["alice", "bob"], \
+        "the roster already running is untouched"
+    assert any(reason in s and "keeping" in s for s in said), said
+
+
+def test_a_missing_roster_holds_rather_than_emptying_the_chat(peer, tmp_path):
+    """⚠️ Deliberately NOT treating ENOENT as positive proof: `mv`ing the file
+    away must not dissolve a live conversation."""
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said, notes = peer.RosterReader(path), [], {}
+    reader.poll(said.append, notes)
+    os.remove(path)
+    assert reader.poll(said.append, notes) is None
+    assert sorted(reader.spec) == ["alice", "bob"]
+
+
+def test_a_hold_is_said_once_not_every_tick(peer, tmp_path):
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said, notes = peer.RosterReader(path), [], {}
+    reader.poll(said.append, notes)
+    os.remove(path)
+    for _ in range(20):
+        reader.poll(said.append, notes)
+    assert len([s for s in said if "keeping" in s]) == 1, said
+
+
+def test_a_roster_restored_after_a_hold_is_applied(peer, tmp_path):
+    """⚠️ The two-state property: the gate advanced past the bad bytes, but the
+    diff base did not, so the next good edit is still seen as a change."""
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said, notes = peer.RosterReader(path), [], {}
+    reader.poll(said.append, notes)
+    open(path, "w").write("garbage\n")
+    assert reader.poll(said.append, notes) is None
+    open(path, "w").write("alice=RowA\nbob=RowB\ncarol=RowC\n")
+    spec = reader.poll(said.append, notes)
+    assert spec is not None and "carol" in spec
+
+
+def test_a_drop_to_one_participant_is_announced_not_refused(peer, tmp_path):
+    path = roster_file(tmp_path, "alice=RowA\nbob=RowB\n")
+    reader, said, notes = peer.RosterReader(path), [], {}
+    reader.poll(said.append, notes)
+    open(path, "w").write("alice=RowA\n")
+    spec = reader.poll(said.append, notes)
+    assert sorted(spec) == ["alice"], "applied, because people do leave"
+    assert any("down to 1" in s for s in said), said

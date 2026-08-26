@@ -706,6 +706,72 @@ def parse_show_options(text):
     return messages
 
 
+class RosterReader(object):
+    """Re-reads a roster file, and reports the participants only when they move.
+
+    ⚠️ **TWO PIECES OF STATE, AND THEY DIVERGE ON PURPOSE.** `self.raw` is the
+    change GATE -- what the file said the last time we looked -- while
+    `self.spec` is the last roster actually APPLIED. A read that parses badly
+    advances the first and not the second, so the next valid edit is still
+    diffed against what is really running rather than against a file that was
+    refused. Collapsing them loses a join.
+
+    ⚠️ **The gate compares BYTES rather than a stat key.** The file is a handful
+    of lines, so reading it is cheaper than reasoning about whether
+    `(mtime, size, inode)` can miss a rewrite -- and `os.stat` on a network
+    mount is served from the attribute cache, which is what invariant 6 is
+    about. Comparing what we read satisfies that by construction instead of by
+    a comment nobody re-checks.
+
+    ⚠️ **Every failure HOLDS.** Unreadable, missing, not UTF-8, malformed,
+    empty: at runtime none of those is evidence that anybody left. A truncated
+    read is exactly what a file being rewritten in place looks like for a
+    millisecond, and it parses *cleanly* as a shorter roster -- so treating a
+    short answer as authoritative would apply a leave nobody asked for. This is
+    invariant 2 in its own words: a short or malformed read is no information
+    this poll, never "gone".
+    """
+
+    def __init__(self, path, minimum=1):
+        self.path = path
+        self.minimum = minimum
+        self.raw = None
+        self.spec = None
+
+    def poll(self, say, notes=None):
+        """The new roster when it changed and parsed, else None (keep going)."""
+        def hold(reason):
+            _throttled(say, notes, ("roster",))(
+                "%s -- keeping the %d participant(s) already running"
+                % (reason, len(self.spec or {})))
+            return None
+
+        try:
+            data = read_roster_file(self.path)
+        except PeerError as error:
+            return hold(str(error))
+        if data == self.raw:
+            return None
+        self.raw = data
+        try:
+            spec = parse_roster_text(data, minimum=self.minimum)
+        except PeerError as error:
+            return hold(str(error))
+        if notes is not None:
+            notes.pop(("said", ("roster",)), None)
+        self.spec = spec
+        if len(spec) < 2:
+            # Announced, not refused. One participant is a legal state for a
+            # RUNNING relay -- somebody left, somebody else may yet join -- and
+            # stopping would make a roster edit unable to remove anybody.
+            _throttled(say, notes, ("thin",))(
+                "the roster is down to %d participant(s): nothing can be "
+                "delivered until another joins" % (len(spec),))
+        elif notes is not None:
+            notes.pop(("said", ("thin",)), None)
+        return spec
+
+
 def read_roster_file(path):
     """The roster file's raw BYTES, or a PeerError naming what stopped us.
 
