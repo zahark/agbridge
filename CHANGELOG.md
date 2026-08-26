@@ -100,6 +100,33 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **Participants can now be added, removed and repointed while the relay runs.** A roster edit is
+  applied on the next tick: joiners are primed, leavers are forgotten, and a name whose row changed
+  is treated as neither.
+
+  ⚠️ **A joiner is *primed*, never delivered** — its pane may hold an hour-old conversation, and
+  priming discards it and says what went. Priming is **state that survives ticks**, not a one-shot:
+  a joiner whose row has not appeared, whose pane is detached, or whose fetch failed stays pending
+  and is retried, with no second roster edit needed. It is bounded, and giving up **delivers**
+  rather than discards — see the reasoning at `PRIME_ATTEMPTS_MAX`.
+
+  ⚠️ **The roster is read *before* the rows are resolved.** Resolving first, on the old roster,
+  leaves a joiner unresolved on the tick it joined.
+
+  ⚠️ **A rebind is not a leave.** Both forget the pane-specific state, but a rebound participant
+  keeps its queued mail — it moved, it did not go — and it must drop its **resolved binding**, or
+  `resolve_all`'s keep-previous silently routes to the row it just left.
+
+- **Two participants resolving to the same row are refused, with a warning naming both.** `resolve`
+  refuses an *ambiguous label*, but two different labels can each unambiguously match the same row,
+  and nothing cross-checked the map. Two names on one pane drain it twice, and `try_deliver`'s
+  self-guard compares **names** — so a message addressed to the alias is typed into its own
+  sender's composer. A startup typo could do this before; a roster edit makes it ordinary.
+
+- **An unresolvable participant is reported once, not every tick.** With a fixed participant list a
+  mistyped label is a startup error the operator sees and interrupts. With a roster it is a steady
+  state, and it would otherwise print for the life of the relay.
+
 - **A running relay re-reads its roster when the file changes**, so participants can be added and
   removed without restarting it. ⚠️ **Every failed read HOLDS the roster already running** —
   unreadable, missing, not UTF-8, malformed, empty. At runtime none of those is evidence that

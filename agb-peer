@@ -1774,7 +1774,8 @@ def _throttled(say, notes, key):
 
 
 def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
-               deliver_new=True, notes=None, chat_dir=None, members=None):
+               deliver_new=True, notes=None, chat_dir=None, members=None,
+               deliver_to=None):
     """One pass: watch every doorbell, drain what rang, then drain the queue.
 
     `deliver_new=False` is the PRIMING pass. It still FETCHES -- and discards.
@@ -1817,15 +1818,20 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
             "Send AFTER the relay is up, or it primes them away."
             % (len(discarded), ", ".join(discarded)))
     held = []
+    # ⚠️ Delivery uses `deliver_to`, which may be WIDER than the set we scanned:
+    # a joiner still being primed is skipped as a SENDER, because its pane has
+    # not been read, but it must still be reachable as a RECIPIENT. Defaults to
+    # the scanned set, so every other caller is unchanged.
+    audience = people if deliver_to is None else deliver_to
     for sender, message in pending:
-        if not try_deliver(ctl, sessions, people, sender, message, lines, say,
+        if not try_deliver(ctl, sessions, audience, sender, message, lines, say,
                            notes, members):
             held.append((sender, message))
     pending[:] = held
     return len(pending)
 
 
-def resolve_all(ctl, spec, say, previous=None):
+def resolve_all(ctl, spec, say, previous=None, notes=None):
     """{name: (row id, pane, target)}, re-resolved from LABELS every tick.
 
     ⚠️ This is the `agb-refresh` defence. A refresh closes and re-mints every
@@ -1845,12 +1851,41 @@ def resolve_all(ctl, spec, say, previous=None):
                 # transient: a row is briefly absent while it is re-minted.
                 resolved[name] = previous[name]
             else:
-                say("%s: %s" % (name, error))
-    return resolved
+                # ⚠️ Throttled, because a roster turns this from a startup typo
+                # the operator sees and Ctrl-Cs into a STEADY STATE: a mistyped
+                # label would otherwise print every tick for the life of the
+                # relay. The ("gone", name) ladder cannot help, because a name
+                # that never resolved never reaches `resolved` at all.
+                _throttled(say, notes, ("resolve", name))(
+                    "%s: %s" % (name, error))
+    return _one_name_per_row(resolved, say, notes)
+
+
+def _one_name_per_row(resolved, say, notes=None):
+    """Refuse to let two participants share a row, keeping the first by name.
+
+    ⚠️ `resolve` refuses an AMBIGUOUS label, but two DIFFERENT labels can each
+    unambiguously match the same row -- `bob=alice-box` and `alice=alice` -- and
+    nothing cross-checked the map. Two names on one pane both drain it, so a
+    message is delivered twice; and `try_deliver`'s self-guard compares NAMES,
+    so a message addressed to the alias is typed into the sender's own composer.
+    A startup typo could do this before; a roster edit makes it ordinary.
+    """
+    owner = {}
+    for name in sorted(resolved):
+        row = resolved[name][0]
+        if row in owner:
+            _throttled(say, notes, ("alias", name))(
+                "%s and %s both resolve to row %s -- ignoring %s, because two "
+                "names on one pane drain it twice and can type a message into "
+                "its own sender" % (owner[row], name, row[:8], name))
+            continue
+        owner[row] = name
+    return dict((name, resolved[name]) for name in owner.values())
 
 
 def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
-              fetch=None, chat_dir=None, roster=None):
+              fetch=None, chat_dir=None, roster=None, ticks=None):
     """Watch every participant's doorbell and carry messages between them."""
     if roster and words:
         raise PeerError("give participants OR --roster, not both: with two "
@@ -1871,13 +1906,45 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
         out.flush()
 
     seen, pending, resolved, notes = {}, [], {}, {}
+    needs_prime = set()
+    reader = RosterReader(roster, minimum=1) if roster else None
+    if reader is not None:
+        # The startup read above already applied; priming the initial roster is
+        # the existing `deliver_new=False` pass, not a join. Seed the gate so
+        # tick one does not re-apply the same file as a change.
+        reader.raw, reader.spec = read_roster_file(roster), spec
     priming = True
+    remaining = ticks
     while True:
-        fresh = resolve_all(ctl, spec, say, resolved)
+        # ⚠️ **THE ROSTER IS READ BEFORE `resolve_all`, NOT AFTER IT.** An
+        # earlier draft resolved first, on the OLD spec, so a joiner was not in
+        # `resolved` on the tick it joined and every later step silently skipped
+        # it -- and, since the file did not change again, there was no second
+        # attempt. Leaves happen to work under either ordering; joins do not.
+        if reader is not None:
+            arrived = reader.poll(say, notes)
+            if arrived is not None:
+                left = set(spec) - set(arrived)
+                joined = set(arrived) - set(spec)
+                rebound = set(name for name in set(spec) & set(arrived)
+                              if spec[name] != arrived[name])
+                spec = arrived
+                apply_leaves(left, rebound, seen, pending, resolved,
+                             needs_prime, notes, say)
+                needs_prime.update(joined)
+                if left or joined or rebound:
+                    say("roster: %s" % (", ".join(
+                        ["+" + n for n in sorted(joined)]
+                        + ["-" + n for n in sorted(left)]
+                        + ["~" + n for n in sorted(rebound)]) or "unchanged"))
+        fresh = resolve_all(ctl, spec, say, resolved, notes)
         if fresh != resolved:
             if resolved:
-                say("row ids moved -- re-resolved (an `agb-refresh` re-mints "
-                    "every row, and the old ids are dead)")
+                # ⚠️ Names the two causes it now has. It used to blame
+                # `agb-refresh` unconditionally, which became wrong the moment a
+                # roster edit could move this set too.
+                say("participant rows changed -- re-resolved (a roster edit, "
+                    "or an `agb-refresh` re-minting every row)")
             resolved = fresh
             for name in sorted(resolved):
                 row, pane, target, tmux_target = resolved[name]
@@ -1892,18 +1959,44 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                               for n in sorted(resolved)]
                 ok, why = ctl.dashboard(grid_cells)
                 say("dashboard: %s" % ("open" if ok else why))
+        if needs_prime:
+            # ⚠️ Before the scan, and the scan skips whatever is still pending:
+            # a joiner whose pane has not been read must not have its backlog
+            # picked up by the ordinary pass and delivered as new.
+            sessions = {}
+            for session in sessions_of(ctl.tree()):
+                sessions[session["id"]] = session
+            prime_joiners(ctl, sessions, needs_prime, resolved, seen, lines,
+                          say, fetch, notes, chat_dir)
+        # ⚠️ A SECOND LINE OF DEFENCE, not the first, and worth saying so: a
+        # prime that succeeds already writes `seen`, so the scan would find the
+        # participant caught up anyway. This makes the guarantee structural
+        # instead of a consequence of two functions agreeing -- a mutation of it
+        # alone changes no observable behaviour, which is the honest reason
+        # there is no test that only it can fail.
+        scanning = dict((name, resolved[name]) for name in resolved
+                        if name not in needs_prime)
         # ⚠️ `spec`, not `resolved`: membership is what the operator asked for,
         # and a participant whose row has not appeared yet must have its mail
-        # HELD rather than dropped. See try_deliver.
-        relay_tick(ctl, resolved, seen, pending, lines, say, fetch,
+        # HELD rather than dropped. See try_deliver. ⚠️ And `pending` is
+        # delivered for EVERYONE, including names still being primed: a name
+        # skipped as a SENDER must still be reachable as a RECIPIENT, or its
+        # incoming mail waits out the whole prime budget for no reason. The
+        # property is pinned on `relay_tick` itself rather than here, because at
+        # this level the difference is a delay rather than a loss.
+        relay_tick(ctl, scanning, seen, pending, lines, say, fetch,
                    deliver_new=not priming, notes=notes, chat_dir=chat_dir,
-                   members=set(spec))
+                   members=set(spec), deliver_to=resolved)
         if priming:
             say("primed on %d doorbell(s); relaying every %ss -- Ctrl-C to stop"
                 % (len(seen), interval))
             priming = False
         if once:
             return 0
+        if remaining is not None:
+            remaining -= 1
+            if remaining <= 0:
+                return 0
         ctl.sleep(interval)
 
 

@@ -2391,3 +2391,207 @@ def test_priming_walks_a_copy_of_the_set(peer):
     needs_prime = {"alice", "bob"}
     prime(peer, ctl, needs_prime)
     assert needs_prime == set()
+
+
+# ---------------------------------------------------------------------------
+# the relay loop: roster changes applied mid-run
+# ---------------------------------------------------------------------------
+
+
+class TickingCtl(RelayCtl):
+    """A relay ctl whose `sleep` runs a callback, so a test can change the
+    world between ticks. `cmd_relay`'s `once=True` returns after the PRIMING
+    tick, so without this there is no way to observe a second one at all."""
+
+    def __init__(self, panes_, on_tick=None):
+        RelayCtl.__init__(self, panes_)
+        self.on_tick = on_tick or (lambda n: None)
+        self.tick = 0
+
+    def sleep(self, seconds):
+        self.tick += 1
+        self.on_tick(self.tick)
+
+
+def test_a_participant_added_mid_run_joins_without_a_restart(peer, tmp_path):
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+    surfaces = dict(panes(), CCCC3333=COMPOSER)
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write(
+                "alice=AAAA1111\nbob=BBBB2222\ncarol=CCCC3333\n")
+    ctl = TickingCtl(surfaces, edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3)
+    assert "+carol" in out.getvalue(), out.getvalue()
+
+
+def test_a_joiners_backlog_is_not_delivered_by_the_loop(peer, tmp_path):
+    """⚠️ End to end: the joiner's pane already has an old message on it, and
+    the tick that admits it must discard rather than deliver."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+    surfaces = dict(panes(), CCCC3333=COMPOSER + bell("old"))
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write(
+                "alice=AAAA1111\nbob=BBBB2222\ncarol=CCCC3333\n")
+    ctl = TickingCtl(surfaces, edit)
+    out = io.StringIO()
+    # ⚠️ ticks=2 is the assertion: the joiner must be resolved AND primed on the
+    # one iteration that follows the edit. Reading the roster after
+    # `resolve_all` would leave it unresolved that tick and cost another.
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=2,
+                   fetch=Fetcher(framed(("old", "bob", "ancient"))))
+    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [], out.getvalue()
+    assert "predate a join" in out.getvalue(), out.getvalue()
+
+
+def test_a_participant_removed_mid_run_stops_being_scanned(peer, tmp_path):
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\n")
+    ctl = TickingCtl(panes(), edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3)
+    assert "-bob" in out.getvalue(), out.getvalue()
+    assert "down to 1" in out.getvalue(), out.getvalue()
+
+
+def test_a_positional_relay_never_reads_a_roster(peer, tmp_path, monkeypatch):
+    """The backward-compatibility guarantee, named at the seam so it cannot
+    patch the wrong one and pass."""
+    calls = []
+    real = peer.read_roster_file
+    monkeypatch.setattr(peer, "read_roster_file",
+                        lambda p: calls.append(p) or real(p))
+    ctl = TickingCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8, False,
+                   io.StringIO(), ticks=3)
+    assert calls == []
+
+
+def test_two_names_resolving_to_one_row_are_refused(peer):
+    """⚠️ `resolve` refuses an ambiguous LABEL, but two different labels can
+    each unambiguously match the same row. Two names on one pane drain it
+    twice, and try_deliver's self-guard compares NAMES, so a message to the
+    alias is typed into its own sender's composer."""
+    ctl = RelayCtl(panes())
+    said, notes = [], {}
+    spec = {"alice": ("AAAA1111", "left", None, None),
+            "clone": ("AAAA1111", "left", None, None)}
+    resolved = peer.resolve_all(ctl, spec, said.append, {}, notes)
+    assert sorted(resolved) == ["alice"], "the first by name is kept"
+    assert any("both resolve to row" in s for s in said), said
+
+
+def test_distinct_rows_are_all_kept(peer):
+    """The companion: the collision guard must not narrow an ordinary map."""
+    ctl = RelayCtl(panes())
+    resolved = peer.resolve_all(ctl, dict(PEOPLE), lambda m: None, {}, {})
+    assert sorted(resolved) == ["alice", "bob"]
+
+
+def test_an_unresolvable_participant_is_not_reported_every_tick(peer):
+    ctl = RelayCtl(panes())
+    said, notes = [], {}
+    spec = dict(PEOPLE, ghost=("NOSUCHROW", "left", None, None))
+    for _ in range(20):
+        peer.resolve_all(ctl, spec, said.append, {}, notes)
+    assert len([s for s in said if s.startswith("ghost:")]) == 1, said
+
+
+def test_a_name_still_being_primed_can_still_receive(peer):
+    """⚠️ The skip is scoped to the doorbell SCAN, never to delivery. A
+    participant that only ever receives would otherwise be unreachable for as
+    long as its own pane could not be read."""
+    ctl = RelayCtl(panes())
+    pending = [("alice", {"id": "m1", "to": "bob", "text": "hi"})]
+    peer.relay_tick(ctl, {"alice": PEOPLE["alice"]}, {}, pending, 500, ctl.say,
+                    Fetcher(), notes={}, members={"alice", "bob"},
+                    deliver_to=PEOPLE)
+    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+        "[chat from alice] hi"]
+    assert pending == []
+
+
+def test_delivery_defaults_to_the_scanned_set(peer):
+    """The companion: absent `deliver_to`, nothing is widened and every other
+    caller behaves exactly as before."""
+    ctl = RelayCtl(panes())
+    pending = [("alice", {"id": "m1", "to": "bob", "text": "hi"})]
+    peer.relay_tick(ctl, {"alice": PEOPLE["alice"]}, {}, pending, 500, ctl.say,
+                    Fetcher(), notes={}, members={"alice", "bob"})
+    assert ctl.typed == [], "bob is not in the scanned map, so he is held"
+    assert len(pending) == 1
+
+
+def test_a_leavers_queued_mail_is_dropped_and_named_by_the_loop(peer, tmp_path):
+    """apply_leaves' half of a removal, end to end. `try_deliver` HOLDS for a
+    roster member whose row has not appeared, so without the leave path this
+    message would wait for ever instead of being dropped."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nghost=NOSUCHROW\n")
+    ctl = TickingCtl(panes())
+
+    def edit(tick):
+        if tick == 1:
+            # Ring AFTER the priming pass, or the message is discarded as a
+            # backlog and never reaches the queue at all.
+            ctl.current["AAAA1111"] = COMPOSER + bell("aaa")
+        if tick == 2:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n")
+    ctl.on_tick = edit
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3,
+                   fetch=Fetcher(framed(("aaa", "ghost", "into the void"))))
+    text = out.getvalue()
+    assert "ghost is in the roster but has no row yet" in text, text
+    assert "ghost left" in text and "#aaa" in text, text
+
+
+def test_a_rebind_keeps_its_queued_mail_through_the_loop(peer, tmp_path):
+    """⚠️ End to end, because the leave/rebind distinction lives at the CALL
+    site: a mutation that passes `left | rebound` is invisible to a unit test of
+    `apply_leaves` itself. A rebound participant moved; it did not leave, and
+    its queued messages exist nowhere else."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nghost=NOSUCHROW\n")
+    ctl = TickingCtl(panes())
+
+    def edit(tick):
+        if tick == 1:
+            ctl.current["AAAA1111"] = COMPOSER + bell("aaa")
+        if tick == 2:
+            open(path, "w").write("alice=AAAA1111\nghost=BBBB2222\n")
+    ctl.on_tick = edit
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3,
+                   fetch=Fetcher(framed(("aaa", "ghost", "still for you"))))
+    assert [t for (_, _, t) in ctl.typed if t != "\n"] == [
+        "[chat from alice] still for you"], out.getvalue()
+    assert "will not be delivered" not in out.getvalue(), out.getvalue()
+
+
+def test_a_rebind_stops_routing_to_the_old_row(peer, tmp_path):
+    """⚠️ The case `resolve_all`'s keep-previous makes dangerous. A rebind keeps
+    the same NAME, so if the new label does not resolve this tick, the old
+    binding would be kept -- and the message would be typed into the pane the
+    participant just moved away from. Dropping `resolved[name]` is what stops
+    it, and only a name that WAS resolved can show that."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+    ctl = TickingCtl(panes())
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\nbob=NOSUCHROW\n")
+            ctl.current["AAAA1111"] = COMPOSER + bell("aaa")
+    ctl.on_tick = edit
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=2,
+                   fetch=Fetcher(framed(("aaa", "bob", "wrong pane"))))
+    assert [t for (t_, p, t) in ctl.typed if t != "\n"] == [], (
+        "bob moved; nothing may be typed into the row he left: %s"
+        % (out.getvalue(),))
+    assert "bob is in the roster but has no row yet" in out.getvalue()
