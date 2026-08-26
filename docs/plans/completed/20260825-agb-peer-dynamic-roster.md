@@ -488,76 +488,327 @@ Sequenced first because it stands alone: it needs no roster, and it is wrong tod
 - [x] update `CLAUDE.md` if a new invariant emerged
 - [x] move this plan to `docs/plans/completed/`
 
-## Post-Completion — the live acceptance procedure
+## Post-Completion — the live acceptance walkthrough
 
 ⚠️ **Nothing below has been run.** Two of the last four features in this project passed every test
-and still needed a fix after live use, so this is the gate, not a formality.
+and still needed a fix after live use. This is the gate.
 
-⚠️ **Three commits changed behaviour for people who never touch a roster** — messages to an
+⚠️ **Three commits changed behaviour for people who never touch a roster.** Messages to an
 unresolved participant are now *held* rather than dropped, `seen` means *read* rather than
-*intended*, and several complaint paths became say-once. **Check 0 is therefore the most important
-one on the list**, and it is a regression check, not a feature check.
+*intended*, and several complaint paths became say-once. **Check 0 is a regression check and it is
+the most important item here** — the roster could work perfectly and the branch still be wrong.
 
-### Setup
+Every step is labelled with **where** it runs. Four terminals, and it helps to lay them out first:
 
-Two Claude agents on the farm, each started with `agb-claude <name>` so it has a row and is a valid
-participant. ⚠️ `agb-tmux` shells are **not** valid participants — the relay classifies a bare shell
-as `unknown` and will never type into one, which is deliberate: a shell would *execute* what it was
-sent.
+| | where | what it is |
+|---|---|---|
+| **T1** | Mac | the relay, running in the foreground. **This is the instrument** — nearly every check is a line that must or must not appear here |
+| **T2** | Mac | a spare shell for editing `~/peers` |
+| **T3** | farm | a login shell for starting agents with `agb-claude` |
+| **T4** | Mac, inside agterm | where you click rows to attach and watch messages land |
 
-On the Mac, a roster file and a relay in a **visible terminal** — its stdout is the instrument for
-almost every check below:
+---
+
+### Part 0 — get the code onto both machines
+
+**On the farm (T3).** This repo is already your farm checkout:
+
+```sh
+cd ~/agbridge            # wherever you cloned it
+git fetch && git checkout agb-peer-dynamic-roster
+python3 -m pytest tests/ -q          # 2254 expected, ~80 s
+which agb-peer                        # must resolve to THIS checkout
+```
+
+**On the Mac (T2).**
+
+```sh
+cd ~/agbridge
+git fetch && git checkout agb-peer-dynamic-roster
+./agb-peer --version                  # must print 0.2.0
+```
+
+⚠️ **`install.sh` does not install `agb-peer`** — both sides run it from a checkout. So there is
+nothing to install, but there *are* two copies, and **both must be on this branch**. A farm copy on
+`main` and a Mac copy on the branch is the one configuration that will waste an afternoon: `send`
+would be old and the relay new.
+
+Confirm they agree:
+
+```sh
+./agb-peer --version                  # Mac  (T2)
+agb-peer --version                    # farm (T3)   -- both 0.2.0
+```
+
+---
+
+### Part 1 — stage the agents
+
+**On the farm (T3).** Start three agents now and leave the fourth for later:
+
+```sh
+agb-claude peer-a
+agb-claude peer-b
+agb-claude peer-d
+```
+
+Each opens a tmux session and starts Claude. ⚠️ **Type something in each one** so it is clearly
+alive, then detach (`Ctrl-b d`).
+
+⚠️ **`agb-tmux` shells are NOT valid participants.** The relay classifies a bare shell as `unknown`
+and will never type into one — deliberately, since a shell would *execute* what it was sent. Use
+`agb-claude` for anything that must receive.
+
+**On the Mac (T2).** Find the row labels:
+
+```sh
+cd ~/agbridge && ./agb-peer --list
+```
+
+Use a **substring of the row title**, not a row id — `agb-refresh` re-mints every row and every id
+changes, while a label keeps working.
 
 ```sh
 cat > ~/peers <<'EOF'
-alice=<row label of agent 1>
-bob=<row label of agent 2>
+# who is in this chat
+alice=peer-a
+bob=peer-b
 EOF
-agb-peer relay --roster ~/peers --interval 2      # 2s, so a tick is observable
 ```
 
-Sending, from inside an agent's own tmux session:
+---
+
+### Part 2 — start the relay
+
+**On the Mac (T1):**
+
+```sh
+cd ~/agbridge && ./agb-peer relay --roster ~/peers --interval 2
+```
+
+`--interval 2` makes a tick observable; the 8 s default makes the ladder checks tedious.
+
+**Expected, immediately:**
+
+```
+agb-peer: alice        <id>:left
+agb-peer: bob          <id>:left
+agb-peer: primed on N doorbell(s); relaying every 2s -- Ctrl-C to stop
+```
+
+If instead you get a refusal, that is Part 0 or a bad label — fix it before going on.
+
+---
+
+### Check 0 — the regression check ⭐ **most important**
+
+**In peer-a's session** (attach from T4, or `tmux attach -t peer-a` on the farm):
 
 ```sh
 agb-peer send --to bob --stdin <<'CHAT'
-hello
+check zero, hello
 CHAT
 ```
 
-### Must pass — blocking
+| | |
+|---|---|
+| **T1 must show** | `agb-peer: alice -> bob: delivered` |
+| **peer-b must show** | a prompt beginning `[chat from alice] check zero, hello` |
+| **FAIL** | nothing arrives, or `dropping a message for 'bob': not a participant` |
 
-| # | Do | Expect | Failure looks like |
-|---|---|---|---|
-| **0** | **Regression.** With just alice and bob, send alice → bob. | `alice -> bob: delivered`, and `[chat from alice] hello` in bob's composer. | Nothing arrives, or `dropping a message for 'bob': not a participant`. **This is the check that says whether the branch broke the existing feature.** |
-| **1** | **Held, not dropped.** Add `carol=<label>` for an agent **not yet started**. Send alice → carol. Then start that agent. | `carol is in the roster but has no row yet -- holding (1/225)`, then on start `alice -> carol: delivered`. | `dropping a message for 'carol': not a participant` at send time — that is the pre-existing bug, unfixed. |
-| **3** | **Join discards the backlog.** From an agent **not** in the roster, `agb-peer send --to alice "old"`. Then add it to the roster. | `roster: +dave` and `discarded 1 message(s) that predate a join: #<id> (dave -> alice)`. | alice actually receives `old`. |
-| **4** | **The inverse failure.** Start a fresh agent that has **never** run `agb-peer send`. Add it to the roster. Then send from it. | `roster: +erin`, **no** `discarded` line, then `erin -> alice: delivered`. | Its first message is swallowed as `discarded … predate a join`. ⚠️ **No test in the suite can reach this**; it is why the rule is "nothing announced clears the prime". |
+**If this fails, stop.** The branch broke the existing feature and no other check matters.
 
-### Should pass
+---
 
-| # | Do | Expect |
+### Check 1 — held, not dropped ⭐ *the pre-existing bug*
+
+**T2** — add a participant whose agent does **not exist yet**:
+
+```sh
+echo 'carol=peer-c' >> ~/peers
+```
+
+**T1 within a few ticks:**
+
+```
+agb-peer: roster: +carol
+agb-peer: carol: no row matches 'peer-c', 3 ticks running. If this is not a refresh in progress, check the bridge.
+```
+
+**In peer-a's session:**
+
+```sh
+agb-peer send --to carol --stdin <<'CHAT'
+waiting for you
+CHAT
+```
+
+| | |
+|---|---|
+| **T1 must show** | `agb-peer: carol is in the roster but has no row yet -- holding (1/225)` |
+| **T1 must NOT show** | `dropping a message for 'carol': not a participant` ← **this is the old bug** |
+
+**Now start the agent. On the farm (T3):**
+
+```sh
+agb-claude peer-c
+```
+
+Type something so it is alive.
+
+| | |
+|---|---|
+| **T1 must show** | `agb-peer: alice -> carol: delivered` |
+| **peer-c must show** | `[chat from alice] waiting for you` |
+| **FAIL** | the message never arrives — it was dropped at send time |
+
+---
+
+### Check 2 — the hold is throttled
+
+You just watched `carol` hold. Scroll back in **T1**.
+
+| | |
+|---|---|
+| **Expect** | a ladder: `holding (1/225)`, `(3/225)`, then every 30th — and `no row matches that label` at tick 3, then every 30th |
+| **FAIL** | a line every 2 seconds |
+
+---
+
+### Check 4 — the inverse failure ⭐ *no test can reach this*
+
+`peer-c` joined and has **never run `agb-peer send`**, so it had no doorbell when it was primed.
+That is exactly the case that breaks if "nothing announced" does not clear the prime.
+
+**In peer-c's session:**
+
+```sh
+agb-peer send --to alice --stdin <<'CHAT'
+my first words
+CHAT
+```
+
+| | |
+|---|---|
+| **T1 must show** | `agb-peer: carol -> alice: delivered` |
+| **peer-a must show** | `[chat from carol] my first words` |
+| **FAIL** | `discarded 1 message(s) that predate a join: …` — its **first real message** was thrown away |
+
+---
+
+### Check 3 — a joiner's backlog is discarded ⭐
+
+`peer-d` is running and is **not** in the roster. Give it a backlog first.
+
+**In peer-d's session:**
+
+```sh
+agb-peer send --to alice --stdin <<'CHAT'
+this is old news
+CHAT
+```
+
+It prints `queued for alice as #<id>`. Nothing happens — correct, `peer-d` is not a participant, so
+nobody is reading its doorbell. **T1 says nothing.**
+
+**T2** — now admit it:
+
+```sh
+echo 'dave=peer-d' >> ~/peers
+```
+
+| | |
+|---|---|
+| **T1 must show** | `agb-peer: roster: +dave` and `agb-peer: discarded 1 message(s) that predate a join: #<id> (dave -> alice)` |
+| **peer-a must NOT show** | `this is old news` |
+| **FAIL** | alice receives it — the backlog was delivered as if it were new |
+
+Then confirm the channel is live afterwards — send `peer-d` → alice again and expect it to arrive.
+
+---
+
+### Check 6 — removal drops the queued mail, by name
+
+**T2** — point carol at a row that does not exist, so her mail queues up again:
+
+```sh
+sed -i '' 's/^carol=.*/carol=no-such-row-zzz/' ~/peers      # macOS sed
+```
+
+**In peer-a's session:** send to carol. **T1** shows the hold.
+
+**T2** — now remove her:
+
+```sh
+sed -i '' '/^carol=/d' ~/peers
+```
+
+| | |
+|---|---|
+| **T1 must show** | `carol left, so 1 queued message(s) will not be delivered: #<id> (alice -> carol)` and `roster: -carol` |
+| **FAIL** | silence — the message is held for ever with nothing to release it |
+
+---
+
+### Check 7 — a rebind must stop routing to the old row ⚠️ *the subtlest*
+
+**T2** — repoint `bob` from its live row to one that does not resolve:
+
+```sh
+sed -i '' 's/^bob=.*/bob=no-such-row-yyy/' ~/peers
+```
+
+**In peer-a's session:** send to bob.
+
+| | |
+|---|---|
+| **T1 must show** | `roster: ~bob`, then `bob is in the roster but has no row yet -- holding` |
+| **peer-b must NOT show** | the message |
+| **FAIL** | it lands in `peer-b` — `resolve_all` kept the stale binding and typed into the pane bob just left |
+
+Then put it back (`bob=peer-b`) and confirm the held message is delivered.
+
+---
+
+### Checks 8–11 — resilience
+
+Do these with a live conversation running, and after **each one** send a message to prove the chat
+still works.
+
+| | **T2 does** | **T1 must show** |
 |---|---|---|
-| 2 | Leave an unresolvable name in the roster for ~2 minutes. | The hold ladders — `(1/225)`, `(3/225)`, `(30/225)` — **not** a line every tick. Same for `no row matches that label, N ticks running`. |
-| 6 | Remove a name while a message is queued for it. | `carol left, so 1 queued message(s) will not be delivered: #<id> …` then `roster: -carol`. |
-| 7 | Repoint a name: `bob=<label1>` → `bob=<label2>` where label2 does not resolve yet. | `roster: ~bob`, then `bob is in the roster but has no row yet`. ⚠️ **Nothing may be typed into label1's row** — that is `resolve_all`'s keep-previous, and it is the subtlest bug in the branch. |
-| 8 | Write garbage into the roster. | `… -- keeping the 2 participant(s) already running`, **said once**, and the chat keeps working. |
-| 9 | `mv ~/peers /tmp/` then restore it. | Survives, says it once, and applies the change on restore. |
-| 10 | `: > ~/peers` (truncate to empty). | `the roster is empty -- keeping the 2 participant(s) already running`. ⚠️ The conversation must **not** dissolve. |
-| 11 | Reduce the roster to one name. | `the roster is down to 1 participant(s): nothing can be delivered until another joins`, relay stays up. |
+| 8 | `echo 'this is not a spec' >> ~/peers` | `participants are name=… -- keeping the N participant(s) already running`, **said once**, chat unaffected |
+| 9 | `mv ~/peers /tmp/ && sleep 10 && mv /tmp/peers ~/` | `cannot read the roster … -- keeping …` once, then changes apply again on restore |
+| 10 | `: > ~/peers` then restore from a copy | `the roster is empty -- keeping …` ⚠️ **the conversation must not dissolve** |
+| 11 | reduce the roster to one name | `the roster is down to 1 participant(s): nothing can be delivered until another joins`, relay stays up |
 
-### Opportunistic — stage them if convenient
+⚠️ Keep a copy first: `cp ~/peers ~/peers.bak`.
 
-| # | Do | Expect |
+---
+
+### Opportunistic — stage if convenient
+
+| | Do | Expect |
 |---|---|---|
-| 5 | Add a participant whose row is **detached** (showing `agb pane`'s menu), or run `agb-refresh` mid-join. | `is detached -- attaching it so its doorbell can be seen`, and once attached the backlog is still **discarded**, not delivered. ⚠️ This is the case the whole `SCAN_DETACHED` distinction exists for. |
-| 12 | Point two roster names at the same row. | `X and Y both resolve to row Z -- ignoring Y …`. |
-| 13 | Break ssh to a farm host briefly (VPN off) while a message is in flight. | `fetch failed` said **once**, then the message arrives when ssh returns — the `seen`-records-what-was-read fix. Hard to stage cleanly; skip rather than fake it. |
+| 5 | Add a participant whose row is **detached** (click it, then `q`… no — use `agb-refresh`, which re-mints every row detached), then attach it | `is detached -- attaching it so its doorbell can be seen`, and the backlog still **discarded** once attached. ⚠️ This is what the whole `SCAN_DETACHED` distinction exists for |
+| 12 | Point two roster names at the same row | `X and Y both resolve to row Z -- ignoring Y …` |
+| 13 | Drop the VPN briefly with a message in flight | `fetch failed` **once**, then the message arrives when ssh returns. Hard to stage cleanly — skip rather than fake it |
+
+---
 
 ### Known limitations — do not report these as bugs
 
 - A read truncated at a **line boundary** is indistinguishable from a real removal. Write the roster
-  atomically (`mv` into place); the window is ~1 ms against a tick.
-- Attaching an agent gives it **no way to discover the roster**. That is Plan B.
-- Two *unreachable* agents on two *different* mounts cannot both be served (`--chat-dir` is
-  relay-wide). Never run.
+  atomically (`mv` into place). The window is ~1 ms against a tick.
+- An attached agent has **no way to discover the roster**. That is Plan B (`agb-peer who`).
+- Two *unreachable* agents on two *different* mounts cannot both be served — `--chat-dir` is
+  relay-wide. Never run.
+
+---
+
+### If something fails
+
+Capture, in this order: the **full T1 scrollback**, `~/peers` as it was at that moment, and
+`./agb-peer --list` from the Mac. The relay's output is the whole diagnosis for almost every failure
+mode here, and it is lost when the terminal closes.
 

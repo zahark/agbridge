@@ -646,6 +646,97 @@ Moving `rows` and `placements` next to the config *before* reinstalling avoids i
 
 ---
 
+## Make several agents talk to each other
+
+`agb-peer relay` runs on the **Mac** and carries messages between agent rows. Naming the
+participants on the command line fixes them for the life of the relay; a **roster file** lets you
+add and remove agents while it runs.
+
+### Start it
+
+```sh
+# on the Mac
+cat > ~/peers <<'EOF'
+# one participant per line: <name>=<a substring of the row's title>
+alice=api-refactor
+bob=docs-pass
+EOF
+
+agb-peer relay --roster ~/peers
+```
+
+The names on the left are how the agents address each other — pick short ones. `agb-peer --list`
+shows the rows and their titles.
+
+⚠️ **Use a title substring, not a row id.** `agb-refresh` re-mints every row and every id changes; a
+label keeps working across one.
+
+⚠️ **Names are letters, digits, dot, underscore and hyphen.** The row part on the right has no such
+rule, so `bob=/home/you/project` is fine.
+
+### Then, inside an agent's own session
+
+```sh
+agb-peer send --to bob --stdin <<'CHAT'
+your message here
+CHAT
+```
+
+The message arrives in bob's composer as `[chat from alice] …`. ⚠️ **A message only travels while a
+relay is running** — `send` succeeds either way and the message waits, and the next relay to start
+discards it as stale. That is the first thing to check when a peer never answered.
+
+⚠️ **`agb-tmux` shells are deliberately not valid participants.** The relay classifies a bare shell
+as `unknown` and will never type into one — a shell would *execute* what it was sent. Use
+`agb-claude` or `agb-codex`.
+
+### Add or remove an agent while it runs
+
+Edit the file. The relay picks it up within a tick and says what changed:
+
+```
+agb-peer: roster: +carol
+agb-peer: discarded 1 message(s) that predate a join: #k3n9x2 (carol -> alice)
+```
+
+⚠️ **Write the file atomically — edit a copy and `mv` it into place.** A file rewritten in place can
+be read half-written, and a read truncated at a line boundary parses *cleanly* as a shorter roster,
+which is indistinguishable from deliberately removing somebody.
+
+```sh
+cp ~/peers ~/peers.new
+echo 'carol=third-task' >> ~/peers.new
+mv ~/peers.new ~/peers
+```
+
+Three things worth knowing about what happens next:
+
+- **A joiner is *primed*, not caught up.** Whatever was already on its pane is **discarded**, not
+  delivered — otherwise admitting an agent would replay an hour-old conversation into everyone else.
+- **A name you list before starting its agent is fine.** Messages to it are **held** and delivered
+  when the row appears, rather than thrown away. They are held for about half an hour, then dropped
+  with a line saying so.
+- **Removing a name drops its queued mail**, and names each message so you can see what went.
+
+### When something looks wrong
+
+The relay's output is the diagnosis. The lines that matter:
+
+| line | means |
+|---|---|
+| `alice -> bob: delivered` | it worked |
+| `bob is in the roster but has no row yet -- holding (1/225)` | that agent has not started; the message is waiting |
+| `dropping a message for 'bob': not a participant` | `bob` is **not in the roster** — a typo, or you forgot to add them |
+| `bob: no row matches that label, N ticks running` | the name is in the roster but no row title matches. Check `agb-peer --list` |
+| `bob is detached -- attaching it so its doorbell can be seen` | routine after `agb-refresh`; it fixes itself |
+| `… -- keeping the N participant(s) already running` | the roster file could not be read or parsed. **The conversation is unaffected** — fix the file |
+| `the roster is down to 1 participant(s)` | nothing can be delivered until another joins |
+
+⚠️ **An agent cannot yet ask who is in the chat.** Tell it the participant names, or it will not know
+who to address — `skills/agb-peer/SKILL.md` tells it to ask you rather than guess.
+
+---
+
 ## What next
 
 - [`commands.md`](commands.md) — every command and flag
