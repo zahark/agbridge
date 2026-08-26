@@ -687,8 +687,10 @@ def parse_show_options(text):
     """`show-options -p` output -> [{id, key, to, text}], skipping anything else.
 
     A pane carries options that are none of our business, and a value may be
-    quoted or bare depending on whether it needs escaping -- both are handled,
-    and anything that does not parse is passed over rather than raised on.
+    quoted or bare depending on whether tmux needed the quotes -- both are
+    handled, and anything that does not parse is passed over rather than raised
+    on. ⚠️ "Both are handled" was a claim before it was true; see the comment on
+    the unescape below.
     """
     import re
     pattern = re.compile(r"^(%s[0-9a-z]+)\s+(.*)$" % (re.escape(OPTION_PREFIX),))
@@ -699,7 +701,18 @@ def parse_show_options(text):
             continue
         key, raw = match.group(1), match.group(2).strip()
         if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
-            raw = unescape_option(raw[1:-1])
+            raw = raw[1:-1]
+        # ⚠️ **UNESCAPED WHETHER OR NOT IT WAS QUOTED, and this was a real bug.**
+        # tmux quotes a value only when it has to, so `bob\nhello there` comes
+        # back quoted and `bob\nhello` comes back BARE -- but BOTH render the
+        # newline as a literal backslash-n. Unescaping only the quoted form left
+        # a bare value holding two characters where the separator should be, so
+        # `parse_option_value` found no newline, returned None, and the message
+        # was skipped in silence. Every single-word message was lost that way:
+        # measured, `agb-peer send --to bob hello` never arrived, while
+        # `--to bob 'hello there'` did. `agb-peer who` hits it every time,
+        # because its token is one word by design -- which is how it was found.
+        raw = unescape_option(raw)
         parsed = parse_option_value(raw)
         if parsed:
             messages.append({"id": key[len(OPTION_PREFIX):], "key": key,

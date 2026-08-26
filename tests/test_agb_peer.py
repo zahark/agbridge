@@ -739,6 +739,24 @@ def test_no_tmux_pane_is_reported_rather_than_guessed(peer):
 
 # --------------------------------------------------------------- the relay
 
+def framed_bare(*messages):
+    """What `tmux show-options -p` prints when the value needs NO quotes.
+
+    ⚠️ tmux quotes only when it has to, so a value with no space comes back
+    bare -- and `framed` above always emits the QUOTED form, which is why the
+    whole suite exercised one of the two shapes for the life of this transport.
+    A single-word message is the common bare case, and `agb-peer who` is one by
+    design.
+    """
+    lines = ["some-other-option 42"]
+    for ident, to, text in messages:
+        value = ("%s\n%s" % (to, text)).replace("\\", "\\\\")
+        value = value.replace("\n", "\\n")
+        assert " " not in value, "a bare value by definition has no space"
+        lines.append("%s%s %s" % (peer_prefix(), ident, value))
+    return "\n".join(lines) + "\n"
+
+
 def bell(ident):
     return "\nclaude [peer #%s]\n" % (ident,)
 
@@ -2976,3 +2994,51 @@ def test_usage_lists_every_verb_main_dispatches(peer):
     assert verbs, "non-vacuous: the walk must find some"
     for verb in verbs:
         assert "agb-peer %s" % (verb,) in peer.USAGE, verb
+
+
+# ---------------------------------------------------------------------------
+# an UNQUOTED option value -- the shape the suite never exercised
+# ---------------------------------------------------------------------------
+#
+# ⚠️ Found live, not here. tmux quotes an option value only when it has to, so
+# `bob\nhello there` comes back quoted and `bob\nhello` comes back bare -- and
+# BOTH render the newline as a literal backslash-n. Unescaping only the quoted
+# form meant every single-word message was silently skipped for the life of this
+# transport. `agb-peer who` hits it every time, its token being one word.
+
+
+def test_a_bare_value_is_parsed(peer):
+    got = peer.parse_show_options(framed_bare(("aaa", "bob", "hello")))
+    assert got == [{"id": "aaa", "key": peer.OPTION_PREFIX + "aaa",
+                    "to": "bob", "text": "hello"}], got
+
+
+def test_a_quoted_value_is_still_parsed(peer):
+    """The companion: the fix must not break the shape that always worked."""
+    got = peer.parse_show_options(framed(("aaa", "bob", "hello there")))
+    assert got == [{"id": "aaa", "key": peer.OPTION_PREFIX + "aaa",
+                    "to": "bob", "text": "hello there"}], got
+
+
+def test_a_single_word_message_survives_the_round_trip(peer):
+    """⚠️ The user-visible bug: `agb-peer send --to bob hello` never arrived,
+    while `--to bob 'hello there'` did. The difference was a space."""
+    assert " " not in peer.option_value("bob", "hello")
+    got = peer.parse_show_options(framed_bare(("aaa", "bob", "hello")))
+    assert got and got[0]["text"] == "hello"
+
+
+def test_a_who_request_survives_the_round_trip(peer):
+    """The token is one word by design, so `who` was 100% lost."""
+    value = peer.option_value(peer.RELAY_NAME, peer.WHO_REQUEST)
+    assert " " not in value, "which is exactly why tmux leaves it unquoted"
+    got = peer.parse_show_options(
+        framed_bare(("w1", peer.RELAY_NAME, peer.WHO_REQUEST)))
+    assert got and got[0]["to"] == peer.RELAY_NAME
+    assert got[0]["text"] == peer.WHO_REQUEST
+
+
+def test_a_bare_value_keeps_its_backslashes(peer):
+    """Unescaping now runs on the bare form too, so it must not corrupt one."""
+    got = peer.parse_show_options(framed_bare(("aaa", "bob", "a\\b")))
+    assert got and got[0]["text"] == "a\\b", got

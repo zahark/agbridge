@@ -144,6 +144,25 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A message with no space in it was silently lost.** `agb-peer send --to bob hello` never arrived;
+  `agb-peer send --to bob 'hello there'` did. The difference was a space, and there was no error at
+  either end.
+
+  `tmux show-options -p` quotes a value **only when it has to**, so `bob\nhello there` comes back
+  quoted and `bob\nhello` comes back **bare** — but *both* render the newline as a literal
+  backslash-`n`. The parser unescaped only the quoted form, so a bare value still held two characters
+  where the separator belonged, `parse_option_value` found no newline, returned `None`, and the
+  message was passed over in silence.
+
+  ⚠️ **The docstring claimed both forms were handled.** It had said so since the transport was
+  written; it was a claim, not a fact.
+
+  ⚠️ **The whole test suite exercised one of the two shapes**, because the `framed()` fixture always
+  emitted the quoted form. Found by live-testing `agb-peer who`, whose request is a single word by
+  design and so hit it every time.
+
+
+
 ### Added
 
 > ⚠️ **The roster work below was verified live** — real agents on a farm host, a relay on a Mac,
