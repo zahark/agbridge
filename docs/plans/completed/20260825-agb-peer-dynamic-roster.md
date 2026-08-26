@@ -590,16 +590,38 @@ agb-tmux   -d rookie
 
 **Mac (T4):** click `peer-a` and `peer-b` in agterm; confirm each shows a live Claude composer.
 
+⚠️ **FARM PARTICIPANTS NEED `@<ssh alias>`, AND NOTHING WARNS YOU UNTIL A DOORBELL RINGS.** The relay
+takes its ssh target from the row's own `agb pane --host`, which is a **hostname** — and unlike
+`agb pane`, `agb-peer` does **not** read agbridge's `host_<name>` mapping. On a Mac that cannot
+resolve the bare hostname you get, on the first fetch and not before:
+
+```
+agb-peer: alice: fetch failed: ssh: Could not resolve hostname tlv02-… : nodename nor servname provided
+```
+
+Find the alias on the Mac and put it after an `@`:
+
+```sh
+grep -h '^host_' ~/.config/agbridge/*/config ~/.config/agbridge/config 2>/dev/null
+```
+
+⚠️ Note **when** it appears: the relay starts cleanly and binds every row, because resolving a row
+and reaching its tmux are different questions. Nothing is wrong until somebody sends.
+
+⚠️ And nothing is **lost** either — `seen` is only written on a successful drain, so the doorbell
+stays and the message is delivered on the tick after you fix the alias, with no re-send. If you are
+staging check 13, this *is* check 13.
+
 **Mac (T2):**
 
 ```sh
 cd ~/agbridge && ./agb-peer --list       # note the row titles
 cp /dev/null ~/peers
 cat > ~/peers <<'EOF'
-# who is in this chat
-alice=peer-a
-bob=peer-b
-tx=sender
+# who is in this chat -- @<alias> because the row's --host is a HOSTNAME
+alice=peer-a@<alias>
+bob=peer-b@<alias>
+tx=sender@<alias>
 EOF
 cp ~/peers ~/peers.bak                   # checks 8-11 need a copy
 ```

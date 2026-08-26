@@ -668,6 +668,21 @@ agb-peer relay --roster ~/peers
 The names on the left are how the agents address each other — pick short ones. `agb-peer --list`
 shows the rows and their titles.
 
+⚠️ **If the agent is on another machine, add `@<ssh alias>`** — `alice=api-refactor@myfarm`. The
+relay takes its ssh target from the row's own `agb pane --host`, which is a **hostname**, and unlike
+`agb pane` it does *not* read the `host_<name>` mapping from your config. Your `host_` lines are
+where the alias is:
+
+```sh
+grep -h '^host_' ~/.config/agbridge/*/config
+```
+
+⚠️ **Nothing warns you until somebody sends.** Resolving a row and reaching its tmux are different
+questions, so the relay starts cleanly, lists every participant, and only then says
+`fetch failed: ssh: Could not resolve hostname …` on the first doorbell. Nothing is lost — the
+message is delivered on the tick after you fix it, with no re-send. `@local` means the agent's tmux
+is on this machine.
+
 ⚠️ **Use a title substring, not a row id.** `agb-refresh` re-mints every row and every id changes; a
 label keeps working across one.
 
