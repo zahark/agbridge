@@ -1363,6 +1363,54 @@ def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
                 break
 
 
+# ⚠️ **How many times the pane is read back, one second apart, before a
+# delivery is given up on.** It was ONE read after a one-second sleep, and that
+# is not enough for a long body: MEASURED 2026-08-26, a ~2.8 KB message to a
+# Codex row was still rendering when the read happened -- the screen held two
+# paste placeholders and the tail had not arrived. A read that catches a
+# half-rendered pane is indistinguishable from one that catches a swallowed
+# message, and the wrong answer here is expensive: the failure is exit 4, which
+# `try_deliver` DROPS rather than retries (typing again would leave two copies
+# in the composer), so a slow render costs the whole message.
+#
+# ⚠️ The cost is paid only on the failing path -- the first read succeeds for
+# anything that rendered promptly, which is almost everything -- and a relay
+# must not block, so it is bounded rather than generous. Four seconds of one
+# conversation stalling is worth one message not being thrown away; forty would
+# not be.
+VERIFY_READS = 4
+
+
+def rendered(before, text, probe):
+    """Did the body we typed actually reach the pane? Compared on its TAIL,
+    with ALL WHITESPACE STRIPPED from both sides.
+
+    ⚠️ Two different things defeat a naive match, and fixing only the first left
+    every wrapped message needing a human to press Enter:
+
+      * **pasted** -- both agents collapse a long, fast injection into a
+        placeholder (`[Pasted text #1]`, `[Pasted Content 1461 chars]`) and the
+        body is not on screen at all;
+      * **wrapped** -- the body IS on screen, but agterm has broken it across
+        lines, so a 40-character probe straddles the wrap and matches nothing.
+        Stripping whitespace makes the comparison wrap-immune, which is the same
+        reasoning the old line protocol used and this check did not inherit.
+
+    Stripping can in principle join two unrelated fragments into a false match;
+    over a 40-character probe that is not a risk worth a more complicated
+    comparison.
+
+    ⚠️ **`before` is not decoration.** A paste placeholder is evidence only if
+    its count went UP -- one earlier long message left in the composer would
+    otherwise make every later failure look like a success.
+    """
+    flat_text = "".join((text or "").split())
+    was, now = (before or "").lower(), (text or "").lower()
+    pasted = any(now.count(mark.lower()) > was.count(mark.lower())
+                 for mark in PASTE_MARKS)
+    return "".join(probe.split()) in flat_text or pasted
+
+
 def deliver(ctl, session, pane, body, send, lines, say):
     """Type, verify it rendered, and only then press Return.
 
@@ -1377,39 +1425,19 @@ def deliver(ctl, session, pane, body, send, lines, say):
     # evidence; a placeholder merely being present is not.
     before, _err = ctl.text(target, pane, lines)
     ctl.type(target, pane, body)
-    ctl.sleep(1)
-    text, err = ctl.text(target, pane, lines)
-    if err:
-        raise PeerError("typed, but the pane could not be read back, so it was "
-                        "NOT sent: %s" % (err,), 4)
-    # Compare on the tail of the body, with ALL WHITESPACE STRIPPED from both
-    # sides.
-    #
-    # ⚠️ Two different things defeat a naive match, and fixing only the first
-    # left every wrapped message needing a human to press Enter:
-    #
-    #   * **pasted** -- both agents collapse a long, fast injection into a
-    #     placeholder (`[Pasted text #1]`, `[Pasted Content 1461 chars]`) and
-    #     the body is not on screen at all;
-    #   * **wrapped** -- the body IS on screen, but agterm has broken it across
-    #     lines, so a 40-character probe straddles the wrap and matches
-    #     nothing. Stripping whitespace makes the comparison wrap-immune, which
-    #     is the same reasoning the old line protocol used and this check did
-    #     not inherit.
-    #
-    # Stripping can in principle join two unrelated fragments into a false
-    # match; over a 40-character probe that is not a risk worth a more
-    # complicated comparison.
     probe = body[-40:] if len(body) > 40 else body
-    flat_probe = "".join(probe.split())
-    flat_text = "".join((text or "").split())
-    was, now = (before or "").lower(), (text or "").lower()
-    pasted = any(now.count(mark.lower()) > was.count(mark.lower())
-                 for mark in PASTE_MARKS)
-    if flat_probe not in flat_text and not pasted:
-        raise PeerError("typed, but %r never appeared in the peer's pane, so it "
-                        "was NOT sent. Look at that row before retrying."
-                        % (probe,), 4)
+    for _attempt in range(VERIFY_READS):
+        ctl.sleep(1)
+        text, err = ctl.text(target, pane, lines)
+        if err:
+            raise PeerError("typed, but the pane could not be read back, so it "
+                            "was NOT sent: %s" % (err,), 4)
+        if rendered(before, text, probe):
+            break
+    else:
+        raise PeerError("typed, but %r never appeared in the peer's pane within "
+                        "%ds, so it was NOT sent. Look at that row before "
+                        "retrying." % (probe, VERIFY_READS), 4)
     if not send:
         say("typed, not sent (--no-send). It is sitting in the composer.")
         return

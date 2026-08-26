@@ -1386,6 +1386,69 @@ def test_a_pasted_message_still_gets_its_return(peer):
     assert ctl.typed[-1][2] == "\n", "a pasted message must still be submitted"
 
 
+class SlowRender(RelayCtl):
+    """A pane that only finishes rendering after `after` reads.
+
+    ⚠️ MEASURED 2026-08-26: a ~2.8 KB delivery to a Codex row was still
+    rendering one second after it was typed -- the screen held two paste
+    placeholders and the tail had not arrived yet. `type` deliberately does NOT
+    change the pane here; the reads do.
+    """
+
+    def __init__(self, panes, after, tail):
+        RelayCtl.__init__(self, panes)
+        self.after, self.tail, self.reads = after, tail, 0
+
+    def type(self, target, pane, text):
+        self.typed.append((target, pane, text))
+        return True
+
+    def text(self, target, pane, lines, whole=False):
+        self.reads += 1
+        # ⚠️ So an UNBOUNDED wait fails by name instead of hanging the suite.
+        # Mutating the loop to `while True` otherwise wedges pytest, and a hang
+        # is not a mutation result anyone can read.
+        assert self.reads < 50, "deliver() is reading without a bound"
+        if self.reads > self.after:
+            return self.current.get(target, "") + self.tail, None
+        return self.current.get(target, ""), None
+
+
+def test_a_slow_render_is_waited_out(peer):
+    """⚠️ The read used to happen once, one second after typing, and a pane that
+    had not finished rendering was indistinguishable from a swallowed message.
+    That answer is expensive: it is exit 4, which `try_deliver` DROPS rather
+    than retries, so a slow render cost the whole message."""
+    body = "[chat from alice] " + ("x" * 900)
+    # The first read is the `before` baseline, so the body lands on read 4.
+    ctl = SlowRender(panes(), 3, "\n" + body + "\n")
+    peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert ctl.typed[-1][2] == "\n", "a slow render must still be submitted"
+
+
+def test_a_render_that_never_arrives_is_still_refused(peer):
+    """The companion: waiting longer must not become waiting for ever, and the
+    refusal must still be the exit status `try_deliver` drops on."""
+    body = "[chat from alice] " + ("x" * 900)
+    ctl = SlowRender(panes(), 99, "never")
+    with pytest.raises(peer.PeerError) as caught:
+        peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert caught.value.code == 4
+    assert [x[2] for x in ctl.typed] == [body], "Return must not be pressed"
+    assert ctl.sleeps == peer.VERIFY_READS, \
+        "it must be bounded, not open-ended: %d" % (ctl.sleeps,)
+
+
+def test_a_prompt_render_costs_one_read(peer):
+    """⚠️ A relay must not block, so the retries may not become latency on the
+    ordinary path. Everything that renders promptly still pays exactly one
+    second -- the same as before this loop existed."""
+    body = "[chat from alice] hello"
+    ctl = RelayCtl(panes())
+    peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert ctl.sleeps == 1, "the fast path must not have got slower"
+
+
 def test_a_codex_paste_placeholder_still_gets_its_return(peer):
     """MEASURED 2026-08-26 on a live Codex row: a 1461-character delivery
     collapsed to `› [Pasted Content 1461 chars]`.

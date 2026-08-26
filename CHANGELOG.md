@@ -144,6 +144,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A long message was given up on while the pane was still rendering it.** The delivery check typed
+  the body, slept **one second**, read the pane **once**, and treated "not there yet" as "swallowed".
+
+  MEASURED 2026-08-26: a ~2.8 KB message to a Codex row was still arriving a second later — the
+  screen held two paste placeholders and the tail had not been typed. A half-rendered pane is
+  indistinguishable from a swallowed message on a single read, and the wrong answer is expensive:
+  the failure is exit 4, which the relay **drops rather than retries** (typing again would leave two
+  copies in the composer), so a slow render cost the whole message. Successive attempts then piled
+  up unsubmitted in the composer, one on top of the next.
+
+  The pane is now read up to `VERIFY_READS` (4) times, a second apart, and the delivery succeeds the
+  moment it verifies. ⚠️ **The cost is paid only on the failing path** — anything that renders
+  promptly still costs exactly one second, which a test pins, because a relay must not block. Four
+  seconds of one conversation stalling is worth one message not being thrown away; forty would not
+  be.
+
 - **A long message delivered to a Codex peer was typed but never submitted.** It sat in the composer
   as `› [Pasted Content 1461 chars]` waiting for a human to press Return, and the relay reported
   `typed, but '…' never appeared in the peer's pane, so it was NOT sent`.

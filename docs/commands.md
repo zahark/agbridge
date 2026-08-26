@@ -1768,6 +1768,13 @@ for the same indicator.
 Claude-shaped mark was a harmless no-op there. At 1461 characters it is not: `deliver` found neither
 the body nor a mark, raised exit 4, and **the relay drops exit 4 rather than retrying** (typing again
 would leave two copies in the composer). The message sat in Codex's composer waiting for a human.
+⚠️ **And the read is retried, because a long body is still arriving a second after it was typed.**
+MEASURED: a ~2.8 KB delivery had rendered two paste placeholders and no tail one second in. A single
+read cannot tell a half-rendered pane from a swallowed message, and it answers exit 4 — which the
+relay **drops rather than retries**, so successive attempts piled up unsubmitted in the composer.
+`deliver` now reads up to `VERIFY_READS` (4) times a second apart and stops at the first that
+verifies; the prompt case still costs exactly one second, because a relay must not block.
+
 `PASTE_MARKS` holds both spellings, each compared on its own count and **case-insensitively** —
 `cat -A` on the pane read `Content` while the operator watching the same row read `content`, and case
 distinguishes nothing on a composer. **A per-agent rendering read off one sample is a sample, not a
