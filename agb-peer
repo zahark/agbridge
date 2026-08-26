@@ -706,6 +706,67 @@ def parse_show_options(text):
     return messages
 
 
+# Every note this file keys on a participant name. ⚠️ **A list, not a pattern,
+# and it has to grow when a new per-name note appears.** A note left behind
+# after a leave is not cosmetic: `("held", name)` would resume a half-hour hold
+# for a name that came back, and `("said", ...)` would swallow the first
+# complaint about the new pane.
+def _name_notes(name):
+    return (("gone", name), ("menu", name), ("said", name), ("held", name),
+            ("said", ("fetch", name)), ("said", ("read", name)))
+
+
+def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
+                 say):
+    """Forget everything pane-specific about names that left or moved.
+
+    ⚠️ **A REBIND IS NOT A LEAVE, AND THE DIFFERENCE IS `pending`.** Both change
+    which pane a name means, so both must forget `seen`, the notes, the
+    delivered ids and the resolved binding. But a rebound participant has not
+    gone anywhere -- it moved -- and its queued messages were already unset from
+    the SENDER's pane, so they exist nowhere else. Dropping them would destroy
+    mail for somebody still in the conversation.
+
+    ⚠️ **Dropping `resolved[name]` is required, not tidiness.** `resolve_all`
+    keeps `previous[name]` whenever resolution fails, and a rebind keeps the
+    same NAME -- so a rebind to a label that does not resolve this tick would
+    silently stay bound to the OLD row while `seen` had already been cleared,
+    and the old pane's doorbell would read as new and be drained and delivered.
+    """
+    departing = set(left) | set(rebound)
+    for name in sorted(departing):
+        seen.pop(name, None)
+        resolved.pop(name, None)
+        needs_prime.discard(name)
+        for key in _name_notes(name):
+            notes.pop(key, None)
+        done = notes.get("delivered")
+        if done:
+            for entry in [e for e in done if e[0] == name]:
+                done.discard(entry)
+    for name in sorted(rebound):
+        # The new pane may hold anything, including a conversation this name
+        # was never part of, so it is primed exactly like a fresh join.
+        needs_prime.add(name)
+    gone = set(left)
+    if not gone:
+        return
+    dropped, kept = [], []
+    for sender, message in pending:
+        if message.get("to") in gone:
+            # ⚠️ Named, not counted, and load-bearing rather than duplicate:
+            # `try_deliver` HOLDS for a roster member now, so without this a
+            # leaver's mail would be held for ever instead of dropped.
+            dropped.append("#%s (%s -> %s)"
+                           % (message.get("id"), sender, message.get("to")))
+        else:
+            kept.append((sender, message))
+    pending[:] = kept
+    if dropped:
+        say("%s left, so %d queued message(s) will not be delivered: %s"
+            % (", ".join(sorted(gone)), len(dropped), ", ".join(dropped)))
+
+
 class RosterReader(object):
     """Re-reads a roster file, and reports the participants only when they move.
 

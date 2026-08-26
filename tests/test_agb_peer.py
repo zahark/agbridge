@@ -2178,3 +2178,96 @@ def test_a_drop_to_one_participant_is_announced_not_refused(peer, tmp_path):
     spec = reader.poll(said.append, notes)
     assert sorted(spec) == ["alice"], "applied, because people do leave"
     assert any("down to 1" in s for s in said), said
+
+
+# ---------------------------------------------------------------------------
+# leaving, and how a rebind differs from it
+# ---------------------------------------------------------------------------
+
+
+def leave_state(peer, extra_notes=None):
+    seen = {"alice": "aaa", "bob": "bbb"}
+    pending = [("alice", {"id": "m1", "to": "bob", "text": "for bob"}),
+               ("bob", {"id": "m2", "to": "alice", "text": "from bob"})]
+    resolved = dict(PEOPLE)
+    notes = {"delivered": {("bob", "m9"), ("alice", "m8")},
+             ("gone", "bob"): 4, ("menu", "bob"): 2, ("said", "bob"): "x",
+             ("held", "bob"): (3, 1), ("said", ("fetch", "bob")): "y",
+             ("said", ("read", "bob")): "z"}
+    notes.update(extra_notes or {})
+    return seen, pending, resolved, set(), notes
+
+
+def test_a_leave_forgets_everything_pane_specific(peer):
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    said = []
+    peer.apply_leaves({"bob"}, set(), seen, pending, resolved, needs_prime,
+                      notes, said.append)
+    assert "bob" not in seen
+    assert "bob" not in resolved, "or resolve_all keeps the old row"
+    assert [k for k in peer._name_notes("bob") if k in notes] == []
+    assert notes["delivered"] == {("alice", "m8")}, "only bob's ids go"
+
+
+def test_a_leave_drops_its_queued_mail_and_names_it(peer):
+    """Load-bearing rather than duplicate: try_deliver HOLDS for a roster
+    member now, so without this a leaver's mail waits for ever."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    said = []
+    peer.apply_leaves({"bob"}, set(), seen, pending, resolved, needs_prime,
+                      notes, said.append)
+    assert [m["id"] for (_, m) in pending] == ["m2"], "messages FROM bob stay"
+    assert any("#m1" in s for s in said), said
+
+
+def test_a_message_from_a_leaver_is_kept(peer):
+    """It was already unset from the sender's pane; leaving does not unsay it."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves({"bob"}, set(), seen, pending, resolved, needs_prime,
+                      notes, lambda m: None)
+    assert [s for (s, _) in pending] == ["bob"]
+
+
+def test_a_rebind_keeps_the_mail_queued_for_it(peer):
+    """⚠️ The distinction. A rebound participant moved; it did not leave, and
+    its queued messages exist nowhere else."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    said = []
+    peer.apply_leaves(set(), {"bob"}, seen, pending, resolved, needs_prime,
+                      notes, said.append)
+    assert [m["id"] for (_, m) in pending] == ["m1", "m2"], "nothing dropped"
+    assert said == [], "and nothing announced as lost"
+
+
+def test_a_rebind_still_forgets_the_old_pane(peer):
+    """The companion to the one above: it keeps the mail and nothing else."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves(set(), {"bob"}, seen, pending, resolved, needs_prime,
+                      notes, lambda m: None)
+    assert "bob" not in seen and "bob" not in resolved
+    assert notes["delivered"] == {("alice", "m8")}
+
+
+def test_a_rebind_asks_to_be_primed_again(peer):
+    """The new pane may hold a conversation this name was never part of."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves(set(), {"bob"}, seen, pending, resolved, needs_prime,
+                      notes, lambda m: None)
+    assert needs_prime == {"bob"}
+
+
+def test_a_leave_does_not_ask_to_be_primed(peer):
+    """The companion: a name that is gone must not be queued for a prime that
+    will never resolve."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    needs_prime.add("bob")
+    peer.apply_leaves({"bob"}, set(), seen, pending, resolved, needs_prime,
+                      notes, lambda m: None)
+    assert needs_prime == set()
+
+
+def test_a_leave_touches_nobody_else(peer):
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves({"bob"}, set(), seen, pending, resolved, needs_prime,
+                      notes, lambda m: None)
+    assert seen == {"alice": "aaa"} and "alice" in resolved
