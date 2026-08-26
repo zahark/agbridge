@@ -625,9 +625,28 @@ def read_doorbell(text):
     is normally last, but a pane mid-redraw can put it elsewhere, and a missed
     doorbell costs a round trip.
     """
-    import re
-    found = re.findall(r"\[peer #([0-9a-z]+)\]", text or "")
+    found = read_doorbells(text)
     return found[-1] if found else None
+
+
+def read_doorbells(text):
+    """EVERY announced id on the pane, oldest first. [] when there are none.
+
+    ⚠️ **The file transport needs all of them, and the tmux one does not.**
+    `drain` sweeps every `@agbpeer_msg_*` option off the pane, so a doorbell it
+    missed is harmless -- the option is still there next ring. `drain_files`
+    cannot sweep: the chat directory is shared by every participant, and a
+    message carries its recipient but not its sender, so a blind glob would
+    attribute one agent's message to whichever pane happened to ring. It has to
+    fetch BY NAME, and the only names it has are the ones on this screen.
+
+    So two sends between one relay tick used to lose the earlier message: the
+    window name shows only the newest, and that was the only id fetched.
+    MEASURED live -- a Codex rang twice in one tick and its first message was
+    orphaned in the chat directory for ever.
+    """
+    import re
+    return re.findall(r"\[peer #([0-9a-z]+)\]", text or "")
 
 
 def list_argv(pane):
@@ -1573,7 +1592,8 @@ def _drained(outcome, result, messages=None):
     return [] if messages is None else messages
 
 
-def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None):
+def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None,
+                idents=None, done=None):
     """One message, named by the doorbell, read over ssh to a REACHABLE host.
 
     Never to the machine the agent is on -- that is the whole point. The file
@@ -1587,12 +1607,34 @@ def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None):
     if not ident:
         say("%s: no message id in the doorbell" % (name,))
         return _drained(outcome, FETCH_FAILED)
+    # ⚠️ Every id still on the screen, not just the announced one -- see
+    # `read_doorbells`. Ones already delivered are skipped so a long transcript
+    # does not cost an ssh per marker per ring; ones already collected answer
+    # FETCH_GONE and cost one cheap failed `cat`.
+    wanted = [i for i in (idents or [ident])
+              if done is None or (name, i) not in done]
+    if not wanted:
+        return _drained(outcome, FETCH_OK)
+    collected, seen_gone = [], False
+    for one in wanted:
+        found, gone = _drain_one_file(fetch, name, target, one, chat_dir, say)
+        if found is None:
+            return _drained(outcome, FETCH_FAILED)
+        seen_gone = seen_gone or gone
+        collected.extend(found)
+    if collected:
+        return _drained(outcome, FETCH_OK, collected)
+    return _drained(outcome, FETCH_GONE if seen_gone else FETCH_OK)
+
+
+def _drain_one_file(fetch, name, target, ident, chat_dir, say):
+    """([messages], gone) for one id, or (None, _) when the transport failed."""
     rc, out, err = fetch(ssh_argv(target, file_argv(chat_dir, ident)))
     if rc == SSH_FAILED_RC:
         # We could not ask. Retryable, and worth retrying.
         say("%s: cannot reach %s to read %s.msg: %s"
             % (name, target, ident, (err or "").strip() or rc))
-        return _drained(outcome, FETCH_FAILED)
+        return None, False
     if rc != 0:
         # ⚠️ The command RAN and could not produce the file. Retrying cannot
         # help: the doorbell names one fixed id, and that file will not come
@@ -1605,22 +1647,21 @@ def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None):
         say("%s: nothing to read at %s/%s.msg (%s) -- treating that doorbell "
             "as already collected. This is normal after a relay restart."
             % (name, chat_dir, ident, (err or "").strip() or rc))
-        return _drained(outcome, FETCH_GONE)
+        return [], True
     parsed = parse_option_value(out)
     if not parsed:
         say("%s: %s.msg is not a message" % (name, ident))
-        return _drained(outcome, FETCH_FAILED)
+        return None, False
     rc, _out, err = fetch(ssh_argv(target, unlink_argv(chat_dir, ident)))
     if rc != 0:
         say("%s: could not remove %s.msg (%s) -- it may be fetched again"
             % (name, ident, (err or "").strip() or rc))
-    return _drained(outcome, FETCH_OK,
-                    [{"id": ident, "key": ident,
-                      "to": parsed[0], "text": parsed[1]}])
+    return [{"id": ident, "key": ident,
+             "to": parsed[0], "text": parsed[1]}], False
 
 
 def drain(fetch, name, target, pane, say, ident=None,
-          chat_dir=None, outcome=None):
+          chat_dir=None, outcome=None, idents=None, done=None):
     """Everything pending in one participant's tmux, or [] and a reason said.
 
     ⚠️ `fetch` defaults to the real runner when it is None. It did not, and the
@@ -1641,7 +1682,8 @@ def drain(fetch, name, target, pane, say, ident=None,
         say("%s: no tmux pane recorded for that row -- cannot fetch" % (name,))
         return _drained(outcome, FETCH_FAILED)
     if pane == NFS_TARGET:
-        return drain_files(fetch, name, target, ident, chat_dir, say, outcome)
+        return drain_files(fetch, name, target, ident, chat_dir, say, outcome,
+                           idents, done)
     rc, out, err = fetch(ssh_argv(target, list_argv(pane)))
     if rc != 0:
         say("%s: fetch failed: %s" % (name, (err or "").strip() or rc))
@@ -1867,7 +1909,8 @@ def scan_participant(ctl, sessions, name, binding, seen, lines, say,
             ctl.type(row, pane, "\n")
         return SCAN_DETACHED, []
     notes.pop(("menu", name), None)
-    ident = read_doorbell(text)
+    idents = read_doorbells(text)
+    ident = idents[-1] if idents else None
     if not ident:
         return SCAN_NO_DOORBELL, []
     if seen.get(name) == ident:
@@ -1885,7 +1928,7 @@ def scan_participant(ctl, sessions, name, binding, seen, lines, say,
     outcome = {}
     messages = drain(fetch, name, host, tmux_pane,
                      _throttled(say, notes, ("fetch", name)), ident,
-                     chat_dir, outcome)
+                     chat_dir, outcome, idents, notes.get("delivered"))
     if outcome.get("fetch") == FETCH_FAILED:
         return SCAN_FETCH_FAILED, []
     # ⚠️ FETCH_GONE advances `seen` exactly as FETCH_OK does, and that is the

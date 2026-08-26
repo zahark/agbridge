@@ -144,6 +144,23 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **Two messages sent between one relay tick lost the earlier one, on the file transport.** The
+  doorbell shows only the newest id and `drain_files` fetched exactly that one, so the first message
+  was orphaned in the chat directory for ever, silently.
+
+  ⚠️ **The tmux transport never had this**, and the difference is why it took a live run to find:
+  `drain` sweeps *every* `@agbpeer_msg_*` option off the pane, so a missed doorbell there is
+  harmless. `drain_files` cannot sweep — the chat directory is shared by every participant, and a
+  message carries its recipient but **not** its sender, so a blind glob would credit one agent's
+  message to whichever pane happened to ring.
+
+  So it now fetches **every id still on that screen**, which is the only list of names anchored to
+  the pane being read. Ids already delivered are skipped, so a long transcript does not cost an ssh
+  per marker per ring.
+
+  Measured live: a Codex rang twice inside one two-second interval — a `who` and a message — and the
+  `who` was orphaned.
+
 - **A file-transport doorbell that outlived its message made the relay re-fetch it every tick, for
   ever.** After a relay restart you saw one line —
   `pool: cannot read <chat-dir>/<id>.msg: No such file or directory` — and then silence, while the

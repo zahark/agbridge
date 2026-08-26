@@ -3160,3 +3160,100 @@ def test_an_unreachable_host_keeps_retrying(peer):
     reads = [c for c in fetch.calls if "cat" in c]
     assert "alice" not in seen, "a transport failure must not be recorded as read"
     assert len(reads) == 5, "five ticks, five retries: %r" % (reads,)
+
+
+# ---------------------------------------------------------------------------
+# two doorbells between one tick -- the file transport's blind spot
+# ---------------------------------------------------------------------------
+#
+# ⚠️ Found live: a Codex rang twice inside one relay interval and its FIRST
+# message was orphaned in the chat directory for ever. `drain` sweeps every
+# option off a pane, so a missed tmux doorbell is harmless; `drain_files` must
+# fetch BY NAME, because the chat directory is shared by every participant and a
+# message carries its recipient but not its sender -- a blind glob would credit
+# one agent's message to whichever pane happened to ring.
+
+
+class FileFetcher(object):
+    """Serves `cat <dir>/<id>.msg` from a dict; `rm` removes. 255 = unreachable."""
+
+    def __init__(self, files, unreachable=False):
+        self.files, self.calls, self.unreachable = dict(files), [], unreachable
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append(argv)
+        if self.unreachable:
+            return 255, "", "ssh: could not resolve"
+        path = argv[-1]
+        ident = path.rsplit("/", 1)[-1][:-len(".msg")]
+        if "cat" in argv:
+            if ident not in self.files:
+                return 1, "", "cat: %s: No such file or directory" % (path,)
+            return 0, self.files[ident], ""
+        if "rm" in argv:
+            self.files.pop(ident, None)
+        return 0, "", ""
+
+
+def test_every_doorbell_on_the_screen_is_read(peer):
+    fetch = FileFetcher({"aaa": "bob\nfirst", "bbb": "bob\nsecond"})
+    got = peer.drain(fetch, "pool", "box", peer.NFS_TARGET, lambda m: None,
+                     ident="bbb", chat_dir="/s/chat",
+                     idents=["aaa", "bbb"])
+    assert [m["text"] for m in got] == ["first", "second"], got
+
+
+def test_only_the_announced_one_would_lose_the_other(peer):
+    """The companion, and the bug as it was: announce only the newest and the
+    earlier message is never fetched at all."""
+    fetch = FileFetcher({"aaa": "bob\nfirst", "bbb": "bob\nsecond"})
+    got = peer.drain(fetch, "pool", "box", peer.NFS_TARGET, lambda m: None,
+                     ident="bbb", chat_dir="/s/chat")
+    assert [m["text"] for m in got] == ["second"], got
+    assert "aaa" in fetch.files, "the first message is still orphaned"
+
+
+def test_an_already_delivered_id_is_not_re_fetched(peer):
+    """Bounds the cost: a long transcript keeps every marker it ever printed, so
+    without this each ring would cost an ssh per marker."""
+    fetch = FileFetcher({"bbb": "bob\nsecond"})
+    got = peer.drain(fetch, "pool", "box", peer.NFS_TARGET, lambda m: None,
+                     ident="bbb", chat_dir="/s/chat", idents=["aaa", "bbb"],
+                     done=set([("pool", "aaa")]))
+    assert [m["text"] for m in got] == ["second"], got
+    reads = [c for c in fetch.calls if "cat" in c]
+    assert len(reads) == 1, "the known id must not be fetched: %r" % (reads,)
+
+
+def test_a_transport_failure_on_any_id_is_still_a_failure(peer):
+    """It must not be downgraded to `gone` just because it was one of several."""
+    outcome = {}
+    fetch = FileFetcher({}, unreachable=True)
+    assert peer.drain(fetch, "pool", "box", peer.NFS_TARGET, lambda m: None,
+                      ident="bbb", chat_dir="/s/chat", idents=["aaa", "bbb"],
+                      outcome=outcome) == []
+    assert outcome["fetch"] == peer.FETCH_FAILED
+
+
+def test_read_doorbells_returns_them_oldest_first(peer):
+    text = "noise [peer #aaa] more\nlines [peer #bbb] end"
+    assert peer.read_doorbells(text) == ["aaa", "bbb"]
+    assert peer.read_doorbell(text) == "bbb", "the newest is still the newest"
+
+
+def test_the_relay_reads_both_doorbells_off_a_pane(peer):
+    """⚠️ Through relay_tick, not drain: the fix is only real if
+    scan_participant passes EVERY id it saw. A test that calls drain with a
+    hand-built list proves the parameter works and nothing about the wiring."""
+    surfaces = dict(panes())
+    surfaces["AAAA1111"] = COMPOSER + bell("aaa") + bell("bbb")
+    ctl = RelayCtl(surfaces)
+    people = {"alice": ("AAAA1111", "left", "box", peer.NFS_TARGET),
+              "bob": PEOPLE["bob"]}
+    fetch = FileFetcher({"aaa": "bob\nfirst", "bbb": "bob\nsecond"})
+    pending = []
+    peer.relay_tick(ctl, people, {}, pending, 500, ctl.say, fetch,
+                    notes={}, chat_dir="/s/chat", members={"alice", "bob"})
+    bodies = sorted(b for (_t, _p, b) in ctl.typed if b != "\n")
+    assert bodies == ["[chat from alice] first",
+                      "[chat from alice] second"], bodies
