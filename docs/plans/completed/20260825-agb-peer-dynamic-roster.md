@@ -535,6 +535,31 @@ is the whole reason labels exist. **Rename the session.** The names below are de
 | `stale` | `agb-tmux -d stale` | check 3 — sends *before* joining |
 | `rookie` | `agb-tmux -d rookie` | check 4 — joins first, *then* sends |
 
+⚠️ **IF `AGB_CLAUDE_CUSTOM` IS SET, `agb-claude` DOES NOT START A LOCAL AGENT.** It replaces the
+whole `claude` command line, so on a site that submits agents to a batch pool the tmux session is
+created **here** while the agent process runs **there** — and `$TMUX`/`$TMUX_PANE` are inherited
+through the submission to a socket that does not exist on that machine. `agb-peer send` then takes
+the **file** transport and says so:
+
+```
+agb-peer: tmux is unreachable (error connecting to /tmp/tmux-…/default (No such file or directory))
+agb-peer: wrote <statedir>/chat/<id>.msg
+[peer #<id>]
+agb-peer: queued for bob as #<id> (via file)
+```
+
+That is correct behaviour, not a fault — but it is a **different transport**, and testing the roster
+over it means a failure has two possible causes. For this walkthrough, force the agents local
+(`custom=${AGB_CLAUDE_CUSTOM:-}`, so an empty value disables it):
+
+```sh
+env AGB_CLAUDE_CUSTOM= agb-claude -d peer-a
+```
+
+⚠️ Running the whole walkthrough **again** with pool agents afterwards is worth doing — a roster over
+the file transport is coverage nobody has. It needs `:nfs` on those participants
+(`alice=peer-a@<alias>:nfs`) and a relay-wide `--chat-dir <statedir>/chat`.
+
 ⚠️ **`-d` mints the row before the command starts, so the row appears immediately — but a row is not
 the same as a ready agent.** A fresh Claude in a directory it has not been trusted in sits on a
 trust prompt, which classifies as `MODE_UNKNOWN`, and the relay refuses to type into it. Click each
