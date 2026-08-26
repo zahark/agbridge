@@ -362,9 +362,13 @@ Verified in real use, not just in tests:
 | a corrupt / missing / empty roster file | ✅ conversation survived all three, complaint said once |
 | two roster names resolving to the **same row** | ⬜ not yet run |
 | a joiner whose row is **detached** at the moment it joins | ⬜ not yet run |
-| `agb-peer who` — an agent asks the relay who is in the chat | ⬜ not yet run |
-| the same on a pool/NFS agent, over the file path | ⬜ not yet run |
-| a non-token message to `relay` is dropped, so the answer cannot loop | ⬜ not yet run |
+| `agb-peer who` — an agent asks the relay who is in the chat | ✅ answered as `[chat from relay] you=… peer=…` |
+| the same on a pool/NFS agent, over the file path | ✅ `you=pooled`, correct per-agent, via `<chat-dir>/<id>.msg` |
+| a non-token message to `relay` is dropped, so the answer cannot loop | ✅ dropped and named; the agent also declined to reply on its own |
+| the answer tracks a roster edit — a name added and removed mid-run | ✅ appeared, then gone, with no relay restart |
+| an answer held while the asking agent is mid-turn, then delivered | ✅ the composer gate refused, held, and retried |
+| `who` from a pane that is not a participant | ✅ silence; its request is never read |
+| `who` outside tmux | ✅ refused in `who`'s own words |
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 
 **Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except
