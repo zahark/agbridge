@@ -184,47 +184,47 @@ The whole mechanism. Every behaviour here has a placement that is easy to get wr
 
 **Files:** Modify `agb-peer`, `tests/test_agb_peer.py`, `CHANGELOG.md`
 
-- [ ] ⚠️ **spell the `members is None` fallback that `try_deliver` already has** —
+- [x] ⚠️ **spell the `members is None` fallback that `try_deliver` already has** —
       `members = people if members is None else members`. `relay_tick`'s signature is `members=None`
       and ~40 test call sites omit it, so `roster_answer(sender, None)` → `None - {you}` →
       **`TypeError`**, killing the tick
-- [ ] ⚠️ **put the intercept INSIDE the `if deliver_new:` branch** of the drain loop. Above it, the
+- [x] ⚠️ **put the intercept INSIDE the `if deliver_new:` branch** of the drain loop. Above it, the
       relay answers a request that predates it *and delivers on the priming tick*, breaking the
       contract that a startup or joiner backlog is discarded. Inside, a stale request is discarded
       and named, which is correct
-- [ ] answer only when the text is `WHO_REQUEST`; anything else addressed to `RELAY_NAME` is
+- [x] answer only when the text is `WHO_REQUEST`; anything else addressed to `RELAY_NAME` is
       **dropped with a line naming it** — this is what stops the reply loop
-- [ ] ⚠️ **queue it as `(RELAY_NAME, {"to": <asker>, "text": …, "id": message_id()})` — both fields
+- [x] ⚠️ **queue it as `(RELAY_NAME, {"to": <asker>, "text": …, "id": message_id()})` — both fields
       matter.** `<asker>` is the pane the doorbell rang on. The tuple's *sender* must be
       `RELAY_NAME`, not the asker: `try_deliver:1616` drops a message whose `recipient == sender`,
       so signing it with the asker's name loses the answer permanently, with a line blaming the
       asker. The sender is also what `compose` turns into the literal `[chat from relay] ` prefix,
       which Task 5's loop mitigation and walkthrough checks 1 and 2 all depend on
-- [ ] give it a real `id` ⚠️ — `apply_leaves` prints dropped mail as `#%s (%s -> %s)`, so a `None`
+- [x] give it a real `id` ⚠️ — `apply_leaves` prints dropped mail as `#%s (%s -> %s)`, so a `None`
       id logs `#None`
-- [ ] deliver through the ordinary `pending` path, inheriting the composer gate, the holding and the
+- [x] deliver through the ordinary `pending` path, inheriting the composer gate, the holding and the
       throttles with no new code
-- [ ] ⚠️ **`say()` when a request is answered.** `docs/cookbook.md` is a *"the relay's output is the
+- [x] ⚠️ **`say()` when a request is answered.** `docs/cookbook.md` is a *"the relay's output is the
       diagnosis"* table, and every other decision this relay makes says so once; an answered request
       would otherwise produce no line at all and be indistinguishable from one never seen
-- [ ] write a test that a request is answered **and never routed to anybody** — the companion that
+- [x] write a test that a request is answered **and never routed to anybody** — the companion that
       stops "answered" passing against a relay that does both
-- [ ] write a test that the answer reaches the **asker**, with a second participant present that must
+- [x] write a test that the answer reaches the **asker**, with a second participant present that must
       not receive it
-- [ ] write a test that the delivered body starts with the literal **`[chat from relay] `** — the
+- [x] write a test that the delivered body starts with the literal **`[chat from relay] `** — the
       prefix three other sections depend on and that no task previously produced
-- [ ] write a test with **two askers in one tick**, proving `you` is per-pane and not a constant
-- [ ] write a test that a non-token message to `relay` is dropped and named — **the loop guard**
-- [ ] write a test that the request is **discarded, not answered, on the priming pass**
+- [x] write a test with **two askers in one tick**, proving `you` is per-pane and not a constant
+- [x] write a test that a non-token message to `relay` is dropped and named — **the loop guard**
+- [x] write a test that the request is **discarded, not answered, on the priming pass**
       (`deliver_new=False`)
-- [ ] write a test that `members=None` does not crash
-- [ ] write a test that the peer list comes from `members` with a `people` that **differs** — the
+- [x] write a test that `members=None` does not crash
+- [x] write a test that the peer list comes from `members` with a `people` that **differs** — the
       property Task 2 could not express
-- [ ] ⚠️ note that a re-fetched request is answered once, via `notes["delivered"]`, and pin it
-- [ ] add the CHANGELOG entry
-- [ ] ⚠️ **audit this task's tests now.** *"An ordinary message is still routed"* is free — ~15
+- [x] ⚠️ note that a re-fetched request is answered once, via `notes["delivered"]`, and pin it
+- [x] add the CHANGELOG entry
+- [x] ⚠️ **audit this task's tests now.** *"An ordinary message is still routed"* is free — ~15
       existing tests cover routing — so keep it only as a labelled regression companion
-- [ ] run tests — must pass before Task 4
+- [x] run tests — must pass before Task 4
 
 ### Task 4: `agb-peer who` — the agent side
 

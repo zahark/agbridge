@@ -106,6 +106,27 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   one still offering to re-render it. That refusal also said "which config uses" — with a hole where
   the instance name goes — on every run that did not type one.
 
+### Added
+
+- **The relay answers `who`.** An agent addresses a message to the reserved name `relay` with the
+  single word `who`, and the relay replies with the membership —
+  `[chat from relay] you=alice peer=bob peer=carol` — delivered like any other message.
+
+  ⚠️ **The asker is the pane the doorbell rang in**, which is `try_deliver`'s existing rule and the
+  reason this needs no identity of its own: an agent cannot print into another agent's pane, so the
+  place is the only part of a message that cannot be misstated.
+
+  ⚠️ **Only that exact word is answered, and that is a loop guard rather than input validation.**
+  `SKILL.md` tells an agent that anything arriving as `[chat from <name>]` is a peer talking to it
+  and to reply — so an answer signed `[chat from relay]` invites a reply, which is another message
+  to `relay`, for ever. A polite *"thanks"* is not the token, so it is dropped and named, and the
+  loop cannot start.
+
+  **Membership only** — no status, no timestamp. The answer is composed when the request is *drained*
+  and delivered whenever the composer is free, so anything time-shaped in it would be a snapshot from
+  one moment read as truth at another.
+
+
 ### Fixed
 
 ### Added

@@ -1828,6 +1828,41 @@ def _throttled(say, notes, key):
     return once
 
 
+def answer_who(asker, message, pending, members, people, say):
+    """Queue the relay's own reply to a `who`, or say why there is none.
+
+    ⚠️ **The asker is the pane the doorbell rang in, never a `from` field.** That
+    is `try_deliver`'s rule and it is the whole reason this feature needs no
+    identity of its own: an agent cannot print into another agent's pane, so the
+    place is the only part of a message that cannot be misstated.
+
+    ⚠️ **Only the exact token is answered, and that is the loop guard.**
+    `SKILL.md` tells an agent that anything arriving as `[chat from <name>]` is a
+    peer talking to it and to reply -- so an answer signed `[chat from relay]`
+    invites a reply, which is another message to `relay`, for ever. A polite
+    "thanks" is not the token, so it is dropped here and the loop cannot start.
+    The skill also says the answer needs no reply; that is a rule an agent may
+    ignore, and this is one it cannot.
+    """
+    text = (message.get("text") or "").strip()
+    if text != WHO_REQUEST:
+        # Named, not silent: this is the loop guard's only visible evidence.
+        say("%s sent %r to %s, which is not %r -- dropping it. The relay only "
+            "answers that one word." % (asker, text, RELAY_NAME, WHO_REQUEST))
+        return
+    # ⚠️ `members` may be None -- `relay_tick`'s default, and ~40 test call sites
+    # omit it -- in which case `people` stands in, exactly as `try_deliver` does.
+    # `roster_answer` takes a dict as happily as a set.
+    roster = people if members is None else members
+    # ⚠️ The SENDER of the reply is RELAY_NAME, not the asker. `try_deliver`
+    # drops a message whose recipient equals its sender, so signing it with the
+    # asker's own name would lose the answer permanently -- with a line blaming
+    # the asker. It is also what `compose` renders as `[chat from relay] `.
+    pending.append((RELAY_NAME, {"id": message_id(), "to": asker,
+                                 "text": roster_answer(asker, roster)}))
+    say("%s asked who is here" % (asker,))
+
+
 def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
                deliver_new=True, notes=None, chat_dir=None, members=None,
                deliver_to=None):
@@ -1861,6 +1896,15 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
                 continue
             done.add((name, message["id"]))
             if deliver_new:
+                if message.get("to") == RELAY_NAME:
+                    # ⚠️ **INSIDE this branch, deliberately.** Above it, a `who`
+                    # that predates the relay would be answered AND the answer
+                    # delivered on the priming tick -- the delivery loop below
+                    # runs unconditionally -- which breaks the contract that a
+                    # startup or joiner backlog is discarded. Here, a stale
+                    # request falls to the `else` and is named like any other.
+                    answer_who(name, message, pending, members, people, say)
+                    continue
                 pending.append((name, message))
             else:
                 # ⚠️ Named, not counted. "discarded 1 message(s)" reads as

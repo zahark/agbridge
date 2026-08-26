@@ -2693,3 +2693,158 @@ def test_the_answer_accepts_a_dict_membership(peer):
     same fallback only because it does `in` tests."""
     assert peer.roster_answer("alice", {"alice": 1, "bob": 2}) == \
         "you=alice peer=bob"
+
+
+# ---------------------------------------------------------------------------
+# the relay answers a `who`
+# ---------------------------------------------------------------------------
+#
+# The asker is the pane the doorbell rang in -- try_deliver's rule -- which is
+# why this needs no identity of its own. Only the exact token is answered, and
+# that is what stops the reply loop SKILL.md's "reply to a peer" rule would
+# otherwise start.
+
+
+def who_from(sender, text=None, ident="w1"):
+    """A drained `who` request, as parse_show_options would build it."""
+    return framed((ident, "relay", "who" if text is None else text))
+
+
+def test_a_who_request_is_answered_to_the_asker(peer):
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
+                    Fetcher(who_from("alice")), notes={},
+                    members={"alice", "bob"})
+    typed = [(t, body) for (t, _p, body) in ctl.typed if body != "\n"]
+    assert len(typed) == 1, typed
+    target, body = typed[0]
+    assert target == PEOPLE["alice"][0], "the answer goes to the asker"
+    assert body == "[chat from relay] you=alice peer=bob", body
+
+
+def test_the_request_itself_is_never_routed(peer):
+    """The companion. Without it, "answered" passes against a relay that also
+    delivers the request to a participant called `relay` -- or to nobody, with a
+    dropped-message line nobody reads."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    said = []
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, said.append,
+                    Fetcher(who_from("alice")), notes={},
+                    members={"alice", "bob"})
+    assert not any("not a participant" in s for s in said), said
+    assert any("asked who is here" in s for s in said), said
+
+
+def test_the_answer_carries_the_relay_prefix(peer):
+    """⚠️ `[chat from relay] ` is load-bearing in three other places: SKILL.md's
+    "this is not a peer" rule, and two walkthrough checks. It comes from the
+    reply's SENDER being RELAY_NAME."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
+                    Fetcher(who_from("alice")), notes={},
+                    members={"alice", "bob"})
+    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    assert bodies and bodies[0].startswith("[chat from relay] "), bodies
+
+
+def test_the_answer_is_not_dropped_as_addressed_to_itself(peer):
+    """⚠️ The failure the sender field guards. try_deliver drops a message whose
+    recipient equals its sender, so signing the reply with the asker's own name
+    loses it permanently -- with a line blaming the asker."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    said = []
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, said.append,
+                    Fetcher(who_from("alice")), notes={},
+                    members={"alice", "bob"})
+    assert not any("addressed to itself" in s for s in said), said
+
+
+def test_each_asker_gets_its_own_you(peer):
+    """Two askers in one tick: `you` is per-pane, not a constant."""
+    ctl = RelayCtl(panes(alice=bell("w1"), bob=bell("w2")))
+
+    class TwoAskers(Fetcher):
+        def __call__(self, argv):
+            if "show-options" in argv:
+                # Same request from both panes; `done` keys on (name, id), so
+                # each is processed and each must get its OWN `you`.
+                self.calls.append(argv)
+                return 0, framed(("w1", "relay", "who")), ""
+            return Fetcher.__call__(self, argv)
+
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say, TwoAskers(),
+                    notes={}, members={"alice", "bob"})
+    bodies = sorted(b for (_t, _p, b) in ctl.typed if b != "\n")
+    assert len(bodies) == 2, bodies
+    assert bodies[0] == "[chat from relay] you=alice peer=bob", bodies
+    assert bodies[1] == "[chat from relay] you=bob peer=alice", bodies
+
+
+def test_a_non_token_message_to_the_relay_is_dropped_and_named(peer):
+    """⚠️ The loop guard. SKILL.md tells an agent to reply to anything shaped
+    `[chat from <name>]`, so a polite answer to the answer would ask again."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    said = []
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, said.append,
+                    Fetcher(who_from("alice", text="thanks")), notes={},
+                    members={"alice", "bob"})
+    assert ctl.typed == [], "a non-token message must produce no answer"
+    assert any("not 'who'" in s and "thanks" in s for s in said), said
+
+
+def test_a_who_on_the_priming_pass_is_discarded_not_answered(peer):
+    """⚠️ Placement. Above the `if deliver_new:` branch the relay would answer a
+    request that predates it AND deliver on the priming tick, because the
+    delivery loop runs unconditionally."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    said = []
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, said.append,
+                    Fetcher(who_from("alice")), notes={},
+                    members={"alice", "bob"}, deliver_new=False)
+    assert ctl.typed == [], "nothing may be delivered while priming"
+    assert any("discarded" in s and "#w1" in s for s in said), said
+
+
+def test_a_who_survives_the_members_default(peer):
+    """⚠️ `members=None` is relay_tick's default and ~40 call sites omit it, so
+    the fallback is the ordinary path in tests rather than an edge."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
+                    Fetcher(who_from("alice")), notes={})
+    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    assert bodies == ["[chat from relay] you=alice peer=bob"], bodies
+
+
+def test_the_answer_lists_the_roster_not_the_resolved_set(peer):
+    """A row absent for a moment while agb-refresh re-mints it must not read as
+    `left the chat` on everyone else's `who`."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
+                    Fetcher(who_from("alice")), notes={},
+                    members={"alice", "bob", "carol"})
+    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    assert bodies == ["[chat from relay] you=alice peer=bob peer=carol"], bodies
+
+
+def test_a_refetched_who_is_answered_once(peer):
+    """`done.add` runs before the branch, so a re-fetched request is deduped by
+    the same set that stops a message being delivered twice."""
+    ctl = RelayCtl(panes(alice=bell("w1")))
+    notes = {}
+    for _ in range(3):
+        peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
+                        Fetcher(who_from("alice")), notes=notes,
+                        members={"alice", "bob"})
+    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    assert len(bodies) == 1, bodies
+
+
+def test_an_ordinary_message_is_still_routed(peer):
+    """Labelled regression companion: routing is covered by ~15 existing tests,
+    so this is here to prove the intercept did not swallow the normal path."""
+    ctl = RelayCtl(panes(alice=bell("m1")))
+    peer.relay_tick(ctl, PEOPLE, {}, [], 500, ctl.say,
+                    Fetcher(framed(("m1", "bob", "hello"))), notes={},
+                    members={"alice", "bob"})
+    bodies = [b for (_t, _p, b) in ctl.typed if b != "\n"]
+    assert bodies == ["[chat from alice] hello"], bodies
