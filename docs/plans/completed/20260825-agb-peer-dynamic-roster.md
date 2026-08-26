@@ -645,6 +645,16 @@ agb-peer: primed on N doorbell(s); relaying every 2s -- Ctrl-C to stop
 
 ---
 
+⚠️ **EDIT THE ROSTER UNDER THE RUNNING RELAY — DO NOT RESTART IT.** Restarting is the one action
+that throws away queued messages: the new relay's priming pass drains every pane and **discards**
+what it finds, by design, because otherwise starting a relay would replay an hour-old conversation
+into everybody. Every roster change in this walkthrough is meant to be picked up live, within a
+tick. If you do restart, assume anything in flight is gone and re-send it.
+
+⚠️ **A leftover doorbell after a restart is normal.** `send` renames the window and the relay only
+compares the id, so `primed on 1 doorbell(s)` with **no** `discarded …` line means the doorbell
+survived but its message was already consumed — not that something was lost.
+
 ### Check 0 — the regression check ⭐ **run this first; if it fails, stop**
 
 Two real agents, end to end. **In agterm (T4)**, click `peer-a` and give Claude this prompt:
