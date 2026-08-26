@@ -53,7 +53,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 CTL = os.environ.get("AGB_AGTERMCTL", "agtermctl")
 
@@ -704,6 +704,24 @@ def parse_show_options(text):
     return messages
 
 
+# ⚠️ **A POSITIVE LIST, and it applies to the NAME only -- the text left of the
+# `=`.** `<row>` is a row-title SUBSTRING and legitimately contains `/`, since
+# the default `row_fields` renders `cwd` unshortened: `bob=/home/you/agbridge`
+# is a working spec. Two reasons for the rule, and the second is why it is here
+# rather than wherever it is first needed: a name has to survive being spliced
+# into a value that crosses `ssh <host> tmux set ...`, where ssh flattens argv
+# into a string for the remote login shell -- and **tightening a refusal later
+# is the breaking direction**, so the time to draw it is before anyone has a
+# name it would reject.
+NAME_ALPHABET = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+NAME_RULE = "letters, digits, dot, underscore and hyphen"
+
+
+def valid_participant_name(name):
+    return bool(name) and not (set(name) - NAME_ALPHABET)
+
+
 def parse_participants(words):
     """`name=<row>` or `name=<row>:<pane>` -> {name: (row, pane)}.
 
@@ -730,6 +748,9 @@ def parse_participants(words):
         if not sep or not name or not where:
             raise PeerError("participants are name=<row> or name=<row>:<pane>, "
                             "not %r" % (word,))
+        if not valid_participant_name(name):
+            raise PeerError("%r is not a usable participant name: %s"
+                            % (name, NAME_RULE))
         where, at, target = where.partition("@")
         target, _sep3, tmux_target = target.partition(":")
         row, sep2, pane = where.partition(":")

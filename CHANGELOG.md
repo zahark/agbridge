@@ -98,6 +98,23 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+### Added
+
+- **`agb-peer` participant names are now letters, digits, dot, underscore and hyphen** — refused at
+  `agb-peer relay`, with the reason named. ⚠️ **The rule applies to the *name* only**, the text left
+  of the `=`: `<row>` is a row-title *substring* and legitimately contains `/`, because the default
+  `row_fields` renders `cwd` unshortened — `bob=/home/you/agbridge` is a spec people have and it
+  still parses.
+
+  Two reasons, and the second is why it is drawn now rather than when it is first needed: a name has
+  to survive being spliced into a value that crosses `ssh <host> tmux set …`, where ssh flattens
+  argv into a string handed to the remote login shell (often tcsh); and **tightening a refusal later
+  is the breaking direction**, so the time to draw the line is before anyone owns a name it rejects.
+
+  It is a positive list rather than a list of characters to escape, for the same reason
+  `agb-claude`'s `{}` splice is: a denylist grows a hole every time somebody invents a
+  metacharacter.
+
 - **A failed fetch lost the messages it could not read, until the agent happened to send again.**
   `relay_tick` recorded `seen[name] = ident` one line *above* the fetch, so an ssh that failed left
   the participant marked caught-up having read nothing. The doorbell guard then short-circuited every

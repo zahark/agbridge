@@ -1931,3 +1931,40 @@ def test_the_seven_scan_outcomes_are_distinct(peer):
                 peer.SCAN_NO_DOORBELL, peer.SCAN_CAUGHT_UP, peer.SCAN_FETCHED,
                 peer.SCAN_FETCH_FAILED]
     assert len(set(outcomes)) == len(outcomes)
+
+
+# ---------------------------------------------------------------------------
+# the participant name alphabet
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["a/b", "a,b", "a@b", "a:b", "a b", "aéb"])
+def test_a_name_outside_the_alphabet_is_refused(peer, bad):
+    with pytest.raises(peer.PeerError) as caught:
+        peer.parse_participants(["%s=R1" % (bad,), "c=R2"])
+    assert "participant name" in str(caught.value)
+
+
+def test_a_slash_in_the_ROW_is_still_fine(peer):
+    """⚠️ The companion, and the reason the rule is scoped to the name. `<row>`
+    is a row-title substring and the default `row_fields` renders `cwd`
+    unshortened, so this is a spec people actually have."""
+    people = peer.parse_participants(["bob=/home/you/agbridge", "c=R2"])
+    assert people["bob"][0] == "/home/you/agbridge"
+
+
+def test_the_alphabet_is_a_positive_list_not_a_denylist(peer):
+    """A denylist grows a hole every time somebody invents a metacharacter."""
+    assert peer.valid_participant_name("Agent_9.x-y")
+    assert not peer.valid_participant_name("")
+    assert not peer.valid_participant_name("a$b")
+    assert not peer.valid_participant_name("a`b")
+
+
+def test_an_equals_in_a_name_is_unreachable_not_refused(peer):
+    """⚠️ Documented rather than tested as a refusal, because `partition("=")`
+    takes the FIRST `=` -- so a name containing one cannot be built through this
+    front door at all, and a test asserting a refusal would assert something
+    that never fires. Whitespace is the same: relay words come from `.split()`."""
+    people = peer.parse_participants(["a=b=R1", "c=R2"])
+    assert people["a"][0] == "b=R1", "the second = landed in the ROW"
