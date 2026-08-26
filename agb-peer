@@ -1373,6 +1373,109 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
     return True
 
 
+# What one participant's scan learned, and the five ways it can end without
+# ever reaching the doorbell. ⚠️ **The distinction that matters is "we did not
+# read the pane" versus "we read it and there was nothing announced".** Priming
+# a joiner turns on exactly that: the first leaves the pane still suspect, the
+# second proves there is nothing stale on it. `SCAN_DETACHED` is the one that
+# looks like the second and is the first -- a detached row's doorbell is not
+# VISIBLE, which is not the same as ABSENT, and every row `agb-refresh`
+# re-mints comes back detached.
+SCAN_NO_ROW = "no-row"
+SCAN_UNREADABLE = "unreadable"
+SCAN_DETACHED = "detached"
+SCAN_NO_DOORBELL = "no-doorbell"
+SCAN_CAUGHT_UP = "caught-up"
+SCAN_FETCHED = "fetched"
+SCAN_FETCH_FAILED = "fetch-failed"
+
+# The outcomes that prove the pane was read and nothing is waiting on it.
+SCAN_PANE_IS_CLEAN = (SCAN_FETCHED, SCAN_NO_DOORBELL)
+
+
+def scan_participant(ctl, sessions, name, binding, seen, lines, say,
+                     fetch=None, notes=None, chat_dir=None):
+    """Read one participant's pane and drain it. -> (outcome, messages).
+
+    ⚠️ **This owns `seen`.** It reads it for the caught-up guard and writes it
+    only on a successful drain, so a caller cannot mark a participant read
+    without having read it -- the bug that cost every message a failed fetch
+    touched. Priming calls this too, which is why priming leaves a participant
+    caught up rather than needing to say so separately.
+
+    The caller decides what the messages MEAN (delivered, or discarded as a
+    backlog); this only decides what is there.
+    """
+    notes = {} if notes is None else notes
+    row, pane, target, tmux_target = binding
+    session = sessions.get(row)
+    if session is None:
+        # ⚠️ Not silent. A row is briefly absent while `agb-refresh`
+        # re-mints it, which is why this is not reported on the first tick --
+        # but if the bridge never comes back, a relay that said nothing would
+        # leave "gone" looking exactly like "quiet".
+        gone = notes.get(("gone", name), 0) + 1
+        notes[("gone", name)] = gone
+        if gone == 3 or gone % 30 == 0:
+            say("%s: no row matches that label, %d ticks running. If this "
+                "is not a refresh in progress, check the bridge."
+                % (name, gone))
+        return SCAN_NO_ROW, []
+    notes.pop(("gone", name), None)
+    text, err = ctl.text(row, pane, lines)
+    if err:
+        # Throttled for the same reason as the fetch below: this fires every
+        # tick for as long as the read keeps failing, and it always did --
+        # moving the `seen` write merely put a second unthrottled path beside
+        # it and made the shape obvious.
+        _throttled(say, notes, ("read", name))(
+            "cannot read %s: %s" % (name, err))
+        return SCAN_UNREADABLE, []
+    notes.pop(("said", ("read", name)), None)
+    if classify(text) == MODE_MENU:
+        # ⚠️ **Armed, not merely reported.** Every row `agb-refresh` re-mints
+        # comes back DETACHED, showing `agb pane`'s menu -- and a menu is not a
+        # tmux screen, so the status bar is absent and the doorbell cannot be
+        # seen. Its tmux is fine and its doorbell is still set; the relay just
+        # cannot look. Complaining and waiting would make every refresh a
+        # manual re-attach of every participant. The bare newline is the safe
+        # arming primitive: `agb pane` strips its input and "" matches none of
+        # its three word sets, so it falls through to the attach and cannot hit
+        # the branch that closes the row.
+        tries = notes.get(("menu", name), 0)
+        notes[("menu", name)] = tries + 1
+        if tries % 10 == 0:
+            say("%s is detached -- attaching it so its doorbell can be seen"
+                % (name,))
+            ctl.type(row, pane, "\n")
+        return SCAN_DETACHED, []
+    notes.pop(("menu", name), None)
+    ident = read_doorbell(text)
+    if not ident:
+        return SCAN_NO_DOORBELL, []
+    if seen.get(name) == ident:
+        return SCAN_CAUGHT_UP, []
+    tmux_pane = tmux_target or pane_argv_field(session.get("foreground"),
+                                               "--pane")
+    host = target or pane_argv_field(session.get("foreground"), "--host")
+    # ⚠️ **`seen` IS WRITTEN AFTER THE DRAIN, NOT BEFORE IT.** It used to be
+    # written above the fetch -- so a fetch that FAILED left the participant
+    # marked caught-up having read nothing, the guard above short-circuited
+    # every later tick, and those messages were lost until the agent happened
+    # to send again and moved the doorbell. Recording what we have read only
+    # once we have actually read it makes the retry automatic; the cost is that
+    # a persistent failure complains every tick, which is `_throttled`'s job.
+    outcome = {}
+    messages = drain(fetch, name, host, tmux_pane,
+                     _throttled(say, notes, ("fetch", name)), ident,
+                     chat_dir, outcome)
+    if outcome.get("fetch") != FETCH_OK:
+        return SCAN_FETCH_FAILED, []
+    seen[name] = ident
+    notes.pop(("said", ("fetch", name)), None)
+    return SCAN_FETCHED, messages
+
+
 def _throttled(say, notes, key):
     """A `say` that repeats itself only when the message changes.
 
@@ -1410,72 +1513,12 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
         sessions[session["id"]] = session
     discarded = []
     for name in sorted(people):
-        row, pane, target, tmux_target = people[name]
-        session = sessions.get(row)
-        if session is None:
-            # ⚠️ Not silent. A row is briefly absent while `agb-refresh`
-            # re-mints it, which is why this is not reported on the first
-            # tick -- but if the bridge never comes back, a relay that said
-            # nothing would leave "gone" looking exactly like "quiet".
-            gone = notes.get(("gone", name), 0) + 1
-            notes[("gone", name)] = gone
-            if gone == 3 or gone % 30 == 0:
-                say("%s: no row matches that label, %d ticks running. If this "
-                    "is not a refresh in progress, check the bridge."
-                    % (name, gone))
+        result, messages = scan_participant(
+            ctl, sessions, name, people[name], seen, lines, say, fetch,
+            notes, chat_dir)
+        if result != SCAN_FETCHED:
             continue
-        notes.pop(("gone", name), None)
-        text, err = ctl.text(row, pane, lines)
-        if err:
-            # Throttled for the same reason as the fetch below: this fires
-            # every tick for as long as the read keeps failing, and it always
-            # did -- moving the `seen` write merely put a second unthrottled
-            # path beside it and made the shape obvious.
-            _throttled(say, notes, ("read", name))(
-                "cannot read %s: %s" % (name, err))
-            continue
-        notes.pop(("said", ("read", name)), None)
-        if classify(text) == MODE_MENU:
-            # ⚠️ **Armed, not merely reported.** Every row `agb-refresh`
-            # re-mints comes back DETACHED, showing `agb pane`'s menu -- and a
-            # menu is not a tmux screen, so the status bar is absent and the
-            # doorbell cannot be seen. Its tmux is fine and its doorbell is
-            # still set; the relay just cannot look. Complaining and waiting
-            # would make every refresh a manual re-attach of every
-            # participant. The bare newline is the safe arming primitive:
-            # `agb pane` strips its input and "" matches none of its three
-            # word sets, so it falls through to the attach and cannot hit the
-            # branch that closes the row.
-            tries = notes.get(("menu", name), 0)
-            notes[("menu", name)] = tries + 1
-            if tries % 10 == 0:
-                say("%s is detached -- attaching it so its doorbell can be "
-                    "seen" % (name,))
-                ctl.type(row, pane, "\n")
-            continue
-        notes.pop(("menu", name), None)
-        ident = read_doorbell(text)
-        if not ident or seen.get(name) == ident:
-            continue
-        tmux_pane = tmux_target or pane_argv_field(session.get("foreground"),
-                                                   "--pane")
-        host = target or pane_argv_field(session.get("foreground"), "--host")
         done = notes.setdefault("delivered", set())
-        # ⚠️ **`seen` IS WRITTEN AFTER THE DRAIN, NOT BEFORE IT.** It used to be
-        # written here, one line above the fetch -- so a fetch that FAILED left
-        # the participant marked caught-up having read nothing, the guard above
-        # short-circuited every later tick, and those messages were lost until
-        # the agent happened to send again and moved the doorbell. Recording
-        # what we have read only once we have actually read it makes the retry
-        # automatic; the cost is that a persistent failure now complains every
-        # tick instead of once, which is what `_throttled` is for.
-        outcome = {}
-        messages = drain(fetch, name, host, tmux_pane,
-                         _throttled(say, notes, ("fetch", name)), ident,
-                         chat_dir, outcome)
-        if outcome.get("fetch") == FETCH_OK:
-            seen[name] = ident
-            notes.pop(("said", ("fetch", name)), None)
         for message in messages:
             if (name, message["id"]) in done:
                 # An option the far side would not let us unset comes back on

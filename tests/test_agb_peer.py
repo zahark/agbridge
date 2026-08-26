@@ -1845,3 +1845,89 @@ def test_an_unreadable_pane_says_it_once(peer):
                         notes=notes)
     per_name = [s for s in ctl.said if "cannot read alice" in s]
     assert len(per_name) == 1, "20 ticks, one line per name: %r" % (per_name,)
+
+
+# ---------------------------------------------------------------------------
+# a scan says HOW it ended, and the five ways it never reached the doorbell
+# ---------------------------------------------------------------------------
+#
+# The distinction priming turns on: "we did not read the pane" leaves it
+# suspect, "we read it and nothing was announced" proves there is nothing stale
+# on it. SCAN_DETACHED looks like the second and is the first.
+
+
+def scan(peer, ctl, name="alice", binding=None, seen=None, fetch=None,
+         notes=None, chat_dir=None):
+    sessions = {}
+    for s in peer.sessions_of(ctl.tree()):
+        sessions[s["id"]] = s
+    return peer.scan_participant(
+        ctl, sessions, name, binding or PEOPLE[name], {} if seen is None else seen,
+        500, ctl.say, fetch or Fetcher(), {} if notes is None else notes,
+        chat_dir)
+
+
+def test_a_scan_of_a_missing_row_says_no_row(peer):
+    ctl = RelayCtl({})
+    assert scan(peer, ctl)[0] == peer.SCAN_NO_ROW
+
+
+def test_a_scan_of_an_unreadable_pane_says_unreadable(peer):
+    class Unreadable(RelayCtl):
+        def text(self, target, pane, lines, whole=False):
+            return "", "agterm: no such session"
+
+    assert scan(peer, Unreadable(panes()))[0] == peer.SCAN_UNREADABLE
+
+
+def test_a_detached_row_is_not_a_clean_pane(peer):
+    """⚠️ The one that has to be right. A detached row's doorbell is not
+    VISIBLE, which is not the same as ABSENT -- and every row `agb-refresh`
+    re-mints comes back detached, so getting this wrong delivers a joiner's
+    backlog on the ordinary path."""
+    ctl = RelayCtl(dict(panes(), AAAA1111=MENU))
+    assert scan(peer, ctl)[0] == peer.SCAN_DETACHED
+    assert peer.SCAN_DETACHED not in peer.SCAN_PANE_IS_CLEAN
+
+
+def test_a_pane_with_no_doorbell_is_clean(peer):
+    """The companion: read, and nothing announced, is a FACT about the pane."""
+    result, messages = scan(peer, RelayCtl(panes()))
+    assert result == peer.SCAN_NO_DOORBELL
+    assert messages == []
+    assert peer.SCAN_NO_DOORBELL in peer.SCAN_PANE_IS_CLEAN
+
+
+def test_an_unchanged_doorbell_says_caught_up(peer):
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    assert scan(peer, ctl, seen={"alice": "aaa"})[0] == peer.SCAN_CAUGHT_UP
+
+
+def test_a_successful_drain_says_fetched_and_records_seen(peer):
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    seen = {}
+    result, messages = scan(peer, ctl, seen=seen,
+                            fetch=Fetcher(framed(("aaa", "bob", "hi"))))
+    assert result == peer.SCAN_FETCHED
+    assert [m["text"] for m in messages] == ["hi"]
+    assert seen == {"alice": "aaa"}, "the scan owns `seen`"
+
+
+def test_a_failed_drain_says_so_and_records_nothing(peer):
+    """The companion to the one above, and the reason the scan owns `seen`: a
+    caller cannot mark a participant read without having read it."""
+    ctl = RelayCtl(panes(alice=bell("aaa")))
+    seen = {}
+    result, messages = scan(peer, ctl, seen=seen, fetch=Fetcher(rc=1))
+    assert result == peer.SCAN_FETCH_FAILED
+    assert messages == []
+    assert seen == {}
+    assert peer.SCAN_FETCH_FAILED not in peer.SCAN_PANE_IS_CLEAN
+
+
+def test_the_seven_scan_outcomes_are_distinct(peer):
+    """Two of them collapsing into one is the whole failure mode."""
+    outcomes = [peer.SCAN_NO_ROW, peer.SCAN_UNREADABLE, peer.SCAN_DETACHED,
+                peer.SCAN_NO_DOORBELL, peer.SCAN_CAUGHT_UP, peer.SCAN_FETCHED,
+                peer.SCAN_FETCH_FAILED]
+    assert len(set(outcomes)) == len(outcomes)
