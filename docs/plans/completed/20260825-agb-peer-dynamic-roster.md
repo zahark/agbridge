@@ -518,14 +518,22 @@ Check 0 is the exception and uses two real agents end to end, which is the point
 
 ### The cast
 
+⚠️ **THE SESSION NAMES MUST NOT BE PREFIXES OF EACH OTHER.** A roster entry is a **substring of the
+row title**, so `tx`, `tx-old` and `tx-new` make `tx=tx` match all three and the relay refuses it:
+`'tx' matches 3 rows … -- use a longer prefix or the row id`. It refuses cleanly and carries on with
+the rest, which is correct — but that participant is simply absent until you fix it. Nor can you
+disambiguate with more of the title: `parse_roster_text` splits each line on whitespace, so a label
+containing a space becomes two words, and a pane id like `%111` moves when rows are re-minted, which
+is the whole reason labels exist. **Rename the session.** The names below are deliberately unrelated.
+
 | session | start it with | role |
 |---|---|---|
 | `peer-a` | `agb-claude -d peer-a` | receiver, and check 0's sender (agent-driven) |
 | `peer-b` | `agb-claude -d peer-b` | receiver |
 | `peer-c` | `agb-claude -d peer-c` — **started late, in check 1** | receiver |
-| `tx` | `agb-tmux -d tx` | general deterministic sender |
-| `tx-old` | `agb-tmux -d tx-old` | check 3 — sends *before* joining |
-| `tx-new` | `agb-tmux -d tx-new` | check 4 — joins first, *then* sends |
+| `sender` | `agb-tmux -d sender` | general deterministic sender |
+| `stale` | `agb-tmux -d stale` | check 3 — sends *before* joining |
+| `rookie` | `agb-tmux -d rookie` | check 4 — joins first, *then* sends |
 
 ⚠️ **`-d` mints the row before the command starts, so the row appears immediately — but a row is not
 the same as a ready agent.** A fresh Claude in a directory it has not been trusted in sits on a
@@ -539,7 +547,7 @@ agent row once in agterm and confirm you can see its composer before relying on 
 |---|---|---|
 | **T1** | Mac | the relay, foreground. **The instrument** — nearly every check is a line that must or must not appear here |
 | **T2** | Mac | spare shell for editing `~/peers` |
-| **T3** | farm | login shell for `agb-claude` / `agb-tmux`, and for `tmux attach -t tx` to send |
+| **T3** | farm | login shell for `agb-claude` / `agb-tmux`, and for `tmux attach -t sender` to send |
 | **T4** | Mac | agterm, for clicking rows and watching messages land |
 
 ---
@@ -575,9 +583,9 @@ else.
 ```sh
 agb-claude -d peer-a
 agb-claude -d peer-b
-agb-tmux   -d tx
-agb-tmux   -d tx-old
-agb-tmux   -d tx-new
+agb-tmux   -d sender
+agb-tmux   -d stale
+agb-tmux   -d rookie
 ```
 
 **Mac (T4):** click `peer-a` and `peer-b` in agterm; confirm each shows a live Claude composer.
@@ -591,7 +599,7 @@ cat > ~/peers <<'EOF'
 # who is in this chat
 alice=peer-a
 bob=peer-b
-tx=tx
+tx=sender
 EOF
 cp ~/peers ~/peers.bak                   # checks 8-11 need a copy
 ```
@@ -650,7 +658,7 @@ cp ~/peers ~/peers.new && echo 'carol=peer-c' >> ~/peers.new && mv ~/peers.new ~
 **Farm (T3)** — send from the shell, deterministically:
 
 ```sh
-tmux attach -t tx
+tmux attach -t sender
 # inside that session:
 agb-peer send --to carol --stdin <<'CHAT'
 waiting for you
@@ -686,12 +694,12 @@ Scroll back in **T1** over what you just watched.
 
 ### Check 3 — a joiner's backlog is discarded ⭐
 
-`tx-old` is running and is **not** in the roster. Give it a backlog first.
+`stale` is running and is **not** in the roster. Give it a backlog first.
 
 **Farm (T3):**
 
 ```sh
-tmux attach -t tx-old
+tmux attach -t stale
 agb-peer send --to alice --stdin <<'CHAT'
 this is old news
 CHAT
@@ -704,7 +712,7 @@ doorbell yet.
 **T2 — admit it:**
 
 ```sh
-cp ~/peers ~/peers.new && echo 'dave=tx-old' >> ~/peers.new && mv ~/peers.new ~/peers
+cp ~/peers ~/peers.new && echo 'dave=stale' >> ~/peers.new && mv ~/peers.new ~/peers
 ```
 
 | | |
@@ -713,19 +721,19 @@ cp ~/peers ~/peers.new && echo 'dave=tx-old' >> ~/peers.new && mv ~/peers.new ~/
 | **peer-a must NOT show** | `this is old news` |
 | **FAIL** | alice receives it — the backlog was delivered as new |
 
-Then send from `tx-old` again and confirm *that* one **does** arrive.
+Then send from `stale` again and confirm *that* one **does** arrive.
 
 ---
 
 ### Check 4 — the inverse failure ⭐ *no test in the suite can reach this*
 
-`tx-new` has **never sent anything**, so it has no doorbell at all — exactly the case that breaks if
+`rookie` has **never sent anything**, so it has no doorbell at all — exactly the case that breaks if
 "nothing announced" fails to clear the prime.
 
 **T2 — admit it first:**
 
 ```sh
-cp ~/peers ~/peers.new && echo 'erin=tx-new' >> ~/peers.new && mv ~/peers.new ~/peers
+cp ~/peers ~/peers.new && echo 'erin=rookie' >> ~/peers.new && mv ~/peers.new ~/peers
 ```
 
 **T1 must show** `roster: +erin` and **no** `discarded` line — there was nothing to discard.
@@ -733,7 +741,7 @@ cp ~/peers ~/peers.new && echo 'erin=tx-new' >> ~/peers.new && mv ~/peers.new ~/
 **Farm (T3) — now it sends its first ever message:**
 
 ```sh
-tmux attach -t tx-new
+tmux attach -t rookie
 agb-peer send --to alice --stdin <<'CHAT'
 my first words
 CHAT
@@ -757,7 +765,7 @@ cp ~/peers ~/peers.new && sed 's|^carol=.*|carol=no-such-row-zzz|' ~/peers.new >
   && mv ~/peers.tmp ~/peers
 ```
 
-**T3:** from `tx`, send to `carol`. **T1** shows the hold.
+**T3:** from `sender`, send to `carol`. **T1** shows the hold.
 
 **T2 — remove her:**
 
@@ -780,7 +788,7 @@ grep -v '^carol=' ~/peers > ~/peers.tmp && mv ~/peers.tmp ~/peers
 sed 's|^bob=.*|bob=no-such-row-yyy|' ~/peers > ~/peers.tmp && mv ~/peers.tmp ~/peers
 ```
 
-**T3:** from `tx`, send to `bob`.
+**T3:** from `sender`, send to `bob`.
 
 | | |
 |---|---|
@@ -822,7 +830,7 @@ After **each** one, send a message to prove the chat still works.
 - An attached agent has **no way to discover the roster**. That is Plan B (`agb-peer who`).
 - Two *unreachable* agents on two *different* mounts cannot both be served — `--chat-dir` is
   relay-wide. Never run.
-- **A shell participant never receives.** `tx`, `tx-old` and `tx-new` are senders by design; the
+- **A shell participant never receives.** `tx`, `stale` and `rookie` are senders by design; the
   relay refusing to type into them is correct, not a failure.
 
 ---

@@ -671,6 +671,19 @@ shows the rows and their titles.
 ⚠️ **Use a title substring, not a row id.** `agb-refresh` re-mints every row and every id changes; a
 label keeps working across one.
 
+⚠️ **And make sure no session name is a prefix of another.** The match is a substring, so with
+sessions called `tx`, `tx-old` and `tx-new`, the entry `tx=tx` matches all three and is refused:
+
+```
+agb-peer: tx: 'tx' matches 3 rows (tx · proj · %111, tx-old · proj · %112, tx-new · proj · %113)
+             -- use a longer prefix or the row id
+```
+
+The relay says so and carries on with everyone else, so it is loud rather than dangerous — but that
+participant is absent until you fix it. You cannot disambiguate with more of the title, because a
+roster line is split on whitespace and a label with a space in it becomes two words; and a pane id
+moves when rows are re-minted, which is the whole reason labels exist. Rename the session.
+
 ⚠️ **Names are letters, digits, dot, underscore and hyphen.** The row part on the right has no such
 rule, so `bob=/home/you/project` is fine.
 
