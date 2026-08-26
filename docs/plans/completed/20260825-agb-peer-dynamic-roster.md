@@ -535,6 +535,21 @@ is the whole reason labels exist. **Rename the session.** The names below are de
 | `stale` | `agb-tmux -d stale` | check 3 — sends *before* joining |
 | `rookie` | `agb-tmux -d rookie` | check 4 — joins first, *then* sends |
 
+⚠️ **AND `agb-claude -d` IS A NO-OP IF THE SESSION ALREADY EXISTS.** It checks
+`tmux has-session` and prints `attach with tmux attach -t <name>` — no error, no new agent. So
+changing how an agent is launched and re-running the command **changes nothing**, and the symptom is
+that the old agent's behaviour persists while the command appears to have succeeded. Kill the
+session first:
+
+```sh
+tmux kill-session -t peer-a
+bjobs -u $USER      # if the old one went to a batch pool, bkill it too
+```
+
+⚠️ **Verify where an agent actually is before trusting anything else.** One prompt settles it:
+*"Run exactly this and tell me the output: `hostname`"*. Everything below assumes the answer is the
+machine you are typing on.
+
 ⚠️ **IF `AGB_CLAUDE_CUSTOM` IS SET, `agb-claude` DOES NOT START A LOCAL AGENT.** It replaces the
 whole `claude` command line, so on a site that submits agents to a batch pool the tmux session is
 created **here** while the agent process runs **there** — and `$TMUX`/`$TMUX_PANE` are inherited
