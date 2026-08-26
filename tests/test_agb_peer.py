@@ -3042,3 +3042,45 @@ def test_a_bare_value_keeps_its_backslashes(peer):
     """Unescaping now runs on the bare form too, so it must not corrupt one."""
     got = peer.parse_show_options(framed_bare(("aaa", "bob", "a\\b")))
     assert got and got[0]["text"] == "a\\b", got
+
+
+def test_nothing_non_ascii_reaches_stdout(peer):
+    """⚠️ Found live, in a plain tcsh login shell: a warning glyph in `who`'s
+    output raised UnicodeEncodeError AFTER the request had already been sent, so
+    the message went out and the command reported a traceback.
+
+    `sys.stdout` is `strict` in CPython and `-E` does not touch `LC_ALL`, so any
+    non-ASCII byte written through `out` raises under an ASCII locale. The
+    comments and docstrings in this file may hold anything -- and do -- but what
+    leaves through `out.write` or `say` may not. CLAUDE.md records the same trap
+    for `agb instances --arg` and `install-config --print-statedir`.
+    """
+    import ast
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    offenders, calls = [], 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "write":
+            pass
+        elif isinstance(func, ast.Name) and func.id == "say":
+            pass
+        else:
+            continue
+        calls += 1
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Str) and any(ord(c) > 127 for c in inner.s):
+                offenders.append((node.lineno, inner.s[:60]))
+    assert calls > 20, "non-vacuous: the walk must actually find the calls"
+    assert offenders == [], offenders
+
+
+def test_the_docstrings_are_allowed_to_be_non_ascii(peer):
+    """The companion. Without it the guard above would pass against a file that
+    had been stripped of every ⚠️ -- which is most of how this codebase warns."""
+    import ast
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    rich = [n for n in ast.walk(tree)
+            if isinstance(n, ast.Str) and any(ord(c) > 127 for c in n.s)]
+    assert len(rich) > 10, "the file's own warnings should still be there"

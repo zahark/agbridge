@@ -144,6 +144,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-peer who` crashed in a plain login shell, after it had already sent the request.** A warning
+  glyph in its output raised `UnicodeEncodeError: 'ascii' codec can't encode characters` — so the
+  message went out, the relay answered it, and the command reported a traceback.
+
+  `sys.stdout` is `strict` in CPython and `-E` does not touch `LC_ALL`, so any non-ASCII byte written
+  through it raises under an ASCII locale, which a tcsh login shell has. ⚠️ **The comments and
+  docstrings in that file may hold anything — and do — but what leaves through `out.write` or `say`
+  may not.** A structural guard now pins that, with a companion so it cannot be satisfied by
+  stripping the file's warnings.
+
 - **A message with no space in it was silently lost.** `agb-peer send --to bob hello` never arrived;
   `agb-peer send --to bob 'hello there'` did. The difference was a space, and there was no error at
   either end.

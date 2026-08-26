@@ -1385,8 +1385,15 @@ def cmd_who(run, out, env=None):
                         "with `agb-claude <name>`, or inside "
                         "`tmux new -A -s <name> <the agent>`.")
     status = cmd_send(RELAY_NAME, WHO_REQUEST, run, out, env=env)
-    out.write("agb-peer: asked the relay who is here. ⚠️ The answer arrives as "
-              "a MESSAGE on a later turn, not here.\n")
+    # ⚠️ **ASCII only on stdout.** `sys.stdout` is `strict`, so a non-ASCII
+    # character here raises `UnicodeEncodeError` under an ASCII locale -- which
+    # a plain login shell has, and `-E` does not touch `LC_ALL`. Measured: a
+    # warning glyph in this line crashed `who` in a tcsh session AFTER the
+    # request had already been sent, so the message went out and the command
+    # reported a traceback. The comments in this file may hold anything; what
+    # leaves through `out` may not.
+    out.write("agb-peer: asked the relay who is here. NOTE: the answer arrives "
+              "as a MESSAGE on a later turn, not here.\n")
     out.write("agb-peer: no answer at all means no relay is running, or this "
               "pane is not one of its participants. Neither is worth "
               "retrying.\n")
