@@ -1611,8 +1611,22 @@ def drain_files(fetch, name, target, ident, chat_dir, say, outcome=None,
     # `read_doorbells`. Ones already delivered are skipped so a long transcript
     # does not cost an ssh per marker per ring; ones already collected answer
     # FETCH_GONE and cost one cheap failed `cat`.
-    wanted = [i for i in (idents or [ident])
-              if done is None or (name, i) not in done]
+    #
+    # ⚠️ **The same id legitimately appears TWICE on one screen**, so the
+    # list is deduplicated rather than passed through. `skills/agb-peer/SKILL.md`
+    # tells a file-transport sender to repeat the printed doorbell in its own
+    # answer -- because an agent UI folds command output behind a `ran N
+    # commands` summary -- and the second copy is the one that reaches the
+    # screen. Measured on the live capture that found this bug. Undeduplicated
+    # it costs a second `cat` that cannot succeed (the first fetch unlinked the
+    # file) and logs `nothing to read ... normal after a relay restart`, which
+    # is not what happened.
+    wanted, already = [], set()
+    for one in (idents or [ident]):
+        if one in already or (done is not None and (name, one) in done):
+            continue
+        already.add(one)
+        wanted.append(one)
     if not wanted:
         return _drained(outcome, FETCH_OK)
     collected, seen_gone = [], False

@@ -158,6 +158,14 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   the pane being read. Ids already delivered are skipped, so a long transcript does not cost an ssh
   per marker per ring.
 
+  ⚠️ **And that list is deduplicated, because the same id is on the screen twice by design.**
+  `skills/agb-peer/SKILL.md` tells a file-transport sender to *repeat* the printed doorbell in its
+  own answer — an agent UI folds command output behind a `ran N commands` summary, so the repeat is
+  the copy that actually reaches the pane. Fetching the second copy can only fail, the first having
+  unlinked the file, and it fails saying `nothing to read … normal after a relay restart`, which is
+  not what happened. Confirmed on the live capture that found the bug above: its screen carried the
+  same marker twice.
+
   Measured live: a Codex rang twice inside one two-second interval — a `who` and a message — and the
   `who` was orphaned.
 

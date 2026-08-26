@@ -3235,6 +3235,32 @@ def test_a_transport_failure_on_any_id_is_still_a_failure(peer):
     assert outcome["fetch"] == peer.FETCH_FAILED
 
 
+def test_a_repeated_marker_is_fetched_once(peer):
+    """⚠️ Not hypothetical, and not a tidy-up: `skills/agb-peer/SKILL.md` tells a
+    file-transport sender to REPEAT the printed doorbell in its own answer, so
+    the same id is on the screen twice by design. The first fetch unlinks the
+    file, so the second can only fail -- and it fails saying `normal after a
+    relay restart`, which is a lie about what happened."""
+    fetch = FileFetcher({"aaa": "bob\nonce"})
+    got = peer.drain(fetch, "pool", "box", peer.NFS_TARGET, lambda m: None,
+                     ident="aaa", chat_dir="/s/chat",
+                     idents=["aaa", "aaa"])
+    assert [m["text"] for m in got] == ["once"], got
+    reads = [c for c in fetch.calls if "cat" in c]
+    assert len(reads) == 1, "the repeat must not cost an ssh: %r" % (reads,)
+
+
+def test_two_distinct_ids_are_still_both_fetched(peer):
+    """The companion to the dedupe: it must collapse repeats, not neighbours."""
+    fetch = FileFetcher({"aaa": "bob\nfirst", "bbb": "bob\nsecond"})
+    got = peer.drain(fetch, "pool", "box", peer.NFS_TARGET, lambda m: None,
+                     ident="bbb", chat_dir="/s/chat",
+                     idents=["aaa", "bbb", "aaa"])
+    assert [m["text"] for m in got] == ["first", "second"], got
+    reads = [c for c in fetch.calls if "cat" in c]
+    assert len(reads) == 2, "one cat per distinct id: %r" % (reads,)
+
+
 def test_read_doorbells_returns_them_oldest_first(peer):
     text = "noise [peer #aaa] more\nlines [peer #bbb] end"
     assert peer.read_doorbells(text) == ["aaa", "bbb"]
