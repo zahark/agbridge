@@ -369,6 +369,8 @@ Verified in real use, not just in tests:
 | an answer held while the asking agent is mid-turn, then delivered | ✅ the composer gate refused, held, and retried |
 | `who` from a pane that is not a participant | ✅ silence; its request is never read |
 | `who` outside tmux | ✅ refused in `who`'s own words |
+| `who` with **no relay running** | ✅ request sits unread; no answer, no error |
+| a doorbell whose file a previous relay consumed | ✅ collected once, then silent — no re-fetch loop |
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 
 **Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except
