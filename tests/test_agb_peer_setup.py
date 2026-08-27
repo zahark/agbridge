@@ -332,3 +332,201 @@ def test_the_title_separator_agrees_with_agb_mac(setup, mac):
 
 def test_the_title_prefixes_agree_with_agb_mac(setup, mac):
     assert set(setup.TITLE_PREFIXES) == {mac.TITLE_STALE, mac.TITLE_DONE}
+
+
+# ---------------------------------------------------------------------------
+# transport hint and instance-correct host resolution -- Task 5.
+# ---------------------------------------------------------------------------
+
+PANE_ARGV = ["/usr/bin/python3", "-S", "-E", "/opt/agb", "pane", "abcd1234",
+             "--host", "box01", "--pane", "%7", "--tmux", "work"]
+
+
+def test_load_ops_goes_through_agbs_own_door(setup):
+    """⚠️ `agb._load_ops()`, not a second loader.
+
+    conftest routes through that door deliberately so a broken door fails
+    tests rather than being bypassed; a second copy here would be free to
+    drift. Structural, because the alternative is asserting on a module object
+    that a reimplementation would produce identically.
+    """
+    tree = ast.parse(io.open(SETUP_PATH, encoding="utf-8").read())
+    fns = [n for n in ast.walk(tree)
+           if isinstance(n, ast.FunctionDef) and n.name == "load_ops"]
+    assert fns, "load_ops is gone"
+    attrs = [n.func.attr for n in ast.walk(fns[0])
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)]
+    assert attrs, "load_ops calls nothing"
+    assert "_load_ops" in attrs, attrs
+
+
+def test_load_ops_refuses_a_missing_agb_by_name(setup, tmp_path):
+    with pytest.raises(setup.SetupError) as err:
+        setup.load_ops(str(tmp_path / "nope"))
+    assert err.value.code == 3
+    assert "--agb" in str(err.value)
+
+
+def test_the_default_agb_path_matches_agb_refresh(setup):
+    """A cross-file agreement: the bridge loads its modules from the INSTALL,
+    not a checkout, so a tool reading the same config must look there too."""
+    text = io.open(os.path.join(REPO_ROOT, "agb-refresh"),
+                   encoding="utf-8").read()
+    assert 'DEFAULT_AGB="$HOME/.local/lib/agbridge/agb"' in text
+    assert setup.DEFAULT_AGB.endswith(os.path.join(
+        ".local", "lib", "agbridge", "agb"))
+
+
+def test_agbridge_hint_reads_a_real_pane_argv(setup, ops):
+    hint = setup.agbridge_hint(ops, {"foreground": PANE_ARGV})
+    assert hint is not None
+    assert hint["host"] == "box01"
+    assert hint["pane"] == "%7"
+
+
+def test_agbridge_hint_on_a_bare_shell_is_none(setup, ops):
+    assert setup.agbridge_hint(ops, {"foreground": ["/bin/zsh", "-l"]}) is None
+    assert setup.agbridge_hint(ops, {}) is None
+
+
+# ⚠️ Each of these is an argv `agb pane` REFUSES but a naive `--flag value`
+# walk reads happily -- measured. That gap is the whole reason this calls the
+# real parser: a trailing `--host` with no value would NOT discriminate, since
+# both answer None, and a test built on it passes against the imitation.
+REFUSED_ARGV = [
+    (["key", "--bogus", "x", "--host", "box01"], "unknown option"),
+    (["key", "--host", "box01 evil"], "a host containing whitespace"),
+    (["key", "extra", "--host", "box01"], "a stray positional"),
+    (["key", "--host", "box01", "--pane", "notapane"], "a bad pane id"),
+]
+
+
+@pytest.mark.parametrize("argv,why", REFUSED_ARGV)
+def test_agbridge_hint_swallows_a_refusal_rather_than_raising(setup, ops,
+                                                              argv, why):
+    """⚠️ An argv `agb pane` rejects describes a row whose settings cannot be
+    trusted, and the refusal must not traceback out of a menu.
+
+    The premise is asserted first: the parser really does refuse, and a naive
+    walk really would return a host. Without that, this passes against an
+    imitation -- which is what CLAUDE.md's rule about calling the parser rather
+    than simulating it is about.
+    """
+    with pytest.raises(Exception) as err:
+        ops.parse_pane_args(argv)
+    assert type(err.value).__name__ == "AgbError", why
+    naive = {}
+    for i, a in enumerate(argv):
+        if a.startswith("--") and i + 1 < len(argv):
+            naive[a[2:]] = argv[i + 1]
+    assert naive.get("host"), "premise: a walk would read a host from %r" % (why,)
+    assert setup.agbridge_hint(ops, {"foreground": ["/opt/agb", "pane"] + argv}) is None
+
+
+def test_row_target_threads_the_CALLERS_unreadable_list(setup, ops, tmp_path):
+    """⚠️ The finding: passing `pane_settings` a fresh `[]` looks identical and
+    reports nothing.
+
+    The caller's list stays empty, so the "could not read the config" branch
+    downstream never fires and an EACCES config degrades silently to a bare
+    hostname -- the wrong-machine bug with the diagnostic removed.
+    """
+    bad = tmp_path / "config"
+    bad.write_text("host_box01 = box01-alias\n")
+    os.chmod(str(bad), 0o000)
+    unreadable = []
+    try:
+        hint = {"host": "box01", "jump": None, "config": str(bad)}
+        setup.row_target(ops, hint, unreadable)
+    finally:
+        os.chmod(str(bad), 0o600)
+    assert unreadable, "the caller's list was not threaded through"
+
+
+def test_row_target_resolves_through_the_rows_own_config(setup, ops, tmp_path):
+    cfg = tmp_path / "config"
+    cfg.write_text("host_box01 = user@box01.example\n")
+    hint = {"host": "box01", "jump": None, "config": str(cfg)}
+    assert setup.row_target(ops, hint, []) == "user@box01.example"
+
+
+def test_host_choices_reads_the_rows_own_instance(setup, agb, ops, tmp_path):
+    """⚠️ A Mac running two bridges has two `host_<name>` tables. Reading the
+    default one would resolve instance B's rows through instance A's."""
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "config").write_text("host_boxA = a-alias\n")
+    b = tmp_path / "b"
+    b.mkdir()
+    (b / "config").write_text("host_boxB = b-alias\nhost_boxB2 = b2-alias\n")
+    hint = {"host": "boxB", "jump": None, "config": str(b / "config")}
+    choices = setup.host_choices(agb, ops, hint, [])
+    assert choices == [("boxB", "b-alias"), ("boxB2", "b2-alias")]
+    assert all(name != "boxA" for name, _t in choices)
+
+
+def test_host_choices_on_a_row_with_no_config_uses_the_default(setup, agb, ops,
+                                                               fake_home):
+    """A row minted by a DEFAULT install carries no `--config` -- that is every
+    default install, not a legacy case -- and `read_config(None)` is exactly
+    the right answer for it."""
+    path = agb.config_path()
+    if not os.path.isdir(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+    io.open(path, "w", encoding="utf-8").write(u"host_boxD = d-alias\n")
+    hint = {"host": "boxD", "jump": None}
+    assert setup.host_choices(agb, ops, hint, []) == [("boxD", "d-alias")]
+
+
+def test_host_choices_reports_an_unreadable_config_and_offers_nothing(
+        setup, agb, ops, tmp_path):
+    """⚠️ Invariant 12: "I could not answer" is not "the answer is nothing".
+    Silence here is a bare hostname the user then types by hand."""
+    cfg = tmp_path / "config"
+    cfg.write_text("host_boxE = e-alias\n")
+    os.chmod(str(cfg), 0o000)
+    unreadable = []
+    try:
+        hint = {"host": "boxE", "jump": None, "config": str(cfg)}
+        assert setup.host_choices(agb, ops, hint, unreadable) == []
+    finally:
+        os.chmod(str(cfg), 0o600)
+    assert unreadable, "the read failure was swallowed"
+
+
+def test_host_choices_with_no_hint_offers_nothing_QUIETLY(setup, agb, ops):
+    """The companion the test above needs: same empty result, different reason,
+    and the `unreadable` list is what tells them apart."""
+    unreadable = []
+    assert setup.host_choices(agb, ops, None, unreadable) == []
+    assert unreadable == []
+
+
+def test_the_agbridge_default_is_withheld_when_a_mapping_applies(setup, ops):
+    """⚠️ The relay does NOT apply `host_<name>`: `scan_participant` hands
+    `--host` to ssh verbatim. So on a host needing an alias, `[a]` produces a
+    roster that parses, validates, prints a working-looking next command, and
+    silently never delivers."""
+    hint = {"host": "box01"}
+    assert setup.offer_agbridge_default(ops, hint, {}) is True
+    assert setup.offer_agbridge_default(
+        ops, hint, {"host_box01": "box01.example"}) is False
+
+
+def test_the_agbridge_default_needs_a_host_at_all(setup, ops):
+    assert setup.offer_agbridge_default(ops, None, {}) is False
+    assert setup.offer_agbridge_default(ops, {"host": None}, {}) is False
+
+
+def test_scan_participant_really_does_use_the_host_verbatim(setup, peer):
+    """The premise the gate rests on, pinned against `agb-peer` itself rather
+    than restated -- if the relay ever learns `ssh_target_for`, this fails and
+    the gate can be relaxed."""
+    src = io.open(PEER_PATH, encoding="utf-8").read()
+    tree = ast.parse(src)
+    fns = [n for n in ast.walk(tree)
+           if isinstance(n, ast.FunctionDef) and n.name == "scan_participant"]
+    assert fns, "scan_participant is gone"
+    names = [n.id for n in ast.walk(fns[0]) if isinstance(n, ast.Name)]
+    assert "pane_argv_field" in names, names
+    assert "ssh_target_for" not in names, names

@@ -209,6 +209,127 @@ def discover_rows(peer, ctl, say):
         return []
 
 
+# Where `agb` lives on a Mac. `agb-refresh` spells the same default, and for
+# the same reason: the bridge loads its modules from the INSTALL, not from a
+# checkout, so a tool that reads the same config has to look where the running
+# system does.
+DEFAULT_AGB = os.path.join(os.path.expanduser("~"), ".local", "lib",
+                           "agbridge", "agb")
+
+
+def load_ops(agb_path=None):
+    """`agb_ops`, through `agb`'s own door. Raises `SetupError` if it cannot.
+
+    ⚠️ **`agb._load_ops()`, not a second loader.** That function already does
+    all of this -- registers `agb` in `sys.modules` first so the sibling's own
+    `import agb` binds the module already running, then loads by path -- and
+    `tests/conftest.py` routes through it deliberately, so that a broken door
+    fails tests rather than being quietly bypassed. Reimplementing it here
+    would be a second copy free to drift from the first.
+
+    `agb` itself still has to be loaded by path, because THIS script is not one
+    of its siblings; only that first hop is ours.
+    """
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    target = agb_path or DEFAULT_AGB
+    if not os.path.isfile(target):
+        raise SetupError("no agb at %s -- pass --agb <path>" % (target,), 3)
+    agb = sys.modules.get("agb")
+    if agb is None or getattr(agb, "__file__", None) != target:
+        loader = SourceFileLoader("agb", target)
+        spec = importlib.util.spec_from_file_location("agb", target,
+                                                      loader=loader)
+        agb = importlib.util.module_from_spec(spec)
+        sys.modules["agb"] = agb
+        loader.exec_module(agb)
+    return agb, agb._load_ops()
+
+
+def agbridge_hint(ops, session):
+    """A picked row's own `agb pane` options, or None if it is not one.
+
+    ⚠️ **`agb_ops.parse_pane_args`, not a hand-rolled walk over `foreground`.**
+    That array is a real argv with a real parser, and CLAUDE.md's rule for
+    exactly this case is: where it is not ambiguous, CALL the parser rather
+    than imitating it. An imitation also cannot reproduce a REFUSAL -- an argv
+    `agb pane` would reject describes a row whose settings cannot be trusted,
+    and a walk would confidently return values from it.
+
+    A refusal here is `None`, not an exception: `foreground` is whatever
+    somebody launched, so `AgbError` is an ordinary answer rather than a fault.
+    """
+    argv = session.get("foreground") or []
+    try:
+        index = list(argv).index("pane")
+    except ValueError:
+        return None
+    try:
+        opts = ops.parse_pane_args(list(argv)[index + 1:])
+    except Exception as exc:                       # agb.AgbError, by any name
+        if type(exc).__name__ != "AgbError":
+            raise
+        return None
+    return opts if opts.get("host") else None
+
+
+def row_target(ops, hint, unreadable):
+    """The row's own resolved ssh target, via `agb pane`'s own resolver.
+
+    ⚠️ **`unreadable` is the CALLER's list and is passed straight through.**
+    Handing `pane_settings` a fresh `[]` here would look identical and report
+    nothing: the caller's list stays empty, so the "could not read the config"
+    branch downstream can never fire, and an EACCES config degrades silently to
+    a bare hostname -- which is the wrong-machine bug with the diagnostic
+    removed. `pane_settings`' own docstring is a write-up of that failure.
+    """
+    target, _jump = ops.pane_settings(hint, unreadable=unreadable)
+    return target
+
+
+def host_choices(agb, ops, hint, unreadable):
+    """[(hostname, ssh target)] from the RIGHT instance's config.
+
+    ⚠️ **The instance is the one the picked ROW belongs to**, named by its own
+    `--config`, because a Mac running two bridges has two `host_<name>` tables
+    and reading the default one would resolve instance B's rows through
+    instance A's table. A row minted by a DEFAULT install carries no `--config`
+    at all -- that is every default install, not a legacy case -- and
+    `read_config(None)` is exactly the right answer for it.
+
+    ⚠️ **`pane_settings` cannot answer this and never could**: it returns one
+    target for one host, and deliberately never exposes the table. Enumerating
+    it is a separate read, which is why the failure has to be collected
+    separately too.
+    """
+    if hint is None:
+        return []
+    try:
+        config = agb.read_config(hint.get("config"))
+    except (IOError, OSError) as exc:
+        unreadable.append(exc)
+        return []
+    return sorted((key[len("host_"):], value)
+                  for key, value in config.items()
+                  if key.startswith(ops.CONFIG_KEY_PREFIXES[0]))
+
+
+def offer_agbridge_default(ops, hint, config):
+    """Whether `[a]` -- "let the relay read the row's own host" -- is honest.
+
+    ⚠️ **The relay does NOT apply the `host_<name>` mapping.**
+    `scan_participant` takes `pane_argv_field(foreground, "--host")` and hands
+    it to ssh VERBATIM. So on a host that needs an alias, `[a]` produces a
+    roster that parses, validates, prints a working-looking next command, and
+    then silently never delivers. Offering it only when the mapping is a no-op
+    is what keeps that option truthful.
+    """
+    if not hint or not hint.get("host"):
+        return False
+    host = hint["host"]
+    return ops.ssh_target_for(host, config or {}) == host
+
+
 def main(argv, out=None, peer=None, read_line=None, ctl=None):
     out = out or sys.stdout
     if not argv:

@@ -604,42 +604,47 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `_load_ops(agb_path=None)`: load **`agb`** by path (default
+- [x] implement `_load_ops(agb_path=None)`: load **`agb`** by path (default
       `~/.local/lib/agbridge/agb` per `agb-refresh:39`, injectable override, hard existence check),
       then call **`agb._load_ops()`** (`agb:2682`) — do **not** reimplement it (R7).
       `tests/conftest.py:155-162` routes through that door deliberately so a broken door fails
       tests rather than being bypassed. Lazy: only on the `[s]` branch
-- [ ] a failed `_load_ops` is a **reported** fallback to manual entry, never a crash
-- [ ] implement `agbridge_hint(session)`: locate `pane` in `foreground`, call
+- [x] a failed `_load_ops` is a **reported** fallback to manual entry, never a crash
+- [x] implement `agbridge_hint(session)`: locate `pane` in `foreground`, call
       **`agb_ops.parse_pane_args(foreground[i+1:])`** (`agb_ops:1830`) for a complete `opts`; return
       `None` when the argv is not an `agb pane` command or the parser refuses it
-- [ ] ⚠️ **thread ONE `unreadable` list through both readers** (R1): `row_target(hint, unreadable)`
+- [x] ⚠️ **thread ONE `unreadable` list through both readers** (R1): `row_target(hint, unreadable)`
       passes **that list** to `agb_ops.pane_settings(opts, unreadable=unreadable)` — not a fresh
       `[]`, which is what made the next check dead — and `host_choices(hint, unreadable, say)` takes
       it too, either reusing the `config` dict `pane_settings` already resolved or wrapping its own
       `agb.read_config` in `try/except OSError` and appending
-- [ ] enumerate the pick-list via `agb.read_config(...)` filtered on
+- [x] enumerate the pick-list via `agb.read_config(...)` filtered on
       `agb_ops.CONFIG_KEY_PREFIXES` (`agb_ops:238`) — `pane_settings` returns one target and cannot
       do this
-- [ ] when `unreadable` is non-empty, **report and offer no list** — distinct from "no hint, no
+- [x] when `unreadable` is non-empty, **report and offer no list** — distinct from "no hint, no
       list" (CLAUDE.md invariant 12; `agb_ops.pane_config_warning`, `agb_ops:2079`, is the house wording)
-- [ ] implement `offer_agbridge_default(hint, config)` as a **pure predicate** (R9): True only when
+- [x] implement `offer_agbridge_default(hint, config)` as a **pure predicate** (R9): True only when
       a `--host` was found **and** `ssh_target_for(host, config) == host`, because
       `scan_participant` uses that host **verbatim** (`agb-peer:2081`). The prompt wording that acts
       on it belongs to Task 7
-- [ ] write tests: `agbridge_hint` on a bare shell → `None`; on a real `agb pane --config X --host Y
+- [x] write tests: `agbridge_hint` on a bare shell → `None`; on a real `agb pane --config X --host Y
       --pane Z` argv → a complete `opts`; on an argv `parse_pane_args` **refuses** → `None`, not an
       `AgbError` escaping the menu
-- [ ] write tests: reuse `tests/conftest.py:514`'s `instance_config` fixture rather than inventing a
+- [x] write tests: reuse `tests/conftest.py:514`'s `instance_config` fixture rather than inventing a
       parallel one — a hint carrying `--config B` enumerates B's `host_<name>` table, **not** A's
-- [ ] write tests: a hint with **no** `--config` resolves against the default config — **every**
+- [x] write tests: a hint with **no** `--config` resolves against the default config — **every**
       default install, not a legacy case (`agb_mac.pane_argv` withholds the flag)
-- [ ] write tests: an unreadable config → the `unreadable` list the **caller** passed is non-empty
+- [x] write tests: an unreadable config → the `unreadable` list the **caller** passed is non-empty
       (R1's regression: a fresh-literal implementation leaves it empty and passes a weaker test),
       no pick-list, and **no** `OSError` escapes
-- [ ] write tests: `offer_agbridge_default` is False when `host_<name>` maps the host, True when it
+- [x] write tests: `offer_agbridge_default` is False when `host_<name>` maps the host, True when it
       does not
-- [ ] run tests — must pass before task 6
+- [x] run tests — **47 passed**; full suite **2394 passed**
+- [x] ➕ mutation-checked four guards. ⚠️ **The parser-vs-walk one was VACUOUS at first**: the
+      test used a trailing `--host` with no value, where a naive walk and the real parser both
+      answer `None`. Replaced with four argvs `parse_pane_args` **refuses** while a walk reads a
+      host — including one containing whitespace, which would break the roster grammar
+      downstream. The test now asserts that premise before asserting the behaviour
 
 ### Task 6: Draft state and file loading (including repair and unreadable paths)
 
