@@ -142,6 +142,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
   Not installed by `install.sh`; symlink it beside `agb-peer`.
 
+  **Verified against a live agterm on 2026-08-27** — the picker, the `[done]` prefix strip on a real
+  stale row, the substring-ambiguity refusal, the write and its `0600` mode, the conflict path with
+  its recovery draft, the symlink install, add and remove against a *running* relay, and both
+  branches of the `[a]` gate. ⚠️ **Two of the three defects above were found by that run and by
+  nothing else** — 2462 tests, three review rounds and fifteen mutation-checked tasks did not
+  surface either. **Not verified**: the `[?]` (feed-quiet) prefix, and a second instance's
+  `host_<name>` table rendered live — in both cases because no such row existed to pick, and
+  manufacturing one meant breaking a working bridge or installing an instance on somebody's
+  machine.
+
 - **`agb-peer` can now write a roster file safely, which is what an interactive builder needs.**
   Editing a `--roster` file by hand while a relay runs means knowing that the write has to be
   atomic: a file rewritten in place can be read truncated at a line boundary, and a truncated

@@ -892,6 +892,58 @@ No auto-merge anywhere.
 - [x] confirm the Tasks 2, 11 and 13 `CHANGELOG.md` entries read as one coherent feature
 - [x] move this plan to `docs/plans/completed/`
 
+## Post-Completion — RUN 2026-08-27, against a live agterm
+
+⚠️ **Two real defects were found, neither of which any test here caught.** Both are fixed, tested
+and mutation-checked. The plan's own value was in the *reasoning*, not the coverage: 2462 passing
+tests, three review rounds and fifteen mutation-checked tasks did not surface either.
+
+**Verified live:**
+
+- picker and `<row>` derivation against real agterm titles
+- ⚠️ the `[?]`/`[done]` **prefix strip on a real `[done]` row** — the case a fully-populated
+  unprefixed fixture structurally cannot reach, and the reason it survived three reviews
+- the uniqueness refusal on a real substring collision (`/Users/x` vs `/Users/x/y`)
+- happy write, mode `0600`, and the printed next-command
+- the **conflict path end to end**: `RosterConflict` not a bare error, roster byte-identical,
+  recovery draft on disk holding the pending changes, correct submenu
+- the symlink install (`agb-peer` link removed, only `agb-peer-setup`'s left)
+- **add and remove against a RUNNING relay**, without dropping the channel the test was conducted over
+- the `[a]` gate, **both branches**: withheld six times on a remapped host with the reason printed,
+  and offered on a host whose mapping is a no-op
+
+**Defects found and fixed:**
+
+1. **Comments and blank lines silently destroyed on write.** This plan *named* it as a decision
+   requiring disclosure; the rewrite was implemented, the message never was, and the checkbox was
+   ticked. The decision got made by the implementation instead of stated.
+2. 🔴 **Infinite spin on an exhausted stdin** — 305,869 menu prints in six seconds, on *any*
+   non-interactive invocation. `readline` returns `""` at EOF and does not raise `EOFError`.
+   ⚠️ **The test fake raised `EOFError`, which real stdin never does**, so the harness described a
+   world where the bug was impossible and `test_eof_is_a_cancel_not_a_crash` passed against the
+   broken code from the day it was written. A fake simpler than reality fails nothing.
+3. The `[a]` option was withheld **silently** when a row carried no host hint at all — a third code
+   path conflated with the remapped-host case. Both now name their own cause.
+
+**Still unverified, honestly:**
+
+- **`[?]` (feed-quiet) prefix strip.** No such row existed; manufacturing one means breaking a
+  working bridge to watch the same three lines of strip code already confirmed on `[done]`.
+- **A second instance's `host_<name>` table rendered live.** Both named instances exist, but the
+  dc6 one had no live row to pick. Right instance, no live row — a fact about that evening.
+
+**Found incidentally, and worth more to the operator than the branch it unblocked:** an
+**identity mapping is not automatically a working one.** A `host_<name> = <the same bare name>`
+line looks like a harmless no-op and is exactly what makes `[a]` eligible — but if that bare name
+does not resolve from the Mac, while the machine is reachable only under a different alias or a
+non-standard port, the line is worse than absent. `agb pane` resolves click-to-attach through that
+same table, so every row on that host ssh's a name that does not exist. Measured on the live
+system, where it also explained a key that was live in its host's marker and whose row never
+rendered. **Check an identity mapping resolves before trusting it**; the shape that catches it is
+`ssh <the value> true`.
+
+---
+
 ## Post-Completion
 
 **Manual verification.** This project's history is that menu/discovery features passed every test and
