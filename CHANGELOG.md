@@ -241,6 +241,17 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Ctrl-C path, where a raise would replace your Ctrl-C with a traceback out of the cleanup, and a
   grid that will not close is cosmetic while a relay that dies reporting it is not.
 
+- **`agb-peer relay --dashboard` opened no grid at all when a participant was in the scratch
+  drawer.** `agb pane`'s `[d]` puts an agent there, and the relay handed agterm a `<id>:scratch`
+  cell — which agterm refuses at parse time, before it looks at any row, so the *whole* command
+  failed and the conversation you asked to watch got no grid. All-or-nothing on a cell for the one
+  participant you were least likely to be watching.
+
+  A grid cell is now built in exactly one place, which drops a pane agterm's grid cannot show and
+  opens the grid with the rest. ⚠️ **It is dropped silently for now** — saying which participant is
+  missing is a separate change; until then, a grid with fewer cells than participants means one of
+  them is in a drawer.
+
 - **A message delivered to a *working* Codex was typed and never submitted.** Intermittent by
   nature: the same delivery to an idle Codex submits itself, so it depended entirely on whether the
   peer happened to be mid-turn when the reply came back. The relay logged `delivered` either way.

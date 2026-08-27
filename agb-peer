@@ -2627,8 +2627,17 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                 if dashboard and len(resolved) > 1:
                     # Re-opened on every move for the same reason the ids are
                     # re-resolved: a grid built on dead ids shows dead cells.
-                    grid_cells = ["%s:%s" % (resolved[n][0], resolved[n][1])
-                                  for n in sorted(resolved)]
+                    # ⚠️ Built HERE and nowhere else. The inline comprehension
+                    # this replaces produced the same string for a `left`/
+                    # `right` participant -- the routing is deliberately a
+                    # no-op for them -- but it was a second place where a cell
+                    # spelling lived, and a second place is how a bare id
+                    # (which takes every pane of its session) gets emitted by
+                    # one caller and not the other. `excluded` is not read yet;
+                    # reporting it is the scratch task's job.
+                    grid_cells, _excluded = dashboard_cells(
+                        [(resolved[n][0], resolved[n][1])
+                         for n in sorted(resolved)])
                     ok, _out, why = ctl.dashboard(grid_cells)
                     # ⚠️ Latched, never cleared: a re-open that FAILS does not
                     # mean the earlier grid went away, so forgetting ownership

@@ -526,19 +526,40 @@ do not depend on it. Both questions are currently **ASSUMED**, and both decide c
 Task 6 named its AST guard as evidence — so on the skip branch an acceptance criterion cited a guard
 nobody wrote, and the no-bare-id property reverted to a human read.
 
-- [ ] convert `agb-peer:2563`'s cell construction to `dashboard_cells`
-- [ ] write the AST guard that cell strings are built only in `dashboard_cells`, over `agb-peer`
+- [x] convert `agb-peer:2563`'s cell construction to `dashboard_cells`
+- [x] write the AST guard that cell strings are built only in `dashboard_cells`, over `agb-peer`
       **and** `agb-dashboard`, with its non-vacuity assertion
-- [ ] ⚠️ **two walks, one tree each — not `functions(peer_tree, dash_tree)`.**
+      — ➕ **two** non-vacuity assertions, not one, because there are two ways to cover nothing:
+      `checked` (no tree was parsed) and `found` (the pattern matches no literal any more). An
+      absent `agb-dashboard` is skipped, so without the second the guard would go green on a file
+      whose only cell format had been renamed
+      — ➕ the pattern is *placeholders joined by colons* (`%s:%s`, `{}:{}`), NOT "a string with a
+      colon in it": `render_roster` legitimately builds `":%s"` for the roster grammar, and a
+      broader pattern would have had to allow-list it — an allow-list being the thing that makes a
+      guard stop guarding
+- [x] ⚠️ **two walks, one tree each — not `functions(peer_tree, dash_tree)`.**
       `tests/conftest.py`'s `functions()` raises on any non-dunder name defined in two trees, and
       both files define `main`. Revision 3's parenthetical "the `conftest` helpers take any tree" was
       false and would have sent an implementer into an assertion about duplicate definitions
-- [ ] add `DASH_PATH` to `tests/conftest.py` beside `PEER_PATH`/`SETUP_PATH`, which the guard needs
-      to parse the new file
-- [ ] write tests: the relay's cells still match what it produced before, for a roster of `left` and
+      — ➕ a local `_owned_strings` attributes each literal to its **innermost** `def`, so the answer
+      is "which function spells this" rather than "does the file contain it"
+- [x] add `DASH_PATH` to `tests/conftest.py` beside `PEER_PATH`/`SETUP_PATH`, which the guard needs
+      to parse the new file — ➕ commented as *may not exist yet*, with the skip-plus-non-vacuity
+      contract a reader of it owes
+- [x] write tests: the relay's cells still match what it produced before, for a roster of `left` and
       `right` participants — the no-behaviour-change proof for the routing itself
-- [ ] add a `CHANGELOG.md` entry for the user-visible half of Task 2a and this task
-- [ ] run tests — must pass before task 2b-ii
+      — ➕ plus a complement, `test_the_relay_asks_dashboard_cells_for_its_cells`: the absence of a
+      stray format proves nothing on its own, since a caller could pass a **bare id** and never
+      spell a colon at all
+- [x] ➕ **CHANGELOG entry: this task's half only.** 2a already wrote its own (see its last bullet),
+      so this bullet's "for the user-visible half of Task 2a and this task" is stale. The entry
+      written here is for the one user-visible consequence this commit really has: routing through
+      `dashboard_cells` drops a `scratch` participant, so a relay that previously opened **no grid
+      at all** (agterm refuses `:scratch` at parse time — Task 0) now opens one without that cell.
+      ⚠️ **Task 2b-ii should EXTEND that entry, not add a second** — it is the same symptom, and the
+      entry already flags the silent-drop gap 2b-ii closes
+- [x] run tests — must pass before task 2b-ii
+      — ➕ 364 in `test_agb_peer.py`, 2497 in the full suite
 
 ### Task 2b-ii: Exclude `scratch` from the grid (defect 4) — CONDITIONAL
 

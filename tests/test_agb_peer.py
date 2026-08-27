@@ -11,6 +11,7 @@ import ast
 import importlib.util
 import io
 import os
+import re
 
 import pytest
 from importlib.machinery import SourceFileLoader
@@ -4079,3 +4080,104 @@ def test_the_relay_still_opens_a_grid_after_the_return_shape_changed(peer):
     assert unpacks, "no ctl.dashboard(...) unpack found in cmd_relay"
     for u in unpacks:
         assert len(u.targets[0].elts) == 3, "must unpack (ok, out, why)"
+
+
+# ---------------------------------------------------------------------------
+# The relay builds its cells through dashboard_cells -- agb-dashboard Task 2b-i.
+# Plan: docs/plans/20260827-agb-dashboard.md
+# ---------------------------------------------------------------------------
+
+def test_the_relays_cells_are_unchanged_by_the_routing(peer):
+    """⚠️ The no-behaviour-change proof, and the only thing 2b-i owes.
+
+    The inline comprehension this replaced spelled the same string for a
+    `left`/`right` participant, so a green suite proves nothing unless a test
+    pins the OUTPUT rather than the route. `right` is in here deliberately: a
+    routing that forced `:left` would still pass over an all-`left` roster.
+    """
+    ctl = RelayCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222:right"], 500, 0, True,
+                   io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards == [["AAAA1111:left", "BBBB2222:right"]]
+
+
+# A cell is `<id>:<pane>`, and the pane half is load-bearing: a BARE id takes
+# every pane of its session, so agterm's 9-cell cap starts counting somebody
+# else's split. `dashboard_cells` is where that spelling lives, and this guard
+# is what stops a second caller growing its own copy -- which is exactly how
+# `cmd_relay` and `agb-dashboard` would drift apart.
+#
+# ⚠️ It spans TWO files. `agb-dashboard` is created by Task 3 of the plan and
+# does not exist yet; an absent tree is skipped rather than failed, which is
+# why the non-vacuity assertions below matter -- without them the guard would
+# read a missing file as a clean bill of health for both.
+#
+# ⚠️ Two walks, one tree each, NOT `conftest.functions(peer_tree, dash_tree)`:
+# that helper raises on any non-dunder name defined in two trees, and both
+# files define `main`.
+
+# A cell FORMAT is placeholders joined by colons and nothing else -- `"%s:%s"`,
+# `"{}:{}"`. Deliberately not every string containing a colon: `render_roster`
+# legitimately builds `":%s"` fragments for the roster grammar, which is a
+# different string that happens to share a character.
+CELL_FORMAT = re.compile(r"^(%s|\{\d*\})(:(%s|\{\d*\}))+$")
+
+
+def _owned_strings(tree):
+    """{owning function name or None: [str literals]}, innermost owner wins.
+
+    Attributing a literal to the innermost `def` is what makes the answer
+    "which function spells this", rather than "does the file contain it" --
+    the second is the substring grep this file's conventions forbid.
+    """
+    owned = {}
+
+    def visit(node, owner):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef):
+                visit(child, child.name)
+                continue
+            if isinstance(child, ast.Str):
+                owned.setdefault(owner, []).append(child.s)
+            visit(child, owner)
+
+    visit(tree, None)
+    return owned
+
+
+def test_cell_strings_are_spelled_only_in_dashboard_cells():
+    from conftest import DASH_PATH, PEER_PATH as CONF_PEER_PATH
+
+    checked, found = [], []
+    for path in (CONF_PEER_PATH, DASH_PATH):
+        if not os.path.exists(path):
+            # Task 3 creates `agb-dashboard`. Until then there is one emitter,
+            # and skipping is right -- but only because `found` below still has
+            # to be non-empty.
+            continue
+        checked.append(path)
+        tree = ast.parse(io.open(path, encoding="utf-8").read(), filename=path)
+        for owner, literals in _owned_strings(tree).items():
+            for text in literals:
+                if CELL_FORMAT.match(text):
+                    found.append((os.path.basename(path), owner, text))
+
+    assert checked, "neither cell emitter was parsed -- the guard covered nothing"
+    assert found, "no cell format found at all -- the pattern stopped matching"
+    strays = [f for f in found if f[1] != "dashboard_cells"]
+    assert not strays, (
+        "a cell string is built outside dashboard_cells: %r" % (strays,))
+
+
+def test_the_relay_asks_dashboard_cells_for_its_cells():
+    """The complement of the guard above: absence of a stray format proves
+    nothing on its own, because a caller could pass a bare id and never spell a
+    colon at all. `cmd_relay` must actually CALL the one builder."""
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    fns = [n for n in ast.walk(tree)
+           if isinstance(n, ast.FunctionDef) and n.name == "cmd_relay"]
+    assert fns, "cmd_relay is gone"
+    names = [n.func.id for n in ast.walk(fns[0])
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert names, "cmd_relay calls no bare-name function -- walk is wrong"
+    assert "dashboard_cells" in names

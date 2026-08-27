@@ -147,6 +147,11 @@ def agb():
 PEER_MODULE = "agb_peer"
 PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 SETUP_PATH = os.path.join(REPO_ROOT, "agb-peer-setup")
+# ⚠️ MAY NOT EXIST YET -- `agb-dashboard` is created by a later task of the
+# agb-dashboard plan. It is named here so the guards that must span both cell
+# emitters have one spelling of the path; a guard reading it is responsible for
+# skipping a tree that is absent and for asserting it still covered something.
+DASH_PATH = os.path.join(REPO_ROOT, "agb-dashboard")
 
 
 @pytest.fixture(scope="session")
