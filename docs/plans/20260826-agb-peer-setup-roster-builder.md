@@ -722,13 +722,13 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `cmd_delete(draft, read_line, say)`: numbered list over the ordered `entries`, pick
+- [x] implement `cmd_delete(draft, read_line, say)`: numbered list over the ordered `entries`, pick
       or cancel, remove, set dirty
-- [ ] write tests: delete by index on a **3-entry** draft removes the right entry and preserves the
+- [x] write tests: delete by index on a **3-entry** draft removes the right entry and preserves the
       order of the rest
-- [ ] write tests: cancel and out-of-range leave the draft byte-identical
-- [ ] write tests: deleting down to **one** entry is allowed — it is the removal workflow
-- [ ] run tests — must pass before task 9
+- [x] write tests: cancel and out-of-range leave the draft byte-identical
+- [x] write tests: deleting down to **one** entry is allowed — it is the removal workflow
+- [x] run tests — **115 passed**
 
 ### Task 9: Raw-edit escape hatch (`e`)
 
@@ -736,21 +736,21 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `cmd_edit_raw(draft, read_line, say)`: pick an entry (or "new"), pre-fill with its
+- [x] implement `cmd_edit_raw(draft, read_line, say)`: pick an entry (or "new"), pre-fill with its
       canonical **`str`** line
-- [ ] ⚠️ **validate with `parse_roster_text` on the joined draft, NOT `parse_participants`** (R6).
+- [x] ⚠️ **validate with `parse_roster_text` on the joined draft, NOT `parse_participants`** (R6).
       **Measured**: `parse_participants(['alice=my row'], minimum=1)` → `{'alice': ('my row',
       'left', None, None)}` — **accepted**, because it receives words already split and never
       rejects whitespace inside `<row>`. Only `parse_roster_text` rejects it, by splitting
       (`agb-peer:1058-1061`). Use the same call Task 11 uses, `minimum=1`
-- [ ] on invalid input show the **exact** `PeerError` text and the prior canonical line, leaving the
+- [x] on invalid input show the **exact** `PeerError` text and the prior canonical line, leaving the
       draft untouched — otherwise the hatch is a trap, which is this checkbox's whole point
-- [ ] write tests: **a raw line containing a space is refused** (R6's regression — it passed before)
-- [ ] write tests: a valid raw edit replaces the entry **in place** and sets dirty
-- [ ] write tests: an invalid raw edit leaves `entries` equal to its pre-attempt value, with the
+- [x] write tests: **a raw line containing a space is refused** (R6's regression — it passed before)
+- [x] write tests: a valid raw edit replaces the entry **in place** and sets dirty
+- [x] write tests: an invalid raw edit leaves `entries` equal to its pre-attempt value, with the
       parser's own wording in the message
-- [ ] write tests: a raw line naming `relay`, or duplicating another entry's name, is refused
-- [ ] run tests — must pass before task 10
+- [x] write tests: a raw line naming `relay`, or duplicating another entry's name, is refused
+- [x] run tests — **115 passed**
 
 ### Task 10: View (`v`), dirty-aware quit (`q`), and the menu loop
 
@@ -758,16 +758,16 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `cmd_view(draft, say)` — renders the draft, no disk touch
-- [ ] implement `cmd_quit(draft, read_line, say)` — no prompt when clean; confirm when dirty
-- [ ] implement `render_menu(draft)` and `main_loop(draft, ctl, read_line, say)`, wiring Tasks 7–9's
+- [x] implement `cmd_view(draft, say)` — renders the draft, no disk touch
+- [x] implement `cmd_quit(draft, read_line, say)` — no prompt when clean; confirm when dirty
+- [x] implement `render_menu(draft)` and `main_loop(draft, ctl, read_line, say)`, wiring Tasks 7–9's
       handlers and filling Task 3's interactive dispatch arm
-- [ ] unrecognised input re-shows the menu and changes nothing — the safe default here, unlike
+- [x] unrecognised input re-shows the menu and changes nothing — the safe default here, unlike
       `agb pane`'s fall-through-to-attach
-- [ ] write tests: quitting clean exits with no prompt; quitting dirty prompts, and "no" returns to
+- [x] write tests: quitting clean exits with no prompt; quitting dirty prompts, and "no" returns to
       the menu with the draft intact
-- [ ] write tests: an unrecognised key leaves the draft byte-identical
-- [ ] run tests — must pass before task 11
+- [x] write tests: an unrecognised key leaves the draft byte-identical
+- [x] run tests — **115 passed**
 
 ### Task 11: Write flow (`w`) — happy path
 
@@ -776,29 +776,29 @@ No auto-merge anywhere.
 - Modify: `tests/test_agb_peer_setup.py`
 - Modify: `CHANGELOG.md`
 
-- [ ] implement `cmd_write(draft, ctl, say)`: validate via
+- [x] implement `cmd_write(draft, ctl, say)`: validate via
       `parse_roster_text("\n".join(render(entries)).encode(), minimum=1)`; invalid → message, stay
       in the menu, **no** disk touch
-- [ ] decide and state whether the file ends with a trailing newline — `"\n".join` produces none,
+- [x] decide and state whether the file ends with a trailing newline — `"\n".join` produces none,
       which `parse_roster_text` tolerates (`splitlines`) but is user-visible in an editor.
       Recommendation: append one
-- [ ] if `len(entries) < 2`, **warn and continue**, naming the distinction: a running relay accepts
+- [x] if `len(entries) < 2`, **warn and continue**, naming the distinction: a running relay accepts
       one participant, a starting one refuses it
-- [ ] resolve every entry against a **fresh** tree and warn when two names land on one row — the
+- [x] resolve every entry against a **fresh** tree and warn when two names land on one row — the
       failure `_one_name_per_row` (`agb-peer:2253`) exists for, which a picker makes easy and
       `parse_participants` cannot see
-- [ ] call `write_roster_file(path, lines, draft.loaded)`; on success print `wrote <path>` and the
+- [x] call `write_roster_file(path, lines, draft.loaded)`; on success print `wrote <path>` and the
       literal `agb-peer relay --roster <path>` command; clear dirty; refresh `loaded`
-- [ ] add the user-visible `CHANGELOG.md` entry in this commit — name the symptom (hand-writing the
+- [x] add the user-visible `CHANGELOG.md` entry in this commit — name the symptom (hand-writing the
       grammar and the atomic-write discipline), not just "added a builder"
-- [ ] write tests: an empty draft is refused with the parser's message, target untouched
-- [ ] write tests: a **one-entry** draft **is written**, with a warning — mutation-check it (flip to
+- [x] write tests: an empty draft is refused with the parser's message, target untouched
+- [x] write tests: a **one-entry** draft **is written**, with a warning — mutation-check it (flip to
       a refusal, confirm this named test fails), following the Testing Strategy's `__pycache__` step
-- [ ] write tests: two entries resolving to one row produce a warning naming both
-- [ ] write tests: happy path produces the expected bytes and next-command string
-- [ ] write tests: after a successful write, `dirty` is False and `loaded` matches, so an immediate
+- [x] write tests: two entries resolving to one row produce a warning naming both
+- [x] write tests: happy path produces the expected bytes and next-command string
+- [x] write tests: after a successful write, `dirty` is False and `loaded` matches, so an immediate
       second `w` does not conflict
-- [ ] run tests — must pass before task 12
+- [x] run tests — **115 passed**
 
 ### Task 12: Write flow (`w`) — conflict detection and recovery
 
@@ -806,28 +806,28 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] extend `cmd_write` to catch `RosterConflict` and **immediately** persist the draft with
+- [x] extend `cmd_write` to catch `RosterConflict` and **immediately** persist the draft with
       **`write_draft_file`** — the **ungated** writer — to a unique path beside the roster, printing
       it before asking anything
-- [ ] implement the submenu: `[v]` view draft, `[r]` reload (confirmed; the only destructive action;
+- [x] implement the submenu: `[v]` view draft, `[r]` reload (confirmed; the only destructive action;
       resets `entries`, `loaded`, clears dirty), `[q]` quit leaving the draft, `[enter]` back to the
       editor. **Deferred deliberately**: a `difflib` display and `[c] view current`
-- [ ] a second `w` after `[enter]` re-reads the gate and may conflict again — same code path
-- [ ] write tests: mutating the file between `Draft.load` and `cmd_write` leaves the roster
+- [x] a second `w` after `[enter]` re-reads the gate and may conflict again — same code path
+- [x] write tests: mutating the file between `Draft.load` and `cmd_write` leaves the roster
       **byte-identical**, creates exactly **one** recovery file containing the draft, and lands in
       the submenu
-- [ ] write tests: the recovery write **succeeds** — a gated writer would raise `RosterConflict`
+- [x] write tests: the recovery write **succeeds** — a gated writer would raise `RosterConflict`
       from inside the conflict handler
-- [ ] write tests: **an unreadable roster at write time also produces a recovery draft** (R3's
+- [x] write tests: **an unreadable roster at write time also produces a recovery draft** (R3's
       regression) — this is the path that silently lost the draft when the conversion was missing
-- [ ] write tests: two conflicts in one session produce two **distinct** recovery files
-- [ ] write tests: `[r]` reload resets dirty and `loaded` such that an immediate `w` succeeds
-- [ ] write **AST guard**: the recovery path calls `write_draft_file`, which contains **no**
+- [x] write tests: two conflicts in one session produce two **distinct** recovery files
+- [x] write tests: `[r]` reload resets dirty and `loaded` such that an immediate `w` succeeds
+- [x] write **AST guard**: the recovery path calls `write_draft_file`, which contains **no**
       `roster_bytes` comparison — so a crash mid-recovery leaves the file absent, never half-written
-- [ ] mutation-check the conflict gate: make `write_roster_file` skip the comparison, confirm the
+- [x] mutation-check the conflict gate: make `write_roster_file` skip the comparison, confirm the
       named byte-identical test fails, restore from the `sha256`-verified snapshot — deleting
       `<repo-root>/__pycache__/agb-peer*.pyc` first and confirming the mtime moved
-- [ ] run tests — must pass before task 13
+- [x] run tests — **115 passed**; full suite **2462 passed**
 
 ### Task 13: Non-interactive `validate` handler
 
@@ -836,18 +836,18 @@ No auto-merge anywhere.
 - Modify: `tests/test_agb_peer_setup.py`
 - Modify: `CHANGELOG.md`
 
-- [ ] implement `cmd_validate(path, out)` — `read_roster_file` + `parse_roster_text`; print
+- [x] implement `cmd_validate(path, out)` — `read_roster_file` + `parse_roster_text`; print
       `ok: N participant(s)` or the exact `PeerError` message with a non-zero exit
-- [ ] state and comment the `minimum`: **2**, because this answers "would `agb-peer relay --roster`
+- [x] state and comment the `minimum`: **2**, because this answers "would `agb-peer relay --roster`
       **start**?" — deliberately stricter than the editor's `minimum=1`, and the asymmetry is the point
-- [ ] the dispatch arm already exists from Task 3 — only the body lands here
-- [ ] add its own `CHANGELOG.md` entry — `validate` is a separate user-visible subcommand and the
+- [x] the dispatch arm already exists from Task 3 — only the body lands here
+- [x] add its own `CHANGELOG.md` entry — `validate` is a separate user-visible subcommand and the
       repo rule is same-commit-as-the-code
-- [ ] write tests: a valid two-participant file → exit 0 and the count
-- [ ] write tests: a one-participant file → non-zero, message naming the startup minimum
-- [ ] write tests: malformed and non-UTF-8 → non-zero, message **identical** to
+- [x] write tests: a valid two-participant file → exit 0 and the count
+- [x] write tests: a one-participant file → non-zero, message naming the startup minimum
+- [x] write tests: malformed and non-UTF-8 → non-zero, message **identical** to
       `parse_roster_text`'s own wording (proving no duplicated validation)
-- [ ] run tests — must pass before task 14
+- [x] run tests — **115 passed**
 
 ### Task 14: Verify acceptance criteria (automated only)
 

@@ -687,6 +687,273 @@ def cmd_add(peer, draft, ctl, read_line, say, ops=None, agb=None):
     return True
 
 
+def cmd_delete(peer, draft, read_line, say):
+    """Remove one participant. Returns True when the draft changed."""
+    if not draft.entries:
+        say("nothing to delete.")
+        return False
+    lines = peer.render_roster_lines(draft.entries)
+    say("participants:")
+    for i, line in enumerate(lines, 1):
+        say("  %2d) %s" % (i, line))
+    answer = ask(read_line, say, "delete which [1-%d]: " % (len(lines),))
+    if answer is CANCEL:
+        say("cancelled -- nothing was deleted.")
+        return False
+    if not (answer.isdigit() and 1 <= int(answer) <= len(lines)):
+        say("not a number in range -- nothing was deleted.")
+        return False
+    name, _spec = draft.entries.pop(int(answer) - 1)
+    draft.dirty = True
+    # ⚠️ Announced, never refused, even down to zero. A running relay accepts
+    # one participant -- somebody left -- and refusing the last delete would
+    # mean this tool cannot perform the operation `--roster` exists for.
+    say("deleted %s (%d left)" % (name, len(draft.entries)))
+    return True
+
+
+def cmd_edit_raw(peer, draft, read_line, say):
+    """Edit one entry as a raw roster line, or add one. The expert hatch.
+
+    ⚠️ **Validated with `parse_roster_text`, not `parse_participants`.**
+    MEASURED: `parse_participants(['alice=my row'], minimum=1)` returns
+    `{'alice': ('my row', ...)}` -- accepted. It receives words that are
+    ALREADY SPLIT and never rejects whitespace inside `<row>`; only
+    `parse_roster_text` does, by doing the splitting. Validating with the
+    former lets a spaced line into the draft to fail at write time, which is
+    exactly the "escape hatch becomes a trap" this prompt exists to avoid.
+    """
+    lines = peer.render_roster_lines(draft.entries)
+    say("participants:")
+    for i, line in enumerate(lines, 1):
+        say("  %2d) %s" % (i, line))
+    say("  %2d) add a new line" % (len(lines) + 1,))
+    which = ask(read_line, say, "edit which [1-%d]: " % (len(lines) + 1,))
+    if which is CANCEL:
+        say("cancelled -- nothing was changed.")
+        return False
+    if not (which.isdigit() and 1 <= int(which) <= len(lines) + 1):
+        say("not a number in range -- nothing was changed.")
+        return False
+    index = int(which) - 1
+    adding = index == len(lines)
+    if not adding:
+        say("current: %s" % (lines[index],))
+    edited = ask(read_line, say, "line: ")
+    if edited is CANCEL or not edited:
+        say("cancelled -- nothing was changed.")
+        return False
+    others = [line for i, line in enumerate(lines) if adding or i != index]
+    try:
+        people = peer.parse_roster_text(
+            "\n".join(others + [edited]).encode("utf-8"), minimum=1)
+    except peer.PeerError as exc:
+        say("not a usable roster line: %s" % (exc,))
+        if not adding:
+            say("unchanged: %s" % (lines[index],))
+        return False
+    name = edited.split("=")[0].strip()
+    if name not in people:
+        say("that line does not define %r -- nothing was changed." % (name,))
+        return False
+    entry = (name, people[name])
+    if adding:
+        draft.entries.append(entry)
+    else:
+        draft.entries[index] = entry           # in place: the order is a contract
+    draft.dirty = True
+    say("now: %s" % (peer.render_roster_lines([entry])[0],))
+    return True
+
+
+def cmd_view(peer, draft, say):
+    """Show the draft. Touches no disk: this is what is in memory."""
+    if not draft.entries:
+        say("the draft is empty.")
+        return False
+    say("draft (%d participant(s))%s:"
+        % (len(draft.entries), " -- UNSAVED" if draft.dirty else ""))
+    for line in peer.render_roster_lines(draft.entries):
+        say("  %s" % (line,))
+    return False
+
+
+def cmd_quit(draft, read_line, say):
+    """True when the editor should exit. Confirms only when there is a loss."""
+    if not draft.dirty:
+        return True
+    answer = ask(read_line, say,
+                 "discard unsaved changes? [y/N]: ", default="n")
+    if answer is CANCEL:
+        return True
+    if answer.lower() in ("y", "yes"):
+        say("discarded -- nothing was written.")
+        return True
+    return False
+
+
+MENU = ("[a] add   [d] delete   [e] edit raw   [v] view   "
+        "[w] write & exit   [q] quit > ")
+
+
+def render_menu(peer, draft):
+    """The header lines: the path, a dirty marker, and the entries."""
+    lines = ["", "Roster: %s%s" % (draft.path, " *" if draft.dirty else "")]
+    if draft.entries:
+        for i, line in enumerate(peer.render_roster_lines(draft.entries), 1):
+            lines.append("  %d) %s" % (i, line))
+    else:
+        lines.append("  (empty)")
+    return lines
+
+
+def main_loop(peer, draft, ctl, read_line, say, ops=None, agb=None):
+    """The editor. Returns an exit code.
+
+    ⚠️ **Unrecognised input re-shows the menu and does nothing**, which is the
+    opposite of `agb pane`, whose menu falls through to attaching. There the
+    fall-through is safe and useful; here the closest thing to a default would
+    be an edit, and a mistyped key must never change somebody's roster.
+    """
+    while True:
+        for line in render_menu(peer, draft):
+            say(line)
+        answer = ask(read_line, say, MENU)
+        if answer is CANCEL or answer in ("q", "quit", "exit"):
+            if cmd_quit(draft, read_line, say):
+                return 0
+            continue
+        if answer == "a":
+            cmd_add(peer, draft, ctl, read_line, say, ops=ops, agb=agb)
+        elif answer == "d":
+            cmd_delete(peer, draft, read_line, say)
+        elif answer == "e":
+            cmd_edit_raw(peer, draft, read_line, say)
+        elif answer == "v":
+            cmd_view(peer, draft, say)
+        elif answer == "w":
+            if cmd_write(peer, draft, ctl, read_line, say):
+                return 0
+        else:
+            say("pick one of a, d, e, v, w, q.")
+
+
+def one_name_per_row(peer, ctl, draft, say):
+    """Warn when two participants resolve to the SAME row.
+
+    ⚠️ `_one_name_per_row` exists in the relay because two DIFFERENT labels can
+    each unambiguously match one row -- and then both drain that pane, so a
+    message is delivered twice, and `try_deliver`'s self-guard compares NAMES,
+    so a message to the alias is typed into the sender's own composer. A
+    startup typo could do it before; a PICKER makes it easy, and
+    `parse_participants` cannot see it because the names and the row strings
+    both differ.
+    """
+    sessions = discover_rows(peer, ctl, lambda _m: None)
+    if not sessions:
+        return
+    owner = {}
+    for name, spec in draft.entries:
+        matches = peer.match_sessions(sessions, spec[0])
+        if len(matches) != 1:
+            continue
+        rid = matches[0].get("id")
+        if rid in owner:
+            say("warning: %r and %r both resolve to the same row (%s) -- the "
+                "relay would deliver to it twice and can type a message into "
+                "its own sender."
+                % (owner[rid], name, matches[0].get("name") or rid))
+        else:
+            owner[rid] = name
+
+
+def cmd_write(peer, draft, ctl, read_line, say):
+    """Write the roster. True when the editor should exit.
+
+    ⚠️ **Fewer than two participants WARNS, it does not refuse.** A relay
+    cannot START with one, but a running one can legitimately drop to one when
+    somebody leaves -- and refusing here would mean this tool cannot remove a
+    participant from a running two-person relay, which is the workflow it
+    exists to replace.
+    """
+    lines = peer.render_roster_lines(draft.entries)
+    try:
+        people = peer.parse_roster_text("\n".join(lines).encode("utf-8"),
+                                        minimum=1)
+    except peer.PeerError as exc:
+        say("this draft is not a usable roster (%s) -- nothing was written."
+            % (exc,))
+        return False
+    if len(people) < 2:
+        say("note: %d participant(s). A relay cannot START with fewer than 2, "
+            "though a RUNNING one can drop to 1 when somebody leaves -- so this"
+            " is how you remove somebody." % (len(people),))
+    one_name_per_row(peer, ctl, draft, say)
+    try:
+        peer.write_roster_file(draft.path, lines, draft.loaded)
+    except peer.RosterConflict as exc:
+        return conflict(peer, draft, lines, read_line, say, exc)
+    draft.loaded = peer.roster_bytes(draft.path)
+    draft.dirty = False
+    say("wrote %s" % (draft.path,))
+    say("")
+    say("start the relay with:")
+    say("  agb-peer relay --roster %s" % (draft.path,))
+    return True
+
+
+def conflict(peer, draft, lines, read_line, say, exc):
+    """The roster moved underneath us. Save the draft, then ask. Never merge.
+
+    ⚠️ **The recovery draft is written BEFORE anything is asked**, and through
+    the UNGATED writer. "The draft is safe because it is still in memory" is
+    operationally worthless: a closed terminal, a killed process or a user who
+    panics loses it. And routing this through `write_roster_file` would raise
+    `RosterConflict` from inside the conflict handler -- the one path standing
+    between a conflict and lost work cannot itself be conditional.
+
+    ⚠️ **Nothing is merged, ever.** These entries encode a participant and a
+    transport, not prose; a line-wise merge would produce a roster that looks
+    plausible and routes messages somewhere nobody chose.
+    """
+    say(str(exc))
+    saved = None
+    try:
+        saved = peer.write_draft_file(draft.path + ".conflict", lines)
+    except (IOError, OSError) as write_exc:
+        say("could not save a recovery draft either (%s) -- do not quit until "
+            "you have copied what you need." % (write_exc,))
+    if saved:
+        say("your draft was saved to %s" % (saved,))
+    while True:
+        say("  [v] view your draft   [r] reload from disk (discards it)")
+        say("  [q] quit, leaving the recovery draft   [enter] back to the menu")
+        answer = ask(read_line, say, "conflict > ")
+        if answer is CANCEL:
+            return True
+        if answer == "v":
+            for line in lines:
+                say("  %s" % (line,))
+        elif answer == "r":
+            sure = ask(read_line, say,
+                       "discard your draft and reload %s? [y/N]: "
+                       % (draft.path,), default="n")
+            if sure is not CANCEL and sure.lower() in ("y", "yes"):
+                fresh = load_draft(peer, draft.path, say)
+                draft.entries = fresh.entries
+                draft.loaded = fresh.loaded
+                draft.dirty = False
+                say("reloaded -- your draft is only in %s now."
+                    % (saved or "memory",))
+                return False
+        elif answer == "q":
+            return True
+        elif answer == "":
+            return False
+        else:
+            say("pick v, r, q, or press enter.")
+
+
 def main(argv, out=None, peer=None, read_line=None, ctl=None):
     out = out or sys.stdout
     if not argv:
@@ -716,11 +983,40 @@ class SetupError(Exception):
 
 
 def cmd_validate(path, out, peer=None):
-    raise SetupError("validate is not implemented yet", 70)
+    """Would `agb-peer relay --roster <path>` START? Exit 0 if so.
+
+    ⚠️ **`minimum=2` here, where the editor uses 1, and the asymmetry is the
+    answer rather than an inconsistency.** This command answers the question a
+    support request actually asks -- "why will my relay not start" -- so it has
+    to apply the STARTUP rule. The editor applies the runtime one, because a
+    one-participant roster is a legal thing to be editing.
+    """
+    peer = peer or load_peer()
+    try:
+        people = peer.parse_roster_text(peer.read_roster_file(path), minimum=2)
+    except peer.PeerError as exc:
+        out.write("%s\n" % (exc,))
+        return 1
+    out.write("ok: %d participant(s)\n" % (len(people),))
+    return 0
 
 
 def run_editor(path, out, peer=None, read_line=None, ctl=None):
-    raise SetupError("the interactive editor is not implemented yet", 70)
+    peer = peer or load_peer()
+    say = lambda message: out.write("%s\n" % (message,))
+    if read_line is None:
+        read_line = sys.stdin.readline
+    if ctl is None:
+        ctl = peer.Ctl()
+    ops = agb = None
+    try:
+        agb, ops = load_ops()
+    except SetupError as exc:
+        # Not fatal: without `agb` there is no host list and no row hint, and
+        # every prompt still works by hand. Saying so beats a silent downgrade.
+        say("note: %s -- host lists and row hints are unavailable." % (exc,))
+    draft = load_draft(peer, path, say)
+    return main_loop(peer, draft, ctl, read_line, say, ops=ops, agb=agb)
 
 
 if __name__ == "__main__":

@@ -893,3 +893,351 @@ def test_picking_a_row_whose_label_resolves_ELSEWHERE_is_refused(setup, peer,
     setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
     assert "not to the row you picked" in s.text
     assert peer.render_roster_lines(draft.entries) == ["alice=something"]
+
+
+# ---------------------------------------------------------------------------
+# delete / raw edit / view / quit / menu -- Tasks 8, 9, 10.
+# ---------------------------------------------------------------------------
+
+THREE = [("alice", ("R1", "left", None, None)),
+         ("bob", ("R2", "left", None, None)),
+         ("carol", ("R3", "left", None, None))]
+
+
+def test_delete_removes_the_right_entry_and_keeps_the_order(setup, peer):
+    """A 3-entry draft so an off-by-one is visible -- a 2-entry one cannot
+    distinguish "the second" from "the last"."""
+    draft = draft_of(setup, THREE)
+    s = Script("2")
+    assert setup.cmd_delete(peer, draft, s.read_line, s.say) is True
+    assert draft.names() == ["alice", "carol"]
+    assert draft.dirty is True
+
+
+@pytest.mark.parametrize("answer", ["q", "0", "4", "x", ""])
+def test_a_bad_delete_answer_changes_nothing(setup, peer, answer):
+    draft = draft_of(setup, THREE)
+    s = Script(answer)
+    assert setup.cmd_delete(peer, draft, s.read_line, s.say) is False
+    assert draft.names() == ["alice", "bob", "carol"]
+    assert draft.dirty is False
+
+
+def test_deleting_down_to_one_is_ALLOWED(setup, peer):
+    """⚠️ It is the removal workflow. A running relay accepts one participant,
+    and refusing here would mean this tool cannot do what `--roster` exists
+    for."""
+    draft = draft_of(setup, THREE[:2])
+    s = Script("1")
+    assert setup.cmd_delete(peer, draft, s.read_line, s.say) is True
+    assert draft.names() == ["bob"]
+
+
+def test_delete_on_an_empty_draft_says_so(setup, peer):
+    draft = draft_of(setup)
+    s = Script()
+    assert setup.cmd_delete(peer, draft, s.read_line, s.say) is False
+    assert "nothing to delete" in s.text
+
+
+def test_a_raw_line_with_a_SPACE_is_refused(setup, peer):
+    """⚠️ The regression this hatch exists to avoid being.
+
+    MEASURED: `parse_participants(['alice=my row'], minimum=1)` returns
+    `{'alice': ('my row', ...)}` -- accepted, because it receives words that
+    are ALREADY SPLIT. Only `parse_roster_text` rejects it, by doing the
+    splitting. Validating with the former lets a spaced line into the draft to
+    fail at write time.
+    """
+    assert peer.parse_participants(["alice=my row"], minimum=1)   # the premise
+    draft = draft_of(setup, THREE)
+    s = Script("1", "alice=my row")
+    assert setup.cmd_edit_raw(peer, draft, s.read_line, s.say) is False
+    assert peer.render_roster_lines(draft.entries)[0] == "alice=R1"
+    assert draft.dirty is False
+
+
+def test_a_valid_raw_edit_replaces_IN_PLACE(setup, peer):
+    draft = draft_of(setup, THREE)
+    s = Script("2", "bob=NewRow:right@box9")
+    assert setup.cmd_edit_raw(peer, draft, s.read_line, s.say) is True
+    assert draft.names() == ["alice", "bob", "carol"], "order is a contract"
+    assert peer.render_roster_lines(draft.entries)[1] == "bob=NewRow:right@box9"
+
+
+def test_a_raw_edit_can_add_a_line(setup, peer):
+    draft = draft_of(setup, THREE)
+    s = Script("4", "dave=R4@box4")
+    assert setup.cmd_edit_raw(peer, draft, s.read_line, s.say) is True
+    assert draft.names() == ["alice", "bob", "carol", "dave"]
+
+
+def test_an_invalid_raw_edit_shows_the_parsers_own_wording(setup, peer):
+    """Proving no duplicated validation: the message is the relay's."""
+    draft = draft_of(setup, THREE)
+    before = list(draft.entries)
+    s = Script("1", "this is not a spec")
+    setup.cmd_edit_raw(peer, draft, s.read_line, s.say)
+    assert draft.entries == before
+    assert "participants are name=" in s.text
+    assert "unchanged: alice=R1" in s.text
+
+
+def test_a_raw_edit_cannot_introduce_a_duplicate(setup, peer):
+    draft = draft_of(setup, THREE)
+    s = Script("1", "bob=Other")
+    assert setup.cmd_edit_raw(peer, draft, s.read_line, s.say) is False
+    assert "named twice" in s.text
+
+
+def test_a_raw_edit_cannot_name_relay(setup, peer):
+    draft = draft_of(setup, THREE)
+    s = Script("1", "relay=R1")
+    assert setup.cmd_edit_raw(peer, draft, s.read_line, s.say) is False
+    assert "reserved" in s.text
+
+
+def test_view_touches_no_disk(setup, peer, tmp_path):
+    path = str(tmp_path / "roster")
+    draft = setup.Draft(path, THREE, None)
+    s = Script()
+    setup.cmd_view(peer, draft, s.say)
+    assert "alice=R1" in s.text
+    assert not os.path.exists(path)
+
+
+def test_quitting_a_clean_draft_asks_nothing(setup):
+    draft = draft_of(setup, THREE)
+    s = Script()
+    assert setup.cmd_quit(draft, s.read_line, s.say) is True
+    assert s.said == []
+
+
+def test_quitting_a_dirty_draft_confirms(setup):
+    draft = draft_of(setup, THREE)
+    draft.dirty = True
+    s = Script("n")
+    assert setup.cmd_quit(draft, s.read_line, s.say) is False
+    s2 = Script("y")
+    assert setup.cmd_quit(draft, s2.read_line, s2.say) is True
+
+
+def test_an_unrecognised_key_changes_nothing(setup, peer, tmp_path):
+    """⚠️ The opposite of `agb pane`, whose menu falls through to attaching.
+    There the fall-through is safe; here the closest default would be an edit,
+    and a mistyped key must never change somebody's roster."""
+    draft = setup.Draft(str(tmp_path / "roster"), THREE, None)
+    before = list(draft.entries)
+    s = Script("z", "?", "q")
+    assert setup.main_loop(peer, draft, FakeCtl(), s.read_line, s.say) == 0
+    assert draft.entries == before
+    assert draft.dirty is False
+    assert "pick one of a, d, e, v, w, q" in s.text
+
+
+def test_the_menu_marks_an_unsaved_draft(setup, peer, tmp_path):
+    draft = setup.Draft(str(tmp_path / "roster"), THREE, None)
+    assert " *" not in "\n".join(setup.render_menu(peer, draft))
+    draft.dirty = True
+    assert " *" in "\n".join(setup.render_menu(peer, draft))
+
+
+# ---------------------------------------------------------------------------
+# write and conflict recovery -- Tasks 11, 12.
+# ---------------------------------------------------------------------------
+
+def test_write_produces_the_file_and_the_next_command(setup, peer, tmp_path):
+    path = str(tmp_path / "roster")
+    draft = setup.Draft(path, THREE, peer.ROSTER_ABSENT)
+    s = Script()
+    assert setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say) is True
+    assert io.open(path, encoding="utf-8").read() == "alice=R1\nbob=R2\ncarol=R3\n"
+    assert "agb-peer relay --roster %s" % (path,) in s.text
+    assert draft.dirty is False
+
+
+def test_after_a_write_an_immediate_second_write_does_not_conflict(setup, peer,
+                                                                   tmp_path):
+    path = str(tmp_path / "roster")
+    draft = setup.Draft(path, THREE, peer.ROSTER_ABSENT)
+    setup.cmd_write(peer, draft, FakeCtl(), Script().read_line, lambda _m: None)
+    draft.entries.append(("dave", ("R4", "left", None, None)))
+    s = Script()
+    assert setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say) is True
+    assert "dave=R4" in io.open(path, encoding="utf-8").read()
+
+
+def test_a_ONE_entry_draft_IS_written_with_a_warning(setup, peer, tmp_path):
+    """⚠️ The regression: refusing this would mean the tool cannot remove a
+    participant from a running two-person relay -- the workflow it replaces."""
+    path = str(tmp_path / "roster")
+    draft = setup.Draft(path, THREE[:1], peer.ROSTER_ABSENT)
+    s = Script()
+    assert setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say) is True
+    assert io.open(path, encoding="utf-8").read() == "alice=R1\n"
+    assert "cannot START with fewer than 2" in s.text
+
+
+def test_an_empty_draft_is_refused_and_writes_nothing(setup, peer, tmp_path):
+    path = str(tmp_path / "roster")
+    draft = setup.Draft(path, [], peer.ROSTER_ABSENT)
+    s = Script()
+    assert setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say) is False
+    assert not os.path.exists(path)
+    assert "not a usable roster" in s.text
+
+
+def test_two_names_on_one_row_warn(setup, peer, tmp_path):
+    """⚠️ `_one_name_per_row` exists in the relay because both names drain the
+    same pane -- a message delivered twice, and one typed into its own sender.
+    A picker makes this easy and `parse_participants` cannot see it."""
+    row = {"id": "AAAA1111", "name": "work · box01 · %7", "cwd": "/w",
+           "status": "active", "foreground": PANE_ARGV}
+    path = str(tmp_path / "roster")
+    draft = setup.Draft(path, [("alice", ("work", "left", None, None)),
+                               ("bob", ("wor", "left", None, None))],
+                        peer.ROSTER_ABSENT)
+    s = Script()
+    setup.cmd_write(peer, draft, FakeCtl([row]), s.read_line, s.say)
+    assert "both resolve to the same row" in s.text
+
+
+def test_a_conflict_writes_a_recovery_draft_and_touches_nothing(setup, peer,
+                                                                tmp_path):
+    """The whole point: the roster is untouched and the draft is on disk."""
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["old=Row"], peer.ROSTER_ABSENT)
+    stale = peer.roster_bytes(path)
+    peer.write_roster_file(path, ["old=Row", "other=X"], stale)   # somebody else
+    current = peer.roster_bytes(path)
+
+    draft = setup.Draft(path, THREE, stale)
+    draft.dirty = True
+    s = Script("q")
+    setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say)
+    assert peer.roster_bytes(path) == current, "the roster must be untouched"
+    saved = path + ".conflict"
+    assert io.open(saved, encoding="utf-8").read() == \
+        "alice=R1\nbob=R2\ncarol=R3\n"
+    assert "changed on disk" in s.text
+    assert saved in s.text
+
+
+def test_the_recovery_write_SUCCEEDS(setup, peer, tmp_path):
+    """⚠️ A gated writer here would raise RosterConflict from inside the
+    conflict handler and lose the draft it was called to save."""
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["old=Row"], peer.ROSTER_ABSENT)
+    draft = setup.Draft(path, THREE, b"something else entirely")
+    s = Script("q")
+    setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say)
+    assert os.path.exists(path + ".conflict")
+
+
+def test_an_UNREADABLE_roster_also_produces_a_recovery_draft(setup, peer,
+                                                             tmp_path):
+    """⚠️ The path that silently lost the draft when write_roster_file did not
+    convert roster_bytes' PeerError into a RosterConflict: the handler never
+    fired, so nothing was saved."""
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["old=Row"], peer.ROSTER_ABSENT)
+    draft = setup.Draft(path, THREE, peer.roster_bytes(path))
+    os.chmod(path, 0o000)
+    s = Script("q")
+    try:
+        setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say)
+    finally:
+        os.chmod(path, 0o600)
+    assert os.path.exists(path + ".conflict")
+
+
+def test_reload_discards_the_draft_and_clears_the_gate(setup, peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["old=Row"], peer.ROSTER_ABSENT)
+    stale = b"stale bytes"
+    draft = setup.Draft(path, THREE, stale)
+    draft.dirty = True
+    s = Script("r", "y")
+    setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say)
+    assert draft.names() == ["old"]
+    assert draft.dirty is False
+    assert draft.loaded == peer.roster_bytes(path)
+    s2 = Script()
+    assert setup.cmd_write(peer, draft, FakeCtl(), s2.read_line, s2.say) is True
+
+
+def test_reload_needs_confirming(setup, peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["old=Row"], peer.ROSTER_ABSENT)
+    draft = setup.Draft(path, THREE, b"stale")
+    s = Script("r", "n", "q")
+    setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say)
+    assert draft.names() == ["alice", "bob", "carol"], "the draft survived"
+
+
+def test_the_conflict_menu_can_view_the_draft(setup, peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["old=Row"], peer.ROSTER_ABSENT)
+    draft = setup.Draft(path, THREE, b"stale")
+    s = Script("v", "q")
+    setup.cmd_write(peer, draft, FakeCtl(), s.read_line, s.say)
+    assert "alice=R1" in s.text
+
+
+def test_nothing_is_ever_merged(setup):
+    """⚠️ These entries encode a participant and a transport, not prose. A
+    line-wise merge would produce a roster that looks plausible and routes
+    messages somewhere nobody chose. Structural, because the assertion is that
+    a whole category of code is absent."""
+    src = io.open(SETUP_PATH, encoding="utf-8").read()
+    tree = ast.parse(src)
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            names.add(node.name)
+    assert names, "no functions found -- the walk is broken"
+    assert not [n for n in names if "merge" in n.lower()], names
+
+
+# ---------------------------------------------------------------------------
+# validate -- Task 13.
+# ---------------------------------------------------------------------------
+
+def test_validate_accepts_a_startable_roster(setup, peer, tmp_path):
+    out = Out()
+    path = roster(tmp_path, "alice=R1\nbob=R2\n", name="v-ok")
+    assert setup.cmd_validate(path, out, peer=peer) == 0
+    assert out.text.strip() == "ok: 2 participant(s)"
+
+
+def test_validate_refuses_a_ONE_participant_roster(setup, peer, tmp_path):
+    """⚠️ minimum=2 here where the editor uses 1, and the asymmetry is the
+    answer rather than an inconsistency: this command answers "why will my
+    relay not start", so it applies the STARTUP rule."""
+    out = Out()
+    path = roster(tmp_path, "solo=R1\n", name="v-one")
+    assert setup.cmd_validate(path, out, peer=peer) == 1
+    assert "at least 2" in out.text
+
+
+@pytest.mark.parametrize("content,name", [
+    (b"nonsense\n", "v-bad"), (b"", "v-empty"), (b"a=\xff\xfe\n", "v-utf8"),
+])
+def test_validate_reports_the_parsers_own_message(setup, peer, tmp_path,
+                                                  content, name):
+    """Identical wording proves there is no second validator here."""
+    out = Out()
+    path = roster(tmp_path, content, name=name)
+    assert setup.cmd_validate(path, out, peer=peer) == 1
+    try:
+        peer.parse_roster_text(peer.read_roster_file(path), minimum=2)
+        raise AssertionError("premise: the parser must refuse this")
+    except peer.PeerError as exc:
+        assert out.text.strip() == str(exc)
+
+
+def test_validate_on_a_missing_file_reports_and_exits_nonzero(setup, peer,
+                                                              tmp_path):
+    out = Out()
+    assert setup.cmd_validate(str(tmp_path / "nope"), out, peer=peer) == 1
+    assert "cannot read the roster" in out.text
