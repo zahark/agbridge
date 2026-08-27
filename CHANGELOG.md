@@ -280,6 +280,23 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-dashboard`'s own cleanup could destroy the message it exists to print.** Both places it
+  closes a grid assumed `Ctl.dashboard_close` returns a two-tuple; it *raises* when agtermctl cannot
+  be started at all. On the strict path that meant the error naming the still-up partial grid was
+  **never constructed** — you got an errno and no word that a grid is on your screen, which is
+  exactly the failure the command exists to prevent. In the hold's `finally` it replaced the exit
+  with a traceback out of the cleanup. One `close_grid` helper now answers "no, and here is why",
+  which is what the two-tuple already said.
+
+- **The two handler entries written to catch filesystem errors were INERT.** `__main__` matched
+  `type(error).__name__`, and no real filesystem error is ever spelled `OSError`: it arrives as
+  `FileNotFoundError` or `PermissionError`. `IOError` could never match at all — it is an alias of
+  `OSError` in Python 3 and is not a class name — so it is gone rather than kept as decoration. The
+  match is over the whole MRO now, which also makes `RosterConflict` fall out of `PeerError` instead
+  of needing an entry of its own. ⚠️ The structural test asserted that the implementation's own list
+  was present and nothing about whether anything could ever match it — the tautology `CLAUDE.md`
+  warns about, in the one place it was load-bearing.
+
 - **A grid that would not open KILLED THE RELAY and lost the message it was carrying.** The one
   outcome the grid's whole error policy forbids. `Ctl.dashboard` returns a status for an agtermctl
   that *ran* and refused — but the relay's open was unguarded, and `_spawn` **raises** when agtermctl

@@ -228,10 +228,24 @@ def test_no_argument_is_a_usage_error_that_writes_nothing(dashboard):
     assert out.text == ""
 
 
-def test_version_is_answered_without_loading_the_sibling(dashboard):
+def test_version_is_answered_without_loading_the_sibling(dashboard, peer,
+                                                         monkeypatch):
     """A version query is one of the things asked in order to find out whether
     an install is sound, so it must answer in a tree where `agb-peer` is
-    missing rather than dying on the load."""
+    missing rather than dying on the load.
+
+    ⚠️ **The registration has to be UNDONE, or this tests nothing.** The
+    `dashboard` fixture depends on `peer`, which puts the module in
+    `sys.modules` before any test runs -- so `load_peer` returns early and
+    adding `and load_peer()` to the `--version` branch SURVIVED the suite. With
+    the key removed and `peer_path` pointed at a file that is not there, a load
+    is a `FileNotFoundError`, which is exactly the tree this claim is about.
+    """
+    monkeypatch.delitem(sys.modules, dashboard.PEER_MODULE)
+    monkeypatch.setattr(dashboard, "peer_path",
+                        lambda: os.path.join(REPO_ROOT, "no-such-agb-peer"))
+    with pytest.raises(Exception):
+        dashboard.load_peer()          # the arrangement is genuinely hostile
     out = Out()
     assert dashboard.main(["--version"], out=out, ctl=NoCtl()) == 0
     assert out.text.startswith("agb-dashboard ")
@@ -300,39 +314,67 @@ def test_an_accepted_argv_is_ACTED_ON_rather_than_refused(dashboard):
 # the __main__ guard
 # ---------------------------------------------------------------------------
 
-def test_the_guard_names_every_class_that_can_reach_it():
+def test_the_guard_names_every_class_that_can_reach_it(dashboard):
     """⚠️ Matched BY CLASS NAME, not in an `except` clause, because naming them
     there would require importing the sibling -- and a usage error is raised
     with no module in hand.
 
-    Structural because the alternative is provoking each one for real.
+    ⚠️ **Asserted against a LITERAL set, not only against the implementation's
+    own tuple.** A loop over `dashboard.HANDLED_ERRORS` asserts that whatever
+    the guard lists is listed -- so widening it, which is the thing this test
+    exists to notice, is exactly what it stops seeing.
     """
+    assert set(dashboard.HANDLED_ERRORS) == set(
+        ["PeerError", "AgbError", "OSError"])
+
+
+@pytest.mark.parametrize("error", [
+    OSError(13, "denied"),
+    FileNotFoundError(2, "no such file"),      # what a missing roster raises
+    PermissionError(13, "denied"),             # what an unreadable one raises
+])
+def test_a_REAL_filesystem_error_is_handled_not_a_traceback(dashboard, error):
+    """🔴 The reachability half, and the defect it caught. The guard matched
+    `type(error).__name__`, and no filesystem error is ever spelled `OSError`:
+    it arrives as `FileNotFoundError` or `PermissionError`. Both entries
+    written to catch these were INERT, so an unreadable roster ended in a
+    traceback -- and the structural test above passed the whole time, because
+    it asserted the implementation's own list was present and nothing about
+    whether anything could match it."""
+    assert dashboard.is_handled(error), (
+        "%s reaches __main__ as a traceback" % (type(error).__name__,))
+
+
+def test_a_PeerError_SUBCLASS_is_handled_through_its_parent(dashboard, peer):
+    """`RosterConflict` used to need an entry of its own, because an exact
+    `__name__` match cannot see inheritance. Over the MRO it falls out of
+    `PeerError` -- which is the same reason the `OSError` entry now works."""
+    assert dashboard.is_handled(peer.RosterConflict("busy"))
+    assert dashboard.is_handled(peer.PeerError("nope"))
+
+
+def test_an_unrelated_error_is_NOT_swallowed(dashboard):
+    """The companion the assertions above need. Without it they would pass
+    against an `is_handled` that returns True for everything -- which would
+    turn every real bug in this script into a one-line message and an exit
+    code, the shape a crash must not be able to hide in."""
+    assert not dashboard.is_handled(ValueError("a genuine bug"))
+    assert not dashboard.is_handled(KeyError("k"))
+
+
+def test_the_guard_calls_is_handled_rather_than_re_spelling_it(dashboard):
+    """Structural, because the alternative is running the script's `__main__`
+    for each class. The check lives in a function so it can be tested at all;
+    a copy of it inlined in the handler would be untested again."""
     tree = ast.parse(io.open(DASH_PATH, encoding="utf-8").read())
-
-    def literal(node):
-        # ast.Str on 3.6-3.7, ast.Constant from 3.8. The floor is 3.6.8 and CI
-        # may be newer, so both spellings have to work.
-        if isinstance(node, ast.Str):
-            return node.s
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        return None
-
-    names = set()
-    for node in ast.walk(tree):
-        # `type(error).__name__ in (...)` -- the left side is an Attribute over
-        # a Call, not a Call, which is what the same guard in
-        # test_agb_peer_setup.py got wrong first: it matched nothing and
-        # asserted over an empty set.
-        if not isinstance(node, ast.Compare):
-            continue
-        for cmp_node in node.comparators:
-            if isinstance(cmp_node, ast.Tuple):
-                names.update(v for v in (literal(e) for e in cmp_node.elts)
-                             if v is not None)
-    assert names, "no class-name tuple found -- the walk is broken"
-    for cls in ("PeerError", "RosterConflict", "AgbError", "OSError", "IOError"):
-        assert cls in names, "%s can reach __main__ and is not handled" % (cls,)
+    main_block = [n for n in tree.body if isinstance(n, ast.If)]
+    assert main_block, "no `if __name__ == \"__main__\":` block found"
+    called = set()
+    for node in ast.walk(main_block[-1]):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            called.add(node.func.id)
+    assert called, "the walk found no calls -- it is broken"
+    assert "is_handled" in called
 
 
 def test_the_guard_handles_KeyboardInterrupt_in_a_clause_of_its_own():
@@ -525,6 +567,21 @@ def test_nine_selectors_are_accepted(dashboard, peer):
     assert len(ctl.opened()[0]) == 9
 
 
+def test_ten_selectors_that_DEDUPE_to_nine_are_opened(dashboard, peer):
+    """⚠️ The cap is counted AFTER the dedupe, and nothing tested that: both cap
+    tests used distinct rows, so no case existed where deduping brought the
+    count under nine. `len(resolved)` -> `len(wanted)` survived the suite.
+
+    Two spellings of one cell is not a user error; spending two of the nine on
+    it is the bug -- so the tenth selector must cost nothing at all."""
+    sessions = rows(*[("ROW%d" % n, "agent%d" % n) for n in range(9)])
+    ctl = GridCtl(sessions)
+    argv = ["agent%d" % n for n in range(9)] + ["ROW0"]
+    assert len(argv) > peer.DASHBOARD_MAX_CELLS, "the tenth selector is missing"
+    assert grid(dashboard, argv, ctl) == 0
+    assert len(ctl.opened()) == 1 and len(ctl.opened()[0]) == 9
+
+
 def test_a_scratch_participant_is_a_SHORTFALL_here(dashboard, tmp_path):
     """⚠️ Unlike in the relay, where the same exclusion is reported and the grid
     opens anyway. The relay's grid is an adjunct to carrying messages; this
@@ -540,6 +597,42 @@ def test_a_scratch_participant_is_a_SHORTFALL_here(dashboard, tmp_path):
 
 
 # --- opening, and the strict check on stdout ------------------------------
+
+@pytest.mark.parametrize("argv,sessions,code", [
+    (["--nope"], [], 1),                       # a usage error
+    ([], [], 1),                               # no mode at all
+    (["--mru", "alice"], [], 1),               # two modes
+    (["carol"], [("AAAA1111", "alice")], 2),   # a shortfall it detected
+    (["api"], [("A", "api"), ("B", "api2")], 2),
+    (["alice"], [], 2),                        # no rows at all
+])
+def test_the_exit_CODE_says_which_kind_of_refusal_it_was(dashboard, argv,
+                                                         sessions, code):
+    """⚠️ Pinned to the NUMBER, not to "non-zero". Every refusal test here
+    asserted `code != 0`, so changing a 2 to a 1 survived the suite -- and the
+    two mean different things to a script wrapping this one: 1 is *you typed
+    something I cannot act on*, 2 is *I could not show what you asked for*."""
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, argv, GridCtl(rows(*sessions)))
+    assert err.value.code == code
+
+
+def test_a_ROSTER_the_sibling_refuses_exits_1_not_2(dashboard, tmp_path):
+    """⚠️ MEASURED, and it is not what the flag table used to say: an
+    unreadable or malformed roster, and an agtermctl that will not start, all
+    arrive as `PeerError` and carry ITS code, which is 1. Only the shortfalls
+    this script detects for itself are 2. Documented as measured rather than as
+    intended -- the alternative is a doc that describes a exit code nothing
+    produces."""
+    roster = tmp_path / "peers"
+    roster.write_text("=broken\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    with pytest.raises(Exception) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert not isinstance(err.value, dashboard.DashError)
+    assert getattr(err.value, "code", None) == 1
+    assert ctl.opened() == []
+
 
 def test_a_grid_is_opened_with_explicit_panes_and_reported(dashboard):
     ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
@@ -619,6 +712,62 @@ def test_a_close_that_FAILS_is_said_out_loud(dashboard):
         grid(dashboard, ["alice"], ctl)
     assert "STILL UP" in str(err.value)
     assert "no such dashboard" in str(err.value)
+
+
+class Exploding(GridCtl):
+    """A `Ctl` whose close RAISES, which is what the real one does.
+
+    ⚠️ `Ctl.dashboard_close` returns a status for a tool that RAN and refused,
+    and `_spawn` RAISES `PeerError` when agtermctl cannot be started at all: a
+    removed binary, a `$PATH` an agterm pane did not inherit, the
+    `/proc/<pid>/exe (deleted)` case after an upgrade. A fake that can only
+    return a two-tuple describes a world where that cannot happen.
+    """
+
+    def dashboard_close(self):
+        self.calls.append(("close",))
+        raise RuntimeError("agtermctl: [Errno 2] No such file or directory")
+
+
+def test_a_close_that_RAISES_still_names_the_grid_it_left_up(dashboard):
+    """🔴 The failure this command exists to prevent, reached through its own
+    cleanup. `unresolved:` means the grid is ALREADY UP; if the close raises,
+    the `DashError` naming it is never constructed and the user gets an errno
+    with no word that a partial grid is on their screen."""
+    ctl = Exploding(rows(("AAAA1111", "alice")), said="unresolved: ZZZZ\n")
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice"], ctl)
+    assert "STILL UP" in str(err.value)
+    assert "Errno 2" in str(err.value), "the reason the close failed is lost"
+    assert ("close",) in ctl.calls
+
+
+def test_a_close_that_RAISES_during_the_hold_is_said_not_raised(dashboard):
+    """The same call in the hold's `finally`, where a raise replaces the exit
+    -- an Enter, an EOF or a `Ctrl-C` -- with a traceback out of the cleanup."""
+    ctl = Exploding(rows(("AAAA1111", "alice")))
+    out = Out()
+    assert dashboard.main(["alice"], out=out, ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert "IT IS STILL UP" in out.text
+    assert dashboard.CLOSE_COMMAND in out.text
+
+
+def test_close_grid_never_raises_and_says_why(dashboard):
+    """The unit behind both, and the companion that keeps them honest: it must
+    still pass a working close through unchanged."""
+
+    class Boom(object):
+        def dashboard_close(self):
+            raise RuntimeError("no agtermctl")
+
+    class Fine(object):
+        def dashboard_close(self):
+            return True, ""
+
+    closed, why = dashboard.close_grid(Boom())
+    assert closed is False and "no agtermctl" in why
+    assert dashboard.close_grid(Fine()) == (True, "")
 
 
 def test_a_clean_open_is_not_read_as_unresolved(dashboard):

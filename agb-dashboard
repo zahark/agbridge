@@ -303,16 +303,25 @@ def wanted_from(opts, peer):
     return [(want, DEFAULT_PANE) for want in opts["selectors"]]
 
 
-def unresolved_lines(text):
-    """The `unresolved: <id>` lines agterm printed, if any.
+def close_grid(ctl):
+    """`(closed, why)` for agterm's one grid -- and it NEVER raises.
 
-    ⚠️ **On STDOUT, and beside exit 0.** When only some cells resolve agterm
-    opens the grid without the rest, says so here, and succeeds -- so this is
-    the one place in the family where the exit status is deliberately not
-    trusted. It is why `Ctl.dashboard` returns stdout at all.
+    🔴 **`Ctl.dashboard_close` can raise, and both callers here assumed a
+    two-tuple.** `_spawn` raises `PeerError` when agtermctl cannot be started
+    at all -- a removed binary, a `$PATH` an agterm pane did not inherit, the
+    `/proc/<pid>/exe (deleted)` case after an upgrade. On the strict path that
+    meant the `DashError` naming the still-up partial grid was never
+    constructed: the user got an errno and no word that a grid is on screen,
+    which is precisely the failure this command exists to prevent. In the
+    hold's `finally` it replaced the exit with a traceback out of the cleanup.
+    The reason to catch it here rather than at each site is that both need the
+    same answer -- "no, and here is why" -- which is what the two-tuple already
+    says.
     """
-    return [line.strip() for line in (text or "").splitlines()
-            if line.strip().startswith("unresolved:")]
+    try:
+        return ctl.dashboard_close()
+    except Exception as exc:
+        return False, "%s" % (exc,)
 
 
 def run_grid(opts, out, peer=None, ctl=None, read_line=None):
@@ -368,13 +377,13 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
         # agterm refuses an invalid id and a wholly unresolvable set BEFORE
         # opening anything (measured), so there is no grid to close here.
         raise DashError("the dashboard would not open: %s" % (why,), 2)
-    missed = unresolved_lines(said)
+    missed = peer.unresolved_lines(said)
     if missed:
         # 🔴 **CLOSE FIRST, THEN REFUSE.** agterm prints `unresolved:` *after*
         # it has already opened the grid with the rest, so exiting on it would
         # leave exactly the silently-partial grid this command exists to
         # remove -- and with no hold running, nothing else would ever close it.
-        closed, why_close = ctl.dashboard_close()
+        closed, why_close = close_grid(ctl)
         raise DashError(
             "agterm opened the grid without every row and said so on stdout: "
             "%s -- %s" % ("; ".join(missed),
@@ -491,12 +500,48 @@ def hold(out, ctl, read_line):
         if raw is None or raw == "":
             out.write("agb-dashboard: stdin ended -- closing the grid\n")
     finally:
-        closed, why = ctl.dashboard_close()
+        closed, why = close_grid(ctl)
         if not closed:
             out.write("agb-dashboard: the grid would not close (%s)\n"
                       "  IT IS STILL UP. Close it with:\n"
                       "  %s\n" % (why, CLOSE_COMMAND))
     return 0
+
+
+# The classes that reach `__main__` and are a message rather than a crash.
+#
+#   * `PeerError` -- the sibling's own, for anything it refuses: a tree that is
+#     not JSON, a roster that will not parse, an agtermctl that will not start.
+#     `RosterConflict` is a SUBCLASS and needs no entry of its own; see below.
+#   * `AgbError` -- `agb_ops`' hand-rolled parsers raise it. Nothing here loads
+#     `agb_ops` today, so this one has no reachable raiser and is kept
+#     deliberately: `agb-peer-setup`, from the same family, does load it, and a
+#     name absent from this tuple escapes as a traceback rather than a message.
+#   * `OSError` -- `agb.read_config` re-raises every errno except
+#     ENOENT/ENOTDIR, and an unreadable roster is an `OSError` too.
+#
+# ⚠️ `IOError` is NOT here: it is an alias of `OSError` in Python 3, so it can
+# never be a class `__name__` and the entry that named it was decoration.
+HANDLED_ERRORS = ("PeerError", "AgbError", "OSError")
+
+
+def is_handled(error):
+    """Is this one of `HANDLED_ERRORS`, including by inheritance?
+
+    ⚠️ **Matched by class NAME rather than in an `except` clause** because
+    naming the sibling's classes there would mean importing the sibling first,
+    and a usage error is raised with no module in hand.
+
+    🔴 **Over the whole MRO, not `type(error).__name__`.** That is not a
+    generalisation, it is the bug: a real filesystem error arrives as
+    `FileNotFoundError` or `PermissionError`, whose `__name__` is neither
+    `"OSError"` nor `"IOError"` -- so the two entries written to catch exactly
+    those were INERT, and an unreadable roster file ended in a traceback. The
+    MRO also makes `RosterConflict` fall out of `PeerError` instead of needing
+    its own entry, which is what the old exact match had to spell by hand.
+    """
+    return bool(set(cls.__name__ for cls in type(error).__mro__)
+                & set(HANDLED_ERRORS))
 
 
 if __name__ == "__main__":
@@ -512,23 +557,7 @@ if __name__ == "__main__":
         sys.stderr.write("agb-dashboard: interrupted\n")
         sys.exit(1)
     except Exception as error:
-        # ⚠️ FOUR classes reach here, not one.
-        #   * `PeerError` -- the sibling's own, for anything it refuses:
-        #     a tree that is not JSON, a roster that will not parse.
-        #   * `RosterConflict` -- a PeerError SUBCLASS, and the match below is
-        #     on the exact `__name__`, so leaving it out lets it escape as a
-        #     traceback while its parent is handled.
-        #   * `AgbError` -- `agb_ops`' hand-rolled parsers raise it. Nothing
-        #     here loads `agb_ops` today; `agb-peer-setup` does, from the same
-        #     family, and a name absent from this tuple escapes silently.
-        #   * `OSError`/`IOError` -- `agb.read_config` re-raises every errno
-        #     except ENOENT/ENOTDIR, so an unreadable instance config arrives
-        #     as one of these.
-        # They cannot be named in an `except` clause without importing the
-        # sibling first, which a usage error must not require -- so they are
-        # matched here by class name instead.
-        if type(error).__name__ in ("PeerError", "RosterConflict", "AgbError",
-                                    "OSError", "IOError"):
+        if is_handled(error):
             sys.stderr.write("agb-dashboard: %s\n" % (error,))
             sys.exit(getattr(error, "code", 1))
         raise
