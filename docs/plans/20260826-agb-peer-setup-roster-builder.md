@@ -652,27 +652,34 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `Draft`: `entries` (ordered list), `dirty`, `loaded` (the `roster_bytes` answer),
+- [x] implement `Draft`: `entries` (ordered list), `dirty`, `loaded` (the `roster_bytes` answer),
       `path`
-- [ ] implement `Draft.load(path, say)` with **`minimum=1`**, building `entries` in the **file's
+- [x] implement `Draft.load(path, say)` with **`minimum=1`**, building `entries` in the **file's
       line order** — re-derive from the lines, not from `parse_roster_text`'s dict
-- [ ] repair paths: **empty / malformed / non-UTF-8 / one-participant** each report and yield a
+- [x] repair paths: **empty / malformed / non-UTF-8 / one-participant** each report and yield a
       usable draft, with `loaded` preserved so a later `w` still gates against it
-- [ ] ⚠️ **unreadable is not a repair path**: `roster_bytes` raises, so refuse to open, say so, and
+- [x] ⚠️ **unreadable is not a repair path**: `roster_bytes` raises, so refuse to open, say so, and
       exit — opening it would mean a later write gates against nothing and renames over a file
       nobody could read
-- [ ] comment the decision: a malformed file's surviving lines are **not** salvaged line-by-line in
+- [x] comment the decision: a malformed file's surviving lines are **not** salvaged line-by-line in
       v1 (the parser is all-or-nothing); the draft starts empty with `loaded` still set
-- [ ] write tests: a valid **one-participant** roster loads and yields one entry
-- [ ] write tests: line **order** survives a load (3 entries)
-- [ ] write tests: empty / malformed / non-UTF-8 each report and yield a usable draft with `loaded`
+- [x] write tests: a valid **one-participant** roster loads and yields one entry
+- [x] write tests: line **order** survives a load (3 entries)
+- [x] write tests: empty / malformed / non-UTF-8 each report and yield a usable draft with `loaded`
       preserved
-- [ ] write tests: an **unreadable** file → `pytest.raises` at load, non-zero exit, nothing written
+- [x] write tests: an **unreadable** file → `pytest.raises` at load, non-zero exit, nothing written
       (R10 — revision 3 asked for a sentinel-inequality assertion that cannot exist, since there is
       no unreadable *value* to compare)
-- [ ] write tests: a missing path yields an empty, non-dirty draft with `loaded is None`, and `None`
+- [x] write tests: a missing path yields an empty, non-dirty draft with `loaded is None`, and `None`
       is distinguishable from `b""` (empty-but-present)
-- [ ] run tests — must pass before task 7
+- [x] run tests — **58 passed**
+- [x] ➕ mutation-checked four guards; three failed their named test. ⚠️ **The fourth —
+      line-order vs dict order — is NOT mutation-distinguishable and cannot be made so.** On
+      CPython 3.6+ a dict preserves insertion order, which here *is* file order, so a dict
+      comprehension returns the same list for every input. Measured: the suite stays green.
+      `parse_ordered` is kept for legibility (the order is a contract `[d]` and `[e]` depend on,
+      and should be findable in the code), and both the docstring and the test now **say** that
+      rather than implying a guard that defends nothing
 
 ### Task 7: Add flow (`a`)
 

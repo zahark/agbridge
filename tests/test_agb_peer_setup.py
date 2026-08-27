@@ -530,3 +530,117 @@ def test_scan_participant_really_does_use_the_host_verbatim(setup, peer):
     names = [n.id for n in ast.walk(fns[0]) if isinstance(n, ast.Name)]
     assert "pane_argv_field" in names, names
     assert "ssh_target_for" not in names, names
+
+
+# ---------------------------------------------------------------------------
+# Draft state and loading -- Task 6.
+# ---------------------------------------------------------------------------
+
+def roster(tmp_path, text, name="roster"):
+    path = tmp_path / name
+    path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
+    return str(path)
+
+
+def test_a_missing_file_opens_an_empty_draft(setup, peer, tmp_path):
+    said = []
+    draft = setup.load_draft(peer, str(tmp_path / "nope"), said.append)
+    assert draft.entries == []
+    assert draft.dirty is False
+    assert draft.loaded is peer.ROSTER_ABSENT
+    assert said and "does not exist yet" in said[0]
+
+
+def test_a_one_participant_roster_LOADS(setup, peer, tmp_path):
+    """⚠️ It is a legal state for a RUNNING relay -- somebody left -- so
+    refusing to open one would mean this tool cannot add the second back.
+    `minimum=2` here would have died on exactly the file that needs editing."""
+    said = []
+    draft = setup.load_draft(peer, roster(tmp_path, "solo=RowA\n"), said.append)
+    assert draft.names() == ["solo"]
+    assert any("cannot START" in m for m in said)
+
+
+def test_the_load_keeps_the_files_line_order(setup, peer, tmp_path):
+    """Order is a contract: `[d]` deletes by position, `[e]` edits in place.
+
+    ⚠️ **This does not distinguish the line-walk from plain dict order**, and
+    saying so is more useful than implying it does. On CPython 3.6+ a dict
+    preserves insertion order, which here is file order -- measured: swapping
+    `parse_ordered` for a dict comprehension leaves the suite green. What this
+    pins is the OBSERVABLE property downstream code relies on, which is worth
+    a test whichever implementation provides it.
+    """
+    path = roster(tmp_path, "carol=R3\nalice=R1\nbob=R2\n")
+    draft = setup.load_draft(peer, path, lambda _m: None)
+    assert draft.names() == ["carol", "alice", "bob"]
+
+
+def test_comments_and_blanks_do_not_disturb_the_order(setup, peer, tmp_path):
+    path = roster(tmp_path, "# who\n\ncarol=R3\n  # note\nalice=R1\n")
+    draft = setup.load_draft(peer, path, lambda _m: None)
+    assert draft.names() == ["carol", "alice"]
+
+
+@pytest.mark.parametrize("content,why", [
+    (b"", "empty"),
+    (b"this is not a roster\n", "malformed"),
+    (b"alice=\xff\xfe\n", "not UTF-8"),
+])
+def test_a_broken_roster_opens_for_REPAIR(setup, peer, tmp_path, content, why):
+    """These are precisely the files somebody needs an editor for. `loaded` is
+    still set from the raw bytes, so a later write still gates against what was
+    really there -- only the parsed entries are dropped."""
+    said = []
+    path = roster(tmp_path, content, name="broken-" + why.replace(" ", "-"))
+    draft = setup.load_draft(peer, path, said.append)
+    assert draft.entries == []
+    assert draft.loaded == content, "the gate must still hold the real bytes"
+    assert said and "could not be read as a roster" in said[0]
+
+
+def test_an_UNREADABLE_roster_is_not_a_repair_path(setup, peer, tmp_path):
+    """⚠️ The asymmetry is the point.
+
+    Opening it would mean a later write gates against nothing and renames over
+    a file nobody could read -- the vacuous gate this whole design avoids.
+    Empty and malformed are repairable because their bytes are known; this
+    one's are not.
+    """
+    path = roster(tmp_path, "alice=RowA\n", name="unreadable")
+    os.chmod(path, 0o000)
+    try:
+        with pytest.raises(peer.PeerError):
+            setup.load_draft(peer, path, lambda _m: None)
+    finally:
+        os.chmod(path, 0o600)
+
+
+def test_the_absent_answer_is_distinguishable_from_an_empty_file(setup, peer,
+                                                                 tmp_path):
+    """`ROSTER_ABSENT` and `b""` are different states, and a write gates on
+    the difference: one file is not there, the other is there and empty."""
+    missing = setup.load_draft(peer, str(tmp_path / "nope"), lambda _m: None)
+    empty = setup.load_draft(peer, roster(tmp_path, b"", name="e"),
+                             lambda _m: None)
+    assert missing.loaded is peer.ROSTER_ABSENT
+    assert empty.loaded == b""
+    assert empty.loaded is not peer.ROSTER_ABSENT
+
+
+def test_a_loaded_draft_round_trips_through_render(setup, peer, tmp_path):
+    """The join between Task 1's renderer and this loader, which is where an
+    order or shape mismatch would show up."""
+    text = "carol=R3:right@box3\nalice=R1\nbob=R2@local:work\n"
+    draft = setup.load_draft(peer, roster(tmp_path, text), lambda _m: None)
+    lines = peer.render_roster_lines(draft.entries)
+    assert lines == ["carol=R3:right@box3", "alice=R1", "bob=R2@local:work"]
+    assert peer.parse_roster_text("\n".join(lines).encode(), minimum=1) == \
+        dict(draft.entries)
+
+
+def test_index_of_finds_and_misses(setup, peer, tmp_path):
+    draft = setup.load_draft(peer, roster(tmp_path, "a=R1\nb=R2\n"),
+                             lambda _m: None)
+    assert draft.index_of("b") == 1
+    assert draft.index_of("nope") == -1

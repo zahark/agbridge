@@ -330,6 +330,114 @@ def offer_agbridge_default(ops, hint, config):
     return ops.ssh_target_for(host, config or {}) == host
 
 
+class Draft(object):
+    """The roster being edited: an ORDERED list, plus the bytes it came from.
+
+    ⚠️ **`entries` is a list of `(name, spec)`, not `parse_participants`' dict.**
+    That dict keeps insertion order only as a CPython 3.6 implementation
+    detail, and 3.6.8 is this project's floor -- so "delete the second one"
+    cannot be built on it. The order here is the FILE's line order, re-derived
+    from the lines rather than read out of the dict.
+
+    `loaded` is whatever `roster_bytes` answered when this session opened the
+    file: the bytes, or `ROSTER_ABSENT`. It is the gate a later write compares
+    against, so it must not be refreshed by anything but a write or a reload.
+    """
+
+    def __init__(self, path, entries=None, loaded=None):
+        self.path = path
+        self.entries = list(entries or [])
+        self.loaded = loaded
+        self.dirty = False
+
+    def names(self):
+        return [name for name, _spec in self.entries]
+
+    def index_of(self, name):
+        for i, (existing, _spec) in enumerate(self.entries):
+            if existing == name:
+                return i
+        return -1
+
+
+def load_draft(peer, path, say):
+    """Open `path` for editing, repairing what can be repaired.
+
+    ⚠️ **`minimum=1`, not the default 2.** A one-participant roster is a legal
+    state for a RUNNING relay -- somebody left -- and refusing to open one
+    would mean this tool cannot be used to add the second participant back.
+
+    ⚠️ **Empty, malformed and not-UTF-8 are REPAIR paths, not refusals.** Those
+    are precisely the files somebody needs an editor for. `loaded` is still set
+    from the raw bytes, so a later write still gates against what was really
+    there; only the parsed entries are dropped.
+
+    ⚠️ **Unreadable is NOT a repair path**, and that asymmetry is the point.
+    `roster_bytes` raises for it, and opening anyway would mean a later write
+    gates against nothing and renames over a file nobody could read -- the
+    vacuous gate this whole design exists to avoid. It propagates.
+
+    A malformed file's surviving lines are deliberately not salvaged one by
+    one: `parse_roster_text` is all-or-nothing, and a partial salvage would
+    have to re-implement the grammar to decide which lines survived.
+    """
+    raw = peer.roster_bytes(path)                  # unreadable raises, on purpose
+    if raw is peer.ROSTER_ABSENT:
+        say("%s does not exist yet -- starting an empty roster" % (path,))
+        return Draft(path, [], peer.ROSTER_ABSENT)
+    try:
+        entries = parse_ordered(peer, raw)
+    except peer.PeerError as exc:
+        say("%s could not be read as a roster (%s) -- starting an empty draft; "
+            "writing will replace it" % (path, exc))
+        return Draft(path, [], raw)
+    if len(entries) < 2:
+        say("note: %d participant(s). A relay cannot START with fewer than 2, "
+            "though a running one can drop to 1 when somebody leaves."
+            % (len(entries),))
+    return Draft(path, entries, raw)
+
+
+def parse_ordered(peer, raw):
+    """`[(name, spec)]` in the file's LINE order.
+
+    The whole file goes through `parse_roster_text` first, so the grammar and
+    every refusal are the relay's own -- this only decides the ORDER, by
+    walking the lines again and looking each name up in the parsed result.
+
+    ⚠️ **This walk is NOT mutation-distinguishable, and that is worth saying
+    out loud rather than leaving as an implied guarantee.** On CPython 3.6+ a
+    dict preserves insertion order, `parse_participants` inserts in word order,
+    and word order is file order -- so `[(n, people[n]) for n in people]`
+    returns exactly the same list for every input, and a test cannot tell the
+    two apart on any interpreter this project runs on. Measured: substituting
+    the dict comprehension leaves the whole suite green.
+
+    It is kept because the ORDER IS A CONTRACT HERE and should be stated
+    rather than inherited: `[d]` deletes by position and `[e]` edits in place,
+    so a reader asking "what fixes the order" should find an answer in the code
+    rather than a language guarantee two files away. That is a legibility
+    argument, not a correctness one, and pretending otherwise would put a guard
+    in the suite that defends against nothing.
+    """
+    people = peer.parse_roster_text(raw, minimum=1)
+    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    entries, seen = [], set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for word in line.split():
+            name = word.partition("=")[0]
+            if name in people and name not in seen:
+                seen.add(name)
+                entries.append((name, people[name]))
+    for name in people:                            # belt and braces
+        if name not in seen:
+            entries.append((name, people[name]))
+    return entries
+
+
 def main(argv, out=None, peer=None, read_line=None, ctl=None):
     out = out or sys.stdout
     if not argv:
