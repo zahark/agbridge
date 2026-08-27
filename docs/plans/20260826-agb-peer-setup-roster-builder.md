@@ -437,25 +437,28 @@ No auto-merge anywhere.
 - Modify: `agb-peer`
 - Modify: `tests/test_agb_peer.py`
 
-- [ ] add `RosterConflict(PeerError)` beside `PeerError`
-- [ ] add `roster_bytes(path)` with **three** outcomes: the bytes; `None` for *absent*
+- [x] add `RosterConflict(PeerError)` beside `PeerError`
+- [x] add `roster_bytes(path)` with **three** outcomes: the bytes; `None` for *absent*
       (`ENOENT`/`ENOTDIR`); a raised `PeerError` for any other errno. Read the file — do **not**
       `os.stat` — with a comment pointing at `RosterReader`'s docstring (`agb-peer:968`)
-- [ ] comment the `None`-is-absent choice honestly (R10): now that unreadable **raises**, `None`
+- [x] comment the `None`-is-absent choice honestly (R10): now that unreadable **raises**, `None`
       cannot be confused with it, so the vacuous-gate bug correction 6 fixed cannot recur; `None` is
       still distinct from `b""`, which is an empty-but-present file
-- [ ] add `render_roster_lines(entries)` over the ordered list → **`str`** lines, no trailing
+- [x] add `render_roster_lines(entries)` over the ordered list → **`str`** lines, no trailing
       newlines; omit `:left`, omit an unset `@target`, omit an unset tmux target, and **raise** on a
       `tmux_target` with no `target` (ungrammatical — `agb-peer:1165`)
-- [ ] write tests: `roster_bytes` returns bytes / `None` / **raises** for present / absent /
+- [x] write tests: `roster_bytes` returns bytes / `None` / **raises** for present / absent /
       unreadable (chmod `000`), and an identical-content rewrite is **not** a change
-- [ ] write tests: **semantic** round-trip `parse_roster_text("\n".join(render(entries)).encode(),
+- [x] write tests: **semantic** round-trip `parse_roster_text("\n".join(render(entries)).encode(),
       minimum=1) == dict(entries)` over a fixture covering all four transport shapes and all three
       pane kinds
-- [ ] write tests: canonical spelling pinned against **literal** strings (`alice=myrow` — no
+- [x] write tests: canonical spelling pinned against **literal** strings (`alice=myrow` — no
       `:left`, no `@`, no tmux target); `render_roster_lines` returns `str`, not bytes; raises on
       tmux-without-target; and a 3-entry list renders in **list order**
-- [ ] run `python3 -m pytest tests/test_agb_peer.py -q` — must pass before task 2
+- [x] run `python3 -m pytest tests/test_agb_peer.py -q` — **325 passed**
+- [x] ➕ mutation-checked three guards (unreadable→absent, dropped tmux refusal, `:left`
+      emitted): each failed its **named** test, restore sha256-verified, `__pycache__/agb-peer*.pyc`
+      deleted at the repo root and mtime confirmed moved
 
 ### Task 2: The two atomic writers
 

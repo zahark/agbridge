@@ -301,6 +301,19 @@ class PeerError(Exception):
         self.code = code
 
 
+class RosterConflict(PeerError):
+    """The roster changed underneath an editing session: do not write.
+
+    ⚠️ **A distinct class because the caller must RECOVER, not print and exit.**
+    Every other `PeerError` here ends the command; this one means an in-memory
+    draft is still good and has to be persisted somewhere before anything else
+    happens. `agb-peer-setup` catches exactly this to write its recovery draft,
+    so anything that reaches that handler as a bare `PeerError` loses the
+    draft silently -- which is why `write_roster_file` converts rather than
+    letting `roster_bytes`' own failure through.
+    """
+
+
 # ---------------------------------------------------------------------------
 # pure helpers -- everything here is a string/dict test, no subprocess
 # ---------------------------------------------------------------------------
@@ -1034,6 +1047,86 @@ def read_roster_file(path):
             return handle.read()
     except (IOError, OSError) as exc:
         raise PeerError("cannot read the roster %s: %s" % (path, exc))
+
+
+ROSTER_ABSENT = None
+
+
+def roster_bytes(path):
+    """The roster's bytes, `ROSTER_ABSENT` if there is no file, else raise.
+
+    ⚠️ **THREE ANSWERS, NOT TWO, AND THE THIRD IS A RAISE.** `read_roster_file`
+    turns every errno into one `PeerError`, which is right for the relay -- at
+    runtime nothing is evidence that anybody left -- and wrong for a WRITER.
+    Folding "unreadable" into "absent" would make `write_roster_file` compare
+    `None == None` and rename straight over a roster nobody could read: the
+    gate goes vacuous exactly when it matters. That is invariant 12's rule
+    ("I could not answer" is not "the answer is nothing") applied to the one
+    input this file writes.
+
+    ⚠️ **It READS the file rather than stat-ing it**, deliberately, and
+    `RosterReader` explains why: the file is a handful of lines, so reading it
+    is cheaper than reasoning about whether `(mtime, size, inode)` can miss a
+    rewrite -- and `os.stat` on a network mount is served from the attribute
+    cache, which is what invariant 6 is about. Comparing what we read satisfies
+    that by construction instead of by a comment nobody re-checks.
+
+    `ROSTER_ABSENT` is `None`, and it is unambiguous *because* unreadable
+    raises: nothing else can produce it. It stays distinct from `b""`, which is
+    an empty file that really is there -- a difference the relay cares about
+    (`parse_roster_text` refuses an empty roster with its own message) and a
+    writer must not erase.
+    """
+    import errno   # only this function needs it; `agb-peer send` does not
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except (IOError, OSError) as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return ROSTER_ABSENT
+        raise PeerError("cannot read the roster %s: %s" % (path, exc))
+
+
+def render_roster_lines(entries):
+    """`[(name, (row, pane, target, tmux_target))]` -> canonical `str` lines.
+
+    The inverse of `parse_roster_text`, and **`str` rather than bytes** because
+    every caller but the writer is showing a line to a human -- a picker echoes
+    the entry it just built, the raw-edit hatch pre-fills a prompt with it.
+    The writer encodes; nobody else should have to decode.
+
+    ⚠️ **A LIST, ordered, not the dict `parse_participants` returns.** That dict
+    only keeps insertion order as a CPython 3.6 implementation detail, and this
+    project's floor *is* 3.6 -- so an editor that lets you delete "the second
+    one" cannot be built on it. The caller owns the order; this just renders it.
+
+    ⚠️ **The defaults are omitted, and that is what makes the round trip
+    SEMANTIC rather than textual.** `parse_participants` normalises a missing
+    pane to `"left"` and a missing `@`/`:` to `None`, so `alice=myrow` and
+    `alice=myrow:left` parse identically and only one of them can be rendered
+    back. Rendering the shorter spelling keeps a hand-written file recognisable
+    after an edit; the test that matters is `parse(render(parse(x))) == parse(x)`.
+    """
+    lines = []
+    for name, spec in entries:
+        row, pane, target, tmux_target = spec
+        if tmux_target and not target:
+            # ⚠️ The grammar cannot express it: `<row>:<tmux>` with no `@`
+            # reparses as a PANE, and `parse_participants` then refuses it for
+            # not being one of PANE_KINDS -- or, worse, accepts it silently if
+            # the tmux session happens to be called `left`. Refuse at the
+            # point where the entry is built instead.
+            raise PeerError("%s: a tmux target needs an ssh target -- "
+                            "name=<row>@<target>:<tmux>" % (name,))
+        text = "%s=%s" % (name, row)
+        if pane and pane != "left":
+            text += ":%s" % (pane,)
+        if target:
+            text += "@%s" % (target,)
+            if tmux_target:
+                text += ":%s" % (tmux_target,)
+        lines.append(text)
+    return lines
 
 
 def parse_roster_text(data, minimum=2):

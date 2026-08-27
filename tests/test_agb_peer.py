@@ -3549,3 +3549,138 @@ def test_the_relay_reads_both_doorbells_off_a_pane(peer):
     bodies = sorted(b for (_t, _p, b) in ctl.typed if b not in ("\n", "\r"))
     assert bodies == ["[chat from alice] first",
                       "[chat from alice] second"], bodies
+
+
+# ---------------------------------------------------------------------------
+# roster_bytes / render_roster_lines -- the primitives `agb-peer-setup` writes
+# through. Plan: docs/plans/20260826-agb-peer-setup-roster-builder.md, Task 1.
+# ---------------------------------------------------------------------------
+
+def test_roster_bytes_returns_the_content(peer, tmp_path):
+    path = tmp_path / "roster"
+    path.write_bytes(b"alice=RowA\nbob=RowB\n")
+    assert peer.roster_bytes(str(path)) == b"alice=RowA\nbob=RowB\n"
+
+
+def test_roster_bytes_answers_absent_for_a_missing_file(peer, tmp_path):
+    assert peer.roster_bytes(str(tmp_path / "nope")) is peer.ROSTER_ABSENT
+
+
+def test_roster_bytes_answers_absent_for_enotdir(peer, tmp_path):
+    """ENOTDIR is the same positive answer as ENOENT: there is no file there."""
+    notafile = tmp_path / "roster"
+    notafile.write_bytes(b"alice=RowA\n")
+    assert peer.roster_bytes(str(notafile / "sub")) is peer.ROSTER_ABSENT
+
+
+def test_roster_bytes_RAISES_on_an_unreadable_file(peer, tmp_path):
+    """⚠️ The whole reason this is not `read_roster_file`.
+
+    Folding unreadable into absent would make `write_roster_file` compare
+    `None == None` and rename over a roster nobody could read -- the gate goes
+    vacuous exactly when it matters. Invariant 12: "I could not answer" is not
+    "the answer is nothing".
+    """
+    path = tmp_path / "roster"
+    path.write_bytes(b"alice=RowA\n")
+    os.chmod(str(path), 0o000)
+    try:
+        with pytest.raises(peer.PeerError):
+            peer.roster_bytes(str(path))
+    finally:
+        os.chmod(str(path), 0o600)
+
+
+def test_an_empty_file_is_not_the_absent_answer(peer, tmp_path):
+    """`b""` is a file that really is there, and the relay cares: an empty
+    roster gets `parse_roster_text`'s own refusal, not "no file"."""
+    path = tmp_path / "roster"
+    path.write_bytes(b"")
+    assert peer.roster_bytes(str(path)) == b""
+    assert peer.roster_bytes(str(path)) is not peer.ROSTER_ABSENT
+
+
+def test_an_identical_rewrite_is_not_a_change(peer, tmp_path):
+    """The gate compares BYTES, so re-saving the same content in an editor --
+    new mtime, new inode after a `mv` -- must not read as a conflict. This is
+    the property a `(mtime, size, inode)` key would get wrong."""
+    path = tmp_path / "roster"
+    path.write_bytes(b"alice=RowA\n")
+    before = peer.roster_bytes(str(path))
+    other = tmp_path / "other"
+    other.write_bytes(b"alice=RowA\n")
+    os.rename(str(other), str(path))
+    assert peer.roster_bytes(str(path)) == before
+
+
+ROUND_TRIP = [
+    ("alice", ("myrow", "left", None, None)),
+    ("bob", ("codex", "right", "poolnode07", None)),
+    ("mac", ("macrow", "left", "local", "work")),
+    ("scratchy", ("srow", "scratch", "box3", "%24")),
+]
+
+
+def test_render_round_trips_semantically(peer):
+    """⚠️ SEMANTIC, not textual, and it has to be.
+
+    `parse_participants` normalises a missing pane to "left" and a missing
+    `@`/`:` to None, so `alice=myrow` and `alice=myrow:left` parse identically
+    and only one can be rendered back. Asserting on the TEXT would pin whatever
+    the implementation happened to emit -- a tautology. Covers all four
+    transport shapes and all three pane kinds.
+    """
+    lines = peer.render_roster_lines(ROUND_TRIP)
+    assert len(lines) == len(ROUND_TRIP)
+    back = peer.parse_roster_text("\n".join(lines).encode("utf-8"), minimum=1)
+    assert back == dict(ROUND_TRIP)
+
+
+def test_render_omits_every_default(peer):
+    """The canonical spelling, pinned against literals -- the companion the
+    semantic round trip needs, because it is the half a round trip cannot see."""
+    assert peer.render_roster_lines(
+        [("alice", ("myrow", "left", None, None))]) == ["alice=myrow"]
+
+
+def test_render_spells_each_optional_part(peer):
+    assert peer.render_roster_lines(ROUND_TRIP) == [
+        "alice=myrow",
+        "bob=codex:right@poolnode07",
+        "mac=macrow@local:work",
+        "scratchy=srow:scratch@box3:%24",
+    ]
+
+
+def test_render_returns_str_not_bytes(peer):
+    """A picker echoes the line it just built and the raw hatch pre-fills a
+    prompt with it. `bytes` would print as `b'alice=row'`."""
+    for line in peer.render_roster_lines(ROUND_TRIP):
+        assert isinstance(line, str)
+
+
+def test_render_refuses_a_tmux_target_with_no_ssh_target(peer):
+    """⚠️ The grammar cannot express it: `<row>:<tmux>` with no `@` reparses as
+    a PANE. Refuse where the entry is built, not three steps later."""
+    with pytest.raises(peer.PeerError):
+        peer.render_roster_lines([("x", ("r", "left", None, "tmux-session"))])
+
+
+def test_render_keeps_the_lists_order(peer):
+    """⚠️ The order is the LIST's, not a dict's.
+
+    `parse_participants` returns a dict whose order is a CPython 3.6
+    implementation detail -- and 3.6 is this project's floor -- so an editor
+    that deletes "the second one" cannot be built on it.
+    """
+    entries = [("c", ("r3", "left", None, None)),
+               ("a", ("r1", "left", None, None)),
+               ("b", ("r2", "left", None, None))]
+    assert peer.render_roster_lines(entries) == ["c=r3", "a=r1", "b=r2"]
+
+
+def test_roster_conflict_is_a_peer_error(peer):
+    """Catchable as either: the relay's handlers keep working, and the setup
+    tool can single it out for recovery."""
+    assert issubclass(peer.RosterConflict, peer.PeerError)
+    assert peer.RosterConflict("x").code == 1
