@@ -564,6 +564,26 @@ It has to be the config of the instance whose bridge renders that row — `agb p
 file is valid, unread, and reports nothing. For a host reachable only through another, add
 `jump_host = myfarm` to the same file.
 
+⚠️ **`host_<name>` REPLACES the ssh target; `jump_host` goes THROUGH a box. Reaching for the first
+when you meant the second lands you ON the intermediate machine**, and it does not look like a
+failure — the ssh succeeds, and then the attach runs against a tmux pane id that means something
+else there, or nothing. Measured on a live install: two different hosts had been mapped to the same
+alias, so clicking a row on the second silently attached on the first. Diagnose with
+`ssh <the value> 'uname -n'` and check it answers with the host the **key** names, not merely that
+it connects.
+
+⚠️ And the two interact, because **`jump_host` is one value for the whole instance, not per host**.
+`agb pane` drops it when it names the target or the host itself — so the box that *is* the jump host
+is unaffected — but every *other* host in that config gets the hop whether it needs one or not. Two
+hosts wanting different routes cannot both be expressed; if that happens, one of them is not
+clickable and the choice is yours to make deliberately.
+
+⚠️ **An identity mapping (`host_boxA = boxA`) is not automatically a working one.** It looks like a
+harmless no-op and is easy to leave in place unexamined, but if that bare name does not resolve from
+the Mac while the machine is reachable only under a different alias or port, the line is worse than
+absent — with no line at all you would get the same failure, but nothing would have implied the
+mapping had been checked.
+
 **`[enter]` says `open terminal failed: missing or unsuitable terminal: <name>`**, then
 `ssh exited 1 -- nothing was attached`. The ssh worked; **tmux** refused, because that host's
 terminfo database has no entry for the terminal you are attaching from.
