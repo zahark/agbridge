@@ -669,6 +669,9 @@ whitespace, so a pasted title silently is not a spec. And it refuses the "just u
 host" option when your config remaps that host, because the relay uses the host **verbatim** — that
 combination produces a file that looks completely correct and never delivers a message.
 
+⚠️ **It does not preserve `#` comments** — it rewrites the file as generated output, and tells you
+so when it opens a file that has any. If your roster carries notes you care about, keep a copy.
+
 `agb-peer-setup validate ~/peers` answers "would the relay start with this?" without starting it.
 
 ⚠️ It is not installed by `install.sh`: symlink it onto your `$PATH` beside `agb-peer`.

@@ -108,6 +108,26 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`agb-peer-setup` — build a relay roster by picking rows instead of typing the grammar.**
+  Writing one by hand means knowing three things that are not obvious: that `<row>` is the row's
+  **label** and not the title agterm shows you (a title is `label · host · cwd · pane · beat`, and a
+  roster line is split on **whitespace**, so a pasted title silently is not a spec), that a `:<tmux>`
+  suffix with no `@<target>` reparses as a *pane*, and that editing the file while a relay runs has
+  to be atomic or the relay reads a truncated roster as somebody leaving.
+
+  ⚠️ **It withholds the "use the row's own host" option when `host_<name>` remaps that host**,
+  because the relay hands `--host` to ssh **verbatim** and never applies the mapping. That
+  combination produces a roster that parses, validates, prints a working-looking next command, and
+  then silently never delivers — which is indistinguishable from a broken agent.
+
+  ⚠️ **It rewrites the file as generated output, so `#` comments and blank lines are not preserved**,
+  and it says so **when it opens the file** rather than when you save — by then you would be
+  choosing between losing the comments and losing the work. Found during the first live run: the
+  cookbook's own hand-written roster example carries a comment on line 1, so the documented way to
+  author one produced a file this tool ate without a word.
+
+  Not installed by `install.sh`; symlink it beside `agb-peer`.
+
 - **`agb-peer` can now write a roster file safely, which is what an interactive builder needs.**
   Editing a `--roster` file by hand while a relay runs means knowing that the write has to be
   atomic: a file rewritten in place can be read truncated at a line boundary, and a truncated

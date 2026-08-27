@@ -385,6 +385,7 @@ def load_draft(peer, path, say):
     if raw is peer.ROSTER_ABSENT:
         say("%s does not exist yet -- starting an empty roster" % (path,))
         return Draft(path, [], peer.ROSTER_ABSENT)
+    warn_about_comments(raw, say)
     try:
         entries = parse_ordered(peer, raw)
     except peer.PeerError as exc:
@@ -396,6 +397,38 @@ def load_draft(peer, path, say):
             "though a running one can drop to 1 when somebody leaves."
             % (len(entries),))
     return Draft(path, entries, raw)
+
+
+def warn_about_comments(raw, say):
+    """Say, ONCE and up front, that writing does not preserve comments.
+
+    ⚠️ **This editor rewrites the file as generated output.** Entries are the
+    only thing it models, so a `#` line has nowhere to attach: it belongs
+    between two entries, or above one, or to the file as a whole, and the
+    parser -- which skips comments entirely -- cannot tell which. Preserving
+    them faithfully would mean modelling the file's layout rather than its
+    participants, for a feature nothing else here needs.
+
+    That trade is defensible. Making it SILENTLY is not, and it nearly shipped
+    that way: the cookbook's own hand-written roster carries a comment on its
+    first line, so the documented way to author one produces a file this tool
+    would have eaten without a word.
+
+    ⚠️ **The warning is at LOAD, not at write**, and the difference is the
+    whole point. At write time the user has already picked rows, typed names
+    and chosen transports; telling them then means either losing the comments
+    or losing the work. At load it is information they can still act on -- copy
+    the file, or edit it by hand instead.
+    """
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+    comments = sum(1 for line in text.splitlines()
+                   if line.strip().startswith("#"))
+    if comments:
+        say("note: this file has %d comment line%s. Writing rewrites it as "
+            "generated output, so comments and blank lines are NOT preserved. "
+            "Keep a copy if you need them."
+            % (comments, "" if comments == 1 else "s"))
+    return comments
 
 
 def parse_ordered(peer, raw):

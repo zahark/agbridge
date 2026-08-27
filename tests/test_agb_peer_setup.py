@@ -1241,3 +1241,81 @@ def test_validate_on_a_missing_file_reports_and_exits_nonzero(setup, peer,
     out = Out()
     assert setup.cmd_validate(str(tmp_path / "nope"), out, peer=peer) == 1
     assert "cannot read the roster" in out.text
+
+
+# ---------------------------------------------------------------------------
+# comments are not preserved, and the user is told -- found by the LIVE test.
+# ---------------------------------------------------------------------------
+
+COMMENTED = ("# who is in this chat -- do not add prod boxes\n"
+             "alice=RowA\n"
+             "\n"
+             "# bob is on the batch pool\n"
+             "bob=RowB@pool:nfs\n")
+
+
+def test_a_commented_roster_warns_AT_LOAD(setup, peer, tmp_path):
+    """⚠️ Found live, not by any test here.
+
+    The editor rewrites the file as generated output, so `#` lines vanish. The
+    trade is defensible -- a comment has nowhere to attach in a model that only
+    holds entries -- but making it SILENTLY is not, and it nearly shipped that
+    way: the cookbook's own hand-written roster carries a comment on line 1.
+    """
+    said = []
+    setup.load_draft(peer, roster(tmp_path, COMMENTED, name="c1"), said.append)
+    joined = "\n".join(said)
+    assert "2 comment lines" in joined
+    assert "NOT preserved" in joined
+
+
+def test_the_warning_is_at_LOAD_not_at_write(setup, peer, tmp_path):
+    """⚠️ The difference is the whole point.
+
+    At write time the user has already picked rows, typed names and chosen
+    transports -- telling them then means losing the comments or losing the
+    work. At load it is information they can still act on.
+    """
+    path = roster(tmp_path, COMMENTED, name="c2")
+    load_said = []
+    draft = setup.load_draft(peer, path, load_said.append)
+    assert any("NOT preserved" in m for m in load_said), "must warn at load"
+
+    write_said = []
+    draft.entries.append(("carol", ("R3", "left", None, None)))
+    setup.cmd_write(peer, draft, FakeCtl(), Script().read_line,
+                    write_said.append)
+    assert "carol=R3" in io.open(path, encoding="utf-8").read()
+
+
+def test_writing_really_does_drop_them(setup, peer, tmp_path):
+    """The behaviour the warning is about, pinned -- so that if anyone ever
+    implements preservation, this fails and the warning gets removed with it
+    rather than outliving its reason."""
+    path = roster(tmp_path, COMMENTED, name="c3")
+    draft = setup.load_draft(peer, path, lambda _m: None)
+    setup.cmd_write(peer, draft, FakeCtl(), Script().read_line, lambda _m: None)
+    after = io.open(path, encoding="utf-8").read()
+    assert after == "alice=RowA\nbob=RowB@pool:nfs\n"
+    assert "#" not in after
+
+
+def test_an_uncommented_roster_says_nothing_about_comments(setup, peer,
+                                                           tmp_path):
+    """The companion that makes the test above non-vacuous: same call, one
+    variable changed, and the message must NOT appear."""
+    said = []
+    setup.load_draft(peer, roster(tmp_path, "alice=RowA\nbob=RowB\n",
+                                  name="c4"), said.append)
+    assert not any("comment" in m.lower() for m in said), said
+
+
+def test_a_hash_inside_a_row_is_not_counted_as_a_comment(setup, peer,
+                                                          tmp_path):
+    """`<row>` may contain `#` -- `agb-peer` has its own test for that -- so a
+    trailing `#` must not inflate the count or warn about a file that has no
+    comments at all."""
+    said = []
+    setup.load_draft(peer, roster(tmp_path, "alice=build#7\nbob=RowB\n",
+                                  name="c5"), said.append)
+    assert not any("comment" in m.lower() for m in said), said

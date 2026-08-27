@@ -1718,6 +1718,11 @@ hands the row's `--host` to ssh **verbatim** — it never applies the mapping �
 needs an alias, `[a]` produces a roster that parses, validates, prints a working-looking next
 command, and then silently never delivers.
 
+⚠️ **It rewrites the file as generated output, so `#` comments and blank lines are NOT preserved.**
+An entry is the only thing the editor models, so a comment has nowhere to attach — it may belong to
+the file, to the entry below it, or to the gap. It says so **when it opens the file**, not when you
+save, because by then you would be choosing between losing the comments and losing the work.
+
 **Writing is gated on the file's bytes.** If the roster changed since the session opened it, nothing
 is written, your draft is saved to `<roster>.conflict` **before you are asked anything**, and you
 get `[v]` view / `[r]` reload / `[q]` quit / `enter` back. Nothing is ever merged: these lines
