@@ -38,8 +38,8 @@ agb-dashboard --roster ~/peers          # everyone in a relay roster
 agb-dashboard --mru                     # whatever you were just using
 ```
 
-It also fixes **three defects** in the existing `agb-peer relay --dashboard` — **or four**, if
-Task 0 finds that agterm rejects a `:scratch` cell. `relay --dashboard` stays. The two
+It also fixes **four defects** in the existing `agb-peer relay --dashboard`, the fourth confirmed
+by measurement in Task 0. `relay --dashboard` stays. The two
 features are different and both are wanted — see *Solution Overview*.
 
 **Benefits**: a grid you can open by name rather than by id; one that refuses to lie about its
@@ -255,7 +255,7 @@ They also differ in lifetime. `relay --dashboard` **follows**: it re-resolves ev
 when ids move. `agb-dashboard` is a one-shot open with a foreground hold; `--follow` is deliberately
 out of scope (see *What Goes Where*).
 
-### The defects in `relay --dashboard` — three certain, one conditional
+### The four defects in `relay --dashboard`
 
 Found by reading `agb-peer:2560` against the measured behaviour. The first three are the same class:
 **a visual surface that looks correct and is not.** The fourth is worse — a surface that never
@@ -422,16 +422,33 @@ unanswered. Nothing in Tasks 1, 2a, 2b-i, 3 or 4 depends on them.
 ⚠️ **A gate, not a formality**, and it now gates **Task 2 and Task 5** — not Tasks 1, 3 or 4, which
 do not depend on it. Both questions are currently **ASSUMED**, and both decide code rather than prose.
 
-- [ ] **Does agterm accept a `:scratch` cell suffix?** Revision 2 asserted it does not, citing an
+- [x] **Does agterm accept a `:scratch` cell suffix?** Revision 2 asserted it does not, citing an
       evidence table that has no such row — it generalised from `id:notapane`, a different input,
       while agterm demonstrably has a scratch pane (`agb_ops.open_drawer`). If accepted, **defect 4
       does not exist** and Task 2's exclusion must not be built
-- [ ] **Can a human type at the terminal that opened a held grid?** A different path from
+- [x] **Can a human type at the terminal that opened a held grid?** A different path from
       `session type`, which is already CONFIRMED. If not, Task 5's default becomes `--detach` with
       `--hold` opt-in
-- [ ] record both in `docs/agtermctl.md`, promoting each from ASSUMED to CONFIRMED with its date
-- [ ] ⚠️ update the pane rule in *Technical Details* and Task 2's checkboxes to whichever branch the
+- [x] record both in `docs/agtermctl.md`, promoting each from ASSUMED to CONFIRMED with its date
+- [x] ⚠️ update the pane rule in *Technical Details* and Task 2's checkboxes to whichever branch the
       first answer selects, **before** starting Task 2
+
+**ANSWERS — measured 2026-08-27, by a human at the machine:**
+
+1. **`:scratch` is REJECTED** — `invalid session id … use <id>, <id>:left, or <id>:right`. ⚠️ And
+   **at parse time, not as a resolution check**: byte-identical error whether the row has a scratch
+   pane open or not, so the suffix vocabulary is fixed before agterm looks at row state. Stronger
+   than the question asked for. **Defect 4 is real; Task 2b-ii is built.** `DASHBOARD_PANES =
+   ("left", "right")`, already written in Task 1, is confirmed correct and needs no change — which
+   is what isolating the unknown to one constant bought.
+2. **A terminal outside agterm stays responsive** while a grid is up: a blocking `read` waited
+   normally and returned on Enter, closing the grid. **Foreground hold stays the default**;
+   `--detach` remains an option.
+
+   ⚠️ **What was NOT measured, because a first attempt conflated them.** A grid *cell* is read-only
+   to the keyboard — true, and irrelevant: nothing types into a cell, the hold is a `read` in the
+   launching shell. Whether a shell *inside* an agterm session stays responsive is untested and
+   unneeded; outside is the documented route.
 
 ### Task 1: A stdout-carrying dashboard call, and cell construction
 
@@ -511,8 +528,8 @@ nobody wrote, and the no-bare-id property reverted to a human read.
 - Modify: `tests/test_agb_peer.py`
 - Modify: `CHANGELOG.md`
 
-⚠️ **Skip this task entirely if Task 0 found `:scratch` is ACCEPTED** — then defect 4 does not exist,
-there are three defects rather than four, and every downstream mention must read that way.
+✅ **Task 0 measured `:scratch` as REJECTED, so this task IS built.** The conditional is resolved:
+four defects, and every downstream "three, or four if…" now reads four.
 
 - [ ] exclude a `scratch`-paned participant from the cell set, via `dashboard_cells`' `excluded`
 - [ ] report an excluded participant **once**, not per tick
@@ -631,8 +648,9 @@ there are three defects rather than four, and every downstream mention must read
 
 ### Task 5: Lifecycle — hold, detach and `--mru`
 
-⚠️ **Task 0's second question decides this task's default.** If a held grid cannot be typed at,
-`--detach` becomes the default and `--hold` opt-in; update the checkboxes before starting.
+✅ **Task 0 measured that a terminal outside agterm stays responsive, so foreground hold IS the
+default** and `--detach` stays an option. ⚠️ The tool should say it wants running from outside
+agterm — that is the condition the measurement holds under, and the docs already recommend it.
 
 **Files:**
 - Modify: `agb-dashboard`

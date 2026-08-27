@@ -1263,7 +1263,11 @@ file exists to prevent.
 |---|---|
 | cells are `<id>` or `<id>:left` / `<id>:right`; **ids or unique prefixes, never names** | CONFIRMED |
 | **`session type` still works while a grid is open** — returns ok, and the text is there on read-back | CONFIRMED |
-| whether the grid takes **physical keyboard** focus in the GUI | **ASSUMED** — untested |
+| ⚠️ **`:scratch` is REJECTED** — `invalid session id … use <id>, <id>:left, or <id>:right` | **CONFIRMED 2026-08-27** |
+| ⚠️ …and it is a **parse-time** rejection, not a resolution check: byte-identical error whether the row has a scratch pane open or not | **CONFIRMED 2026-08-27** |
+| a grid **cell** cannot be typed into — it is read-only to the keyboard | **CONFIRMED 2026-08-27** |
+| ⚠️ a terminal **outside agterm** that launched the grid stays fully responsive — a blocking `read` there returns on Enter and the grid closes | **CONFIRMED 2026-08-27** |
+| whether a shell running **inside** an agterm session stays responsive while a grid is up | **ASSUMED** — untested, and not needed: the documented way to drive `agtermctl` is from outside |
 | a bare id takes **every pane** of the session, and the 9-cell cap counts **panes**, not sessions | CONFIRMED (help text) |
 | `--mru` opens a grid of the window's most-recently-used sessions with **no ids given** | CONFIRMED (help text) |
 | one cell alone is valid; there is no minimum of two | CONFIRMED |
@@ -1277,3 +1281,13 @@ file exists to prevent.
 must read the output for `unresolved:` rather than trusting the status, or a silently absent agent
 reads as a working dashboard.
 
+
+⚠️ **The read-only finding is about CELLS, and collapsing it into "you cannot interact at all" is
+wrong.** A grid cell cannot be typed into — measured. The terminal that *launched* the grid is a
+different thing entirely, and is **not** blocked: measured from an external terminal, a blocking
+`read` waited normally and returned on Enter, closing the grid. An agterm overlay does not capture
+the keyboard of a separate terminal application.
+
+So a foreground "open, wait, close" is sound **when run from outside agterm**, which is what
+`docs/commands.md` already recommends for other reasons. Running one from *inside* an agterm session
+is untested and does not need to be: that is not the documented route.
