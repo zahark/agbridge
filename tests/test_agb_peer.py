@@ -536,6 +536,8 @@ class RelayCtl(object):
         self.cursors = list(cursors) if cursors else [2]
         self.sleeps = 0
         self.dashboards = []
+        self.dashboard_out = ""
+        self.closes = 0
 
     def sleep(self, seconds):
         self.sleeps += 1
@@ -558,6 +560,10 @@ class RelayCtl(object):
 
     def dashboard(self, members):
         self.dashboards.append(list(members))
+        return True, self.dashboard_out, ""
+
+    def dashboard_close(self):
+        self.closes += 1
         return True, ""
 
     def say(self, message):
@@ -3861,3 +3867,124 @@ def test_agb_peer_never_imports_tempfile(peer):
             imported.append(node.module or "")
     assert imported, "no imports found at all -- the walk is broken"
     assert "tempfile" not in imported, imported
+
+
+# ---------------------------------------------------------------------------
+# dashboard_cells and the stdout-carrying Ctl.dashboard -- agb-dashboard Task 1.
+# Plan: docs/plans/20260827-agb-dashboard.md
+# ---------------------------------------------------------------------------
+
+def test_dashboard_cells_never_emits_a_bare_id(peer):
+    """⚠️ Not a style rule. A bare id takes EVERY pane of its session and the
+    9-cap counts panes, so a row somebody opened a split on costs two cells --
+    the same rows fit or do not depending on state nobody is looking at."""
+    cells, _excluded = peer.dashboard_cells([("AAAA", "left"), ("BBBB", "right")])
+    assert cells, "nothing was built"
+    for cell in cells:
+        assert ":" in cell, cell
+
+
+def test_dashboard_cells_preserves_the_pane(peer):
+    """⚠️ Preserved, not forced to `left`. A participant may legitimately live
+    in the right-hand pane, and rewriting it points the cell at the wrong half
+    of somebody's screen."""
+    cells, _ = peer.dashboard_cells([("AAAA", "left"), ("BBBB", "right")])
+    assert cells == ["AAAA:left", "BBBB:right"]
+
+
+def test_dashboard_cells_keeps_the_given_order(peer):
+    cells, _ = peer.dashboard_cells(
+        [("CCCC", "left"), ("AAAA", "left"), ("BBBB", "right")])
+    assert cells == ["CCCC:left", "AAAA:left", "BBBB:right"]
+
+
+def test_dashboard_cells_reports_what_it_dropped(peer):
+    """A list of strings cannot say what is NOT in it, and two callers need to
+    know: the relay reports the absence, agb-dashboard refuses on it."""
+    cells, excluded = peer.dashboard_cells(
+        [("AAAA", "left"), ("BBBB", "scratch")])
+    assert cells == ["AAAA:left"]
+    assert excluded == [("BBBB", "scratch")]
+
+
+def test_the_dashboard_pane_vocabulary_is_narrower_than_PANE_KINDS(peer):
+    """⚠️ The gap is the point, and it is one constant wide.
+
+    A participant may be in the scratch drawer -- `PANE_KINDS` allows it and
+    `agb pane`'s `[d]` puts an agent there -- while agterm's grid documents
+    only `:left`/`:right`. `DASHBOARD_PANES` is the single line that a
+    measurement of `:scratch` would change; this test pins that it IS narrower,
+    not which way the measurement went.
+    """
+    assert set(peer.DASHBOARD_PANES) <= set(peer.PANE_KINDS)
+    assert "left" in peer.DASHBOARD_PANES and "right" in peer.DASHBOARD_PANES
+
+
+def test_dashboard_cells_excludes_every_pane_outside_the_vocabulary(peer):
+    """Parametrised over the constant rather than over a literal, so the
+    measurement can move `DASHBOARD_PANES` without this becoming a lie -- and
+    asserted non-empty first, or it would pass by testing nothing."""
+    outside = [k for k in peer.PANE_KINDS if k not in peer.DASHBOARD_PANES]
+    assert outside, "no pane is outside the vocabulary -- premise gone"
+    pairs = [("AAAA", "left")] + [("X%d" % i, k) for i, k in enumerate(outside)]
+    cells, excluded = peer.dashboard_cells(pairs)
+    assert cells == ["AAAA:left"]
+    assert [p for _r, p in excluded] == outside
+
+
+def test_the_cap_is_agterms_own_and_counts_agents_once_panes_are_explicit(peer):
+    assert peer.DASHBOARD_MAX_CELLS == 9
+    cells, _ = peer.dashboard_cells([("R%d" % i, "left") for i in range(9)])
+    assert len(cells) == peer.DASHBOARD_MAX_CELLS
+
+
+def test_Ctl_dashboard_returns_stdout(peer):
+    """⚠️ The whole reason it is a three-tuple.
+
+    agterm exits 0 when only SOME cells resolve, opens the grid without the
+    rest, and names the casualties on STDOUT alone. A caller that sees only the
+    status gets a grid quietly missing the agent it was opened to watch.
+    """
+    seen = []
+
+    def run(argv):
+        seen.append(list(argv))
+        return 0, "unresolved: DEADBEEF\n", ""
+
+    ok, out, why = peer.Ctl(run=run).dashboard(["AAAA:left", "DEADBEEF:left"])
+    assert seen == [["dashboard", "AAAA:left", "DEADBEEF:left"]]
+    assert ok is True, "agterm really does exit 0 for a partial grid"
+    assert "unresolved: DEADBEEF" in out
+    assert why == "exit 0" or why == "", why
+
+
+def test_Ctl_dashboard_close_asks_for_the_one_grid(peer):
+    seen = []
+
+    def run(argv):
+        seen.append(list(argv))
+        return 0, "", ""
+
+    ok, _why = peer.Ctl(run=run).dashboard_close()
+    assert ok is True
+    assert seen == [["dashboard", "--close"]]
+
+
+def test_the_relay_still_opens_a_grid_after_the_return_shape_changed(peer):
+    """The conversion of `Ctl.dashboard`'s only caller, pinned. Without it that
+    line raises ValueError: too many values to unpack."""
+    src = io.open(PEER_PATH, encoding="utf-8").read()
+    tree = ast.parse(src)
+    fns = [n for n in ast.walk(tree)
+           if isinstance(n, ast.FunctionDef) and n.name == "cmd_relay"]
+    assert fns, "cmd_relay is gone"
+    targets = [n for n in ast.walk(fns[0]) if isinstance(n, ast.Assign)]
+    assert targets, "cmd_relay assigns nothing"
+    unpacks = [t for t in targets
+               if isinstance(t.targets[0], ast.Tuple)
+               and isinstance(t.value, ast.Call)
+               and isinstance(t.value.func, ast.Attribute)
+               and t.value.func.attr == "dashboard"]
+    assert unpacks, "no ctl.dashboard(...) unpack found in cmd_relay"
+    for u in unpacks:
+        assert len(u.targets[0].elts) == 3, "must unpack (ok, out, why)"

@@ -1252,6 +1252,46 @@ def write_draft_file(path, lines):
     return path
 
 
+# Which participant panes the DASHBOARD can show. agterm's grid takes a
+# `:left`/`:right` suffix; `PANE_KINDS` is wider because a participant may live
+# in the scratch drawer, which is a place an agent can be but -- pending the
+# measurement in the agb-dashboard plan's Task 0 -- may not be a cell agterm
+# will accept. This tuple is the single line that answer changes.
+DASHBOARD_PANES = ("left", "right")
+
+# agterm's own cap. ⚠️ It counts PANES, not sessions: a BARE id takes every pane
+# of its session, so a row somebody opened a split on costs two. Emitting an
+# explicit pane always is what turns this into a count of AGENTS, and is the
+# only reason a caller can preflight it honestly.
+DASHBOARD_MAX_CELLS = 9
+
+
+def dashboard_cells(pairs):
+    """`[(id, pane)]` -> `(cells, excluded)`.
+
+    ⚠️ **Never a bare id.** Not a style rule: a bare id takes every pane of its
+    session, so the same rows fit or do not depending on whether a stranger
+    opened a split -- state nobody is looking at. An explicit pane makes one
+    entry cost exactly one cell, which is what lets a caller say "9 cells; got
+    10" before calling anything.
+
+    ⚠️ **The pane is PRESERVED, not forced to `left`.** A participant may
+    legitimately live in the right-hand pane, and rewriting that would point
+    the cell at the wrong half of somebody's screen.
+
+    Returns what it dropped as well as what it kept, because a pane the grid
+    cannot show is a real absence: the relay reports it and carries on, while
+    `agb-dashboard` treats it as a shortfall and refuses.
+    """
+    cells, excluded = [], []
+    for row, pane in pairs:
+        if pane in DASHBOARD_PANES:
+            cells.append("%s:%s" % (row, pane))
+        else:
+            excluded.append((row, pane))
+    return cells, excluded
+
+
 def parse_roster_text(data, minimum=2):
     """A roster file's participants. Same grammar as the positional form.
 
@@ -1522,9 +1562,28 @@ class Ctl(object):
             return None, "cursor returned %r" % (out.strip(),)
 
     def dashboard(self, members):
-        """(ok, reason). Best-effort like every other call here: a grid that
-        will not open is a cosmetic failure and must never stop the relay."""
-        rc, _out, err = self.run(["dashboard"] + list(members))
+        """(ok, out, reason). Best-effort like every other call here: a grid
+        that will not open is a cosmetic failure and must never stop the relay.
+
+        ⚠️ **STDOUT IS RETURNED, and that is the whole reason this is not a
+        two-tuple.** agterm exits **0** when only SOME cells resolve, opens the
+        grid without the rest, and names the casualties as `unresolved: <id>`
+        on **stdout** only. So a caller that trusts the status gets a grid
+        quietly missing the agent it was opened to watch -- and the status is
+        the only thing a caller had, before this. The relay is content to
+        ignore it; `agb-dashboard` is not, and cannot see it any other way.
+        """
+        rc, out, err = self.run(["dashboard"] + list(members))
+        return (rc == 0), (out or ""), ((err or "").strip() or "exit %s" % (rc,))
+
+    def dashboard_close(self):
+        """(ok, reason). Closes THE grid -- agterm has exactly one.
+
+        ⚠️ Which is why a caller must only ever close a grid **it opened**:
+        there is no ownership token, so closing unconditionally would dismiss
+        whatever somebody else had up.
+        """
+        rc, _out, err = self.run(["dashboard", "--close"])
         return (rc == 0), ((err or "").strip() or "exit %s" % (rc,))
 
     def type(self, target, pane, text):
@@ -2562,7 +2621,7 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                 # re-resolved: a grid built on dead ids shows dead cells.
                 grid_cells = ["%s:%s" % (resolved[n][0], resolved[n][1])
                               for n in sorted(resolved)]
-                ok, why = ctl.dashboard(grid_cells)
+                ok, _out, why = ctl.dashboard(grid_cells)
                 say("dashboard: %s" % ("open" if ok else why))
         if needs_prime:
             # ⚠️ Before the scan, and the scan skips whatever is still pending:

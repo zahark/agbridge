@@ -439,21 +439,27 @@ do not depend on it. Both questions are currently **ASSUMED**, and both decide c
 - Modify: `agb-peer`
 - Modify: `tests/test_agb_peer.py`
 
-- [ ] ⚠️ change `Ctl.dashboard` to surface **stdout** — `(ok, out, err)` — because `unresolved:` is
+- [x] ⚠️ change `Ctl.dashboard` to surface **stdout** — `(ok, out, err)` — because `unresolved:` is
       announced only there and the current `rc, _out, err` discards it
-- [ ] ⚠️ convert its only caller, `agb-peer:2565` (`ok, why = ctl.dashboard(...)`), to the new shape
+- [x] ⚠️ convert its only caller, `agb-peer:2565` (`ok, why = ctl.dashboard(...)`), to the new shape
       **in this task**. Without it that line raises `ValueError: too many values to unpack` and
       Task 1's own gate cannot go green. No behaviour change here — unpacking only
-- [ ] update `RelayCtl` (`tests/test_agb_peer.py:559`) to the new return shape and add
+- [x] update `RelayCtl` (`tests/test_agb_peer.py:559`) to the new return shape and add
       `dashboard_close`, so Task 2 does not break the 12 `cmd_relay(` call sites
-- [ ] add `DASHBOARD_MAX_CELLS = 9` and `dashboard_cells(pairs)` → **`(cells, excluded)`**, taking
+- [x] add `DASHBOARD_MAX_CELLS = 9` and `dashboard_cells(pairs)` → **`(cells, excluded)`**, taking
       `(id, pane)` pairs, emitting an explicit pane always and a bare id never, preserving `right`,
       and handling `scratch` per whichever branch Task 0 selected
-- [ ] write tests: `left` and `right` are preserved; a bare id is never emitted; order is preserved;
+- [x] write tests: `left` and `right` are preserved; a bare id is never emitted; order is preserved;
       `excluded` reports what was dropped
-- [ ] write tests: `Ctl.dashboard` returns stdout, driven by a fake `run` producing `unresolved: X`
+- [x] write tests: `Ctl.dashboard` returns stdout, driven by a fake `run` producing `unresolved: X`
       on stdout with exit 0 — the shape Task 4 depends on
-- [ ] run `python3 -m pytest tests/test_agb_peer.py -q` — must pass before task 2
+- [x] run `python3 -m pytest tests/test_agb_peer.py -q` — **349 passed**; full suite **2482**
+- [x] ➕ mutation-checked four guards (bare id, forced `:left`, swallowed `excluded`, dropped
+      stdout): each failed its named test
+- [x] ➕ **started without Task 0's answer, safely**: the `scratch` question is now one constant,
+      `DASHBOARD_PANES`, and the test asserts only that it is NARROWER than `PANE_KINDS` — not
+      which way the measurement went. Task 2b-ii changes that line if `:scratch` turns out to be
+      accepted, and nothing else moves
 
 ### Task 2a: Close the grid the relay opened (defect 1)
 
