@@ -147,10 +147,11 @@ def agb():
 PEER_MODULE = "agb_peer"
 PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 SETUP_PATH = os.path.join(REPO_ROOT, "agb-peer-setup")
-# ⚠️ MAY NOT EXIST YET -- `agb-dashboard` is created by a later task of the
-# agb-dashboard plan. It is named here so the guards that must span both cell
-# emitters have one spelling of the path; a guard reading it is responsible for
-# skipping a tree that is absent and for asserting it still covered something.
+# `agb-dashboard`, the second cell emitter. Named here so the guards that must
+# span both have one spelling of the path. ⚠️ A guard reading it keeps its
+# skip-if-absent branch AND its non-vacuity assertion: the file exists now
+# (Task 3), but the reason the pair was written -- that a guard covering
+# nothing must say so rather than go green -- is not about its existence.
 DASH_PATH = os.path.join(REPO_ROOT, "agb-dashboard")
 
 
@@ -186,6 +187,22 @@ def setup(peer):
     """
     loader = SourceFileLoader("agb_peer_setup", SETUP_PATH)
     spec = importlib.util.spec_from_file_location("agb_peer_setup", SETUP_PATH,
+                                                  loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="session")
+def dashboard(peer):
+    """`agb-dashboard`, loaded after `peer` so it adopts that module object.
+
+    Same shape and same reason as `setup` above: depending on `peer` forces the
+    shared registration to happen first, which is the property
+    `dashboard.load_peer() is peer` asserts.
+    """
+    loader = SourceFileLoader("agb_dashboard", DASH_PATH)
+    spec = importlib.util.spec_from_file_location("agb_dashboard", DASH_PATH,
                                                   loader=loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)

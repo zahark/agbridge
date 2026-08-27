@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+# agb-dashboard -- watch several agent rows at once, by NAME.
+#
+# agterm can show a view-only grid of live sessions, one cell per pane, up to
+# nine of them. Driving it by hand means knowing three things:
+#
+#   * **The row ids.** `agtermctl dashboard` takes ids or unique id prefixes
+#     and NEVER names -- and `agb-refresh` re-mints every row, so an id you
+#     wrote down is dead. That is the same trap `agb-peer-setup` was built to
+#     route around, and the reason this command resolves fresh on every run.
+#   * **That the `:left` suffix matters.** A BARE id takes every pane of its
+#     session and agterm's nine-cell cap counts PANES, so a row somebody opened
+#     a split on silently costs two cells.
+#   * **That somebody has to close it.** agterm has exactly one grid and no
+#     ownership token, so a grid nobody closes is a grid in everybody's way.
+#
+# ⚠️ **And the dangerous one, which is why this is a wrapper and not an alias.**
+# When only SOME cells resolve, agterm exits **0**, opens the grid without the
+# rest, and names the casualties as `unresolved: <id>` on stdout alone. So the
+# honest-looking grid is the one missing the agent you opened it to watch.
+#
+# ⚠️ **Why a separate script and not a fourth `agb-peer` verb.** `agb-peer send`
+# runs on cluster hosts, inside agents, on every message, and CPython caches no
+# bytecode for a `__main__` -- so everything in that file is re-parsed by every
+# agent every time. Selector resolution, a preflight and a foreground hold
+# belong on the other side of that line. Same argument as `agb`/`agb_mac`/
+# `agb_ops`, one tier down; same shape as `agb-peer-setup`.
+#
+# What it shares rather than reimplements: row matching (`match_sessions`), the
+# roster grammar, `dashboard_cells` and the `Ctl` wrapper all stay in
+# `agb-peer`, which remains their single owner. This script loads it by path.
+#
+# Usage:
+#
+#   agb-dashboard alice bob          # two rows, by label
+#   agb-dashboard --roster ~/peers   # everyone in a relay roster
+#   agb-dashboard --mru              # whatever you were just using
+
+import os
+import sys
+
+VERSION = "0.1.0"
+
+# ⚠️ The `sys.modules` key is a THREE-WAY CROSS-FILE AGREEMENT: this file,
+# `agb-peer-setup`'s `PEER_MODULE`, and `tests/conftest.py`'s `peer` fixture
+# (CLAUDE.md invariant 14). All three must register `agb-peer` under this exact
+# string. If any one disagrees it loads a SECOND module object with its own
+# `PeerError` class, so `except peer.PeerError` around a call into this script
+# silently does not catch -- a failure that reads like a loader bug rather than
+# like a naming disagreement, which is why it has a test of its own.
+PEER_MODULE = "agb_peer"
+
+USAGE = """usage:
+  agb-dashboard <selector> [<selector> ...]   grid those rows
+  agb-dashboard --roster <file>               grid a relay roster's members
+  agb-dashboard --mru                         grid the rows you last used
+  agb-dashboard --version
+
+  <selector>       a substring of the row's label, its id, or an id prefix.
+                   Prefer the label: `agb-refresh` re-mints every id.
+  --roster <file>  participants from an `agb-peer relay` roster file
+  --mru            let agterm pick; asserts no membership, so nothing is
+                   resolved and nothing can be reported missing
+  --detach         open the grid and exit, printing the command that closes it
+  --help           this text
+"""
+
+# The parser tables, in the convention the other parsers in this project use.
+DASH_FLAGS = ("--mru", "--detach", "--version", "--help")
+DASH_VALUE_ARGS = ("--roster",)
+
+
+class DashError(Exception):
+    """This script's own one-line-message-plus-exit-code error.
+
+    Separate from `agb-peer`'s `PeerError` only because it is raised before the
+    sibling is necessarily loaded -- a usage error happens with no module in
+    hand, and must not require one.
+    """
+
+    def __init__(self, message, code=1):
+        Exception.__init__(self, message)
+        self.code = code
+
+
+def peer_path():
+    """Where `agb-peer` is: beside the REAL path of this file.
+
+    ⚠️ `realpath`, not `dirname(__file__)`, and the install instruction is why:
+    this script is symlinked onto `$PATH` beside `agb-peer`, so an unresolved
+    `__file__` looks in the symlink's directory and finds nothing. `agb`'s own
+    `sibling_path` and `agb-peer-setup` carry the same note for the same reason
+    -- and a test run from the checkout would never notice, because there the
+    two coincide.
+    """
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "agb-peer")
+
+
+def load_peer(path=None):
+    """`agb-peer` as a module, loaded once and shared.
+
+    Mirrors `agb._load_sibling` and `agb-peer-setup.load_peer`: an early return
+    out of `sys.modules` so two callers get one module object, an explicit
+    `SourceFileLoader` because the file has no `.py` extension and
+    `spec_from_file_location` alone would leave `spec.loader` as None, and a
+    `del` on failure -- without which a half-initialised module is returned by
+    the next call as if it had loaded, turning the second failure into a
+    baffling AttributeError.
+    """
+    mod = sys.modules.get(PEER_MODULE)
+    if mod is not None:
+        return mod
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    target = path or peer_path()
+    loader = SourceFileLoader(PEER_MODULE, target)
+    spec = importlib.util.spec_from_file_location(PEER_MODULE, target,
+                                                  loader=loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[PEER_MODULE] = mod
+    try:
+        loader.exec_module(mod)
+    except BaseException:
+        del sys.modules[PEER_MODULE]
+        raise
+    return mod
+
+
+def parse_args(argv):
+    """Hand-rolled, matching the convention the other parsers use.
+
+    Purely SYNTACTIC: it answers "is this argv well formed", and leaves "do
+    these options make a coherent request" to `select_mode`. The split is not
+    tidiness -- `--version` has to be answerable by an argv that names no mode
+    at all, and folding the mode rules in here would refuse it.
+
+    `--opt=` with an empty inline value is a MISSING-VALUE error rather than an
+    empty string, in this parser as in all of them: an empty `--roster` would
+    otherwise be read as a file called "".
+    """
+    opts = {"selectors": [], "roster": None, "mru": False, "detach": False,
+            "version": False, "help": False}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            # Everything after `--` is a selector, so a label that begins with
+            # a dash is still nameable.
+            opts["selectors"].extend(argv[i + 1:])
+            break
+        if arg.startswith("--"):
+            name, sep, inline = arg.partition("=")
+            if name in DASH_FLAGS:
+                if sep:
+                    raise DashError("%s takes no value" % (name,))
+                opts[name[2:].replace("-", "_")] = True
+            elif name in DASH_VALUE_ARGS:
+                if sep:
+                    if not inline:
+                        raise DashError("%s needs a value" % (name,))
+                    value = inline
+                else:
+                    i += 1
+                    if i >= len(argv):
+                        raise DashError("%s needs a value" % (name,))
+                    value = argv[i]
+                opts[name[2:].replace("-", "_")] = value
+            else:
+                raise DashError("unknown option: %s" % (name,))
+        else:
+            opts["selectors"].append(arg)
+        i += 1
+    return opts
+
+
+def select_mode(opts):
+    """Which of the three questions this argv asks: selectors, roster or mru.
+
+    ⚠️ **The refusals are the point.** The three modes answer different
+    questions -- "watch these named rows", "watch this roster", "watch whatever
+    I was just using" -- and there is no defensible way to merge them, so
+    preferring one silently would be a guess dressed as a feature. `--mru`
+    asserts NO membership, which is exactly why it is the one mode where a
+    missing cell is not a shortfall; combining it with a membership set would
+    make that exemption apply to rows the user did name.
+
+    ⚠️ **[decision] `--roster` beside positional selectors is refused too**,
+    although no checkbox demanded it. A union is defensible on paper -- both
+    assert membership and `resolve_selectors` dedupes -- but nothing specifies
+    how a bare selector's default `left` composes with a roster entry's own
+    pane, and refusing is reversible while a silent union is not.
+    """
+    named = []
+    if opts["selectors"]:
+        named.append("selectors")
+    if opts["roster"]:
+        named.append("--roster")
+    if opts["mru"]:
+        named.append("--mru")
+    if len(named) > 1:
+        raise DashError(
+            "%s cannot be combined -- they ask different questions; pick one"
+            % (" and ".join(named),))
+    if not named:
+        raise DashError(
+            "name at least one row, or use --roster <file> or --mru")
+    if opts["mru"]:
+        return "mru"
+    if opts["roster"]:
+        return "roster"
+    return "selectors"
+
+
+def main(argv, out=None, peer=None, ctl=None, read_line=None):
+    out = out or sys.stdout
+    if not argv:
+        raise DashError(USAGE.rstrip("\n"), 1)
+    opts = parse_args(argv)
+    if opts["version"]:
+        # Answered without loading the sibling: a version query must work in a
+        # tree where `agb-peer` is missing, which is one of the things it is
+        # asked in order to find out.
+        out.write("agb-dashboard %s\n" % (VERSION,))
+        return 0
+    if opts["help"]:
+        out.write(USAGE)
+        return 0
+    mode = select_mode(opts)
+    if mode == "mru":
+        return run_mru(opts, out, peer=peer, ctl=ctl, read_line=read_line)
+    return run_grid(opts, out, peer=peer, ctl=ctl, read_line=read_line)
+
+
+def run_grid(opts, out, peer=None, ctl=None, read_line=None):
+    # Task 4 (resolution, preflight, the strict `unresolved:` failure) and
+    # Task 5 (the hold and `--detach`) fill this in.
+    raise DashError("opening a grid is not implemented yet", 70)
+
+
+def run_mru(opts, out, peer=None, ctl=None, read_line=None):
+    # Task 5.
+    raise DashError("--mru is not implemented yet", 70)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except DashError as error:
+        sys.stderr.write("agb-dashboard: %s\n" % (error,))
+        sys.exit(error.code)
+    except KeyboardInterrupt:
+        # Its own clause because it is not an `Exception` -- the class-name
+        # match below cannot see it, and a `Ctrl-C` at the foreground hold is
+        # the DOCUMENTED way to end a held grid rather than a crash.
+        sys.stderr.write("agb-dashboard: interrupted\n")
+        sys.exit(1)
+    except Exception as error:
+        # ⚠️ FOUR classes reach here, not one.
+        #   * `PeerError` -- the sibling's own, for anything it refuses:
+        #     a tree that is not JSON, a roster that will not parse.
+        #   * `RosterConflict` -- a PeerError SUBCLASS, and the match below is
+        #     on the exact `__name__`, so leaving it out lets it escape as a
+        #     traceback while its parent is handled.
+        #   * `AgbError` -- `agb_ops`' hand-rolled parsers raise it. Nothing
+        #     here loads `agb_ops` today; `agb-peer-setup` does, from the same
+        #     family, and a name absent from this tuple escapes silently.
+        #   * `OSError`/`IOError` -- `agb.read_config` re-raises every errno
+        #     except ENOENT/ENOTDIR, so an unreadable instance config arrives
+        #     as one of these.
+        # They cannot be named in an `except` clause without importing the
+        # sibling first, which a usage error must not require -- so they are
+        # matched here by class name instead.
+        if type(error).__name__ in ("PeerError", "RosterConflict", "AgbError",
+                                    "OSError", "IOError"):
+            sys.stderr.write("agb-dashboard: %s\n" % (error,))
+            sys.exit(getattr(error, "code", 1))
+        raise

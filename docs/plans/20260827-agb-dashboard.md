@@ -686,21 +686,56 @@ four defects, and every downstream "three, or four if…" now reads four.
 - Create: `tests/test_agb_dashboard.py`
 - Modify: `tests/conftest.py`
 
-- [ ] create `agb-dashboard` (executable, own `VERSION`/`--version`), loading `agb-peer` by path from
+- [x] create `agb-dashboard` (executable, own `VERSION`/`--version`), loading `agb-peer` by path from
       beside `os.path.realpath(__file__)` and registering it under the shared `sys.modules` key
-- [ ] ⚠️ that key is now a **three-way** cross-file agreement — `agb-peer-setup`, `tests/conftest.py`
+      — ➕ Tasks 4 and 5 are stubs refusing with **exit 70** (`run_grid`, `run_mru`), the shape
+      `agb-peer-setup` used at the same stage. A test asserts an *accepted* argv reaches one of
+      them: without it every refusal test in the file would pass against a `main` that refused
+      everything
+- [x] ⚠️ that key is now a **three-way** cross-file agreement — `agb-peer-setup`, `tests/conftest.py`
       and this file. Name all three in the comment, and add it to CLAUDE.md invariant 14 in Task 7
-- [ ] hand-rolled parser: positional selectors plus `--roster`, `--mru`, `--detach`
+      — ➕ the test compares against **both** other spellings (`conftest.PEER_MODULE` and
+      `setup.PEER_MODULE`), not just one, since a two-way check passes while the third drifts
+- [x] hand-rolled parser: positional selectors plus `--roster`, `--mru`, `--detach`
       (⚠️ **no `--font-size`** — revision 1 invented it; there is no evidence agterm's dashboard
       takes one, and inventing a flag is the exact thing this plan's own rule forbids)
-- [ ] refuse `--mru` together with selectors or `--roster`, naming both; refuse zero selectors with
+      — ➕ its absence is **pinned by a test** (`…does_not_offer_a_font_size`) rather than left to a
+      reader, because "we cut it" is not a property anything checks
+      — ➕ `--` ends the flags, so a label beginning with a dash is nameable rather than an unknown
+      option; `--version`/`--help` are answered **before** the mode rules, so an argv naming no mode
+      is still a legal way to ask for the version
+- [x] refuse `--mru` together with selectors or `--roster`, naming both; refuse zero selectors with
       neither `--roster` nor `--mru`
-- [ ] `__main__` guard naming `PeerError`, `KeyboardInterrupt`, `OSError`/`IOError`, matched by class
+      — ➕ **[decision]** `--roster` beside positional selectors is refused too, though no checkbox
+      demanded it. A union is defensible — both assert membership and `resolve_selectors` dedupes —
+      but nothing specifies how a bare selector's default `left` composes with a roster entry's own
+      pane, and refusing is reversible while a silent union is not. Task 4 may relax it
+      — ➕ split into `parse_args` (syntax) and `select_mode` (coherence), because folding the mode
+      rules into the parser would refuse `--version`
+- [x] `__main__` guard naming `PeerError`, `KeyboardInterrupt`, `OSError`/`IOError`, matched by class
       name since the sibling may not be loaded when a usage error is raised
-- [ ] add a `dashboard` fixture to `tests/conftest.py` beside the existing `peer` one
-- [ ] write tests: module identity (`dash.load_peer() is peer`), and resolution through a **symlink**
-- [ ] write tests: each refusal, asserting nothing is written and no subprocess runs
-- [ ] run `python3 -m pytest tests/test_agb_dashboard.py -q` — must pass before task 4
+      — ➕ `RosterConflict` is named too: it is a `PeerError` **subclass**, and the match is on the
+      exact `type(error).__name__`, so leaving it out lets it escape as a traceback while its parent
+      is handled. `AgbError` is named although nothing here loads `agb_ops` **today**, for the same
+      cost-nothing reason the family's other script does
+      — ➕ `KeyboardInterrupt` gets a clause of its **own** and a second, separate test: it is not an
+      `Exception`, so the class-name match cannot see it at all
+- [x] add a `dashboard` fixture to `tests/conftest.py` beside the existing `peer` one
+      — ➕ `DASH_PATH` was already there from Task 2b-i; its "may not exist yet" comment was rewritten
+      rather than deleted, because the skip-plus-non-vacuity contract it states is not about the
+      file's existence
+- [x] write tests: module identity (`dash.load_peer() is peer`), and resolution through a **symlink**
+- [x] write tests: each refusal, asserting nothing is written and no subprocess runs
+      — ➕ "no subprocess runs" is an **assertion**, not an inference: the injected `NoCtl` raises on
+      any attribute access and `no_read_line` raises on any read, so a refusal that opened the grid
+      first and complained afterwards — the exact failure this command exists to remove — fails
+      loudly instead of passing on an empty stdout
+- [x] run `python3 -m pytest tests/test_agb_dashboard.py -q` — must pass before task 4
+      — ➕ **35** in `test_agb_dashboard.py`, **2544** in the full suite
+- [x] ➕ mutation-checked **seven** guards, each dying against a named test: `realpath` → `abspath`
+      (the symlink test); `AgbError` dropped from the tuple; `except KeyboardInterrupt` → `ValueError`;
+      the two-mode refusal disabled; the no-mode refusal disabled; the `sys.modules` key changed; and
+      `--roster=` accepted as an empty string
 
 ### Task 4: Resolution, preflight, and the strict failure
 
