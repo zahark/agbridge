@@ -438,6 +438,255 @@ def parse_ordered(peer, raw):
     return entries
 
 
+CANCEL = object()
+
+
+def ask(read_line, say, prompt, default=None):
+    """One line from the user, or `CANCEL`. EOF is a cancel, not a crash."""
+    say(prompt)
+    try:
+        answer = read_line()
+    except EOFError:
+        return CANCEL
+    if answer is None:
+        return CANCEL
+    answer = answer.strip()
+    if answer in ("q", "cancel"):
+        return CANCEL
+    return answer or (default if default is not None else "")
+
+
+def pick_row(peer, ctl, read_line, say):
+    """(row-label, picked-session) chosen from live rows, or CANCEL.
+
+    Falls through to typing a label whenever discovery is unavailable or the
+    user asks for it -- the tool has to stay usable with no agterm at all.
+    """
+    sessions = discover_rows(peer, ctl, say)
+    if sessions:
+        rows = format_candidates(sessions)
+        say("live rows:")
+        for i, (display, _sess) in enumerate(rows, 1):
+            say("  %2d) %s" % (i, display))
+        say("  %2d) type a label by hand" % (len(rows) + 1,))
+        while True:
+            answer = ask(read_line, say, "row [1-%d]: " % (len(rows) + 1,))
+            if answer is CANCEL:
+                return CANCEL
+            if answer.isdigit() and 1 <= int(answer) <= len(rows):
+                picked = rows[int(answer) - 1][1]
+                label, reason = row_value(picked)
+                if label is None:
+                    say("cannot use that row: %s" % (reason,))
+                    continue
+                ok, why = row_is_unique(peer, sessions, label, picked)
+                if not ok:
+                    say("cannot use that row: %s" % (why,))
+                    continue
+                return label, picked
+            if answer.isdigit() and int(answer) == len(rows) + 1:
+                break
+            say("pick a number from the list.")
+    return type_row_label(peer, read_line, say, sessions)
+
+
+def type_row_label(peer, read_line, say, sessions):
+    """A hand-typed label, checked the same way a picked one is."""
+    while True:
+        answer = ask(read_line, say,
+                     "row label (a substring of the row's title): ")
+        if answer is CANCEL:
+            return CANCEL
+        probe = {"name": answer, "id": None}
+        label, reason = row_value(probe)
+        if label is None:
+            say(reason)
+            continue
+        if sessions:
+            matches = peer.match_sessions(sessions, label)
+            if len(matches) != 1:
+                say("%r matches %d rows -- it has to name exactly one."
+                    % (label, len(matches)))
+                continue
+            return label, matches[0]
+        # No discovery: nothing to check against, and refusing would make the
+        # tool unusable exactly when agterm is unreachable.
+        say("note: agterm is unreachable, so %r was not checked against a live "
+            "row." % (label,))
+        return label, None
+
+
+def ask_name(peer, draft, read_line, say):
+    """A participant name the REAL parser accepts, in this draft. Or CANCEL.
+
+    ⚠️ **Validated against the WHOLE draft, not the one new word**, and that is
+    not a stylistic choice. `parse_participants` builds a fresh `people = {}`
+    on every call, so its "named twice" refusal only sees the words handed to
+    THAT call -- measured: two single-word calls both accept `alice`. Passing
+    one word therefore checks the alphabet and the reserved `relay`, and
+    silently checks nothing at all for duplicates.
+    """
+    while True:
+        answer = ask(read_line, say, "participant name: ")
+        if answer is CANCEL:
+            return CANCEL
+        if not answer:
+            continue
+        words = peer.render_roster_lines(draft.entries) + ["%s=probe" % (answer,)]
+        try:
+            peer.parse_participants(words, minimum=1)
+        except peer.PeerError as exc:
+            say(str(exc))
+            continue
+        return answer
+
+
+def ask_pane(peer, read_line, say):
+    """Which pane of the row the agent's composer is in. Or CANCEL.
+
+    A closed vocabulary (`PANE_KINDS`), defaulted to `left`, which is where a
+    single-pane row's agent always is. It is a separate question from the
+    `:<tmux target>` below -- one names an agterm pane, the other a tmux
+    session -- and conflating them is why this prompt exists at all.
+    """
+    kinds = list(peer.PANE_KINDS)
+    while True:
+        answer = ask(read_line, say,
+                     "agterm pane [%s] (default left): " % ("|".join(kinds),),
+                     default="left")
+        if answer is CANCEL:
+            return CANCEL
+        if answer in kinds:
+            return answer
+        say("pane must be one of %s." % ("|".join(kinds),))
+
+
+def ask_transport(peer, ops, agb, hint, read_line, say):
+    """(target, tmux_target) for the `@...` suffix, or CANCEL.
+
+    The options map one-to-one onto what actually gets written, rather than
+    onto a general idea of "where is this peer" -- there is no way to answer
+    that question once for a row that agterm, ssh and tmux each locate
+    differently.
+    """
+    unreadable = []
+    config = {}
+    choices = []
+    # ⚠️ BOTH, not just `ops`. The table is enumerated with `agb.read_config`,
+    # so `ops` alone gets as far as calling a method on None -- and the caller
+    # legitimately has one without the other when `load_ops` was never reached
+    # (no agb installed, or discovery never needed it).
+    if hint is not None and ops is not None and agb is not None:
+        choices = host_choices(agb, ops, hint, unreadable)
+        config = dict(("host_" + name, target) for name, target in choices)
+        if unreadable:
+            say("warning: this row's config could not be read (%s) -- no host "
+                "list, and you may need to type an ssh target"
+                % (unreadable[0],))
+    offer_default = (ops is not None
+                     and offer_agbridge_default(ops, hint, config))
+    options = []
+    if offer_default:
+        options.append(("a", "let the relay use the row's own host (%s)"
+                        % (hint.get("host"),)))
+    elif hint is not None and hint.get("host"):
+        mapped = config.get("host_" + hint["host"])
+        if mapped:
+            say("note: %s maps to %s in this instance's config, and the relay "
+                "uses the row's host VERBATIM -- so an ssh target is needed "
+                "rather than the row default." % (hint["host"], mapped))
+    options.extend([
+        ("l", "tmux on this Mac"),
+        ("s", "ssh to a host running tmux"),
+        ("t", "ssh, naming a tmux session or pane explicitly"),
+    ])
+    while True:
+        say("how does the relay reach this agent?")
+        for key, text in options:
+            say("  [%s] %s" % (key, text))
+        answer = ask(read_line, say, "transport: ")
+        if answer is CANCEL:
+            return CANCEL
+        if answer == "a" and offer_default:
+            return None, None
+        if answer == "l":
+            tmux = ask(read_line, say, "tmux session or pane on this Mac: ")
+            if tmux is CANCEL:
+                return CANCEL
+            if tmux:
+                return "local", tmux
+            say("a Mac-side participant needs a tmux target: an agterm row "
+                "that is not an agbridge row has no --pane argv to read one "
+                "from.")
+            continue
+        if answer in ("s", "t"):
+            target = ask_ssh_target(choices, read_line, say)
+            if target is CANCEL:
+                return CANCEL
+            if not target:
+                continue
+            if answer == "s":
+                return target, None
+            tmux = ask(read_line, say, "tmux session or pane on %s: " % (target,))
+            if tmux is CANCEL:
+                return CANCEL
+            return target, (tmux or None)
+        say("pick one of %s." % (", ".join(k for k, _t in options),))
+
+
+def ask_ssh_target(choices, read_line, say):
+    """An ssh target, offered from this instance's own `host_<name>` table.
+
+    Both sides are shown because the mapping is the thing people get wrong, and
+    the value written is the resolved TARGET -- the `host_boxN` key is a
+    hostname the relay would hand to ssh unchanged.
+    """
+    if choices:
+        say("hosts known to this row's config:")
+        for i, (name, target) in enumerate(choices, 1):
+            say("  %2d) %-16s -> %s" % (i, name, target))
+        say("  or type any ssh target")
+    answer = ask(read_line, say, "ssh target: ")
+    if answer is CANCEL:
+        return CANCEL
+    if choices and answer.isdigit() and 1 <= int(answer) <= len(choices):
+        return choices[int(answer) - 1][1]
+    if answer.split() != [answer] or not answer:
+        say("an ssh target cannot contain whitespace.")
+        return ""
+    return answer
+
+
+def cmd_add(peer, draft, ctl, read_line, say, ops=None, agb=None):
+    """Add one participant. Returns True when the draft changed."""
+    picked = pick_row(peer, ctl, read_line, say)
+    if picked is CANCEL:
+        say("cancelled -- nothing was added.")
+        return False
+    label, session = picked
+    name = ask_name(peer, draft, read_line, say)
+    if name is CANCEL:
+        say("cancelled -- nothing was added.")
+        return False
+    pane = ask_pane(peer, read_line, say)
+    if pane is CANCEL:
+        say("cancelled -- nothing was added.")
+        return False
+    hint = None
+    if session is not None and ops is not None:
+        hint = agbridge_hint(ops, session)
+    transport = ask_transport(peer, ops, agb, hint, read_line, say)
+    if transport is CANCEL:
+        say("cancelled -- nothing was added.")
+        return False
+    target, tmux_target = transport
+    entry = (name, (label, pane, target, tmux_target))
+    draft.entries.append(entry)
+    draft.dirty = True
+    say("added: %s" % (peer.render_roster_lines([entry])[0],))
+    return True
+
+
 def main(argv, out=None, peer=None, read_line=None, ctl=None):
     out = out or sys.stdout
     if not argv:

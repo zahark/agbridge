@@ -687,26 +687,34 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `cmd_add(draft, ctl, read_line, say)`: discover → picker → **`row_value` +
+- [x] implement `cmd_add(draft, ctl, read_line, say)`: discover → picker → **`row_value` +
       `row_is_unique`** (Task 4), re-prompting with the reason → name prompt validated by
       **`parse_participants([render(e) for e in draft.entries] + [new_word], minimum=1)`** (the
       whole draft, so alphabet, reserved `relay` **and** duplicates are all the real parser's
       answer) → pane-kind prompt (`PANE_KINDS`, default `left`) → transport prompt `[a]/[l]/[s]/[t]`
-- [ ] the `[a]` arm consumes `offer_agbridge_default` (Task 5): when False, **withhold `[a]`, say
+- [x] the `[a]` arm consumes `offer_agbridge_default` (Task 5): when False, **withhold `[a]`, say
       why, and pre-select `[s]`** with the mapped target (R9 — the wording lives here, where the
       prompt exists, not in Task 5 where it could not be tested)
-- [ ] print the generated canonical line via `render_roster_lines`
-- [ ] write tests: one full flow per transport shape, asserting the **exact** canonical line
-- [ ] write tests: a `relay` name is refused and re-prompted, draft unchanged
-- [ ] write tests: a **duplicate** name is refused and re-prompted — mutation-check it by reverting
+- [x] print the generated canonical line via `render_roster_lines`
+- [x] write tests: one full flow per transport shape, asserting the **exact** canonical line
+- [x] write tests: a `relay` name is refused and re-prompted, draft unchanged
+- [x] write tests: a **duplicate** name is refused and re-prompted — mutation-check it by reverting
       to the single-word call, following the Testing Strategy's `__pycache__` step exactly
-- [ ] write tests: `[a]` is withheld with a reason and `[s]` pre-selected when `host_<name>` maps the
+- [x] write tests: `[a]` is withheld with a reason and `[s]` pre-selected when `host_<name>` maps the
       host (R9's regression, now testable because the prompt exists)
-- [ ] write tests: a picked row whose label has a space, and one matching two rows, are each refused
+- [x] write tests: a picked row whose label has a space, and one matching two rows, are each refused
       with the reason; manual entry still works
-- [ ] write tests: each pane kind renders correctly, and `left` renders **without** `:left`
-- [ ] write tests: discovery failure mid-flow falls back to manual entry without aborting
-- [ ] run tests — must pass before task 8
+- [x] write tests: each pane kind renders correctly, and `left` renders **without** `:left`
+- [x] write tests: discovery failure mid-flow falls back to manual entry without aborting
+- [x] run tests — **78 passed**
+- [x] ➕ **a real bug the tests caught**: `ask_transport` gated the host-table read on `ops`
+      alone, but the enumeration needs `agb` too — `AttributeError: 'NoneType' object has no
+      attribute 'read_config'` on every ssh path. The caller legitimately has one without the
+      other when `load_ops` was never reached
+- [x] ➕ mutation-checked five guards. ⚠️ **The `row_is_unique` one was VACUOUS**: every add test
+      picked a label that happened to be unique, so removing the check changed nothing. Added
+      `test_picking_a_row_whose_label_resolves_ELSEWHERE_is_refused`, where the picked row's
+      label prefixes a decoy's **id** — one match, on a row the user did not pick
 
 ### Task 8: Delete flow (`d`)
 

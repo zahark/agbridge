@@ -644,3 +644,252 @@ def test_index_of_finds_and_misses(setup, peer, tmp_path):
                              lambda _m: None)
     assert draft.index_of("b") == 1
     assert draft.index_of("nope") == -1
+
+
+# ---------------------------------------------------------------------------
+# the add flow -- Task 7.
+# ---------------------------------------------------------------------------
+
+class Script(object):
+    """A canned sequence of answers, plus everything that was said to us."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.said = []
+
+    def read_line(self):
+        if not self.answers:
+            raise EOFError()
+        return self.answers.pop(0)
+
+    def say(self, message):
+        self.said.append(message)
+
+    @property
+    def text(self):
+        return "\n".join(self.said)
+
+
+def draft_of(setup, entries=(), path="/tmp/roster"):
+    return setup.Draft(path, list(entries), None)
+
+
+AGBRIDGE_ROW = {"id": "AAAA1111", "name": "work · box01 · /w · %7 · 3s",
+                "cwd": "/w", "status": "active", "foreground": PANE_ARGV}
+PLAIN_ROW = {"id": "BBBB2222", "name": "shell · mac · /home · %0 · 1s",
+             "cwd": "/home", "status": "completed",
+             "foreground": ["/bin/zsh", "-l"]}
+
+
+def test_add_via_the_picker_writes_the_expected_line(setup, peer, ops):
+    """`[a]` -- the relay reads the row's own host -- so no `@` is written."""
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "alice", "", "a")
+    draft = draft_of(setup)
+    assert setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops) is True
+    assert peer.render_roster_lines(draft.entries) == ["alice=work"]
+    assert draft.dirty is True
+
+
+def test_add_with_an_explicit_ssh_target(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "bob", "right", "s", "poolnode07")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert peer.render_roster_lines(draft.entries) == ["bob=work:right@poolnode07"]
+
+
+def test_add_a_mac_side_participant(setup, peer, ops):
+    """⚠️ A Mac-side agent NEEDS the tmux target: an agterm row that is not an
+    agbridge row has no `--pane` argv to read one from."""
+    ctl = FakeCtl([PLAIN_ROW])
+    s = Script("1", "mac", "", "l", "work")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert peer.render_roster_lines(draft.entries) == ["mac=shell@local:work"]
+
+
+def test_add_with_an_explicit_tmux_target_over_ssh(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "far", "scratch", "t", "box3", "%24")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert peer.render_roster_lines(draft.entries) == ["far=work:scratch@box3:%24"]
+
+
+def test_a_duplicate_name_is_refused_AGAINST_THE_WHOLE_DRAFT(setup, peer, ops):
+    """⚠️ The regression that matters.
+
+    `parse_participants` builds a fresh `people = {}` per call, so its "named
+    twice" refusal only sees the words handed to THAT call -- measured, two
+    single-word calls both accept `alice`. Validating one word checks the
+    alphabet and the reserved name and silently checks NOTHING for duplicates.
+    """
+    assert peer.parse_participants(["alice=r1"], minimum=1)      # premise:
+    assert peer.parse_participants(["alice=r2"], minimum=1)      # both accepted
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "alice", "bob", "", "a")
+    draft = draft_of(setup, [("alice", ("other", "left", None, None))])
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert draft.names() == ["alice", "bob"]
+    assert "named twice" in s.text
+
+
+def test_the_reserved_name_relay_is_refused_at_the_prompt(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "relay", "alice", "", "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert draft.names() == ["alice"]
+    assert "reserved" in s.text
+
+
+def test_a_bad_alphabet_is_refused_at_the_prompt(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "not a name", "alice", "", "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert draft.names() == ["alice"]
+
+
+@pytest.mark.parametrize("pane", ["left", "right", "scratch"])
+def test_every_pane_kind_is_reachable(setup, peer, ops, pane):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "p", pane, "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    line = peer.render_roster_lines(draft.entries)[0]
+    assert (":" + pane in line) == (pane != "left"), line
+
+
+def test_a_bad_pane_kind_is_refused(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "p", "middle", "left", "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert draft.entries
+    assert "pane must be one of" in s.text
+
+
+def test_a_row_whose_label_has_a_space_is_refused_with_the_reason(setup, peer,
+                                                                  ops):
+    spaced = dict(AGBRIDGE_ROW, id="CCCC3333", name="my row · box01 · %7")
+    ctl = FakeCtl([spaced])
+    s = Script("1", "2", "typed", "alice", "", "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert "whitespace" in s.text
+
+
+def test_the_agbridge_default_is_withheld_and_ssh_preselected(setup, peer, ops,
+                                                              tmp_path):
+    """⚠️ The `[a]` gate, end to end. The relay hands `--host` to ssh verbatim,
+    so on a host with an alias `[a]` would write a roster that parses,
+    validates, prints a working next command and never delivers."""
+    cfg = tmp_path / "config"
+    cfg.write_text("host_box01 = box01.example\n")
+    argv = list(PANE_ARGV) + ["--config", str(cfg)]
+    row = dict(AGBRIDGE_ROW, foreground=argv)
+    ctl = FakeCtl([row])
+    s = Script("1", "alice", "", "s", "1")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops,
+                  agb=sys.modules["agb"])
+    assert "[a]" not in s.text, "the row default must not be offered"
+    assert "uses the row's host VERBATIM" in s.text
+    assert peer.render_roster_lines(draft.entries) == ["alice=work@box01.example"]
+
+
+def test_the_host_list_offers_both_sides(setup, peer, ops, tmp_path):
+    cfg = tmp_path / "config"
+    cfg.write_text("host_box01 = user@box01.example\n")
+    argv = list(PANE_ARGV) + ["--config", str(cfg)]
+    ctl = FakeCtl([dict(AGBRIDGE_ROW, foreground=argv)])
+    s = Script("1", "alice", "", "s", "1")
+    setup.cmd_add(peer, draft_of(setup), ctl, s.read_line, s.say, ops=ops,
+                  agb=sys.modules["agb"])
+    assert "box01" in s.text and "user@box01.example" in s.text
+
+
+def test_an_unreadable_config_warns_and_still_lets_you_type(setup, peer, ops,
+                                                            tmp_path):
+    cfg = tmp_path / "config"
+    cfg.write_text("host_box01 = x\n")
+    os.chmod(str(cfg), 0o000)
+    argv = list(PANE_ARGV) + ["--config", str(cfg)]
+    ctl = FakeCtl([dict(AGBRIDGE_ROW, foreground=argv)])
+    s = Script("1", "alice", "", "s", "typed-target")
+    draft = draft_of(setup)
+    try:
+        setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops,
+                      agb=sys.modules["agb"])
+    finally:
+        os.chmod(str(cfg), 0o600)
+    assert "could not be read" in s.text
+    assert peer.render_roster_lines(draft.entries) == ["alice=work@typed-target"]
+
+
+def test_discovery_failure_falls_back_to_typing(setup, peer, ops):
+    """The tool has to stay usable with no agterm at all."""
+    ctl = FakeCtl(error=peer.PeerError("tree failed"))
+    s = Script("hand-typed", "alice", "", "s", "box9")
+    draft = draft_of(setup)
+    assert setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops) is True
+    assert peer.render_roster_lines(draft.entries) == ["alice=hand-typed@box9"]
+    assert "not checked against a live row" in s.text
+
+
+def test_a_typed_label_matching_two_rows_is_refused(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW, dict(AGBRIDGE_ROW, id="DDDD4444",
+                                      name="work-two · box02 · %8")])
+    s = Script("3", "work", "work-two", "alice", "", "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert "matches 2 rows" in s.text
+    assert peer.render_roster_lines(draft.entries) == ["alice=work-two"]
+
+
+def test_cancelling_at_any_prompt_adds_nothing(setup, peer, ops):
+    for answers in (["q"], ["1", "q"], ["1", "alice", "q"],
+                    ["1", "alice", "", "q"]):
+        ctl = FakeCtl([AGBRIDGE_ROW])
+        s = Script(*answers)
+        draft = draft_of(setup)
+        assert setup.cmd_add(peer, draft, ctl, s.read_line, s.say,
+                             ops=ops) is False
+        assert draft.entries == []
+        assert draft.dirty is False
+
+
+def test_eof_is_a_cancel_not_a_crash(setup, peer, ops):
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script()
+    draft = draft_of(setup)
+    assert setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops) is False
+    assert draft.entries == []
+
+
+def test_picking_a_row_whose_label_resolves_ELSEWHERE_is_refused(setup, peer,
+                                                                 ops):
+    """⚠️ The picker's own uniqueness check, which no other add test reaches.
+
+    Every other flow here picks a label that happens to be unique, so removing
+    the check changes nothing and the mutation reads as a pass. Here the picked
+    row's label prefixes a *different* row's id, so `match_sessions` wins on the
+    id tier: exactly one match, on a row the user did not pick. Without the
+    check this silently writes a roster entry pointing at the decoy.
+    """
+    picked = {"id": "AAAA1111", "name": "work · box01 · %7", "cwd": "/w",
+              "status": "active", "foreground": PANE_ARGV}
+    decoy = {"id": "work99", "name": "something else · box02 · %8",
+             "cwd": "/x", "status": "active", "foreground": PANE_ARGV}
+    sessions = [picked, decoy]
+    matches = peer.match_sessions(sessions, "work")
+    assert len(matches) == 1 and matches[0] is decoy, "premise: id tier wins"
+
+    ctl = FakeCtl(sessions)
+    s = Script("1", "3", "something", "alice", "", "a")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert "not to the row you picked" in s.text
+    assert peer.render_roster_lines(draft.entries) == ["alice=something"]
