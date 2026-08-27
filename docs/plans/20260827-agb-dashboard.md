@@ -559,7 +559,15 @@ nobody wrote, and the no-bare-id property reverted to a human read.
       ⚠️ **Task 2b-ii should EXTEND that entry, not add a second** — it is the same symptom, and the
       entry already flags the silent-drop gap 2b-ii closes
 - [x] run tests — must pass before task 2b-ii
-      — ➕ 364 in `test_agb_peer.py`, 2497 in the full suite
+      — ➕ 359 in `test_agb_peer.py`, 2492 in the full suite
+- [x] ➕ **mutation-checked three ways, each naming a distinct failing test.** The routing reverted
+      to the inline comprehension (`test_cell_strings_are_spelled_only_in_dashboard_cells` **and**
+      `test_the_relay_asks_dashboard_cells_for_its_cells`); the pane forced to `left`
+      (`test_the_relays_cells_are_unchanged_by_the_routing`); and the cell built by `+` instead of
+      `%` (`…spelled_only_in_dashboard_cells` again, this time on its **non-vacuity** assertion).
+      ⚠️ That third one is worth carrying: the pattern matches the `%`/`.format` idiom and NOT a
+      concatenation, so a rewrite of the idiom does not silently widen the guard — it fails loudly
+      on `found` and asks to be re-taught
 
 ### Task 2b-ii: Exclude `scratch` from the grid (defect 4) — CONDITIONAL
 
