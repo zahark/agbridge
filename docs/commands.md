@@ -1571,8 +1571,10 @@ the run, and that decides its whole error policy: no grid outcome may ever stop 
 |---|---|
 | **it closes what it opened** | on `Ctrl-C`, on a clean exit, and when membership falls to nobody. ⚠️ **Only a grid this run opened** — agterm has exactly one grid and no ownership token, so reaching for one it did not open would close somebody else's |
 | **a partial grid is MARKED, not hidden** | a member with no row gets `dashboard: no row for carol -- the grid shows the other 2`, once, and the rest are gridded. The alternative — a tidy grid silently missing an agent — is the failure this whole area exists to remove |
+| **and that includes the cells AGTERM drops** | `dashboard: open -- but agterm dropped unresolved: BBBB2222`. ⚠️ agterm exits **0** here and says it on **stdout alone**, so the status the relay reads says the grid is fine. This was the one cause of a partial grid the relay could not see, while this table already promised it was marked |
+| **a failed open is RETRIED** | the cell set is recorded as shown only on an open that worked, so a transient failure is tried again on the next tick. The *message* is throttled instead — one persistent failure says so once, not once per tick |
 | **a `scratch` participant is excluded, and said** | `dashboard: not shown -- carol (scratch); agterm's grid takes only left/right panes`. agterm rejects `:scratch` at **parse time**, so before this a single scratch participant meant `--dashboard` produced no grid at all, for the whole run, with the reason going only into the log |
-| **an excluded participant is not a MISSING one** | it resolved fine; its pane is just not something a grid can show. Counting it as missing would have kept the grid permanently shut for any roster containing one |
+| **an excluded participant is not a MISSING one** | it resolved fine; its pane is just not something a grid can show, and it has already been named on its own line. A second line calling it "no row for carol" would be a contradictory diagnosis of one situation, and the wrong one. ⚠️ This row used to say that counting it as missing "would have kept the grid permanently shut" — **false of the code**: `missing` drives one throttled message and gates nothing. That consequence belonged to a *close rule* the plan rejected. `design.md` §6 |
 | **both messages are throttled** | they run every tick; unthrottled, one typo prints a line per tick for the life of the relay. The throttle dedupes on the message **text**, so a change in *who* is missing still gets through |
 
 ⚠️ **Running `agb-peer relay --dashboard` and `agb-dashboard` at the same time is unsupported**, not
@@ -2007,11 +2009,15 @@ path from beside itself, so the two travel together and `--version` is per-file.
 The three modes cannot be combined — they ask different questions, and there is no defensible way to
 merge them, so preferring one silently would be a guess dressed as a feature.
 
-**Exit codes:** **0** the grid opened (`--version` and `--help` too), **1** a usage error — a bad
-flag, no mode, two modes at once, or no arguments at all, which prints the usage — and **2** anything
-that stopped a grid opening — an unresolved or ambiguous selector, no rows
-at all, too many cells, a pane the grid cannot show, or agterm opening a grid short of what was
-asked for.
+**Exit codes**, measured rather than intended: **0** the grid opened (`--version` and `--help` too);
+**2** a shortfall *this command* detected — an unresolved or ambiguous selector, no rows at all, too
+many cells, a pane the grid cannot show, or agterm opening a grid short of what was asked for; **1**
+everything else, which is a usage error (a bad flag, no mode, two modes at once, or no arguments at
+all, which prints the usage) **and also anything the shared `agb-peer` layer refuses** — an unreadable
+or malformed roster, an agtermctl that will not start. ⚠️ Those arrive as `PeerError` and carry *its*
+code, which is 1. This paragraph said 2 for "anything that stopped a grid opening" and no roster
+failure has ever exited 2; the codes are now pinned to the number by tests rather than to "non-zero",
+which is what let the two drift apart.
 
 ### Fail-closed: a shortfall opens nothing
 
@@ -2024,7 +2030,7 @@ so it must fail loudly rather than half-succeed. Everything below follows from t
 | what happens | what you get |
 |---|---|
 | a selector matches no row | nothing opens, exit 2, the selector is named |
-| a selector matches several | nothing opens, exit 2, and **its matches are listed** so the next attempt is informed |
+| a selector matches several | nothing opens, exit 2, and **its matches are listed** — the first five of them, so an over-broad selector against forty rows does not fill the terminal |
 | agterm has no rows at all | its own message, rather than N identical "no row matches" lines — with no rows the answer is about agterm, not about what was typed |
 | two selectors naming **one cell** | **deduped**, not refused. Two ways of naming one cell is not a user error; spending two of the nine on it is the bug |
 | more than 9 cells after the dedupe | refused **before** `agtermctl dashboard` is called (the `tree --json` has already run, by design) |
@@ -2071,8 +2077,8 @@ default is a **foreground hold**: open, print what was opened, wait, close.
 ```
 $ agb-dashboard alice bob
 agb-dashboard: 2 cell(s)
-  A1B2C3D4 left alice
-  E5F6A7B8 left bob
+  A1B2C3D4 left alice · box01 · /w/api · %7 · 3s
+  E5F6A7B8 left bob · box02 · /w/dv · %3 · 1s
   Run this from a terminal OUTSIDE agterm -- that is where the hold was
   measured to stay responsive while a grid is up.
   This grid does NOT follow: an `agb-refresh` re-mints every row id and

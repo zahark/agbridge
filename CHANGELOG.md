@@ -1596,6 +1596,28 @@ keep the `agb pane` code they were *created* with until `agb-refresh` re-mints t
   placeholder means it already renders every instance's plist, named ones included. Cosmetic, and
   out of scope.
 
+### Not verified
+
+- **Nothing in `agb-dashboard` has been run against a live agterm, and neither have the
+  `relay --dashboard` fixes.** agterm's own `dashboard` behaviour *was* measured against the binary
+  and is tagged clause by clause in [`docs/agtermctl.md`](docs/agtermctl.md); what has no live run is
+  **agbridge's use of it**. Everything above is covered against a fake `Ctl`. ⚠️ This caveat is in
+  `README.md`, `CLAUDE.md`, `docs/commands.md` and `docs/cookbook.md`, and was missing from **this**
+  file — the one a user actually reads before upgrading, and so the one place the feature read as
+  done.
+
+  The check worth doing first is **not** the happy path. It is the refusal: a grid agterm opened
+  while printing `unresolved:` on stdout has to be **closed again**, and that close is the step
+  everything here can only assert against a fake. `:right` on a row whose split has closed is the
+  cheapest way to provoke it.
+
+- **The relay's grid following its membership has not been watched either.** A departed
+  participant's cell staying on screen is invisible unless you look for it, which is why two separate
+  enumerations of these fixes in this repo dropped that one.
+
+- **`agb-peer-setup` has been run; `agb-dashboard` has not.** Do not read the first as evidence for
+  the second: they share a loader and nothing else.
+
 ## 0.6.0 — 2026-08-01
 
 > **Two breaking changes**, both in the same direction: a command with no instance flag used to act

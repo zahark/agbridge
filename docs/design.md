@@ -2538,12 +2538,23 @@ That single distinction decides both error policies, and both are correct *in pl
 |---|---|---|
 | what the user asked for | a conversation; the grid is a convenience | the grid, as the primary effect |
 | a member that will not resolve | **named, and the rest are gridded** — best-effort, because a cosmetic grid failure must never stop a message | **nothing opens**, exit 2, every problem named |
+| a cell **agterm** drops (`unresolved:` on stdout, exit 0) | **named, and the rest stay gridded** — the same policy, and the relay was blind to this one until it had a reader of its own | **nothing opens**: the grid agterm just put up is **closed again**, then exit 2 |
+| a grid call that **raises** rather than failing | said and ignored; the message pump is what matters | reported, and any grid already up is closed on the way out |
 | a member in the `scratch` pane | excluded and said; it counts as *accounted for*, not missing | a shortfall — nothing opens |
 | lifetime | **follows**: re-resolves every tick and re-opens when the cell set moves | one-shot with a foreground hold; `--follow` deferred |
 
-⚠️ **"Accounted for, not missing" is load-bearing in the relay.** The grid re-opens on any change to
-the cell set and closes when nobody is left; if an excluded `scratch` participant counted as missing,
-a roster containing one would keep the grid permanently shut — the opposite of the fix.
+⚠️ **"Accounted for, not missing" is a rule about the REPORT, not about the grid.** An excluded
+participant resolved perfectly well — its pane is merely not something a grid can express, and it has
+just been named on its own line — so calling it "no row for carol" as well would be a second,
+contradictory diagnosis of one situation, and the wrong one.
+
+⚠️ **It was written here as "counting it as missing would keep the grid permanently shut", and that
+is FALSE of the code.** `missing` drives one throttled `say` and gates nothing: it does not reach the
+`dashboard` call, and a member with no row does not close the grid either. The counterfactual is real
+but belongs to a *close rule* the plan considered and did not adopt — "close when any member is not
+gridded". Escalating a cosmetic argument into a behavioural claim is the failure mode this file is
+supposed to catch, not commit; it is recorded rather than quietly deleted because the rejected close
+rule is exactly what a future reader will propose.
 
 **Ownership.** agterm has **one** grid and no ownership token — its own help says `--close` closes
 *"the open one"*. So the policy is: **each closes only a grid it opened this run**, tracked by a
@@ -2552,6 +2563,17 @@ That does not make them safe to run simultaneously and is not meant to: **runnin
 documented as unsupported**, whoever opens last wins, because agterm gives us nothing finer to work
 with. Defending against it would mean inventing an ownership token on top of a single global
 resource, in two processes that cannot see each other.
+
+⚠️ **"Best-effort" is a claim about a call that RAISES, not only about one that fails**, and both
+sides had it wrong in the same way. `Ctl.dashboard` and `Ctl.dashboard_close` return a status when
+agtermctl *ran* and refused — but `_spawn` raises `PeerError` when it cannot be started at all, and a
+caller that only reads the status is a caller that dies. In the relay that killed the message pump
+the grid is an adjunct to; in `agb-dashboard` it destroyed the error naming the still-up partial grid
+and replaced the hold's exit with a traceback out of the cleanup. ⚠️ The general shape is worth more
+than the fix: **the guarded call and the unguarded one sat three lines apart**, the guard had its
+reason in a comment, and the newer code did not carry it. A "cannot stop the message" property has to
+be enforced at every call, because a docstring stating it is not a mechanism — and a test fake that
+can only *return* a failure describes a world where the raise cannot happen.
 
 ⚠️ **The exit status is second-guessed in exactly one place, and it is not laziness.** agterm exits
 **0** while printing `unresolved: <id>` on stdout and opening the grid without those cells (measured

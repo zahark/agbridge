@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (2462 tests, ~90 s)
+python3 -m pytest tests/ -q                                    # full suite (2614 tests, ~80 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -145,8 +145,21 @@ done here — it looks like two small functions and is not, and a boundary is wo
 callers have shown where it is. `docs/design.md` §6.
 
 ⚠️ **Not verified against a live agterm.** agterm's own `dashboard` behaviour was measured
-(`docs/agtermctl.md`); agbridge's use of it — this command, and the three `relay --dashboard` fixes
-beside it — has tests and no live run.
+(`docs/agtermctl.md`); agbridge's use of it — this command, and the `relay --dashboard` fixes beside
+it — has tests and no live run. ⚠️ There are **four** of those, not three: the grid left on screen at
+exit, the grid that went on **following its membership** wrongly (a departed participant's cell
+stayed up, and an `agb-refresh` moving every id changed nothing the relay compared), the unmarked
+partial grid, and the `scratch` participant that stopped the whole grid opening. Two enumerations of
+them in this repo dropped the membership one — including the live-verification list in `README.md`,
+so the hardest defect to *see* was the one nobody was told to look for.
+
+⚠️ **And a fifth thing, found in review rather than in the plan: the grid calls could RAISE.**
+`Ctl.dashboard` and `Ctl.dashboard_close` return a status for an agtermctl that ran and refused;
+`_spawn` **raises** when it cannot be started at all. The relay died mid-delivery and
+`agb-dashboard`'s strict path lost the message naming the grid it had left on screen. The general
+lesson is the one to carry: a "this can never stop a message" property must be enforced at **every**
+call, because a docstring asserting it is not a mechanism — and the guarded call and the unguarded
+one were three lines apart.
 
 `agb hook` runs on **every Claude Code tool call**, over a network filesystem. `agb` has no `.py`
 extension and runs as `__main__`, so **CPython caches no bytecode for it** — the whole file is
@@ -679,6 +692,12 @@ filesystem object NFS carries, **measured** — so *sending* falls back to a fil
 doorbell, while *delivery* needed no change whatever, because the pane is connected all the way
 down from a host you can reach. `AGB_CODEX_CUSTOM` is what starts an agent there.
 
+⚠️ **Newer still, and unreleased with it: `agb-peer-setup` and `agb-dashboard`** — the roster writer
+and the row grid, both described above and in [`docs/commands.md`](docs/commands.md). Neither is
+installed by `install.sh`; both load `agb-peer` by path from beside themselves. ⚠️ **`agb-dashboard`
+has never been run against a live agterm** (see the honest list below), and the `relay --dashboard`
+fixes that shipped with it have not either.
+
 Released **0.5.0** — **instances**: a machine that shares no disk with the first is now an install
 (`install.sh mac --instance <name> --statedir …`), one independent bridge per machine, all rendering
 into the same sidebar. One flag, `--config`, carries it everywhere: bridge, `close-done`,
@@ -760,7 +779,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2462 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2614 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
@@ -795,6 +814,11 @@ agterm, and think about which row you test it on.**
   and the process was right until a restart reconciled them, and then every row went `[?]`. Both are
   fixed; the second is why the upgrade note tells you to read the installer's `probed:` line rather
   than trust the alias you copied out of the config you are migrating.
+- **`agb-dashboard`, and every `relay --dashboard` fix beside it.** agterm's `dashboard` *clauses*
+  were measured against the binary (`docs/agtermctl.md`); nobody has watched either command drive a
+  real grid. ⚠️ **The one to check first is not the happy path** — it is the refusal: a grid agterm
+  opened while printing `unresolved:` on stdout has to be **closed again**, and that close is the
+  step the tests can only assert against a fake `Ctl`.
 - **Long-running behaviour** — reconnects, the watchdog firing, `prune` against a genuinely dead
   host. This is why the version is 0.x.
 

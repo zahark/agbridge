@@ -820,7 +820,10 @@ agb-peer relay --roster ~/peers --dashboard
 It re-resolves every tick, so it survives an `agb-refresh` and repairs itself when membership
 changes; it closes the grid when you `Ctrl-C` out of it. A member with no row is **named** and the
 rest are still shown (`dashboard: no row for carol -- the grid shows the other 2`), and a participant
-whose pane is `scratch` is named too — agterm's grid takes only `left` and `right`.
+whose pane is `scratch` is named too — agterm's grid takes only `left` and `right`. A cell **agterm**
+drops is named as well (`dashboard: open -- but agterm dropped unresolved: BBBB2222`), which is worth
+knowing because agterm exits **0** when it does that. An open that fails is retried on the next tick,
+and complains once rather than once a tick.
 
 Or watch rows that are not in a conversation at all — an agent and the build it kicked off, say —
 with no relay anywhere:
@@ -830,6 +833,10 @@ agb-dashboard api-refactor docs-pass    # by label, not by row id
 agb-dashboard --roster ~/peers          # the same members the relay has
 agb-dashboard --mru                     # whatever you were just using
 ```
+
+⚠️ **It is not installed by `install.sh`** — the same as `agb-peer-setup` above, and for the same
+reason. Symlink it onto your `$PATH` beside `agb-peer`, which it loads by path from there; without
+that these three lines are a `command not found`.
 
 It prints what it opened, then waits; **enter or `Ctrl-C` closes the grid**. `--detach` leaves it up
 and prints the command that closes it.

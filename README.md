@@ -183,8 +183,11 @@ agb doctor          # probes, not existence checks — see below
 ⚠️ **`agb-peer`, `agb-peer-setup` and `agb-dashboard` are NOT installed by `install.sh`**, and nothing in `agb`/`agb_mac`/`agb_ops` imports them. Symlink them onto your `$PATH` from the checkout yourself — a symlink rather than a copy, so `git pull` keeps them current:
 
 ```sh
-ln -s "$PWD/agb-peer" "$PWD/agb-peer-setup" "$PWD/agb-dashboard" ~/.local/bin/
+ln -s "$PWD/agb-peer-setup" "$PWD/agb-dashboard" ~/.local/bin/   # you run these
+ln -s "$PWD/agb-peer" /opt/homebrew/bin/                         # an AGENT runs this
 ```
+
+⚠️ **`agb-peer` goes somewhere `login` already exports, not `~/.local/bin`** — measured, and it bit three times in a row. agterm spawns `bash --noprofile --norc`, so a pane inherits only what `login` gives it and not your `PATH`; `agb-peer send` is invoked *inside* an agterm pane by an agent, and from there `~/.local/bin` may not exist. The other two you type yourself, in your own shell, so your own `PATH` is the right one. [`docs/commands.md`](docs/commands.md) has the measurement.
 
 They are experiments on top of agbridge rather than part of the bridge, which is why the two ends can drift; `<tool> --version` is how you tell.
 
@@ -324,7 +327,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 2286 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # 2614 tests, no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -336,7 +339,7 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 2286 tests, no
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. 2614 tests, no
 network or second machine required to run them.
 
 Verified in real use, not just in tests:
@@ -384,10 +387,11 @@ Verified in real use, not just in tests:
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
 | `agtermctl dashboard` — the cell grammar, the 9-pane cap, `:scratch` rejected at parse time, `unresolved:` on stdout beside exit 0, and a grid cell being read-only while the launching terminal stays responsive | ✅ measured against the binary 2026-08-27; the table is in [`docs/agtermctl.md`](docs/agtermctl.md) |
 | `agb-dashboard` opening a real grid — by label, holding it, closing it | ⬜ **not yet run.** Every behaviour is either measured above or covered against a fake `Ctl`; nobody has watched this command drive a live agterm |
-| `agb-peer relay --dashboard` closing its grid, marking a partial one, and excluding a `scratch` participant | ⬜ not yet run — the three defects were found by reading the code against the measured table, not by seeing them |
+| `agb-peer relay --dashboard` closing its grid, **following its membership**, marking a partial one, and excluding a `scratch` participant | ⬜ not yet run — the four defects were found by reading the code against the measured table, not by seeing them. ⚠️ **Membership is the one to watch**: the grid going on showing a participant who has left is invisible unless you look for it, and it is the defect this list dropped |
+| `agb-peer relay --dashboard` surviving an agtermctl that will not start, and retrying an open that failed | ⬜ not yet run — fixed after the four above, and the retry in particular is only observable across ticks |
 
 **Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except
-`session scratch`** — the rows marked ⬜ above. ⚠️ The `dashboard` *clauses* were measured; what has **not** been run is agbridge's own use of them — `agb-dashboard` and the three `relay --dashboard` fixes. Its spelling is recorded verbatim from `--help`
+`session scratch`.** ⚠️ **That is not the same thing as "the ⬜ rows are all `session scratch`"** — three of them are not. The `dashboard` *clauses* were measured; what has **not** been run is agbridge's own use of them, which is `agb-dashboard` and the `relay --dashboard` fixes. For `session scratch` itself the spelling is recorded verbatim from `--help`
 and its call path is mutation-tested, but nobody has yet watched a drawer open, be hidden, and come
 back with the same shell alive.
 

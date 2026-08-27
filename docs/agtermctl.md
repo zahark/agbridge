@@ -1275,11 +1275,19 @@ file exists to prevent.
 | ⚠️ **some ids unresolvable → prints `unresolved: <id>`, exit 0, and OPENS with the rest** | CONFIRMED |
 | a malformed suffix (`id:notapane`, `a::b`) → invalid-id error, **exit 1**, rejected before opening | CONFIRMED |
 | `:right` on a session with no split is *unresolved*, not an error | CONFIRMED |
+| `dashboard --close` closes **"the open one"** — there is exactly one grid and no ownership token | CONFIRMED (help text) |
+| ⚠️ what `--close` answers when **no** grid is open — a status, an error, or silence | **ASSUMED**, and never run. Both callers already treat a failed close as cosmetic: the relay says so and keeps its ownership flag, `agb-dashboard` prints `IT IS STILL UP` and the literal command. So the tools are correct under either reading, which is the same argument that leaves `--blink`'s stickiness assumed |
+| ⚠️ whether `--close` can fail by **raising** rather than answering | **CONFIRMED**, but about `agtermctl` the *process*, not about this subcommand: `_spawn` raises when the binary cannot be started at all. Every caller of `--close` in this repo is wrapped for it — two were not, and one of them destroyed the message naming the grid it had left up |
 
 ⚠️ **The partial-success row is the one with teeth for a caller.** A mix of good and bad cells exits
 **0** and opens a grid missing a participant, announcing it only on stdout. Anything wrapping this
 must read the output for `unresolved:` rather than trusting the status, or a silently absent agent
 reads as a working dashboard.
+
+⚠️ **And it composes with the row above it**: `:right` on a session whose split has closed is
+*unresolved*, not an error — so a perfectly ordinary roster produces the partial-success case with no
+mistake anywhere. Both callers read the stdout now (`agb-peer`'s `unresolved_lines`); the relay names
+what was dropped and grids the rest, `agb-dashboard` closes the grid again and refuses.
 
 
 ⚠️ **The read-only finding is about CELLS, and collapsing it into "you cannot interact at all" is
