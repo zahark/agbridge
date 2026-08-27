@@ -4343,6 +4343,61 @@ def test_the_exclusion_is_reported_once_not_per_reopen(peer, tmp_path):
     assert out.getvalue().count("not shown") == 1, out.getvalue()
 
 
+def test_a_roster_OVER_THE_CAP_grids_nine_and_names_the_rest(peer):
+    """⚠️ Defect 4's shape with a different cause. agterm's grid takes nine
+    cells; a ten-participant roster handed it ten, and one participant too many
+    cost EVERYBODY the grid -- the same all-or-nothing the drawer exclusion was
+    fixed for. What agterm does with a tenth cell is not measured either, which
+    is the second reason to decide it here."""
+    people = ["p%d" % n for n in range(10)]
+    surfaces = dict(("ROW%d" % n, COMPOSER) for n in range(10))
+    out = io.StringIO()
+    ctl = RelayCtl(surfaces)
+    peer.cmd_relay(ctl, ["%s=ROW%d" % (name, n)
+                         for n, name in enumerate(people)],
+                   500, 0, True, out, dashboard=True, fetch=Fetcher())
+    assert len(ctl.dashboards) == 1, ctl.grid_log
+    assert len(ctl.dashboards[0]) == peer.DASHBOARD_MAX_CELLS, ctl.dashboards
+    report = [line for line in out.getvalue().splitlines()
+              if "agterm's grid takes" in line]
+    assert len(report) == 1, out.getvalue()
+    assert "p9" in report[0] and "p0" not in report[0], report[0]
+
+
+def test_a_roster_AT_the_cap_says_nothing_about_it(peer):
+    """The companion, differing in the one variable under test: nine
+    participants is a full grid, not a shortfall."""
+    surfaces = dict(("ROW%d" % n, COMPOSER) for n in range(9))
+    out = io.StringIO()
+    ctl = RelayCtl(surfaces)
+    peer.cmd_relay(ctl, ["p%d=ROW%d" % (n, n) for n in range(9)],
+                   500, 0, True, out, dashboard=True, fetch=Fetcher())
+    assert len(ctl.dashboards[0]) == 9
+    assert "agterm's grid takes" not in out.getvalue(), out.getvalue()
+
+
+def test_the_cap_note_is_CLEARED_when_the_roster_drops_back_under_it(peer):
+    """The third note with this property, and the same argument as the other
+    two: a roster that drops under the cap and grows over it again must say so
+    twice, or the throttle that stops it repeating stops it ever firing.
+
+    ⚠️ Driven through `update_grid` directly: the shortest relay run that
+    crosses the cap twice needs eleven fake panes and three roster edits to say
+    one thing about a dict.
+    """
+    notes = {}
+    ctl = RelayCtl(dict(("ROW%d" % n, COMPOSER) for n in range(10)))
+    over = dict(("p%d" % n, ("ROW%d" % n, "left", None, None))
+                for n in range(10))
+    under = dict((n, over[n]) for n in list(over)[:5])
+    said = []
+    shown, opened = peer.update_grid(ctl, over, over, None, False, said.append,
+                                     notes)
+    assert ("said", ("dash-cap",)) in notes, notes
+    peer.update_grid(ctl, under, under, shown, opened, said.append, notes)
+    assert ("said", ("dash-cap",)) not in notes, notes
+
+
 def test_a_participant_who_LEAVES_THE_DRAWER_AND_RETURNS_is_named_again(peer,
                                                                        tmp_path):
     """⚠️ The throttle note is CLEARED once everybody fits, for exactly the

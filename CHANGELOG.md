@@ -345,6 +345,21 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   then four ticks of identical membership produced **one** attempt. The open is retried until it
   works; the *message* is throttled instead, the same trade the missing-member line makes.
 
+- **A tenth participant cost everybody the grid.** agterm's dashboard takes **nine** cells and the
+  relay handed it one per participant, so a roster that grew past nine was defect 4 all over again
+  with a different cause: one participant too many, and nobody is shown. What agterm actually does
+  with a tenth cell has never been measured either — which is the second reason to decide it here
+  rather than find out at run time. Nine are gridded, in the same order the cells are already built
+  in, and the rest are **named**:
+
+  ```
+  dashboard: p9 not shown -- agterm's grid takes 9 cells
+  ```
+
+  ⚠️ **Deliberately the opposite of `agb-dashboard`**, which refuses the whole grid over the cap. The
+  same sentence decides both: the relay's grid is an adjunct to a message pump, so nine of ten beats
+  none; `agb-dashboard`'s grid *is* the point, so a grid short of what you named is not worth opening.
+
 - **A participant who left the scratch drawer and came back was dropped from the grid in silence.**
   The exclusion note was never cleared, so the throttle that stops it repeating every tick also
   stopped it ever firing again. The missing-member note beside it had had the clear — and the

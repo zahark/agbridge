@@ -2541,6 +2541,7 @@ That single distinction decides both error policies, and both are correct *in pl
 | a cell **agterm** drops (`unresolved:` on stdout, exit 0) | **named, and the rest stay gridded** — the same policy, and the relay was blind to this one until it had a reader of its own | **nothing opens**: the grid agterm just put up is **closed again**, then exit 2 |
 | a grid call that **raises** rather than failing | said and ignored; the message pump is what matters | reported, and any grid already up is closed on the way out |
 | a member in the `scratch` pane | excluded and said; it counts as *accounted for*, not missing | a shortfall — nothing opens |
+| more members than agterm's nine cells | the first nine are gridded and the rest **named** | **nothing opens**, exit 2, the cap and the count both given |
 | lifetime | **follows**: re-resolves every tick and re-opens when the cell set moves | one-shot with a foreground hold; `--follow` deferred |
 
 ⚠️ **"Accounted for, not missing" is a rule about the REPORT, not about the grid.** An excluded

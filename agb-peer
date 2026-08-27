@@ -2810,6 +2810,24 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
         # would otherwise be dropped from the grid in silence the second time.
         # The two notes had the same argument and only one of them applied it.
         notes.pop(("said", ("dash-excluded",)), None)
+    if len(grid_cells) > DASHBOARD_MAX_CELLS:
+        # ⚠️ **Defect 4's shape with a different cause: one participant too many
+        # and NOBODY is gridded.** agterm's cap is nine cells; what it does with
+        # a tenth is not measured, so this is decided here rather than found out
+        # at run time. Trimmed and SAID, which is the same answer the drawer
+        # exclusion gets and the opposite of `agb-dashboard`'s -- there the grid
+        # is the point, here it is an adjunct and showing nine of ten beats
+        # showing none. The order is the `sorted(resolved)` the cells were built
+        # in, so the choice is deterministic rather than whatever a dict gave.
+        kept = [c[0] for c in cells if (c[1], c[2]) not in excluded]
+        grid_cells = grid_cells[:DASHBOARD_MAX_CELLS]
+        _throttled(say, notes, ("dash-cap",))(
+            "dashboard: %s not shown -- agterm's grid takes %d cells"
+            % (", ".join(kept[DASHBOARD_MAX_CELLS:]), DASHBOARD_MAX_CELLS))
+    elif notes is not None:
+        # Cleared, for the third time and the same reason: a roster that drops
+        # back under the cap and grows over it again must say so twice.
+        notes.pop(("said", ("dash-cap",)), None)
     # ⚠️ **What is ACCOUNTED FOR is wider than what is in the grid**, and each
     # of the three has its own line already. A participant that resolved is in
     # `resolved` -- including one whose pane the grid cannot express, which the
