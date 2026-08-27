@@ -283,19 +283,17 @@ def test_a_refusal_opens_nothing_and_writes_nothing(dashboard, argv):
     assert out.text == ""
 
 
-def test_an_accepted_argv_reaches_a_stub_rather_than_a_refusal(dashboard):
+def test_an_accepted_argv_is_ACTED_ON_rather_than_refused(dashboard):
     """The non-vacuity companion to the refusals above: without it every test
     in this file would pass against a `main` that refused EVERYTHING.
 
-    ⚠️ Task 4 replaced `run_grid`, so the selector and roster argvs no longer
-    stop here -- they are covered by the whole `run_grid` section below, which
-    asserts on the argv handed to `agtermctl`. `--mru` is Task 5's, and the
-    exit code 70 is what still says "accepted, not yet built"."""
-    with pytest.raises(dashboard.DashError) as err:
-        dashboard.main(["--mru"], out=Out(), ctl=NoCtl(),
-                       read_line=no_read_line)
-    assert err.value.code == 70
-    assert "not implemented yet" in str(err.value)
+    ⚠️ Tasks 4 and 5 replaced both stubs, so this no longer looks for an exit
+    code -- it looks for the one thing every accepted argv does and no refused
+    one does: call `agtermctl dashboard`."""
+    ctl = GridCtl()
+    assert dashboard.main(["--mru", "--detach"], out=Out(), ctl=ctl,
+                          read_line=no_read_line) == 0
+    assert ctl.opened() == [["--mru"]]
 
 
 # ---------------------------------------------------------------------------
@@ -403,7 +401,15 @@ class GridCtl(object):
 
 
 def grid(dashboard, argv, ctl, out=None):
-    return dashboard.main(argv, out=out or Out(), ctl=ctl,
+    """Task 4's driver: `--detach`, so these tests stay about RESOLUTION.
+
+    ⚠️ Task 5 made the foreground hold the default, so without this every
+    success case here would block on `read_line` and every "nothing was
+    closed" assertion would be about the hold's own tidy-up rather than about
+    the strict `unresolved:` check it was written for. The lifecycle has its
+    own section below; `no_read_line` keeps it out of this one.
+    """
+    return dashboard.main(["--detach"] + list(argv), out=out or Out(), ctl=ctl,
                           read_line=no_read_line)
 
 
@@ -621,4 +627,292 @@ def test_a_clean_open_is_not_read_as_unresolved(dashboard):
     against a check that can never fire."""
     ctl = GridCtl(rows(("AAAA1111", "alice")), said="opened 1 cell\n")
     assert grid(dashboard, ["alice"], ctl) == 0
+    assert ("close",) not in ctl.calls
+
+
+# ---------------------------------------------------------------------------
+# Task 5: the lifecycle -- the foreground hold, `--detach`, and `--mru`
+#
+# agterm has exactly one grid and no ownership token, so something has to own
+# the one this run opened. The default is to hold it in the foreground; the
+# close is in a `finally` so that neither `Ctrl-C` nor an exhausted stdin can
+# orphan it.
+# ---------------------------------------------------------------------------
+
+class Reader(object):
+    """A canned sequence of lines, modelling `sys.stdin.readline` EXACTLY.
+
+    ⚠️ **Lines come back WITH their newline, and exhaustion returns `""`.**
+    `readline` never raises `EOFError` -- that is `input()`. `agb-peer-setup`'s
+    first fake raised it anyway, so the harness described a world where an
+    exhausted stdin was impossible; the real `""` was treated as an ordinary
+    answer and every re-prompting loop in that file spun, measured at 305,869
+    menu prints in six seconds, while its EOF test passed the whole time.
+
+    ⚠️ **And the read count is BOUNDED**, so a spin fails loudly here instead
+    of hanging the suite -- an infinite loop under pytest looks like a stuck
+    machine, not like a red test.
+    """
+
+    LIMIT = 20
+
+    def __init__(self, *lines):
+        self.lines = list(lines)
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        if self.reads > self.LIMIT:
+            raise AssertionError(
+                "read_line called %d times -- this is the agb-peer-setup spin"
+                % (self.reads,))
+        if not self.lines:
+            return ""                      # readline at EOF, not EOFError
+        return self.lines.pop(0) + "\n"
+
+
+class Boom(object):
+    """A reader that raises what a real terminal raises: `Ctrl-C`."""
+
+    def __init__(self, error=KeyboardInterrupt):
+        self.error = error
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        raise self.error()
+
+
+def test_the_reader_fake_models_readline_not_input(dashboard):
+    """The guard on the harness itself. A fake simpler than reality fails
+    nothing, and this is the exact simplification that shipped a spin once."""
+    reader = Reader("x")
+    assert reader() == "x\n", "the newline is the EOF discriminator"
+    assert reader() == "", "exhaustion returns the empty string"
+    assert reader() == "", "and keeps returning it -- it never raises"
+
+
+# --- the hold -------------------------------------------------------------
+
+def test_the_hold_closes_the_grid_on_enter(dashboard):
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    reader = Reader("")
+    out = Out()
+    assert dashboard.main(["alice"], out=out, ctl=ctl, read_line=reader) == 0
+    assert ("close",) in ctl.calls
+    assert reader.reads == 1
+    assert "press enter" in out.text
+    # ⚠️ The discriminator is the NEWLINE, and this is the companion that
+    # proves it is tested on the RAW value: enter gives "\n", which strips to
+    # "" and is NOT end of input. Strip first and the two become
+    # indistinguishable -- and the dangerous one becomes the harmless one.
+    assert "stdin ended" not in out.text
+
+
+def test_the_hold_closes_the_grid_on_EOF(dashboard):
+    """⚠️ `readline` returns `""` at end of input and does NOT raise. A run
+    with no stdin -- a pipe that ran out, a closed stdin, a here-doc shorter
+    than the prompts -- must close the grid rather than treat the empty string
+    as an answer it can go back and ask for again."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    reader = Reader()                       # exhausted from the start
+    out = Out()
+    assert dashboard.main(["alice"], out=out, ctl=ctl, read_line=reader) == 0
+    assert ("close",) in ctl.calls
+    assert "stdin ended" in out.text
+
+
+def test_EOF_is_read_ONCE_and_cannot_spin(dashboard):
+    """The anti-spin guard, and the reason `Reader` counts. `agb-peer-setup`
+    spun 305,869 times on exactly this input; a bounded fake turns that into a
+    named failure instead of a hung suite."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    reader = Reader()
+    dashboard.main(["alice"], out=Out(), ctl=ctl, read_line=reader)
+    assert reader.reads == 1
+    assert len([c for c in ctl.calls if c[0] == "close"]) == 1
+
+
+def test_the_hold_closes_the_grid_on_KeyboardInterrupt(dashboard):
+    """⚠️ `Ctrl-C` is the documented way out of a foreground wait and is NOT an
+    `Exception`, so the close has to be in a `finally`. An `except` clause
+    would miss it and orphan the grid -- the one failure the hold exists to
+    prevent."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    with pytest.raises(KeyboardInterrupt):
+        dashboard.main(["alice"], out=Out(), ctl=ctl, read_line=Boom())
+    assert ("close",) in ctl.calls
+
+
+def test_an_input_shaped_reader_that_raises_EOFError_still_closes(dashboard):
+    """The real `readline` cannot get here, but a caller injecting an
+    `input()`-shaped reader can -- and a traceback out of the wait would leave
+    the grid up just as surely as a missing `finally` would."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    assert dashboard.main(["alice"], out=out, ctl=ctl,
+                          read_line=Boom(EOFError)) == 0
+    assert ("close",) in ctl.calls
+    assert "stdin ended" in out.text
+
+
+def test_the_hold_says_the_grid_does_NOT_follow_and_names_what_does(dashboard):
+    """⚠️ In the tool's own output, not only in the docs. `agb-refresh`
+    re-mints every row id, so a refresh under a held grid leaves dead cells --
+    and the person who needs to know that is looking at the grid."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    dashboard.main(["alice"], out=out, ctl=ctl, read_line=Reader(""))
+    assert "agb-refresh" in out.text
+    assert "does NOT follow" in out.text
+    assert "agb-peer relay --dashboard" in out.text
+
+
+def test_the_hold_says_to_run_it_OUTSIDE_agterm(dashboard):
+    """That is the condition Task 0's measurement holds under: a terminal
+    outside agterm stayed responsive while a grid was up. Whether a shell
+    inside one does is untested, so the tool names the measured route."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    dashboard.main(["alice"], out=out, ctl=ctl, read_line=Reader(""))
+    assert "OUTSIDE agterm" in out.text
+
+
+def test_a_close_that_fails_during_the_hold_is_said_and_gives_the_command(
+        dashboard):
+    """The grid is still up and the hold is over, so nothing else will close
+    it. That is the moment the literal command is worth the most."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), close=(False, "no such grid"))
+    out = Out()
+    assert dashboard.main(["alice"], out=out, ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert "STILL UP" in out.text
+    assert "no such grid" in out.text
+    assert "dashboard --close" in out.text
+
+
+def test_a_close_that_SUCCEEDS_says_none_of_that(dashboard):
+    """The companion the "nothing happened" test needs: without it the two
+    assertions above would pass against a message that can never be printed."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    dashboard.main(["alice"], out=out, ctl=ctl, read_line=Reader(""))
+    assert "STILL UP" not in out.text
+
+
+def test_the_hold_defaults_to_real_stdin(dashboard, monkeypatch):
+    """The wiring, which every other test in this section bypasses by
+    injecting a reader. An EOF-at-once stdin is the safe way to prove it: a
+    default that was never hooked up would raise a TypeError instead."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    assert dashboard.main(["alice"], out=Out(), ctl=ctl) == 0
+    assert ("close",) in ctl.calls
+
+
+# --- --detach -------------------------------------------------------------
+
+def test_detach_leaves_the_grid_open_and_prints_the_close_command(dashboard):
+    """⚠️ The literal command, because after a detached run nothing owns the
+    grid: agterm has exactly one and no ownership token, so the user is the
+    only thing left that can close it."""
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
+    out = Out()
+    assert dashboard.main(["--detach", "alice", "bob"], out=out, ctl=ctl,
+                          read_line=no_read_line) == 0
+    assert ctl.opened() == [["AAAA1111:left", "BBBB2222:left"]]
+    assert ("close",) not in ctl.calls
+    assert "agtermctl dashboard --close" in out.text
+
+
+def test_detach_still_reports_the_resolved_cells(dashboard):
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    dashboard.main(["--detach", "alice"], out=out, ctl=ctl,
+                   read_line=no_read_line)
+    assert "AAAA1111" in out.text and "alice" in out.text
+    assert "left" in out.text
+
+
+def test_detach_reads_no_stdin_at_all(dashboard):
+    """`no_read_line` raises, so this is an assertion rather than an
+    inference: a detached run that waited would hang a terminal for a grid it
+    has already handed over."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    assert dashboard.main(["--detach", "alice"], out=Out(), ctl=ctl,
+                          read_line=no_read_line) == 0
+
+
+def test_a_detached_run_does_not_promise_to_follow(dashboard):
+    """The follow note belongs to the hold: a detached grid is nobody's, and
+    telling its owner what `agb-peer relay --dashboard` would have done is
+    advice about a run that is already over."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    dashboard.main(["--detach", "alice"], out=out, ctl=ctl,
+                   read_line=no_read_line)
+    assert "press enter" not in out.text
+
+
+# --- --mru ----------------------------------------------------------------
+
+def test_mru_hands_agterm_the_flag_and_resolves_NOTHING(dashboard):
+    """⚠️ No `tree --json` either: with no selector there is no question to
+    ask about the row set, and fetching it anyway would be a subprocess run to
+    populate a variable nobody reads."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    assert dashboard.main(["--mru"], out=out, ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert ctl.opened() == [["--mru"]]
+    assert ("tree",) not in ctl.calls
+
+
+def test_mru_says_that_no_membership_was_asserted(dashboard):
+    """Otherwise a two-cell grid from `--mru` reads exactly like a two-cell
+    grid from two selectors, and only one of them was checked."""
+    ctl = GridCtl()
+    out = Out()
+    dashboard.main(["--mru"], out=out, ctl=ctl, read_line=Reader(""))
+    assert "no membership" in out.text.lower()
+
+
+def test_mru_does_NOT_apply_the_strict_unresolved_check(dashboard):
+    """⚠️ Everywhere else `unresolved:` on stdout is a failure, because the
+    user named a membership and agterm fell short of it. `--mru` names nobody,
+    so there is no shortfall to detect -- and refusing here would close a grid
+    the user can perfectly well use, over a row they never asked for."""
+    ctl = GridCtl(said="unresolved: ZZZZ9999\n")
+    out = Out()
+    assert dashboard.main(["--mru", "--detach"], out=out, ctl=ctl,
+                          read_line=no_read_line) == 0
+    assert ("close",) not in ctl.calls
+
+
+def test_the_strict_check_still_fires_for_SELECTORS(dashboard):
+    """The companion that keeps the exemption above honest: the same stdout,
+    the only difference being whether a membership was asserted."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), said="unresolved: ZZZZ9999\n")
+    with pytest.raises(dashboard.DashError):
+        dashboard.main(["--detach", "alice"], out=Out(), ctl=ctl,
+                       read_line=no_read_line)
+
+
+def test_mru_holds_in_the_foreground_like_any_other_grid(dashboard):
+    """The grid still needs an owner, and `--mru` opened one."""
+    ctl = GridCtl()
+    reader = Reader("")
+    assert dashboard.main(["--mru"], out=Out(), ctl=ctl,
+                          read_line=reader) == 0
+    assert ("close",) in ctl.calls
+    assert reader.reads == 1
+
+
+def test_mru_that_will_not_open_is_refused_and_nothing_is_closed(dashboard):
+    """agterm refuses before opening anything, so there is no grid to close --
+    and closing would dismiss whatever somebody else had up."""
+    ctl = GridCtl(ok=False, why="no recent sessions")
+    with pytest.raises(dashboard.DashError) as err:
+        dashboard.main(["--mru"], out=Out(), ctl=ctl, read_line=no_read_line)
+    assert "no recent sessions" in str(err.value)
     assert ("close",) not in ctl.calls

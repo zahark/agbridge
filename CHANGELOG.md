@@ -108,6 +108,56 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`agb-dashboard` — watch several agent rows at once, by name.** agterm can show a view-only grid
+  of up to nine live sessions, and until now driving it meant knowing the **row ids**
+  (`agtermctl dashboard A1B2C3D4:left E5F6A7B8:left`). `agb-refresh` re-mints every id, so an id you
+  wrote down is dead — the same trap `agb-peer-setup` exists to route around. This takes **row
+  selectors**: a label substring, an id, or an id prefix, resolved fresh on every run.
+
+  ```console
+  $ agb-dashboard alice bob
+  agb-dashboard: 2 cell(s)
+    AAAA1111 left alice · box01 · /w/api · %7 · 3s
+    BBBB2222 left bob · box02 · /w/dv · %3 · 1s
+    Run this from a terminal OUTSIDE agterm -- that is where the hold was
+    measured to stay responsive while a grid is up.
+    This grid does NOT follow: an `agb-refresh` re-mints every row id and
+    leaves dead cells here. `agb-peer relay --dashboard` is the one that
+    re-resolves and re-opens.
+  press enter to close the grid (Ctrl-C closes it too)
+  ```
+
+  ⚠️ **It refuses rather than opening a grid missing the agent you opened it to watch.** That is the
+  whole reason it is a wrapper and not an alias. When only *some* cells resolve, agterm exits **0**,
+  opens the grid without the rest, and names the casualties as `unresolved: <id>` on **stdout**
+  alone — so the honest-looking grid is the incomplete one. An unresolved selector, an ambiguous one
+  and a participant in a pane the grid cannot show all open nothing; a shortfall agterm reports
+  after the fact **closes the grid it already opened**, because exiting on it would leave exactly
+  the partial grid the command exists to remove.
+
+  ⚠️ **Every cell carries an explicit pane, and never a bare id.** A bare id takes *every* pane of
+  its session and agterm's nine-cell cap counts **panes**, so a row somebody opened a `[s]` split on
+  silently costs two cells — the same rows fit, or do not, depending on state nobody is looking at.
+  An explicit pane turns a cap on panes into a cap on agents, which is what makes the "9 cells;
+  got 10" refusal exact instead of a guess. A roster's `right` is preserved, not forced to `left`.
+
+  ⚠️ **The grid is held in the foreground, and that is what owns it.** agterm has exactly one grid
+  and no ownership token, so a grid nobody closes is a grid in everybody's way. The close is in a
+  `finally`, so **`Ctrl-C` and an exhausted stdin close it too** — `sys.stdin.readline()` returns
+  `""` at end of input and does not raise, and treating that as an answer is what made
+  `agb-peer-setup` spin 305,869 times in six seconds. `--detach` is the explicit hand-over: it
+  leaves the grid up and prints the literal `agtermctl dashboard --close` you will need, because
+  after it nothing else can.
+
+  `--roster <file>` grids a relay roster's members (a **one**-participant roster is fine; a grid
+  needs nobody to talk to). `--mru` lets agterm pick — and is the one mode exempt from the strict
+  check, because it asserts no membership and so has no shortfall to detect; it says so in its own
+  output rather than leaving a `--mru` grid looking like a checked one.
+
+  ⚠️ **Not installed by `install.sh`.** Symlink it onto `$PATH` beside `agb-peer`, which it loads by
+  path — same as `agb-peer-setup`. And it does **not follow**: `agb-peer relay --dashboard` is the
+  feature that re-resolves and re-opens as ids move.
+
 - **`agb-peer-setup` — build a relay roster by picking rows instead of typing the grammar.**
   Writing one by hand means knowing three things that are not obvious: that `<row>` is the row's
   **label** and not the title agterm shows you (a title is `label · host · cwd · pane · beat`, and a

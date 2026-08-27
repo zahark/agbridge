@@ -825,23 +825,54 @@ agterm — that is the condition the measurement holds under, and the docs alrea
 - Modify: `tests/test_agb_dashboard.py`
 - Modify: `CHANGELOG.md`
 
-- [ ] foreground hold: print `press enter to close`, wait, close via `try/finally`
-- [ ] ⚠️ close on `KeyboardInterrupt` **and** on EOF — `readline` returns `""` at EOF and does not
+- [x] foreground hold: print `press enter to close`, wait, close via `try/finally`
+- [x] ⚠️ close on `KeyboardInterrupt` **and** on EOF — `readline` returns `""` at EOF and does not
       raise, and treating that as an answer is what made `agb-peer-setup` spin 305,869 times in six
       seconds. Same trap, same family of file
-- [ ] `--detach`: open, print the resolved cells **and the literal close command**, exit 0
-- [ ] say on a held run that the grid does **not** follow an `agb-refresh`, and that
+      — ➕ **[decision] the hold reads ONCE, with no loop at all**, so the spin class is structurally
+      unreachable rather than guarded against: any line closes the grid, so there is nothing to
+      re-prompt for. The raw `""` is still tested before stripping, because it means something
+      different from a keypress and the hold says so (`stdin ended -- closing the grid`)
+      — ➕ `EOFError` is caught too, for an `input()`-shaped injected reader. The real `readline`
+      cannot raise it, but a traceback out of the wait would orphan the grid just as a missing
+      `finally` would
+      — ➕ `KeyboardInterrupt` is **left to propagate** after the close: `__main__` already has a
+      clause reporting it as an exit rather than a crash, and catching it here would have made the
+      documented way out exit 0 while `Ctrl-C` anywhere else in the file exits 1
+- [x] `--detach`: open, print the resolved cells **and the literal close command**, exit 0
+- [x] say on a held run that the grid does **not** follow an `agb-refresh`, and that
       `agb-peer relay --dashboard` is what does — in the tool's own output, not only the docs
-- [ ] `--mru`: call `dashboard --mru`, resolve nothing, print that membership was not asserted, and
+      — ➕ plus Task 0's condition: the hold says to run it from a terminal **outside** agterm, which
+      is the only configuration the responsiveness was measured in
+- [x] `--mru`: call `dashboard --mru`, resolve nothing, print that membership was not asserted, and
       ⚠️ do **not** apply the strict `unresolved:` rule — with no membership asserted there is no
       shortfall to detect
-- [ ] write tests: the hold closes on enter, on EOF and on `KeyboardInterrupt` — three named tests
-- [ ] write tests: an EOF read count stays bounded (the anti-spin guard)
-- [ ] write tests: `--detach` leaves the grid open and prints a command containing `dashboard --close`
-- [ ] write tests: `--mru` calls agtermctl with `--mru`, resolves nothing, and does not apply the
+      — ➕ it also makes **no `tree --json` call**: with no selector there is no question to ask about
+      the row set, and a test asserts the absence
+- [x] write tests: the hold closes on enter, on EOF and on `KeyboardInterrupt` — three named tests
+      — ➕ four: an `EOFError`-raising reader is the fourth
+- [x] write tests: an EOF read count stays bounded (the anti-spin guard)
+      — ➕ the `Reader` fake caps itself at 20 reads and raises, so a spin fails **loudly** instead of
+      hanging the suite; a test of the fake itself pins that it returns lines WITH their newline and
+      `""` when exhausted, the simplification `agb-peer-setup` shipped a spin on
+- [x] write tests: `--detach` leaves the grid open and prints a command containing `dashboard --close`
+- [x] write tests: `--mru` calls agtermctl with `--mru`, resolves nothing, and does not apply the
       strict check
-- [ ] add the `CHANGELOG.md` entry in this commit
-- [ ] run tests — must pass before task 6
+      — ➕ with the companion that keeps the exemption honest: the same `unresolved:` stdout **does**
+      refuse when selectors were named. A test that nothing happened needs one differing only in the
+      variable under test
+- [x] add the `CHANGELOG.md` entry in this commit
+- [x] run tests — must pass before task 6
+      — ➕ 73 in `test_agb_dashboard.py`, **2582** in the full suite
+      — ➕ **[deviation] Task 4's `grid()` helper now passes `--detach`.** The hold became the
+      default, so every Task 4 success case would otherwise block on `read_line`, and its
+      "nothing was closed" assertions would have become claims about the hold's own tidy-up rather
+      than about the strict `unresolved:` check they were written for
+- [x] ➕ mutation-checked four guards, each failing a **named** test: the `finally` removed
+      (`test_the_hold_closes_the_grid_on_KeyboardInterrupt`), the raw value stripped before
+      the EOF test (`test_the_hold_closes_the_grid_on_enter`), the strict check applied to
+      `--mru` (`test_mru_does_NOT_apply_the_strict_unresolved_check`), and `--detach` no
+      longer printing the close command
 
 ### Task 6: Verify acceptance criteria
 

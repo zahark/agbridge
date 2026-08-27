@@ -384,14 +384,119 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
     out.write("agb-dashboard: %d cell(s)\n" % (len(cells),))
     for row, pane in resolved:
         out.write("  %s %s %s\n" % (row[:8], pane, named.get(row) or ""))
-    # Task 5 puts the foreground hold and `--detach` here. Until then the grid
-    # is left open, which is what `--detach` will make explicit.
-    return 0
+    return finish(opts, out, ctl, read_line)
 
 
 def run_mru(opts, out, peer=None, ctl=None, read_line=None):
-    # Task 5.
-    raise DashError("--mru is not implemented yet", 70)
+    """agterm picks the rows; this command asserts nothing about them.
+
+    ⚠️ **The strict `unresolved:` rule is deliberately NOT applied here**, and
+    that is not an oversight to be tidied up later. Everywhere else it is
+    sound because the user named a membership, so anything agterm dropped is a
+    measurable shortfall against what was asked for. `--mru` names nobody, so
+    there is no set to fall short of -- and a line agterm printed about a row
+    this command never requested would be reported as *our* failure and would
+    close a grid the user can perfectly well use.
+
+    Nothing is resolved, so there is no `tree --json` either: no selector means
+    no question to ask about the row set.
+    """
+    peer = peer or load_peer()
+    ctl = ctl if ctl is not None else peer.Ctl()
+    ok, _said, why = ctl.dashboard(["--mru"])
+    if not ok:
+        raise DashError("the dashboard would not open: %s" % (why,), 2)
+    out.write("agb-dashboard: --mru -- agterm chose the rows.\n"
+              "  No membership was asserted, so nothing was resolved and\n"
+              "  nothing can be reported missing. Name rows to get that check.\n")
+    return finish(opts, out, ctl, read_line)
+
+
+# The literal, copy-pasteable way to close the grid by hand. Printed on the
+# `--detach` path because that run ends with a grid up and nothing owning it,
+# and again when a hold's own close FAILS -- which is the moment a user most
+# needs it and least wants to go and look it up.
+CLOSE_COMMAND = "agtermctl dashboard --close"
+
+# ⚠️ Both facts are things the tool has to SAY, not only document.
+#
+#   * **Run it from outside agterm.** That is the condition Task 0's
+#     measurement holds under: a terminal outside agterm stayed responsive
+#     while a grid was up, and a blocking read returned on Enter. Whether a
+#     shell *inside* an agterm session does the same is untested, so the tool
+#     names the route that was measured rather than implying both work.
+#   * **A held grid does not follow.** `agb-refresh` re-mints every row id, and
+#     these cells carry the ids resolved at open, so a refresh under a held
+#     grid leaves dead cells. `agb-peer relay --dashboard` is the one that
+#     re-resolves and re-opens; this is a one-shot. Saying so here rather than
+#     only in the docs is deliberate -- the person who needs it is looking at
+#     the grid, not at `docs/commands.md`.
+HOLD_NOTE = (
+    "  Run this from a terminal OUTSIDE agterm -- that is where the hold was\n"
+    "  measured to stay responsive while a grid is up.\n"
+    "  This grid does NOT follow: an `agb-refresh` re-mints every row id and\n"
+    "  leaves dead cells here. `agb-peer relay --dashboard` is the one that\n"
+    "  re-resolves and re-opens.\n"
+    "press enter to close the grid (Ctrl-C closes it too)\n")
+
+
+def finish(opts, out, ctl, read_line=None):
+    """What happens to the grid now that it is up: held, or handed over.
+
+    ⚠️ **Something must own a grid, because agterm has exactly one and no
+    ownership token.** The default is therefore to hold it in the foreground
+    and close it on the way out; `--detach` is the explicit hand-over, and it
+    prints the close command precisely because after it nothing else will.
+    """
+    if opts["detach"]:
+        out.write("agb-dashboard: left open (--detach). Close it with:\n"
+                  "  %s\n" % (CLOSE_COMMAND,))
+        return 0
+    return hold(out, ctl,
+                read_line if read_line is not None else sys.stdin.readline)
+
+
+def hold(out, ctl, read_line):
+    """Wait, then close the grid -- on enter, on EOF and on `Ctrl-C` alike.
+
+    ⚠️ **EOF IS AN EMPTY STRING, NOT AN EXCEPTION.** `sys.stdin.readline()`
+    returns `""` at end of input; it does not raise `EOFError`, which is what
+    `input()` does. `agb-peer-setup` -- the same family of file -- treated the
+    real `""` as an ordinary answer and every re-prompting loop in it spun:
+    measured at 305,869 menu prints and 1.8 million lines in six seconds, on
+    any non-interactive invocation. This function reads **once**, so it cannot
+    spin whatever comes back; the empty string is still tested explicitly
+    because it means something different from a keypress and is worth saying.
+
+    ⚠️ **The discriminator is the NEWLINE, so the RAW value is tested before
+    stripping.** Enter gives `"\n"`, which strips to `""` and means "close it";
+    EOF gives `""` with no newline. Strip first and the two become
+    indistinguishable, and the dangerous one silently becomes the harmless one.
+
+    ⚠️ **The close is in a `finally`, which is the whole point of holding.**
+    `Ctrl-C` is the documented way out of a foreground wait and is not an
+    `Exception`, so an `except` clause here would miss it and orphan the grid
+    this run opened -- the one failure mode the hold exists to prevent. The
+    `KeyboardInterrupt` is then left to propagate: `__main__` already reports
+    it as an exit rather than a crash.
+    """
+    out.write(HOLD_NOTE)
+    try:
+        try:
+            raw = read_line()
+        except EOFError:
+            # `input()`-shaped readers still work, even though the real one
+            # cannot get here.
+            raw = ""
+        if raw is None or raw == "":
+            out.write("agb-dashboard: stdin ended -- closing the grid\n")
+    finally:
+        closed, why = ctl.dashboard_close()
+        if not closed:
+            out.write("agb-dashboard: the grid would not close (%s)\n"
+                      "  IT IS STILL UP. Close it with:\n"
+                      "  %s\n" % (why, CLOSE_COMMAND))
+    return 0
 
 
 if __name__ == "__main__":
