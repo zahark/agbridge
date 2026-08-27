@@ -1,12 +1,14 @@
 """agb-dashboard -- open agterm's grid by NAME rather than by row id.
 
-Task 3 is the skeleton: sibling loading, shared module identity, and the
-parser. Resolution (Task 4) and the lifecycle (Task 5) are stubs that refuse,
-so every test here drives `main` with fakes that would RAISE if a subprocess
-were run -- which is how the refusal tests prove nothing was opened rather than
-merely that nothing was printed.
+Three sections, in the order the command runs: the skeleton (sibling loading,
+shared module identity, the parser), resolution and the strict `unresolved:`
+check, and the lifecycle (the foreground hold, `--detach`, `--mru`).
 
-Plan: docs/plans/20260827-agb-dashboard.md
+Every test drives `main` with fakes that would RAISE if a subprocess were run,
+which is how a refusal test proves nothing was OPENED rather than merely that
+nothing was printed.
+
+Plan: docs/plans/completed/20260827-agb-dashboard.md
 """
 
 import ast
@@ -18,9 +20,13 @@ import sys
 import pytest
 from importlib.machinery import SourceFileLoader
 
+# ⚠️ `DASH_PATH` comes from `conftest`, which exists so the guards spanning both
+# cell emitters have one spelling of it. A second copy here would drift from the
+# one the cross-file guards use, and the divergence would show up as a guard
+# reading a file nobody else is testing.
+from conftest import DASH_PATH, PEER_PATH
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DASH_PATH = os.path.join(REPO_ROOT, "agb-dashboard")
-PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 
 
 class Out(object):
@@ -390,6 +396,64 @@ def test_the_guard_handles_KeyboardInterrupt_in_a_clause_of_its_own():
     assert handled, "no except handler found -- the walk is broken"
     assert "KeyboardInterrupt" in handled
     assert "DashError" in handled
+
+
+# ---------------------------------------------------------------------------
+# the __main__ block, run for real
+#
+# ⚠️ Everything above drives `main` in-process, so the `__main__` block -- the
+# handler, the exit codes, the shebang, the exec bit -- was covered by AST alone.
+# `agb-codex` and `agb-tmux` both have a subprocess test for the same reason: a
+# script that cannot be executed passes every structural guard ever written.
+# ---------------------------------------------------------------------------
+
+def run_script(*args):
+    """Execute `agb-dashboard` as the shell would -> (rc, stdout, stderr).
+
+    ⚠️ `$PATH` is narrowed to coreutils, so an `agtermctl` on the developer's
+    machine cannot answer for one of these. None of these argvs should reach it
+    anyway -- which is a claim worth making unfalsifiable rather than assuming.
+    """
+    import subprocess
+    import conftest
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join(["/usr/bin", "/bin"])
+    proc = subprocess.Popen([DASH_PATH] + list(args), env=env,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    out, err = conftest.communicate(proc, b"")
+    return proc.returncode, out.decode(), err.decode()
+
+
+def test_the_script_RUNS_and_answers_its_version():
+    """The shebang, the exec bit and the dispatch, end to end. Everything else
+    in this file imports the module and would pass on a file `sh` cannot run."""
+    rc, out, err = run_script("--version")
+    assert rc == 0, err
+    assert out.startswith("agb-dashboard "), out
+
+
+def test_a_usage_error_exits_1_on_STDERR_writing_nothing_to_stdout():
+    """⚠️ stdout is where a caller looks for the grid it asked about, so a
+    refusal must not appear there. The in-process tests assert `out.text == ""`
+    against an injected seam; this asserts it of the real stream."""
+    rc, out, err = run_script("--nope")
+    assert rc == 1
+    assert out == ""
+    assert "unknown option" in err and "--nope" in err
+
+
+def test_a_SIBLING_error_is_a_message_and_an_exit_code_not_a_traceback(
+        tmp_path):
+    """🔴 The `__main__` handler, doing its job for real: `PeerError` is raised
+    by a module this file cannot name in an `except` clause. A regression here
+    is a Python traceback where a one-line message belongs -- and the AST guard
+    cannot see it, because a handler that matches nothing is still a handler."""
+    rc, out, err = run_script("--roster", str(tmp_path / "nope"))
+    assert rc == 1
+    assert out == ""
+    assert "cannot read the roster" in err
+    assert "Traceback" not in err, err
 
 
 # ---------------------------------------------------------------------------

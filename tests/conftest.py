@@ -149,10 +149,13 @@ PEER_MODULE = "agb_peer"
 PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 SETUP_PATH = os.path.join(REPO_ROOT, "agb-peer-setup")
 # `agb-dashboard`, the second cell emitter. Named here so the guards that must
-# span both have one spelling of the path. ⚠️ A guard reading it keeps its
-# skip-if-absent branch AND its non-vacuity assertion: the file exists now
-# (Task 3), but the reason the pair was written -- that a guard covering
-# nothing must say so rather than go green -- is not about its existence.
+# span both have ONE spelling of the path -- `tests/test_agb_dashboard.py`
+# imports it from here rather than rebuilding it, which is the whole point of
+# it living in conftest. ⚠️ The skip-if-absent branch a guard reading it used to
+# carry is gone: the file exists, so the branch could not fire, and a dead
+# branch reads exactly like a guard that quietly covers one file instead of
+# two. What survives from that pair is the non-vacuity assertion, which is the
+# half that was doing the work.
 DASH_PATH = os.path.join(REPO_ROOT, "agb-dashboard")
 
 

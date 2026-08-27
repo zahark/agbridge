@@ -4003,7 +4003,7 @@ def test_agb_peer_never_imports_tempfile(peer):
 
 # ---------------------------------------------------------------------------
 # dashboard_cells and the stdout-carrying Ctl.dashboard -- agb-dashboard Task 1.
-# Plan: docs/plans/20260827-agb-dashboard.md
+# Plan: docs/plans/completed/20260827-agb-dashboard.md
 # ---------------------------------------------------------------------------
 
 def test_dashboard_cells_never_emits_a_bare_id(peer):
@@ -4152,7 +4152,7 @@ def test_the_relay_still_opens_a_grid_after_the_return_shape_changed(peer):
 
 # ---------------------------------------------------------------------------
 # The relay builds its cells through dashboard_cells -- agb-dashboard Task 2b-i.
-# Plan: docs/plans/20260827-agb-dashboard.md
+# Plan: docs/plans/completed/20260827-agb-dashboard.md
 # ---------------------------------------------------------------------------
 
 def test_the_relays_cells_are_unchanged_by_the_routing(peer):
@@ -4227,11 +4227,11 @@ def test_cell_strings_are_spelled_only_in_dashboard_cells():
 
     checked, found = [], []
     for path in (CONF_PEER_PATH, DASH_PATH):
-        if not os.path.exists(path):
-            # Task 3 creates `agb-dashboard`. Until then there is one emitter,
-            # and skipping is right -- but only because `found` below still has
-            # to be non-empty.
-            continue
+        # ⚠️ The skip-if-absent branch is gone deliberately. It was right while
+        # `agb-dashboard` did not exist yet; now it CANNOT fire, and a branch
+        # that cannot fire is indistinguishable from one that silently narrows
+        # the guard to a single emitter. Both files are required, and a missing
+        # one is an IOError here rather than a green run over half the subject.
         checked.append(path)
         tree = ast.parse(io.open(path, encoding="utf-8").read(), filename=path)
         for owner, literals in _owned_strings(tree).items():
@@ -4239,7 +4239,7 @@ def test_cell_strings_are_spelled_only_in_dashboard_cells():
                 if CELL_FORMAT.match(text):
                     found.append((os.path.basename(path), owner, text))
 
-    assert checked, "neither cell emitter was parsed -- the guard covered nothing"
+    assert len(checked) == 2, "both cell emitters must be parsed: %r" % (checked,)
     assert found, "no cell format found at all -- the pattern stopped matching"
     strays = [f for f in found if f[1] != "dashboard_cells"]
     assert not strays, (
@@ -4268,7 +4268,7 @@ def test_the_relay_asks_dashboard_cells_for_its_cells():
 
 # ---------------------------------------------------------------------------
 # A scratch participant is dropped from the grid, and SAID -- Task 2b-ii.
-# Plan: docs/plans/20260827-agb-dashboard.md
+# Plan: docs/plans/completed/20260827-agb-dashboard.md
 #
 # agterm refuses a `:scratch` cell at parse time (measured 2026-08-27), so the
 # whole `dashboard` call failed and the relay opened NO GRID AT ALL -- every
@@ -4393,7 +4393,7 @@ def test_a_member_who_GOES_MISSING_TWICE_is_named_twice(peer, tmp_path):
 
 # ---------------------------------------------------------------------------
 # The grid follows its MEMBERSHIP -- agb-dashboard Task 2c, defects 2 and 3.
-# Plan: docs/plans/20260827-agb-dashboard.md
+# Plan: docs/plans/completed/20260827-agb-dashboard.md
 #
 # Defect 2: `if dashboard and len(resolved) > 1:` skipped the re-open in the
 # case that needed it most -- membership falling to one, or to none -- so the
