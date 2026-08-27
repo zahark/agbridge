@@ -169,3 +169,166 @@ def test_the_guard_names_every_class_that_can_reach_it(setup):
     assert names, "no class-name tuple found -- the walk is broken"
     for cls in ("PeerError", "RosterConflict", "AgbError", "OSError", "IOError"):
         assert cls in names, "%s can reach __main__ and is not handled" % (cls,)
+
+
+# ---------------------------------------------------------------------------
+# row_value / row_is_unique / discovery -- Task 4. This is the feature: what
+# text from a picked row becomes the roster's `<row>` field.
+# ---------------------------------------------------------------------------
+
+def session(sid="AAAA1111", name="work · box01 · /home/me · %7 · 3s",
+            cwd="/home/me", status="active"):
+    return {"id": sid, "name": name, "cwd": cwd, "status": status}
+
+
+def test_row_value_takes_the_label_from_a_default_title(setup):
+    label, reason = setup.row_value(session())
+    assert (label, reason) == ("work", None)
+
+
+@pytest.mark.parametrize("prefix", ["[?] ", "[done] "])
+def test_row_value_strips_the_stale_and_done_prefixes(setup, prefix):
+    """⚠️ Without this, EVERY stale or finished row is unpickable.
+
+    `agb_mac.row_title` is `prefix + TITLE_SEP.join(...)`, and both prefixes
+    end in a space -- so the first component is "[?] work", which the
+    whitespace rule then refuses for a reason that reads like a bug. A fixture
+    whose title has every field populated and no prefix hides this completely,
+    which is why it is parametrized rather than assumed.
+    """
+    label, reason = setup.row_value(session(name=prefix + "work · box01 · %7"))
+    assert (label, reason) == ("work", None)
+
+
+def test_row_value_refuses_a_label_with_whitespace(setup):
+    """`parse_roster_text` splits on whitespace, so such a label cannot be a
+    spec at all -- measured: it parses as two words and errors on the second."""
+    label, reason = setup.row_value(session(name="my row · box01 · %7"))
+    assert label is None
+    assert "whitespace" in reason
+
+
+@pytest.mark.parametrize("bad", ["a@b", "a:b"])
+def test_row_value_refuses_grammar_characters(setup, bad):
+    label, reason = setup.row_value(session(name=bad + " · box01"))
+    assert label is None
+    assert repr(bad) in reason
+
+
+def test_row_value_refuses_an_empty_label(setup):
+    label, reason = setup.row_value(session(name=""))
+    assert label is None and reason
+
+
+def test_row_value_never_returns_the_row_id(setup):
+    """The id works today and breaks at the next `agb-refresh`, which re-mints
+    every row. `docs/commands.md` says to name a label substring."""
+    for name in ("work · box01 · %7", "[?] work · box01", "", "my row · x"):
+        sess = session(sid="DEADBEEF", name=name)
+        label, _reason = setup.row_value(sess)
+        assert label != "DEADBEEF"
+        assert label is None or label in name
+
+
+def test_row_is_unique_accepts_the_picked_row(setup, peer):
+    picked = session(sid="AAAA1111", name="work · box01")
+    others = [picked, session(sid="BBBB2222", name="other · box02")]
+    ok, reason = setup.row_is_unique(peer, others, "work", picked)
+    assert (ok, reason) == (True, None)
+
+
+def test_row_is_unique_refuses_a_label_matching_two_rows(setup, peer):
+    picked = session(sid="AAAA1111", name="work · box01")
+    sessions = [picked, session(sid="BBBB2222", name="work-two · box02")]
+    ok, reason = setup.row_is_unique(peer, sessions, "work", picked)
+    assert ok is False
+    assert "2 rows" in reason
+
+
+def test_row_is_unique_refuses_a_UNIQUE_match_on_the_WRONG_row(setup, peer):
+    """⚠️ The finding that `len(matches) == 1` is not "the right row".
+
+    `match_sessions` returns the first NON-EMPTY tier -- exact id, then id
+    prefix, then name substring. A label that prefixes another row's id wins on
+    the id tier and never reaches the name tier, so the check sees exactly one
+    match and it is a row the user did not pick.
+    """
+    picked = session(sid="AAAA1111", name="work · box01")
+    decoy = session(sid="work99", name="something else · box02")
+    sessions = [picked, decoy]
+    matches = peer.match_sessions(sessions, "work")
+    assert len(matches) == 1 and matches[0] is decoy, "premise: id tier wins"
+    ok, reason = setup.row_is_unique(peer, sessions, "work", picked)
+    assert ok is False
+    assert "not to the row you picked" in reason
+
+
+def test_row_is_unique_refuses_a_label_matching_nothing(setup, peer):
+    picked = session()
+    ok, reason = setup.row_is_unique(peer, [picked], "nosuch", picked)
+    assert ok is False and "no row" in reason
+
+
+def test_format_candidates_is_pure_and_numbers_nothing(setup):
+    sessions = [session(sid="AAAA1111", name="work · box01"),
+                session(sid="BBBB2222", name="other · box02")]
+    rows = setup.format_candidates(sessions)
+    assert len(rows) == 2, "non-empty before asserting content"
+    for (display, sess) in rows:
+        assert sess in sessions
+        assert not display.startswith("1")
+    assert "work" in rows[0][0] and "AAAA1111" in rows[0][0]
+
+
+def test_format_candidates_still_shows_an_unusable_row(setup):
+    """It has to be visible to be reported on: refusing to LIST it would look
+    like the row does not exist."""
+    rows = setup.format_candidates([session(name="my row · box01")])
+    assert "my row" in rows[0][0]
+
+
+class FakeCtl(object):
+    def __init__(self, sessions=None, error=None):
+        self.sessions, self.error, self.calls = sessions or [], error, 0
+
+    def tree(self):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return {"result": {"tree": {"workspaces": [{"sessions": self.sessions}]}}}
+
+
+def test_discover_rows_returns_the_live_rows(setup, peer):
+    ctl = FakeCtl([session()])
+    said = []
+    assert len(setup.discover_rows(peer, ctl, said.append)) == 1
+    assert said == []
+
+
+def test_discovery_failure_reports_and_does_not_raise(setup, peer):
+    """A discovery failure must never abort the editor: typing a label by hand
+    is the fallback the whole tool degrades to."""
+    ctl = FakeCtl(error=peer.PeerError("tree failed: no agterm"))
+    said = []
+    assert setup.discover_rows(peer, ctl, said.append) == []
+    assert said and "type a row label" in said[0]
+
+
+def test_discovery_is_fresh_on_every_call(setup, peer):
+    """⚠️ Rows are exactly what changes while somebody sets this up. A cache
+    held for the session would offer a row that has since been re-minted."""
+    ctl = FakeCtl([session()])
+    setup.discover_rows(peer, ctl, lambda _m: None)
+    setup.discover_rows(peer, ctl, lambda _m: None)
+    assert ctl.calls == 2
+
+
+def test_the_title_separator_agrees_with_agb_mac(setup, mac):
+    """A cross-file agreement (invariant 14): spelled here because `agb_mac` is
+    a sibling of `agb`, not of this script. A disagreement shows up as every
+    row being refused for containing whitespace."""
+    assert setup.TITLE_SEP == mac.TITLE_SEP
+
+
+def test_the_title_prefixes_agree_with_agb_mac(setup, mac):
+    assert set(setup.TITLE_PREFIXES) == {mac.TITLE_STALE, mac.TITLE_DONE}

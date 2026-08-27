@@ -93,6 +93,122 @@ def load_peer(path=None):
     return mod
 
 
+# agterm joins a row's title with this, and the LABEL is the first component.
+# Spelled here rather than imported because `agb_mac` is a Mac-side sibling of
+# `agb`, not of this script, and loading it to read one constant would drag in
+# the whole bridge. It is a cross-file agreement with `agb_mac.TITLE_SEP`; a
+# disagreement shows up as every row being refused for containing whitespace.
+TITLE_SEP = " \u00b7 "
+
+# `agb_mac` prefixes a title when the row is not a live agent. Both END in a
+# space, so leaving them on makes the first component "[?] label" -- which the
+# whitespace rule below then refuses, making every stale or finished row
+# unpickable for a reason that reads like a bug.
+TITLE_PREFIXES = ("[?] ", "[done] ")
+
+# What a `<row>` may not contain: `parse_roster_text` splits lines on
+# WHITESPACE, and `@` and `:` are the suffix grammar.
+ROW_FORBIDDEN = ("@", ":")
+
+
+def row_value(session):
+    """(label, None) for a usable `<row>`, else (None, reason).
+
+    ⚠️ **The label, not the title, and not the id.** The title is
+    `label · host · cwd · pane · beat` and `parse_roster_text` splits on
+    whitespace, so a title can never be a spec. The id is worse in a way that
+    looks fine: it works today and breaks at the next `agb-refresh`, which
+    re-mints every row -- which is why `docs/commands.md` says to name a label
+    substring.
+
+    ⚠️ **`row_fields` is configurable and this assumes the default order.**
+    `label,host,cwd,pane,beat` puts the label first; `row_fields = host,label`
+    would put the host there instead, and this would happily propose it. The
+    failure is a plausible-looking `<row>` that resolves to the wrong row or to
+    nothing -- which is what `row_is_unique` is for. Detecting the setting would
+    mean reading the bridge's config to answer a question the uniqueness check
+    already answers better.
+    """
+    title = str(session.get("name") or "")
+    for prefix in TITLE_PREFIXES:
+        if title.startswith(prefix):
+            title = title[len(prefix):]
+            break
+    label = title.split(TITLE_SEP)[0].strip()
+    if not label:
+        return None, "that row has no label to name it by"
+    if label.split() != [label]:
+        return None, ("%r contains whitespace, and a roster line is split on "
+                      "whitespace" % (label,))
+    for char in ROW_FORBIDDEN:
+        if char in label:
+            return None, ("%r contains %r, which is roster grammar"
+                          % (label, char))
+    return label, None
+
+
+def row_is_unique(peer, sessions, candidate, picked):
+    """True when `candidate` resolves to `picked` and to nothing else.
+
+    ⚠️ **`len(matches) == 1` is NOT "the right row", and the difference is a
+    silent wrong answer.** `match_sessions` returns the first NON-EMPTY tier --
+    exact id, then id prefix, then name substring -- so a label that happens to
+    prefix some other row's id wins on the id tier and never reaches the name
+    tier at all. One match, confidently, on a row the user did not pick.
+    """
+    matches = peer.match_sessions(sessions, candidate)
+    if not matches:
+        return False, "%r matches no row" % (candidate,)
+    if len(matches) > 1:
+        names = ", ".join(str(m.get("name") or m.get("id"))
+                          for m in matches[:3])
+        return False, ("%r matches %d rows (%s) -- it has to name exactly one"
+                       % (candidate, len(matches), names))
+    if matches[0].get("id") != picked.get("id"):
+        return False, ("%r resolves to %r, not to the row you picked -- an id "
+                       "prefix beats a label"
+                       % (candidate, matches[0].get("name")
+                          or matches[0].get("id")))
+    return True, None
+
+
+def format_candidates(sessions):
+    """[(display, session)] for the picker. Pure: the caller numbers them.
+
+    ⚠️ **MODE is deliberately not shown, and `agb-peer --list` does show it.**
+    That listing exists to answer "can I send to this right now", so a
+    disagreement with the tool would be worse than no listing at all. This one
+    answers "which row do you mean", and the answer is resolved again at write
+    time and again by the relay on every tick -- so a mode read here would cost
+    one `session text` per row on an interactive path and still be stale by the
+    time anybody uses the file.
+    """
+    rows = []
+    for session in sessions:
+        label, _reason = row_value(session)
+        rows.append(("%-24s %-8s %s"
+                     % (label or (session.get("name") or "?"),
+                        str(session.get("id") or "")[:8],
+                        session.get("cwd") or ""), session))
+    return rows
+
+
+def discover_rows(peer, ctl, say):
+    """Live rows, freshly. `[]` and a message when agterm cannot be reached.
+
+    ⚠️ **Fresh on every call, never cached for the session.** Rows are exactly
+    what changes while somebody sets this up -- an agent starts, `agb-refresh`
+    re-mints every id. And a discovery failure must never abort the editor:
+    typing a label by hand is the fallback the whole tool degrades to.
+    """
+    try:
+        return peer.sessions_of(ctl.tree())
+    except peer.PeerError as exc:
+        say("agterm could not be reached (%s) -- type a row label instead"
+            % (exc,))
+        return []
+
+
 def main(argv, out=None, peer=None, read_line=None, ctl=None):
     out = out or sys.stdout
     if not argv:

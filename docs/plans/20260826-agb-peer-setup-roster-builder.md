@@ -562,36 +562,41 @@ No auto-merge anywhere.
 - Modify: `agb-peer-setup`
 - Modify: `tests/test_agb_peer_setup.py`
 
-- [ ] implement `row_value(session)` (**the feature**): **strip a leading `"[?] "` / `"[done] "`**
+- [x] implement `row_value(session)` (**the feature**): **strip a leading `"[?] "` / `"[done] "`**
       (`agb_mac:1346-1347`) — R2, without which every stale or finished row is unpickable — then
       take the first ` · ` component; return it plus a reason when unusable (whitespace, `@`, `:`,
       or empty). Never fall back to the row id (`docs/commands.md:1665`)
-- [ ] comment the **`row_fields` assumption** (R2): the default ordering puts the label first
+- [x] comment the **`row_fields` assumption** (R2): the default ordering puts the label first
       (`ROW_FIELDS_DEFAULT`, `agb_mac:1358`), and `row_fields = host,label` would put the host
       there instead. State the assumption and its failure mode rather than detecting it
-- [ ] implement `row_is_unique(sessions, candidate, picked)` — `match_sessions` (`agb-peer:380`)
+- [x] implement `row_is_unique(sessions, candidate, picked)` — `match_sessions` (`agb-peer:380`)
       returns the **first non-empty tier** and the id-prefix tier fires before the name tier, so
       assert `len(matches) == 1` **and `matches[0]["id"] == picked["id"]`** (R2); a label that
       prefixes another row's id is otherwise a unique match on the **wrong** row
-- [ ] implement `format_candidates(sessions)` — pure, `(display_line, session)` pairs; the caller
+- [x] implement `format_candidates(sessions)` — pure, `(display_line, session)` pairs; the caller
       numbers them
-- [ ] display `name`, short `id`, `cwd`, `status`. **Decide MODE explicitly**: `cmd_list` reports it
+- [x] display `name`, short `id`, `cwd`, `status`. **Decide MODE explicitly**: `cmd_list` reports it
       (`agb-peer:1570-1578`) because "a listing that disagrees with the tool it is a listing FOR is
       worse than no listing". Recommendation: **omit** — one `session text` per row makes the picker
       O(n) agterm calls interactively, and this listing feeds an entry resolved later anyway. Record
       the omission **and this reason** in a comment
-- [ ] implement `discover_rows(ctl, say)` — fresh `ctl.tree()` each call; on `PeerError` report via
+- [x] implement `discover_rows(ctl, say)` — fresh `ctl.tree()` each call; on `PeerError` report via
       `say` and return `[]`
-- [ ] write tests: `row_value` on a default title (`label · host · cwd · %7 · 3s`) → `label`; **on a
+- [x] write tests: `row_value` on a default title (`label · host · cwd · %7 · 3s`) → `label`; **on a
       `"[?] label · host · …"` title → `label`** (R2's regression — mutation-check it, since the
       unprefixed fixture alone hides the bug); on a label containing a space/`@`/`:` → the reason
-- [ ] write tests: `row_value` never returns the row id, for any input
-- [ ] write tests: `row_is_unique` is False when the sole match is a **different** row reached by
+- [x] write tests: `row_value` never returns the row id, for any input
+- [x] write tests: `row_is_unique` is False when the sole match is a **different** row reached by
       the id-prefix tier (R2), False when two rows match, True for the picked row
-- [ ] write tests: `format_candidates` over a fixed list, asserting non-empty first
-- [ ] write tests: `discover_rows` with a `PeerError`-raising `Ctl` returns `[]`, calls `say`, does
+- [x] write tests: `format_candidates` over a fixed list, asserting non-empty first
+- [x] write tests: `discover_rows` with a `PeerError`-raising `Ctl` returns `[]`, calls `say`, does
       not raise; two calls issue **two** `tree` calls
-- [ ] run tests — must pass before task 5
+- [x] run tests — **29 passed**
+- [x] ➕ mutation-checked four guards (prefix strip, wrong-row uniqueness, whitespace refusal,
+      discovery caching): each failed its named test
+- [x] ➕ `TITLE_SEP`/`TITLE_PREFIXES` are spelled here, not imported — `agb_mac` is a sibling of
+      `agb`, not of this script. Registered as a cross-file agreement with two tests comparing
+      against `agb_mac`'s own constants rather than a copy of their values
 
 ### Task 5: Transport hint and instance-correct host resolution
 
