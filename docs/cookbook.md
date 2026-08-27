@@ -802,6 +802,55 @@ Three things worth knowing about what happens next:
   with a line saying so.
 - **Removing a name drops its queued mail**, and names each message so you can see what went.
 
+### Watch them talk
+
+Two ways, and the one-line difference is which of the two things is the point:
+
+| | |
+|---|---|
+| `agb-peer relay --dashboard` | you are **running a conversation** and would like to see it. The grid is an adjunct: it **follows** the roster, and no grid problem ever stops a message |
+| `agb-dashboard alice bob` | **the grid is the point.** It opens nothing at all rather than show you a grid missing somebody, and it does **not** follow |
+
+Add the flag to the relay you already have:
+
+```sh
+agb-peer relay --roster ~/peers --dashboard
+```
+
+It re-resolves every tick, so it survives an `agb-refresh` and repairs itself when membership
+changes; it closes the grid when you `Ctrl-C` out of it. A member with no row is **named** and the
+rest are still shown (`dashboard: no row for carol -- the grid shows the other 2`), and a participant
+whose pane is `scratch` is named too — agterm's grid takes only `left` and `right`.
+
+Or watch rows that are not in a conversation at all — an agent and the build it kicked off, say —
+with no relay anywhere:
+
+```sh
+agb-dashboard api-refactor docs-pass    # by label, not by row id
+agb-dashboard --roster ~/peers          # the same members the relay has
+agb-dashboard --mru                     # whatever you were just using
+```
+
+It prints what it opened, then waits; **enter or `Ctrl-C` closes the grid**. `--detach` leaves it up
+and prints the command that closes it.
+
+⚠️ **Run it from a terminal outside agterm** — that is where the hold was measured to stay
+responsive while a grid is up.
+
+⚠️ **It refuses rather than half-succeeds.** A label that matches no row, matches two rows, or names
+a participant in the `scratch` pane opens **nothing** and says which one. That includes the case
+agterm itself is quiet about: it will open a grid short of a cell, print `unresolved: <id>` on
+stdout and exit **0** — `agb-dashboard` reads that, closes the grid again and fails.
+
+⚠️ **A held grid does not follow.** An `agb-refresh` re-mints every row id and leaves dead cells in
+it; close it and open it again. The relay's grid is the one that re-resolves.
+
+⚠️ **Do not run both at once.** agterm has exactly one grid and no way to say whose it is: each
+closes only the grid it opened itself, but whoever opens last wins.
+
+⚠️ **Not yet run against a live agterm.** agterm's own behaviour here was measured
+([`agtermctl.md`](agtermctl.md)); agbridge's use of it has tests and no live run.
+
 ### When something looks wrong
 
 The relay's output is the diagnosis. The lines that matter:

@@ -2525,6 +2525,55 @@ it, and deriving the list from resolvable participants would report that as *lef
 indistinguishable from *this pane is not a participant*; and an answer held behind a busy composer
 can arrive slightly stale.
 
+### Watching rows, and who owns agterm's one grid
+
+agterm can show a view-only **grid** of live sessions. Two things in this project drive it, and they
+are not the same feature:
+
+> **The relay's grid is an adjunct to a message pump; `agb-dashboard`'s grid is the point.**
+
+That single distinction decides both error policies, and both are correct *in place*:
+
+| | `agb-peer relay --dashboard` | `agb-dashboard` |
+|---|---|---|
+| what the user asked for | a conversation; the grid is a convenience | the grid, as the primary effect |
+| a member that will not resolve | **named, and the rest are gridded** — best-effort, because a cosmetic grid failure must never stop a message | **nothing opens**, exit 2, every problem named |
+| a member in the `scratch` pane | excluded and said; it counts as *accounted for*, not missing | a shortfall — nothing opens |
+| lifetime | **follows**: re-resolves every tick and re-opens when the cell set moves | one-shot with a foreground hold; `--follow` deferred |
+
+⚠️ **"Accounted for, not missing" is load-bearing in the relay.** The grid re-opens on any change to
+the cell set and closes when nobody is left; if an excluded `scratch` participant counted as missing,
+a roster containing one would keep the grid permanently shut — the opposite of the fix.
+
+**Ownership.** agterm has **one** grid and no ownership token — its own help says `--close` closes
+*"the open one"*. So the policy is: **each closes only a grid it opened this run**, tracked by a
+latched flag and cleared only on a close that worked. Neither reaches for a grid it did not open.
+That does not make them safe to run simultaneously and is not meant to: **running both at once is
+documented as unsupported**, whoever opens last wins, because agterm gives us nothing finer to work
+with. Defending against it would mean inventing an ownership token on top of a single global
+resource, in two processes that cannot see each other.
+
+⚠️ **The exit status is second-guessed in exactly one place, and it is not laziness.** agterm exits
+**0** while printing `unresolved: <id>` on stdout and opening the grid without those cells (measured
+— [`agtermctl.md`](agtermctl.md)). A wrapper that trusted the status would present a silently
+incomplete grid as a success, which is §4 Rule 1 in a new costume: a surface that looks correct and
+is not. So `agb-dashboard` reads the output, **closes the grid it just caused**, and exits non-zero.
+Closing first is not tidiness — the `unresolved:` line arrives *after* the grid is up, so refusing
+without closing would leave exactly the partial grid the command exists to remove.
+
+⚠️ **Never a bare cell id**, for a reason that is about the cap rather than about style. agterm's cap
+is nine **panes**, and a bare id takes every pane of its session — so the same rows fit or do not
+depending on whether a stranger opened a split on one of them. Emitting an explicit pane always
+converts a cap that counts panes into a cap that counts **agents**, which is the only thing that
+makes a preflight (`9 cells; got 10`) exact rather than a guess. One function, `dashboard_cells`,
+spells it for both callers, and an AST guard spanning both files stops a second copy appearing.
+
+**Where the resolver lives.** `agb-dashboard` loads `agb-peer` by path and uses its `match_sessions`,
+its roster grammar and its `Ctl`. ⚠️ **That is an implementation smell and was deliberately not
+allowed to choose the user-facing noun** — watching rows is not a peer-chat activity, so this is not
+`agb-peer watch`. Extraction into something both callers share honestly is deferred until two callers
+have shown where the boundary really is; today it is one caller and a comment.
+
 ### Still true, and still unfixed
 
 ⚠️ **An option that fails `parse_option_value` is neither unset nor reported.** `parse_show_options`

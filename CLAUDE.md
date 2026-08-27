@@ -117,6 +117,37 @@ so a doorbell can be **invisible rather than absent**, and every `agb-refresh`-r
 back detached, which makes it the ordinary case rather than a corner. `docs/design.md` §6 has the
 rest, including why the prime retry is bounded and why giving up **delivers**.
 
+And **`agb-dashboard`** — agterm's view-only **grid** of live rows, opened by *label*. ⚠️ **The
+thing it exists to get right is not the grid, it is the refusal.** When only *some* cells resolve,
+agterm exits **0**, opens the grid without them, and names the casualties on **stdout alone** — so
+the honest-looking grid is the one missing the agent you opened it to watch. This is the one place in
+the family where the exit status is deliberately not trusted, and the refusal **closes the grid
+first**, because `unresolved:` is printed *after* it is already up. ⚠️ **A cell is never a bare id**:
+agterm's cap is nine **panes** and a bare id takes every pane of its session, so an explicit pane
+turns a cap that counts panes into one that counts **agents** — which is the only thing that makes
+the preflight exact instead of a guess. One function, `dashboard_cells`, spells that for this script
+and for the relay, with an AST guard spanning both files.
+
+⚠️ **Its policy is the opposite of `relay --dashboard`'s, and both are right.** *The relay's grid is
+an adjunct to a message pump; `agb-dashboard`'s grid is the point.* So the relay names an
+unresolvable member and grids the rest, while this opens nothing at all; the relay **follows**,
+re-resolving every tick, while this is a one-shot with a foreground hold and says so in its own
+output. ⚠️ agterm has **one** grid and no ownership token, so each closes only a grid *it* opened and
+running both at once is documented as unsupported rather than defended against.
+
+⚠️ **The name was argued three ways and a future reader will re-open it.** Not `agb-peer watch`:
+watching rows is not a peer-chat activity — you might grid an agent and the build it kicked off, with
+no relay anywhere — and **the resolver living in `agb-peer` today is an implementation smell that
+must not be allowed to choose the user-facing noun.** Not `agb-watch`, the strongest counter-proposal,
+which lost on discoverability: agterm calls this a dashboard and so do our own docs, and nobody
+hunting for how to see a grid searches for *watch*. Extracting the resolver was deliberately **not**
+done here — it looks like two small functions and is not, and a boundary is worth drawing once two
+callers have shown where it is. `docs/design.md` §6.
+
+⚠️ **Not verified against a live agterm.** agterm's own `dashboard` behaviour was measured
+(`docs/agtermctl.md`); agbridge's use of it — this command, and the three `relay --dashboard` fixes
+beside it — has tests and no live run.
+
 `agb hook` runs on **every Claude Code tool call**, over a network filesystem. `agb` has no `.py`
 extension and runs as `__main__`, so **CPython caches no bytecode for it** — the whole file is
 re-parsed every single invocation. (This is a property of being `__main__`, not of the missing
@@ -431,7 +462,7 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Seven cross-file agreements have no single source of truth, and all fail silently.** `agb` is
+14. **Eight cross-file agreements have no single source of truth, and all fail silently.** `agb` is
     Python under a character cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
@@ -481,12 +512,25 @@ These are not style preferences. Each one has a test, and most were re-learned t
       and you get a **second row** beside the one the wrapper just minted — which looks like the
       wrapper being broken, not like a hostname being spelled two ways.
 
+    - **The `sys.modules` key `agb_peer` is spelled in THREE places** — `agb-peer-setup`'s
+      `PEER_MODULE`, `agb-dashboard`'s, and `tests/conftest.py`'s. Each loads `agb-peer` by path and
+      registers it under that name, and each returns an already-registered module rather than
+      re-executing it. A disagreement loads a **second module object with its own `PeerError`
+      class**, so `except peer.PeerError` around a call into the other script silently does not
+      catch and `setup.PeerError is peer.PeerError` fails — which reads like a loader bug rather
+      than like a name spelled two ways. It was already cited as invariant 14 by `conftest.py` while
+      this list did not contain it; adding `agb-dashboard` as the third speller is what made the
+      dangling citation worth fixing rather than deleting.
+
     The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
     resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — the
     third by `tests/test_agb_refresh.py`, the fourth and fifth beside the first two in
     `tests/test_install_pkg.py`, the sixth by `tests/test_agb_peer.py`, which compares against the
     three tuples themselves rather than a copy of their contents, and the seventh by both wrapper
-    test files, each comparing the substituted value against `agb.own_host()` itself.
+    test files, each comparing the substituted value against `agb.own_host()` itself. The eighth is
+    pinned by `tests/test_agb_dashboard.py`, which compares all three constants **and** asserts the
+    two scripts end up with the *same class object* — a string comparison alone would pass against
+    two loaders that agreed on the name and still built two modules.
 
 ## Testing conventions
 

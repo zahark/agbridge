@@ -140,10 +140,11 @@ def agb():
     return module
 
 
-# ⚠️ The key is a CROSS-FILE AGREEMENT with `agb-peer-setup`'s PEER_MODULE
-# (CLAUDE.md invariant 14). If the two disagree, `load_peer` builds a SECOND
-# module object and `setup.PeerError is peer.PeerError` fails -- which reads
-# like a loader bug rather than a naming disagreement.
+# ⚠️ The key is a THREE-WAY CROSS-FILE AGREEMENT -- this file,
+# `agb-peer-setup`'s PEER_MODULE and `agb-dashboard`'s (CLAUDE.md invariant
+# 14). If any two disagree, `load_peer` builds a SECOND module object with its
+# own `PeerError` class, so `setup.PeerError is peer.PeerError` fails -- which
+# reads like a loader bug rather than a naming disagreement.
 PEER_MODULE = "agb_peer"
 PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 SETUP_PATH = os.path.join(REPO_ROOT, "agb-peer-setup")

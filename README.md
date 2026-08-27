@@ -176,8 +176,17 @@ agb doctor          # probes, not existence checks — see below
 | `agb-tmux [name]` | cluster | helper: a plain shell — or any command — in a named session, so a long build gets a row of its own. **Deliberately not an `agb-peer` participant**: a shell would *execute* what it was sent |
 | `agb-peer …` | both | two agents talking to each other. `relay` on the Mac reads each row's screen and types into the other; `send` on a cluster host queues a message for it. See [the skill](skills/agb-peer/SKILL.md) |
 | `agb-peer-setup <file>` | Mac | helper: builds an `agb-peer relay --roster` file interactively — picks live rows instead of you typing a label, asks the transport instead of guessing it, and writes atomically with a byte gate. ⚠️ The `<row>` it writes is the row's **label**, not the title (a title contains spaces, and a roster line is split on whitespace) and not the id (which `agb-refresh` changes). `validate <file>` answers "would the relay start?" |
+| `agb-dashboard …` | Mac | helper: agterm's view-only **grid** of live rows, opened by **label** instead of by row id — `agb-dashboard alice bob`, `--roster <file>`, or `--mru`. Resolves fresh every run (`agb-refresh` re-mints every id), holds the grid in the foreground and closes it on the way out. ⚠️ **Fail-closed**: an unresolved, ambiguous or unshowable member opens **nothing** — including the case agterm reports as `unresolved:` on stdout while exiting 0. ⚠️ A held grid does **not** follow a refresh; `agb-peer relay --dashboard` is the one that re-resolves |
 | `agb-host-line` | cluster | helper: prints the `host_<name>` line a new cluster host needs, **and** a Mac-side command that appends it to the config of the instance actually watching this statedir — not blindly the default one |
 | `agb-refresh` | Mac | helper: stop bridge → forget bindings → start, after agterm loses its rows — a close, a reset, a reinstall, **a Mac reboot**, or an upgrade of the Mac's files |
+
+⚠️ **`agb-peer`, `agb-peer-setup` and `agb-dashboard` are NOT installed by `install.sh`**, and nothing in `agb`/`agb_mac`/`agb_ops` imports them. Symlink them onto your `$PATH` from the checkout yourself — a symlink rather than a copy, so `git pull` keeps them current:
+
+```sh
+ln -s "$PWD/agb-peer" "$PWD/agb-peer-setup" "$PWD/agb-dashboard" ~/.local/bin/
+```
+
+They are experiments on top of agbridge rather than part of the bridge, which is why the two ends can drift; `<tool> --version` is how you tell.
 
 Full flag reference: [`docs/commands.md`](docs/commands.md).
 
@@ -373,9 +382,12 @@ Verified in real use, not just in tests:
 | `who` with **no relay running** | ✅ request sits unread; no answer, no error |
 | a doorbell whose file a previous relay consumed | ✅ collected once, then silent — no re-fetch loop |
 | `--blink` on a transition into `active` | ✅ — observed blinking a live row |
+| `agtermctl dashboard` — the cell grammar, the 9-pane cap, `:scratch` rejected at parse time, `unresolved:` on stdout beside exit 0, and a grid cell being read-only while the launching terminal stays responsive | ✅ measured against the binary 2026-08-27; the table is in [`docs/agtermctl.md`](docs/agtermctl.md) |
+| `agb-dashboard` opening a real grid — by label, holding it, closing it | ⬜ **not yet run.** Every behaviour is either measured above or covered against a fake `Ctl`; nobody has watched this command drive a live agterm |
+| `agb-peer relay --dashboard` closing its grid, marking a partial one, and excluding a `scratch` participant | ⬜ not yet run — the three defects were found by reading the code against the measured table, not by seeing them |
 
 **Every `agtermctl` clause this tool depends on has been exercised against a live agterm, except
-`session scratch`** — the two rows marked ⬜ above. Its spelling is recorded verbatim from `--help`
+`session scratch`** — the rows marked ⬜ above. ⚠️ The `dashboard` *clauses* were measured; what has **not** been run is agbridge's own use of them — `agb-dashboard` and the three `relay --dashboard` fixes. Its spelling is recorded verbatim from `--help`
 and its call path is mutation-tested, but nobody has yet watched a drawer open, be hidden, and come
 back with the same shell alive.
 

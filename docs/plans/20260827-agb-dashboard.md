@@ -876,22 +876,63 @@ agterm — that is the condition the measurement holds under, and the docs alrea
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] `agb-dashboard alice bob` opens a grid from **labels**, with no id typed
-- [ ] no bare id can reach agtermctl — the Task 2b AST guard, which covers **both** `agb-peer` and
+- [x] `agb-dashboard alice bob` opens a grid from **labels**, with no id typed
+      — `test_a_grid_is_opened_with_explicit_panes_and_reported`: the argv is `["alice", "bob"]`
+      and the argv handed to agtermctl is `["AAAA1111:left", "BBBB2222:left"]`
+- [x] no bare id can reach agtermctl — the Task 2b AST guard, which covers **both** `agb-peer` and
       `agb-dashboard` (the `conftest` helpers take any tree), not a human read of the new file
-- [ ] `right` is preserved; `scratch` behaves per Task 0's measured answer
-- [ ] an unresolvable or ambiguous selector opens nothing and exits non-zero; a **duplicate** is
+      — `test_cell_strings_are_spelled_only_in_dashboard_cells` now parses **two** trees (Task 3
+      created the second, so its skip arm no longer fires), plus
+      `test_the_relay_asks_dashboard_cells_for_its_cells` for the complement.
+      ➕ **The manual half, stated AS manual**: the AST guard proves no *second* place spells a
+      cell, and cannot prove a caller does not hand agterm a bare id having spelled no colon at
+      all. Read by hand: `agb-dashboard` has exactly two `ctl.dashboard(...)` call sites — `:366`
+      with `cells` straight out of `peer.dashboard_cells`, and `:406` with the literal `["--mru"]`,
+      which is a **flag**, not an id. `agb-peer` has one, `:2782`, with `grid_cells` from the same
+      builder. Nothing else reaches `Ctl.dashboard`.
+- [x] `right` is preserved; `scratch` behaves per Task 0's measured answer
+      — `test_a_roster_pane_is_PRESERVED_not_forced_to_left` (`alice=alice` + `split=alice:right`
+      → `["AAAA1111:left", "AAAA1111:right"]`) and, for the measured `:scratch` rejection,
+      `test_a_scratch_participant_is_a_SHORTFALL_here` on this side and
+      `test_a_scratch_participant_does_not_stop_the_grid_opening` +
+      `test_an_excluded_participant_is_named` on the relay's.
+- [x] an unresolvable or ambiguous selector opens nothing and exits non-zero; a **duplicate** is
       **deduped**, not refused — decided once, in *Technical Details*
-- [ ] a strict failure on `unresolved:` **closes** the grid agterm already opened
-- [ ] ten selectors refused before **`agtermctl dashboard`** is called (the tree fetch precedes it)
-- [ ] `--roster` grids a one-participant roster; `--mru` works alone and is refused alongside selectors
-- [ ] the hold closes on enter, EOF and `Ctrl-C`; `--detach` prints the close command
-- [ ] `relay --dashboard` leaves no stale or orphaned grid, marks a partial one instead of hiding
-      it, and no grid outcome stops a message. ⚠️ **"opens for a `scratch` roster" applies only if
-      Task 0 found `:scratch` is rejected** — otherwise there was never anything to fix
-- [ ] ⚠️ confirm `agb` is untouched **against the plan's base commit** recorded in the header:
-      `git diff --stat 98210e5..HEAD -- agb` — not `HEAD`, which a later `CHANGELOG` commit hides
-- [ ] run the full suite: `python3 -m pytest tests/ -q`
+      — `test_one_bad_selector_among_three_opens_NOTHING`,
+      `test_an_ambiguous_selector_is_refused_and_NAMES_ITS_MATCHES`,
+      `test_two_selectors_naming_one_cell_are_DEDUPED_not_refused` and
+      `test_the_dedupe_key_is_id_AND_pane_not_the_id_alone`.
+- [x] a strict failure on `unresolved:` **closes** the grid agterm already opened
+      — `test_the_strict_failure_CLOSES_the_grid_before_exiting`, with
+      `test_a_close_that_FAILS_is_said_out_loud` for the other half.
+- [x] ten selectors refused before **`agtermctl dashboard`** is called (the tree fetch precedes it)
+      — `test_ten_selectors_are_refused_before_the_dashboard_call` asserts `ctl.opened() == []`
+      while the `tree` call is present; `test_nine_selectors_are_accepted` is its companion, so the
+      refusal is not vacuous.
+- [x] `--roster` grids a one-participant roster; `--mru` works alone and is refused alongside
+      selectors — `test_a_ONE_participant_roster_is_accepted`,
+      `test_mru_hands_agterm_the_flag_and_resolves_NOTHING`,
+      `test_two_modes_at_once_are_refused_NAMING_BOTH`.
+- [x] the hold closes on enter, EOF and `Ctrl-C`; `--detach` prints the close command
+      — `test_the_hold_closes_the_grid_on_enter` / `_on_EOF` / `_on_KeyboardInterrupt`, and
+      `test_detach_leaves_the_grid_open_and_prints_the_close_command`.
+- [x] `relay --dashboard` leaves no stale or orphaned grid, marks a partial one instead of hiding
+      it, and no grid outcome stops a message
+      — `test_cmd_relay_closes_the_grid_it_opened_on_ctrl_c` / `_on_return`,
+      `test_cmd_relay_closes_no_grid_it_did_not_open`, `test_an_unresolvable_participant_is_named_and_the_rest_are_gridded`, `test_a_membership_drop_to_nobody_closes_the_grid`, and
+      `test_a_failing_grid_does_not_stop_a_message`. Task 0 found `:scratch` **is** rejected, so
+      the conditional clause applies and is covered by
+      `test_a_scratch_participant_does_not_stop_the_grid_opening`.
+- [x] ⚠️ confirm `agb` is untouched **against the plan's base commit**:
+      `git diff --stat 98210e5..HEAD -- agb` → **empty**. `agb`'s character budget is therefore
+      untouched by this whole feature; no `AGB_PARSE_BUDGET` change was needed.
+- [x] run the full suite: `python3 -m pytest tests/ -q` → **2582 passed**.
+
+**No acceptance criterion failed, and nothing was fixed under this task.** ➕ One criterion was
+**narrowed rather than met as written**: "no bare id can reach agtermctl" cannot be settled by an
+AST guard alone, because a caller can pass a bare id without spelling a colon anywhere. The guard's
+own complement test knows this for `cmd_relay`; for `agb-dashboard` the remaining half is the manual
+read recorded above. Said out loud rather than quietly counted as automated.
 
 ### Task 7: Update documentation
 
@@ -902,26 +943,56 @@ agterm — that is the condition the measurement holds under, and the docs alrea
 - Modify: `docs/design.md`
 - Modify: `README.md`
 - Modify: `CLAUDE.md`
+- Modify: `tests/conftest.py` (➕ the dangling invariant-14 citation, below)
 
-- [ ] `docs/commands.md` — the new command's reference: the fail-closed rule, the pane rule, the
+- [x] `docs/commands.md` — the new command's reference: the fail-closed rule, the pane rule, the
       9-cell cap and that it counts panes, and that a held grid does not follow
-- [ ] ⚠️ `docs/commands.md` — **also update the EXISTING `relay --dashboard` prose** (`:1553-1580`)
-      and the `agb-refresh` survival table (`:1673`), whose behaviour Task 2 changes: it now closes
-      on exit and on an incomplete roster
-- [ ] `docs/agtermctl.md` — ⚠️ Task 0 already wrote both answers there; this checkbox only confirms
-      the row says what was **measured**, not what revision 2 assumed
-- [ ] `docs/cookbook.md` — a "watch two agents talk" recipe beside the relay recipe, with the
-      one-line difference between the two features
-- [ ] `docs/design.md` — the *adjunct versus primary effect* distinction, and the one-global-grid
-      ownership policy
-- [ ] `README.md` — add the row to the `agb-*` family table, ⚠️ **including that it is not installed
-      by `install.sh`** and must be symlinked onto `$PATH`, which `agb-peer-setup` already documents
-      and this command inherits
-- [ ] `CLAUDE.md` — the Architecture enumeration, the naming decision, and the `sys.modules` key as
-      a **three-way** agreement under invariant 14. ⚠️ That section says "**Seven** cross-file
-      agreements" and does not list `PEER_MODULE` at all, though `tests/conftest.py:143` already
-      cites invariant 14 for it — so the count becomes eight and a dangling citation is fixed
-- [ ] move this plan to `docs/plans/completed/`
+      — a new `## agb-dashboard — watch several rows at once, by name` section with four
+      subsections, the flag table, the exit codes, the fail-closed table (including the
+      `unresolved:`-beside-exit-0 row and why the close comes before the exit), the pane table, and
+      the lifecycle. It closes with an explicit **not verified against a live agterm** note.
+- [x] ⚠️ `docs/commands.md` — **also update the EXISTING `relay --dashboard` prose** and the
+      `agb-refresh` survival table, whose behaviour Task 2 changes
+      — the relay section gained a *what it does, tick by tick* table (closes what it opened and
+      **only** that; a partial grid is marked, not hidden; a `scratch` participant is excluded and
+      said; an excluded participant is **accounted for, not missing**; both messages throttled) and
+      the both-at-once-is-unsupported warning. The survival table's single `dashboard` row became
+      **two** — the relay's grid now effectively survives a refresh because it re-opens, while
+      `agb-dashboard`'s does not — with a paragraph on the trigger being the **cell set**, and on
+      the drop-to-zero/drop-to-one asymmetry.
+      ➕ **Deviation:** deleted a near-duplicate `agtermctl dashboard <rowA>:left <rowB>:left`
+      code block that sat two paragraphs below an identical one. It was already redundant; leaving
+      it beside the new pointer to `agb-dashboard` would have made three ways to say one thing.
+- [x] `docs/agtermctl.md` — confirmed. Task 0's table (*What `dashboard` actually does — CONFIRMED
+      live 2026-08-27*) says exactly what was measured: `:scratch` **rejected**, and rejected at
+      **parse time**; a grid **cell** read-only; the **launching terminal outside agterm** stays
+      responsive; a shell *inside* agterm marked **ASSUMED — untested**. Nothing added, nothing
+      upgraded from a guess.
+- [x] `docs/cookbook.md` — a `### Watch them talk` recipe beside the relay recipe, opening with the
+      one-line difference in a two-row table (*the grid is an adjunct* vs *the grid is the point*),
+      then both invocations, the hold, and the four warnings — refuses rather than half-succeeds,
+      does not follow, do not run both, and not yet run live.
+- [x] `docs/design.md` — a `### Watching rows, and who owns agterm's one grid` subsection in §6:
+      the adjunct-versus-primary-effect distinction as a four-row comparison, why *accounted for,
+      not missing* is load-bearing, the one-global-grid ownership policy and why running both is
+      documented rather than defended against, the one place the exit status is second-guessed, the
+      never-a-bare-id rule as a statement about the **cap**, and where the resolver lives.
+- [x] `README.md` — a row in the `agb-*` family table, plus a note under it covering `agb-peer`,
+      `agb-peer-setup` and `agb-dashboard` together: **not installed by `install.sh`**, symlink them
+      onto `$PATH` from the checkout (a symlink, so `git pull` updates them), `<tool> --version` is
+      how you tell the two ends apart. ➕ Also three rows in the verification table — the measured
+      `agtermctl dashboard` clauses ✅, and `agb-dashboard` and the `relay --dashboard` fixes ⬜ **not
+      yet run** — and the summary sentence above it narrowed so "measured clauses" is not read as
+      "we ran our own command".
+- [x] `CLAUDE.md` — three paragraphs in the Architecture enumeration (what the tool is and that the
+      refusal is the point; the opposite-but-both-right policy against `relay --dashboard`; the
+      naming decision, including that **the resolver living in `agb-peer` must not choose the
+      user-facing noun**), each ending in a pointer, plus a *not verified live* note. Invariant 14
+      is now **Eight** cross-file agreements, with `PEER_MODULE` written out as a three-way one and
+      a line added to the closing paragraph naming `tests/test_agb_dashboard.py` as its pin.
+      ➕ `tests/conftest.py:143`'s comment said "a CROSS-FILE AGREEMENT with `agb-peer-setup`" —
+      the dangling citation the checkbox predicted. Rewritten to name all three spellers.
+- [ ] move this plan to `docs/plans/completed/` — left to the orchestrator, by instruction.
 
 ## Post-Completion
 

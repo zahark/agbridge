@@ -1563,18 +1563,28 @@ live conversation.
 focus in the GUI is untested — nobody has typed at the machine with one open. The correction is
 about the control socket, not about what your hands can do.
 
+**What `--dashboard` does, tick by tick.** It is an **adjunct to a message pump**, not the point of
+the run, and that decides its whole error policy: no grid outcome may ever stop a message. Every
+`agtermctl` call it makes is best-effort — a failure is said on stdout and the relay carries on.
+
+| | |
+|---|---|
+| **it closes what it opened** | on `Ctrl-C`, on a clean exit, and when membership falls to nobody. ⚠️ **Only a grid this run opened** — agterm has exactly one grid and no ownership token, so reaching for one it did not open would close somebody else's |
+| **a partial grid is MARKED, not hidden** | a member with no row gets `dashboard: no row for carol -- the grid shows the other 2`, once, and the rest are gridded. The alternative — a tidy grid silently missing an agent — is the failure this whole area exists to remove |
+| **a `scratch` participant is excluded, and said** | `dashboard: not shown -- carol (scratch); agterm's grid takes only left/right panes`. agterm rejects `:scratch` at **parse time**, so before this a single scratch participant meant `--dashboard` produced no grid at all, for the whole run, with the reason going only into the log |
+| **an excluded participant is not a MISSING one** | it resolved fine; its pane is just not something a grid can show. Counting it as missing would have kept the grid permanently shut for any roster containing one |
+| **both messages are throttled** | they run every tick; unthrottled, one typo prints a line per tick for the life of the relay. The throttle dedupes on the message **text**, so a change in *who* is missing still gets through |
+
+⚠️ **Running `agb-peer relay --dashboard` and `agb-dashboard` at the same time is unsupported**, not
+defended against. Whoever opens last wins. Each is honest about the grid *it* opened; agterm gives us
+nothing finer to work with.
+
 Open and close it by hand from a terminal outside agterm if you prefer, which is where `agtermctl`
-is being driven from anyway:
+is being driven from anyway — or use [`agb-dashboard`](#agb-dashboard--watch-several-rows-at-once-by-name),
+which does the same by **label** and cleans up after itself:
 
 ```sh
 agtermctl dashboard <a-id>:left <b-id>:left
-agtermctl dashboard --close
-```
-
-Watch a conversation with agterm's own grid — one agent per row, so each keeps its status and glyph:
-
-```sh
-agtermctl dashboard <rowA>:left <rowB>:left
 agtermctl dashboard --close
 ```
 
@@ -1670,12 +1680,21 @@ afternoon. What that does and does not touch:
 |---|---|---|
 | doorbell + message (tmux) | **yes** | they live on the agent's host; a refresh never touches the farm |
 | the relay's resolved ids | **no** | dead the moment the rows are re-minted |
-| an open `dashboard` grid | **no** | it was opened with those ids |
+| an open `dashboard` grid, under `agb-peer relay --dashboard` | **effectively yes** | the cells are dead the instant ids are re-minted, but the relay re-resolves every tick and **re-opens** the grid when the cell set changes, so it repairs itself within a tick |
+| an open `dashboard` grid, under `agb-dashboard` | **no** | that grid is a one-shot: it holds the ids resolved at open and does **not** follow. `--follow` is deferred, not forgotten |
 
 So **name participants by label, not by row id** — `resolve` tries an exact id, then an id prefix,
 then a title substring, and only the last survives a refresh. The relay re-resolves every tick and
 re-opens the dashboard when ids move. A relay that cached ids would go permanently deaf, and its
 only symptom would be silence.
+
+⚠️ **The re-open trigger is the CELL SET, not the participant set** — `(name, id, pane)` for every
+member — and it is computed whether or not membership changed. Two separate bugs lived in the older
+"only when there is more than one participant, and only when the roster moved" reading: a drop to one
+member left the departed member's cell on the screen, and a refresh that moved ids under unchanged
+names changed nothing the relay was looking at. A drop to **zero** closes the grid, because agterm
+has no empty one; a drop to **one** re-opens with the single cell, because one cell is valid
+(measured).
 
 ```
 agb-peer relay alice=<label>[:pane][@<ssh target>] bob=<label> [--dashboard]
@@ -1951,6 +1970,142 @@ The composer check cannot tell an empty composer from one whose caret was moved 
 agterm's own `surface cursor --help` says so. Sending to Claude Code **interrupts** rather than
 queues. There is no transcript. And a model may simply decline to answer a perfectly delivered
 message.
+
+## `agb-dashboard` — watch several rows at once, by name
+
+```
+agb-dashboard <selector> [<selector> ...]   grid those rows
+agb-dashboard --roster <file>               grid a relay roster's members
+agb-dashboard --mru                         grid the rows you last used
+agb-dashboard --version
+```
+
+agterm can show a **view-only grid** of live sessions, one cell per pane. `agtermctl dashboard`
+takes row **ids** and never names, and `agb-refresh` re-mints every id — so driving it by hand means
+looking ids up again every time. This resolves them fresh on every run, from the same
+label/id-prefix/title-substring rule `agb-peer` uses.
+
+⚠️ **Not installed by `install.sh`, and nothing in `agb`/`agb_mac`/`agb_ops` imports it.** Symlink it
+onto your `$PATH` yourself, from the checkout, so `git pull` keeps it current:
+
+```sh
+ln -s "$PWD/agb-dashboard" ~/.local/bin/agb-dashboard
+```
+
+Same arrangement as `agb-peer` and `agb-peer-setup`, and inherited from them: it loads `agb-peer` by
+path from beside itself, so the two travel together and `--version` is per-file. It runs on the
+**Mac**, because that is where `agtermctl` is.
+
+| flag | |
+|---|---|
+| `<selector>` | a substring of the row's label, its id, or an id prefix — the tiers `agb-peer` resolves in. Prefer the label: an id dies at the next `agb-refresh` |
+| `--roster <file>` | take the members from an `agb-peer relay --roster` file instead, panes and all. Parsed with a minimum of **one**, not the relay's two — a chat needs somebody to talk to, a grid does not |
+| `--mru` | let agterm pick the most-recently-used sessions. Names nobody, so nothing is resolved |
+| `--detach` | open the grid and exit, printing the literal command that closes it |
+| `--version`, `--help` | answered before anything is loaded or resolved |
+
+The three modes cannot be combined — they ask different questions, and there is no defensible way to
+merge them, so preferring one silently would be a guess dressed as a feature.
+
+**Exit codes:** **0** the grid opened (`--version` and `--help` too), **1** a usage error — a bad
+flag, no mode, two modes at once, or no arguments at all, which prints the usage — and **2** anything
+that stopped a grid opening — an unresolved or ambiguous selector, no rows
+at all, too many cells, a pane the grid cannot show, or agterm opening a grid short of what was
+asked for.
+
+### Fail-closed: a shortfall opens nothing
+
+> **The relay's grid is an adjunct to a message pump; this command's grid is the point.**
+
+`agb-peer relay --dashboard` is best-effort by design — a cosmetic grid failure must never stop a
+message. Somebody who typed `agb-dashboard alice bob` asked for the grid as the **primary effect**,
+so it must fail loudly rather than half-succeed. Everything below follows from that one sentence.
+
+| what happens | what you get |
+|---|---|
+| a selector matches no row | nothing opens, exit 2, the selector is named |
+| a selector matches several | nothing opens, exit 2, and **its matches are listed** so the next attempt is informed |
+| agterm has no rows at all | its own message, rather than N identical "no row matches" lines — with no rows the answer is about agterm, not about what was typed |
+| two selectors naming **one cell** | **deduped**, not refused. Two ways of naming one cell is not a user error; spending two of the nine on it is the bug |
+| more than 9 cells after the dedupe | refused **before** `agtermctl dashboard` is called (the `tree --json` has already run, by design) |
+| a `scratch` participant from a roster | nothing opens, exit 2, naming it. ⚠️ **Deliberately stricter than the relay**, which reports the same exclusion and grids the rest |
+| ⚠️ agterm prints `unresolved: <id>` | 🔴 **the dangerous one.** agterm exits **0**, opens the grid without those cells, and says so on **stdout alone**. This is the one place in the family where the exit status is not trusted: the output is read, the grid is **closed again**, and the run exits 2 |
+
+⚠️ **The close-before-exit is not tidiness.** `unresolved:` is printed *after* the grid is already
+up, so refusing and exiting without closing would leave exactly the silently-partial grid this
+command exists to remove — the headline feature shipping with its own bug. If the close itself
+fails, it says so in capitals and prints the command.
+
+There is **no `--partial`**. Shipping one unrequested would re-introduce the behaviour being removed,
+behind a flag nobody knows to avoid. ⚠️ `--mru` is the one exemption from all of this, and it is not
+an oversight: there the user asserted no membership, so there is no set to fall short of, and a line
+agterm printed about a row nobody requested would be reported as *our* failure and would close a grid
+that is perfectly usable.
+
+### The pane rule, and why the 9-cell cap counts panes
+
+⚠️ **A cell is never a bare id.** agterm's cap is **9 cells and it counts PANES** — a bare id takes
+*every* pane of its session, so a row somebody happened to open an `[s]` split on silently costs two
+cells. The same rows would fit, or not, depending on state nobody is looking at.
+
+Emitting an explicit pane always is what **turns a cap that counts panes into a cap that counts
+agents**, which is the only reason the preflight above can say "9 cells; got 10" honestly instead of
+guessing.
+
+| where the pane comes from | cell |
+|---|---|
+| a bare positional selector | `<id>:left` — it names a row and says nothing about which half |
+| `--roster`, participant in `left` | `<id>:left` |
+| `--roster`, participant in `right` | `<id>:right` — ⚠️ **preserved, not forced.** Rewriting it would point the cell at the wrong half of somebody's screen |
+| ⚠️ `--roster`, participant in `scratch` | **no cell.** agterm rejects `:scratch` at parse time — `invalid session id … use <id>, <id>:left, or <id>:right`, CONFIRMED 2026-08-27 — so here it is a shortfall and nothing opens |
+
+That spelling lives in exactly one function, `dashboard_cells` in `agb-peer`, shared with the relay
+and pinned by an AST guard spanning both files: a second caller growing its own copy is how the two
+would drift apart.
+
+### Lifecycle — something has to own the grid
+
+agterm has **one** grid and no ownership token; its own `--close` closes *"the open one"*. So the
+default is a **foreground hold**: open, print what was opened, wait, close.
+
+```
+$ agb-dashboard alice bob
+agb-dashboard: 2 cell(s)
+  A1B2C3D4 left alice
+  E5F6A7B8 left bob
+  Run this from a terminal OUTSIDE agterm -- that is where the hold was
+  measured to stay responsive while a grid is up.
+  This grid does NOT follow: an `agb-refresh` re-mints every row id and
+  leaves dead cells here. `agb-peer relay --dashboard` is the one that
+  re-resolves and re-opens.
+press enter to close the grid (Ctrl-C closes it too)
+```
+
+Enter, EOF and `Ctrl-C` all close it — the close is in a `finally`, because `Ctrl-C` is the
+documented way out of a foreground wait and is not an `Exception`, so an `except` would miss it and
+orphan the grid the hold exists to own.
+
+⚠️ **Run it from a terminal OUTSIDE agterm.** That is the condition the measurement holds under: with
+a grid up, an external terminal stayed fully responsive and a blocking read returned on Enter
+(CONFIRMED 2026-08-27). A grid **cell** is read-only to the keyboard, which is a different claim, and
+whether a shell running *inside* an agterm session stays responsive is **untested** — the tool says
+which route was measured rather than implying both work.
+
+⚠️ **A held grid does NOT follow.** The cells carry the ids resolved at open, so an `agb-refresh`
+under a held grid leaves dead cells — the documented limitation, not a crash. `agb-peer relay
+--dashboard` is the one that re-resolves and re-opens; `--follow` here is **deferred by decision**,
+and this is the one place the two commands genuinely differ in capability.
+
+`--detach` is the explicit hand-over: it opens, reports, and exits, printing
+`agtermctl dashboard --close` — precisely because after it, nothing else will.
+
+⚠️ **Running this and `agb-peer relay --dashboard` at once is unsupported.** Each closes only a grid
+it opened itself, so neither will steal the other's; but there is one grid, and whoever opens last
+wins.
+
+⚠️ **Not verified against a live agterm.** Every behaviour above is either measured against the
+binary and recorded in [`agtermctl.md`](agtermctl.md), or covered by tests against a fake `Ctl`.
+Nobody has yet watched this command open a real grid — see the Post-Completion list in the plan.
 
 ## `agb version`
 
