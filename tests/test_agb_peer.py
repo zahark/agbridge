@@ -539,6 +539,10 @@ class RelayCtl(object):
         self.dashboards = []
         self.dashboard_out = ""
         self.closes = 0
+        # One ORDERED log of both grid calls. `dashboards` and `closes` cannot
+        # answer "did it close before it re-opened", which is the whole
+        # question for a relay that must not close on a member it cannot show.
+        self.grid_log = []
 
     def sleep(self, seconds):
         self.sleeps += 1
@@ -561,10 +565,12 @@ class RelayCtl(object):
 
     def dashboard(self, members):
         self.dashboards.append(list(members))
+        self.grid_log.append(("open", list(members)))
         return True, self.dashboard_out, ""
 
     def dashboard_close(self):
         self.closes += 1
+        self.grid_log.append(("close",))
         return True, ""
 
     def say(self, message):
@@ -4067,17 +4073,20 @@ def test_the_relay_still_opens_a_grid_after_the_return_shape_changed(peer):
     line raises ValueError: too many values to unpack."""
     src = io.open(PEER_PATH, encoding="utf-8").read()
     tree = ast.parse(src)
+    # ⚠️ `update_grid`, not `cmd_relay`: Task 2c moved the call out of the loop
+    # body into the helper. Named rather than walked over the whole file, so a
+    # future move has to be noticed here rather than silently covering nothing.
     fns = [n for n in ast.walk(tree)
-           if isinstance(n, ast.FunctionDef) and n.name == "cmd_relay"]
-    assert fns, "cmd_relay is gone"
+           if isinstance(n, ast.FunctionDef) and n.name == "update_grid"]
+    assert fns, "update_grid is gone"
     targets = [n for n in ast.walk(fns[0]) if isinstance(n, ast.Assign)]
-    assert targets, "cmd_relay assigns nothing"
+    assert targets, "update_grid assigns nothing"
     unpacks = [t for t in targets
                if isinstance(t.targets[0], ast.Tuple)
                and isinstance(t.value, ast.Call)
                and isinstance(t.value.func, ast.Attribute)
                and t.value.func.attr == "dashboard"]
-    assert unpacks, "no ctl.dashboard(...) unpack found in cmd_relay"
+    assert unpacks, "no ctl.dashboard(...) unpack found in update_grid"
     for u in unpacks:
         assert len(u.targets[0].elts) == 3, "must unpack (ok, out, why)"
 
@@ -4174,13 +4183,19 @@ def test_the_relay_asks_dashboard_cells_for_its_cells():
     nothing on its own, because a caller could pass a bare id and never spell a
     colon at all. `cmd_relay` must actually CALL the one builder."""
     tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
-    fns = [n for n in ast.walk(tree)
-           if isinstance(n, ast.FunctionDef) and n.name == "cmd_relay"]
-    assert fns, "cmd_relay is gone"
-    names = [n.func.id for n in ast.walk(fns[0])
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
-    assert names, "cmd_relay calls no bare-name function -- walk is wrong"
-    assert "dashboard_cells" in names
+    called = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            called[node.name] = [n.func.id for n in ast.walk(node)
+                                 if isinstance(n, ast.Call)
+                                 and isinstance(n.func, ast.Name)]
+    assert "cmd_relay" in called and "update_grid" in called, "a function is gone"
+    assert called["cmd_relay"], "cmd_relay calls no bare-name function -- walk is wrong"
+    # The whole chain, because Task 2c put a helper in the middle of it: a
+    # `cmd_relay` that stopped calling `update_grid` would leave the guard below
+    # true of code nothing reaches.
+    assert "update_grid" in called["cmd_relay"]
+    assert "dashboard_cells" in called["update_grid"]
 
 
 # ---------------------------------------------------------------------------
@@ -4252,3 +4267,225 @@ def test_the_exclusion_is_reported_once_not_per_reopen(peer, tmp_path):
     assert len(ctl.dashboards) > 1, (
         "the grid never re-opened -- the throttle was not exercised")
     assert out.getvalue().count("not shown") == 1, out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# The grid follows its MEMBERSHIP -- agb-dashboard Task 2c, defects 2 and 3.
+# Plan: docs/plans/20260827-agb-dashboard.md
+#
+# Defect 2: `if dashboard and len(resolved) > 1:` skipped the re-open in the
+# case that needed it most -- membership falling to one, or to none -- so the
+# grid went on showing the participant who had left.
+# Defect 3: a partially-resolved roster opened a tidy smaller grid with nothing
+# saying which member was missing.
+# ---------------------------------------------------------------------------
+
+def test_a_membership_drop_to_one_re_opens_the_grid(peer, tmp_path):
+    """Defect 2. The old guard skipped the whole block below two participants,
+    which is precisely when the grid is showing somebody who has gone."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\n")
+    ctl = TickingCtl(panes(), edit)
+    peer.cmd_relay(ctl, [], 500, 8, False, io.StringIO(), roster=path, ticks=3,
+                   dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards == [["AAAA1111:left", "BBBB2222:left"],
+                              ["AAAA1111:left"]]
+
+
+def test_a_membership_drop_to_nobody_closes_the_grid(peer):
+    """Defect 2 at its other end, and the one case with no cells to re-open on:
+    agterm has no empty grid, so a stale one is all that is left.
+
+    ⚠️ Driven through `update_grid` rather than a roster edit on purpose: a
+    roster is refused below one participant, so `cmd_relay` cannot reach an
+    empty membership by editing one. The branch is reachable from an empty
+    `resolved` all the same, and the honest way to pin it is directly.
+    """
+    ctl = RelayCtl(panes())
+    shown, opened = peer.update_grid(
+        ctl, {}, {}, (("alice", "AAAA1111", "left"),), True, ctl.say, {})
+    assert ctl.closes == 1 and opened is False and shown == ()
+
+
+def test_no_grid_is_closed_when_this_run_opened_none(peer):
+    """The companion the assertion above needs: it differs in the one variable
+    under test (`opened`), so it cannot pass against a close that can never
+    fire. agterm has ONE grid and no ownership token."""
+    ctl = RelayCtl(panes())
+    shown, opened = peer.update_grid(ctl, {}, {}, None, False, ctl.say, {})
+    assert ctl.closes == 0 and opened is False and shown == ()
+
+
+class RefreshCtl(RelayCtl):
+    """Rows that keep their NAMES and change their IDS -- what `agb-refresh`
+    does to every row at once, observed twice in one afternoon."""
+
+    def __init__(self, first, second):
+        RelayCtl.__init__(self, dict((sid, COMPOSER) for sid in first.values()))
+        self.rows, self.second, self.tick = first, second, 0
+
+    def tree(self):
+        return tree_of(*[session(sid, name="%s . cwd . %%0" % label)
+                         for label, sid in sorted(self.rows.items())])
+
+    def sleep(self, seconds):
+        self.tick += 1
+        if self.tick == 1:
+            self.rows = self.second
+            self.current = dict((sid, COMPOSER) for sid in self.rows.values())
+
+
+def test_the_grid_re_opens_when_the_ids_move_under_stable_names(peer):
+    """⚠️ THE REGRESSION THIS TRIGGER COULD SILENTLY REMOVE. The tracked set is
+    `(name, id, pane)`, not the set of names: an `agb-refresh` leaves the names
+    identical and moves every id, so a name-keyed trigger would call it
+    unchanged and leave a grid of dead cells up -- exactly what the old
+    `fresh != resolved` comparison was catching."""
+    ctl = RefreshCtl({"alice": "AAAA1111", "bob": "BBBB2222"},
+                     {"alice": "CCCC3333", "bob": "DDDD4444"})
+    peer.cmd_relay(ctl, ["alice=alice", "bob=bob"], 500, 8, False,
+                   io.StringIO(), ticks=3, dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards == [["AAAA1111:left", "BBBB2222:left"],
+                              ["CCCC3333:left", "DDDD4444:left"]]
+
+
+def test_an_unresolvable_participant_is_named_and_the_rest_are_gridded(peer):
+    """Defect 3: three members, two resolvable, and you got a tidy two-cell
+    grid with nothing saying carol is missing.
+
+    ⚠️ It OPENS WITH THE REST rather than closing. `resolve_all` calls an
+    unresolvable label a steady state and throttles it for ever, so closing
+    would mean no grid at all for the life of the relay over one typo.
+
+    ⚠️ Asserted on the report LINE, not on the output: the relay prints every
+    participant's name in the list it emits on each re-resolve, so `"carol" in
+    out.getvalue()` passes with the report deleted.
+    """
+    out = io.StringIO()
+    ctl = RelayCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222", "carol=NOSUCHROW"],
+                   500, 0, True, out, dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards == [["AAAA1111:left", "BBBB2222:left"]]
+    report = [line for line in out.getvalue().splitlines()
+              if "no row for" in line]
+    assert len(report) == 1 and "carol" in report[0], out.getvalue()
+
+
+def test_nothing_is_said_when_every_member_has_a_row(peer):
+    """The companion for the "nothing happened" half: differs from the test
+    above in the one variable under test."""
+    out = io.StringIO()
+    ctl = RelayCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    assert "no row for" not in out.getvalue(), out.getvalue()
+
+
+def test_a_member_added_with_no_row_is_named_though_nothing_resolved(peer,
+                                                                     tmp_path):
+    """⚠️ WHY THE TRIGGER IS COMPUTED OUTSIDE `if fresh != resolved:`. Adding a
+    member no row answers to leaves `resolved` byte-identical, so a report
+    written inside that block never fires -- and this is defect 3's own case.
+
+    It must also not disturb the grid: the cell set did not move, so there is
+    no re-open and, above all, no close. The only `close` in the log is the
+    one on the way out.
+    """
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write(
+                "alice=AAAA1111\nbob=BBBB2222\ncarol=NOSUCHROW\n")
+    ctl = TickingCtl(panes(), edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3,
+                   dashboard=True, fetch=Fetcher())
+    assert ctl.grid_log == [("open", ["AAAA1111:left", "BBBB2222:left"]),
+                            ("close",)], ctl.grid_log
+    report = [line for line in out.getvalue().splitlines()
+              if "no row for" in line]
+    assert len(report) == 1 and "carol" in report[0], out.getvalue()
+
+
+def test_a_missing_member_is_reported_once_not_per_tick(peer):
+    """⚠️ Unthrottled this runs every tick for the life of the relay, because
+    `resolve_all` treats a label nothing answers to as a steady state."""
+    out = io.StringIO()
+    ctl = TickingCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222", "carol=NOSUCHROW"],
+                   500, 8, False, out, ticks=3, dashboard=True,
+                   fetch=Fetcher())
+    assert ctl.tick >= 2, "one tick only -- the throttle was not exercised"
+    assert out.getvalue().count("no row for") == 1, out.getvalue()
+
+
+def test_a_name_dropped_as_an_alias_is_not_reported_as_missing(peer):
+    """⚠️ `_one_name_per_row` drops `bob` because it resolves to alice's row,
+    and has already said so, naming the row. A second line calling it "no row
+    for bob" would be a contradictory diagnosis of one situation -- and the
+    wrong one, since bob resolved perfectly well."""
+    out = io.StringIO()
+    ctl = RelayCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=AAAA1111"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    assert "both resolve to row" in out.getvalue(), "the alias drop never fired"
+    assert "no row for" not in out.getvalue(), out.getvalue()
+
+
+def test_one_name_per_row_records_its_drops_in_notes(peer):
+    """⚠️ In `notes`, NOT in the return value. `resolve_all` ends with
+    `return _one_name_per_row(...)`, so widening the shape here would change
+    `resolve_all`'s across eight call sites, four of which index it as a dict.
+    """
+    notes = {}
+    kept = peer._one_name_per_row(
+        {"alice": ("AAAA1111", "left", None, None),
+         "bob": ("AAAA1111", "left", None, None)}, lambda m: None, notes)
+    assert sorted(kept) == ["alice"]
+    assert notes[peer.ALIAS_DROPS] == set(["bob"])
+
+
+def test_the_alias_drop_set_is_rebuilt_not_accumulated(peer):
+    """⚠️ THE STALENESS TRAP. Every other `notes` entry persists -- that is what
+    makes `_throttled` work -- so a drop set read as an accumulator would go on
+    calling a live participant somebody else's alias for ever."""
+    notes = {peer.ALIAS_DROPS: set(["bob"])}
+    peer._one_name_per_row({"alice": ("AAAA1111", "left", None, None),
+                            "bob": ("BBBB2222", "left", None, None)},
+                           lambda m: None, notes)
+    assert notes[peer.ALIAS_DROPS] == set()
+
+
+def test_resolve_all_still_returns_a_plain_dict(peer):
+    """The other half of the note above: the reason the drop set went into
+    `notes` at all is that this shape may not move."""
+    got = peer.resolve_all(RelayCtl(panes()), dict(PEOPLE), lambda m: None,
+                           {}, {})
+    assert isinstance(got, dict) and got["alice"][0] == "AAAA1111"
+
+
+def test_a_failing_grid_does_not_stop_a_message(peer):
+    """⚠️ THE CONTRACT THAT MUST NOT REGRESS. The relay's grid is an adjunct to
+    a message pump: every outcome is best-effort, and none of this task's new
+    reporting may sit between a doorbell and a delivery."""
+
+    class NoGrid(TickingCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            self.grid_log.append(("open", list(members)))
+            return False, "", "no agterm"
+
+    def ring(tick):
+        if tick == 1:
+            ctl.current["AAAA1111"] = COMPOSER + bell("aaa")
+    ctl = NoGrid(panes(), ring)
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8, False,
+                   io.StringIO(), ticks=2, dashboard=True,
+                   fetch=Fetcher(framed(("aaa", "bob", "hello"))))
+    assert ctl.dashboards, "the grid never even tried -- the test proves nothing"
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
+        "[chat from alice] hello"]

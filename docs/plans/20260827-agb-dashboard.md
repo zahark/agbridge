@@ -627,43 +627,51 @@ four defects, and every downstream "three, or four if…" now reads four.
 - Modify: `tests/test_agb_peer.py`
 - Modify: `CHANGELOG.md`
 
-- [ ] ⚠️ have `_one_name_per_row` (`agb-peer:2469`) record its alias drops **in the `notes` dict it
+- [x] ⚠️ have `_one_name_per_row` (`agb-peer:2469`) record its alias drops **in the `notes` dict it
       already receives** — NOT by changing its return shape. `agb-peer:2466` is
       `return _one_name_per_row(...)`, so it **is** `resolve_all`'s return value: changing it would
       change `resolve_all`'s shape across **8 call sites**, four of which index the result as a
       dict. That is the identical error correction 3 diagnosed for `Ctl.dashboard` and this plan
       then repeated one task later
-- [ ] the `notes` route is nearly free — `_throttled(say, notes, ("alias", name))` at `agb-peer:2477`
+- [x] the `notes` route is nearly free — `_throttled(say, notes, ("alias", name))` at `agb-peer:2477`
       already writes `notes[("said", ("alias", name))]`. ⚠️ **But it has a staleness trap**: the note
       persists after the alias goes away, so the drop set must be rebuilt per tick rather than read
       as an accumulator
-- [ ] ⚠️ track the **`(name, id, pane)` cell set**, not the set of names. An `agb-refresh` changes
+- [x] ⚠️ track the **`(name, id, pane)` cell set**, not the set of names. An `agb-refresh` changes
       every id while the names are identical — that is exactly what `fresh != resolved` was
       catching, and a name-set trigger would silently reintroduce the dead-cell defect the code
       already handled
-- [ ] replace `len(resolved) > 1`: re-open with the cell set on every change, and ⚠️ **when a member
+- [x] replace `len(resolved) > 1`: re-open with the cell set on every change, and ⚠️ **when a member
       is missing, OPEN WITH THE REST AND SAY SO** — do not close. Defect 3's symptom is a partial
       grid *"with nothing saying carol is missing"*, so the minimal fix is the marker, not the
       closure. ⚠️ Closing would be a worse regression: `resolve_all` throttles an unresolvable name
       **for ever** (`agb-peer:2458-2465` calls a mistyped label a steady state), so one typo would
       mean **no grid at all for the life of the relay** — and it contradicts this plan's own framing
       of the relay's grid as an adjunct whose failures stay cosmetic
-- [ ] ⚠️ compute it **outside** `if fresh != resolved:` — a roster edit adding an unresolvable member
+- [x] ⚠️ compute it **outside** `if fresh != resolved:` — a roster edit adding an unresolvable member
       leaves `fresh == resolved`, so a fix inside it never fires — and throttle the message through
       `_throttled` (`agb-peer:2318`). ⚠️ `_throttled` dedupes on message **text**, not time, so it
       guards the message; the "cell set changed" rule is what guards the repeated `--close` call
-- [ ] ⚠️ keep every grid outcome best-effort, so none of this can stop delivery
-- [ ] write tests: a drop to one resolved participant, **and to zero**, both close the grid
-- [ ] write tests: **ids change while names do not → the grid re-opens** (the `agb-refresh` defence,
+- [x] ⚠️ keep every grid outcome best-effort, so none of this can stop delivery
+- [x] write tests: a drop to one resolved participant, **and to zero**. ⚠️ **[deviation]** only the
+      drop to **zero** closes; a drop to **one** re-opens with the single remaining cell. agterm's
+      measured table says "one cell alone is valid; no minimum of two", and a `len(cells) > 1`
+      special case *is* the `len(resolved) > 1` guard this task exists to remove — with a close
+      bolted on. Defect 2's symptom is the departed member's cell still being on screen, and
+      re-opening with one cell removes it. The zero case closes because agterm has no empty grid
+- [x] write tests: **ids change while names do not → the grid re-opens** (the `agb-refresh` defence,
       the regression this trigger could silently remove)
-- [ ] write tests: a roster edit adding an unresolvable member closes the grid and names it
-- [ ] write tests: a name dropped by `_one_name_per_row` is **not** reported as unresolved
-- [ ] write tests: the "waiting" message is throttled, not per-tick
-- [ ] write tests: a failing `dashboard` call does not stop a queued message being delivered
-- [ ] mutation-check the defect-2 fix by restoring the `> 1` guard
-- [ ] add the `CHANGELOG.md` entry for **this task's** defects (2 and 3). Tasks 2a, 2b-i and 2b-ii
+- [x] write tests: a roster edit adding an unresolvable member **is named, and the grid is left
+      alone** (⚠️ **[deviation]** — "closes the grid" here contradicts the checkbox four above it,
+      which forbids closing on a missing member and gives the reason; the no-close reading wins.
+      The test asserts the whole ordered grid log, so a close before the exit fails it)
+- [x] write tests: a name dropped by `_one_name_per_row` is **not** reported as unresolved
+- [x] write tests: the "waiting" message is throttled, not per-tick
+- [x] write tests: a failing `dashboard` call does not stop a queued message being delivered
+- [x] mutation-check the defect-2 fix by restoring the `> 1` guard
+- [x] add the `CHANGELOG.md` entry for **this task's** defects (2 and 3). Tasks 2a, 2b-i and 2b-ii
       carry their own, per the repo rule that an entry lands in the same commit as its code
-- [ ] run tests — must pass before task 3
+- [x] run tests — must pass before task 3
 
 ### Task 3: `agb-dashboard` skeleton, loading and argument parsing
 

@@ -261,6 +261,41 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   would repeat for ever and bury everything else the relay says. A change in *who* is excluded still
   gets through, because the throttle is on the message rather than on the clock.
 
+- **`agb-peer relay --dashboard` went on showing a participant who had left, and said nothing about
+  one it could not show.** Two defects in one block, both of them a grid that looks right and is
+  not.
+
+  The re-open was guarded by `len(resolved) > 1`, so it was skipped in exactly the case that needed
+  it: when membership fell to a single participant — or to none — the *previous* grid stayed up,
+  cells and all, including the person who had just left the roster. The comment two lines below it
+  said the re-open existed because "a grid built on dead ids shows dead cells".
+
+  And a member the relay could not resolve simply was not there. Three participants, two with rows,
+  and you got a tidy two-cell grid with nothing anywhere saying carol was missing:
+
+  ```
+  dashboard: no row for carol -- the grid shows the other 2
+  ```
+
+  ⚠️ **A missing member does not close the grid, and that is a decision rather than an oversight.**
+  `resolve_all` treats a label nothing answers to as a *steady state* — it has to, or a typo prints
+  a line every tick for the life of the relay — so closing on one would mean a single mistyped
+  roster entry costs you the grid for the whole run. The relay's grid is an adjunct to a message
+  pump; its failures stay cosmetic and get a line of text.
+
+  ⚠️ **The re-open now follows the `(name, id, pane)` cell set, not the set of names.** An
+  `agb-refresh` re-mints every row, so the names are identical while every id has moved — the case
+  the old comparison was there for. A name-keyed trigger would have called that "unchanged" and
+  reintroduced the dead-cell bug while fixing the other two. And the membership check runs on every
+  tick rather than only when the resolution moved, because adding an unresolvable member leaves the
+  resolution byte-identical: a report written inside that condition could never have fired for the
+  very case it was written for. The *message* is throttled instead; the cell set is what stops the
+  repeated `agtermctl` call.
+
+  ⚠️ A name dropped for sharing a row with another participant is **not** reported as missing. It
+  resolved perfectly well and has already been told which row it collided with; a second line
+  calling it "no row" would be a contradictory diagnosis of one situation.
+
 - **A message delivered to a *working* Codex was typed and never submitted.** Intermittent by
   nature: the same delivery to an idle Codex submits itself, so it depended entirely on whether the
   peer happened to be mid-turn when the reply came back. The relay logged `delivered` either way.

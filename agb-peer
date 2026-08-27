@@ -2529,6 +2529,12 @@ def resolve_all(ctl, spec, say, previous=None, notes=None):
     return _one_name_per_row(resolved, say, notes)
 
 
+# Where `_one_name_per_row` leaves the names it dropped. A one-element tuple,
+# so it cannot collide with `_throttled`'s `("said", key)` or `try_deliver`'s
+# `("said", <name>)`, both of which are two-element.
+ALIAS_DROPS = ("alias-dropped",)
+
+
 def _one_name_per_row(resolved, say, notes=None):
     """Refuse to let two participants share a row, keeping the first by name.
 
@@ -2539,16 +2545,32 @@ def _one_name_per_row(resolved, say, notes=None):
     so a message addressed to the alias is typed into the sender's own composer.
     A startup typo could do this before; a roster edit makes it ordinary.
     """
-    owner = {}
+    owner, dropped = {}, set()
     for name in sorted(resolved):
         row = resolved[name][0]
         if row in owner:
+            dropped.add(name)
             _throttled(say, notes, ("alias", name))(
                 "%s and %s both resolve to row %s -- ignoring %s, because two "
                 "names on one pane drain it twice and can type a message into "
                 "its own sender" % (owner[row], name, row[:8], name))
             continue
         owner[row] = name
+    if notes is not None:
+        # ⚠️ **In `notes`, NOT in the return value.** `resolve_all` ends with
+        # `return _one_name_per_row(...)`, so this IS its return value: widening
+        # it to a tuple would change `resolve_all`'s shape across eight call
+        # sites, four of which index the result as a dict.
+        #
+        # ⚠️ **ASSIGNED WHOLE every call, never updated into.** A `notes` entry
+        # normally persists -- that is what makes `_throttled` work -- and a
+        # persisting drop set is a stale one: the alias goes away when the
+        # roster is fixed, and a caller reading this as an accumulator would go
+        # on calling a live participant somebody else's alias for ever. One
+        # call per tick, one whole answer per call. (It is deliberately NOT in
+        # `_name_notes`: it is not per-name state a leave has to purge, because
+        # the next tick overwrites it regardless.)
+        notes[ALIAS_DROPS] = dropped
     return dict((name, resolved[name]) for name in owner.values())
 
 
@@ -2588,6 +2610,10 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
     # would dismiss whatever somebody else had up, and there is nothing to ask:
     # a flag is the only ownership record that exists.
     opened_grid = False
+    # The cell set the grid was last opened with -- see `update_grid`. `None`
+    # rather than `()` so a first tick with nothing to show is distinguishable
+    # from a membership that dropped to nobody.
+    grid_shown = None
     try:
         while True:
             # ⚠️ **THE ROSTER IS READ BEFORE `resolve_all`, NOT AFTER IT.** An
@@ -2628,49 +2654,15 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                         % (name, row[:8], pane,
                            "  via " + target if target else "",
                            "  tmux " + tmux_target if tmux_target else ""))
-                if dashboard and len(resolved) > 1:
-                    # Re-opened on every move for the same reason the ids are
-                    # re-resolved: a grid built on dead ids shows dead cells.
-                    # ⚠️ Built HERE and nowhere else. The inline comprehension
-                    # this replaces produced the same string for a `left`/
-                    # `right` participant -- the routing is deliberately a
-                    # no-op for them -- but it was a second place where a cell
-                    # spelling lived, and a second place is how a bare id
-                    # (which takes every pane of its session) gets emitted by
-                    # one caller and not the other.
-                    grid_cells, excluded = dashboard_cells(
-                        [(resolved[n][0], resolved[n][1])
-                         for n in sorted(resolved)])
-                    if excluded:
-                        # ⚠️ REPORTED, because a silent drop is the worse bug.
-                        # agterm refuses `:scratch` at parse time, so the whole
-                        # dashboard call used to fail and NO grid opened at all;
-                        # routing through `dashboard_cells` fixed that, and
-                        # would otherwise have replaced a visible failure with a
-                        # participant quietly missing from the grid.
-                        #
-                        # ⚠️ Once, not per tick: this block re-runs on every id
-                        # change, and `_throttled` dedupes on the MESSAGE, so a
-                        # change in who is excluded still gets through while a
-                        # steady state says nothing. `resolved` is inverted here
-                        # rather than carried alongside because `dashboard_cells`
-                        # speaks in rows, and a row names a participant only
-                        # because `_one_name_per_row` guarantees the map is 1:1.
-                        named = dict((resolved[n][0], n) for n in resolved)
-                        _throttled(say, notes, ("dash-excluded",))(
-                            "dashboard: not shown -- %s; agterm's grid takes "
-                            "only %s panes"
-                            % (", ".join(
-                                "%s (%s)" % (named.get(row, row[:8]), pane)
-                                for row, pane in excluded),
-                               "/".join(DASHBOARD_PANES)))
-                    ok, _out, why = ctl.dashboard(grid_cells)
-                    # ⚠️ Latched, never cleared: a re-open that FAILS does not
-                    # mean the earlier grid went away, so forgetting ownership
-                    # here would strand somebody else's screen full of cells
-                    # this relay put there.
-                    opened_grid = opened_grid or ok
-                    say("dashboard: %s" % ("open" if ok else why))
+            if dashboard:
+                # ⚠️ **OUTSIDE `if fresh != resolved:`, deliberately.** A roster
+                # edit that adds a member no row answers to leaves `resolved`
+                # byte-identical, so anything inside that block never runs for
+                # it -- and that is precisely the case with something to say.
+                # What guards the repeated `agtermctl` call is the cell set;
+                # what guards the repeated message is `_throttled`.
+                grid_shown, opened_grid = update_grid(
+                    ctl, spec, resolved, grid_shown, opened_grid, say, notes)
             if needs_prime:
                 # ⚠️ Before the scan, and the scan skips whatever is still
                 # pending: a joiner whose pane has not been read must not have
@@ -2720,6 +2712,87 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
             close_grid(ctl, say)
 
 
+def update_grid(ctl, spec, resolved, shown, opened, say, notes):
+    """Keep the relay's grid honest about its membership -> (shown, opened).
+
+    ⚠️ **The tracked set is `(name, id, pane)` -- CELLS, not names.** An
+    `agb-refresh` re-mints every row, so all the ids move while the names stay
+    identical; that is the case `resolve_all` exists for, and a name-keyed
+    trigger would call it "unchanged" and leave a grid of dead cells up. It is
+    also why the old `len(resolved) > 1` guard was wrong: it skipped the re-open
+    exactly when membership fell to one or none, so the grid went on showing the
+    participant who had left.
+
+    ⚠️ **A member with no row does NOT close the grid.** It opens with the rest
+    and says which name is missing. Defect 3's symptom was a tidy partial grid
+    *with nothing saying carol is missing*, so the marker is the fix; closing
+    would be the worse regression, because `resolve_all` treats an unresolvable
+    label as a steady state and throttles it for ever -- one typo would mean no
+    grid at all for the life of the relay, and the relay's grid is an adjunct
+    whose failures are meant to stay cosmetic.
+
+    Every outcome is best-effort, like the rest of `Ctl`'s grid calls: nothing
+    here may stop a message being carried.
+    """
+    cells = [(name, resolved[name][0], resolved[name][1])
+             for name in sorted(resolved)]
+    grid_cells, excluded = dashboard_cells([(c[1], c[2]) for c in cells])
+    if excluded:
+        # ⚠️ REPORTED, because a silent drop is the worse bug. agterm refuses
+        # `:scratch` at parse time, so the whole dashboard call used to fail and
+        # NO grid opened at all; routing through `dashboard_cells` fixed that,
+        # and would otherwise have replaced a visible failure with a participant
+        # quietly missing from the grid.
+        #
+        # `resolved` is inverted here rather than carried alongside because
+        # `dashboard_cells` speaks in rows, and a row names a participant only
+        # because `_one_name_per_row` guarantees the map is 1:1.
+        named = dict((resolved[n][0], n) for n in resolved)
+        _throttled(say, notes, ("dash-excluded",))(
+            "dashboard: not shown -- %s; agterm's grid takes only %s panes"
+            % (", ".join("%s (%s)" % (named.get(row, row[:8]), pane)
+                         for row, pane in excluded),
+               "/".join(DASHBOARD_PANES)))
+    # ⚠️ **What is ACCOUNTED FOR is wider than what is in the grid**, and each
+    # of the three has its own line already. A participant that resolved is in
+    # `resolved` -- including one whose pane the grid cannot express, which the
+    # exclusion above has just named and which is therefore not missing but
+    # unshowable. A name `_one_name_per_row` dropped as an alias resolved
+    # perfectly well and has been told which row it collided with; calling it
+    # "no row" would be a second, contradictory diagnosis of one situation.
+    missing = sorted(set(spec) - set(resolved)
+                     - ((notes or {}).get(ALIAS_DROPS) or set()))
+    if missing:
+        # ⚠️ Throttled, because this runs every tick: `resolve_all` calls an
+        # unresolvable label a steady state, so unthrottled a single typo prints
+        # a line per tick for the life of the relay. `_throttled` dedupes on the
+        # message TEXT, so a change in WHO is missing still gets through.
+        _throttled(say, notes, ("dash-missing",))(
+            "dashboard: no row for %s -- the grid shows the other %d"
+            % (", ".join(missing), len(grid_cells)))
+    elif notes is not None:
+        # Forget it once everyone is back, or a second disappearance of the same
+        # name would be silent -- the same reason `scan_participant` clears its fetch
+        # note when the fetch succeeds.
+        notes.pop(("said", ("dash-missing",)), None)
+    fresh = tuple(cells)
+    if fresh == shown:
+        return shown, opened
+    if grid_cells:
+        ok, _out, why = ctl.dashboard(grid_cells)
+        # ⚠️ Latched, never cleared here: a re-open that FAILS does not mean the
+        # earlier grid went away, so forgetting ownership would strand somebody
+        # else's screen full of cells this relay put there.
+        opened = opened or ok
+        say("dashboard: %s" % ("open" if ok else why))
+    elif opened:
+        # Nobody left to show. Closing is the only honest rendering -- agterm
+        # has no empty grid -- and it is cleared only on a close that WORKED, so
+        # the `finally` still gets its turn if this one did not.
+        opened = not close_grid(ctl, say)
+    return fresh, opened
+
+
 def close_grid(ctl, say):
     """Best-effort like every other grid call, and here it has to be: this
     runs from a `finally` on the Ctrl-C path, where an exception would replace
@@ -2727,15 +2800,21 @@ def close_grid(ctl, say):
     that will not close is cosmetic, while a relay that dies reporting it is
     not. `say` writes to `out`, which can be closed by then, so even the
     report is guarded.
+
+    Returns whether the grid is believed GONE, so an in-loop caller can drop
+    its ownership flag on a close that worked and keep it on one that did not.
+    The `finally` ignores it, there being nothing left to retry by then.
     """
     try:
         ok, why = ctl.dashboard_close()
         say("dashboard: %s" % ("closed" if ok else why))
+        return bool(ok)
     except Exception as exc:
         try:
             say("dashboard: could not close (%s)" % (exc,))
         except Exception:
             pass
+        return False
 
 
 def main(argv, out=None, ctl=None):
