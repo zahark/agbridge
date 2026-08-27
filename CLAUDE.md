@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (2286 tests, ~80 s)
+python3 -m pytest tests/ -q                                    # full suite (2462 tests, ~90 s)
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -71,6 +71,18 @@ mapping for. `AGB_HOST` alone does not fix it — `bind_key` then finds a pid th
 **replaces** the index, orphaning the first row — so `{env}` sets `AGB_AGENT_PID=none` too, and a
 pid-less hook adopts. ⚠️ The price is that the entry can no longer be reaped by proof of death, so
 such a row outlives its job until `agb prune`; use `{env}` only when the launcher really is remote.
+
+⚠️ **`agb-peer-setup` is the tool that writes that roster**, and the thing it exists to get right
+is not the menu. `<row>` cannot be the row's title (`label · host · cwd · pane · beat`, and a
+roster line is split on **whitespace**) and must not be its id (`agb-refresh` re-mints every one),
+so it takes the **label** — after stripping `[?] `/`[done] `, without which every stale row is
+unpickable — and confirms it resolves to **the row you picked**, since an id-prefix match beats a
+label match and can be a different row. It withholds the "use the row's own host" option whenever
+`host_<name>` remaps that host, because the relay uses `--host` **verbatim** and would otherwise
+produce a roster that parses, validates, prints a working next command and never delivers. And it
+writes through a **byte gate** with an **ungated** recovery-draft writer beside it: routing the
+recovery through the gated one would raise `RosterConflict` from inside the conflict handler and
+destroy the draft it was called to save. `docs/design.md` §6.
 
 And **`agb-peer`** — two agents talking to each other. ⚠️ **It is not on the wire, and that is the
 thing to hold on to**: it never reads or writes a session record. It reuses agterm rows as
@@ -695,8 +707,8 @@ and the unseen badge cleared when a block is answered.
 
 ⚠️ **`agb`'s budget is measured in CHARACTERS, not bytes** — the guard is
 `len(agb_source) < AGB_PARSE_BUDGET` (`tests/test_mac_split.py`), and `agb` is not pure ASCII. It is
-**103,198 characters** (103,212 *bytes*) against **103,200**, and the comparison is a **strict `<`**
-— so the maximum is 103,199 and the real headroom is **one character**. `wc -c` is the wrong number
+**105,269 characters** (105,287 *bytes*) against **105,300**, and the comparison is a **strict `<`**
+— so the maximum is 105,299 and the real headroom is **30 characters**. `wc -c` is the wrong number
 to compare, and so is the difference from the budget. This is the single hardest constraint on
 any change to the hot path. Neither 0.5.0 nor the finished-turn banner added anything to it; the
 instances change did — the only part of it in `agb` is `cmd_instances`, a dispatch arm and a `USAGE`
@@ -704,7 +716,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2286 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2462 tests.
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and

@@ -17,7 +17,7 @@ checkout, so an edit here is a change to somebody's repository.
 - **The command is `agb-peer`**, on your `$PATH`. If it is not, `$AGB_PEER` holds the
   path to it. If neither works, say so and stop; do not go looking for it.
 - **Participant names** — yours and your peer's — are whatever the relay was started
-  with (`agb-peer relay alice=… bob=…`). **`agb-peer who` asks the relay for them**; if that
+  with (`agb-peer relay alice=… bob=…`, or a roster file built with `agb-peer-setup`). **`agb-peer who` asks the relay for them**; if that
   gets no answer, **ask the user**. Do not guess a name; a message to a name the relay
   does not know is dropped.
 

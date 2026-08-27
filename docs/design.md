@@ -2452,6 +2452,44 @@ left — and only a name that *was* resolved exhibits it.
 
 ### Asking who is here
 
+### Writing the roster file, and why it needs its own contract
+
+The roster is the one file this project **writes on behalf of a human** while another process is
+reading it on a tick. `agb-peer-setup` is that writer; `write_roster_file` is the contract.
+
+**The gate is the file's bytes**, not a `(mtime, size, inode)` key. `RosterReader` already made
+that choice on the read side and wrote down why: the file is a handful of lines, so reading it is
+cheaper than reasoning about whether a stat key can miss a rewrite — and `os.stat` on a network
+mount is served from the attribute cache, which is what invariant 6 is about. Comparing what you
+read satisfies it by construction. It also means an editor re-saving *identical* content is
+correctly not a conflict, which a stat key would have got wrong.
+
+**`roster_bytes` has three answers where `read_roster_file` has two**, and the third is a raise.
+The relay folds every errno into one "hold", which is right for it — at runtime nothing is evidence
+that anybody left. A **writer** cannot do that: folding "unreadable" into "absent" makes the gate
+compare `None == None` and rename over a roster nobody could read, going vacuous exactly when it
+matters. Invariant 12, applied to the one file this project writes.
+
+**`RosterConflict` is a distinct class because its caller must recover**, not print and exit. An
+in-memory draft is still good and has to reach disk before anything else happens. Everything
+meaning *do not write* — changed, absent-now, present-now, unreadable — leaves through that one
+door; anything arriving as a bare `PeerError` sails past the handler and the draft is lost
+silently, with every test green.
+
+**`write_draft_file` is ungated, and that is load-bearing.** Its only caller is the conflict
+handler, and the path it is given was just minted and belongs to nobody — so there is nothing to
+compare against and any gate would raise `RosterConflict` *from inside the conflict handler*. The
+one path standing between a conflict and lost work cannot itself be conditional. It still goes
+temp+rename, so a crash leaves the recovery file absent rather than half-written.
+
+**Nothing is ever merged.** A roster line encodes a participant and a transport, not prose, so a
+line-wise merge produces a file that looks plausible and routes messages somewhere nobody chose.
+
+⚠️ **The gate is not a lock.** A writer landing between the comparison and the `rename` is still
+lost. The window is microseconds against a human deciding what to type, and closing it needs a
+lockfile whose failure modes are worse than the one it removes. Recorded so the trade is a decision
+rather than an oversight.
+
 `agb-peer who` is request/response over the channel that already exists: the agent sends the single
 word `who` to the reserved recipient `relay`, the relay intercepts it while draining and queues a
 reply to the asker, and the ordinary `pending` path delivers it with the same composer gate, holding

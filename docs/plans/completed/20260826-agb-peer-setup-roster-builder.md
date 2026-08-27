@@ -418,16 +418,18 @@ No auto-merge anywhere.
 
 ## Acceptance Criteria
 
-- [ ] `agb-peer-setup <file>` opens a menu; a row is added by **picking**, and the stored `<row>` is
+- [x] `agb-peer-setup <file>` opens a menu; a row is added by **picking**, and the stored `<row>` is
       a roster-legal label that `match_sessions` resolves to exactly one row
-- [ ] the four transport shapes and all three pane kinds are reachable without the raw hatch
-- [ ] `relay` is refused as a participant name, at the prompt
-- [ ] a duplicate name is refused at the prompt, against the **whole draft**
-- [ ] a one-participant roster loads and writes (with a warning), so a participant can be removed
-- [ ] a file changed underneath the session never loses the draft and never publishes a torn read
-- [ ] an **unreadable** roster is never silently overwritten
-- [ ] the printed next-command starts a working relay verbatim
-- [ ] `agb-peer-setup validate <file>` reports the same errors `agb-peer relay` would
+- [x] the four transport shapes and all three pane kinds are reachable without the raw hatch
+- [x] `relay` is refused as a participant name, at the prompt
+- [x] a duplicate name is refused at the prompt, against the **whole draft**
+- [x] a one-participant roster loads and writes (with a warning), so a participant can be removed
+- [x] a file changed underneath the session never loses the draft and never publishes a torn read
+- [x] an **unreadable** roster is never silently overwritten
+- [ ] ⚠️ the printed next-command starts a working relay verbatim — **the STRING is verified**
+      (asserted character-for-character against the path); that it starts a *working* relay needs
+      a live agterm and stays in Post-Completion. Do not tick this from a test run
+- [x] `agb-peer-setup validate <file>` reports the same errors `agb-peer relay` would
 
 ## Implementation Steps
 
@@ -853,13 +855,13 @@ No auto-merge anywhere.
 
 *Everything here runs on this machine. Live-agterm checks are Post-Completion and are not duplicated.*
 
-- [ ] walk the **Acceptance Criteria** list, checking off every item verifiable without a live agterm
-- [ ] confirm the tool prints the next `agb-peer relay --roster <path>` command — the condition the
+- [x] walk the **Acceptance Criteria** list, checking off every item verifiable without a live agterm
+- [x] confirm the tool prints the next `agb-peer relay --roster <path>` command — the condition the
       `agb-peer-setup` name rests on; if dropped, revisit the name (`agb-peer-roster`)
-- [ ] confirm `agb` is untouched: `git diff --stat HEAD -- agb` is empty (**not** `wc -c`, which
+- [x] confirm `agb` is untouched: `git diff --stat HEAD -- agb` is empty (**not** `wc -c`, which
       measures bytes where the budget is characters)
-- [ ] run the full suite: `python3 -m pytest tests/ -q`
-- [ ] note that `tests/test_core.py:1052-1064` already walks every `tests/test_*.py` for unbounded
+- [x] run the full suite: `python3 -m pytest tests/ -q`
+- [x] note that `tests/test_core.py:1052-1064` already walks every `tests/test_*.py` for unbounded
       `communicate()`/`.read()`, so the new file inherits that guard
 
 ### Task 15: Documentation
@@ -872,23 +874,23 @@ No auto-merge anywhere.
 - Modify: `CLAUDE.md`
 - Modify: `skills/agb-peer/SKILL.md`
 
-- [ ] `docs/design.md` **§6** — the roster write contract, the byte gate, and the conflict semantics
+- [x] `docs/design.md` **§6** — the roster write contract, the byte gate, and the conflict semantics
       belong in the authority document CLAUDE.md says is "reconciled against the implementation"
-- [ ] `docs/commands.md` — document `agb-peer-setup` beside the `--roster` section, and **state the
+- [x] `docs/commands.md` — document `agb-peer-setup` beside the `--roster` section, and **state the
       `<row>` derivation rule**: the label, prefix-stripped, not the title (it is user-visible)
-- [ ] `docs/cookbook.md` — a "build a roster interactively" recipe
-- [ ] `README.md` — add the row to the `agb-*` family table (it runs to `:181`)
-- [ ] `CLAUDE.md` — add the tool to the Architecture section's family enumeration; record the
+- [x] `docs/cookbook.md` — a "build a roster interactively" recipe
+- [x] `README.md` — add the row to the `agb-*` family table (it runs to `:181`)
+- [x] `CLAUDE.md` — add the tool to the Architecture section's family enumeration; record the
       **why-a-separate-script** reasoning; register the `sys.modules`-key agreement (Task 3) under
       invariant 14; and record the `temp_name`-without-`own_host` divergence (Task 2)
-- [ ] ⚠️ `CLAUDE.md` — correct **four** stale numbers, not one (R12). **Measured**: `agb` is
+- [x] ⚠️ `CLAUDE.md` — correct **four** stale numbers, not one (R12). **Measured**: `agb` is
       **105,269 characters / 105,287 bytes**, headroom **30**, against
       `tests/conftest.py:88`'s `AGB_PARSE_BUDGET = 105300`. The file says 103,198 / 103,212 /
       103,200 / "one character". Re-measure before writing — this plan does not touch `agb`, so the
       numbers should still hold at completion
-- [ ] `skills/agb-peer/SKILL.md` — point the "make two agents talk" recipe at `agb-peer-setup`
-- [ ] confirm the Tasks 2, 11 and 13 `CHANGELOG.md` entries read as one coherent feature
-- [ ] move this plan to `docs/plans/completed/`
+- [x] `skills/agb-peer/SKILL.md` — point the "make two agents talk" recipe at `agb-peer-setup`
+- [x] confirm the Tasks 2, 11 and 13 `CHANGELOG.md` entries read as one coherent feature
+- [x] move this plan to `docs/plans/completed/`
 
 ## Post-Completion
 

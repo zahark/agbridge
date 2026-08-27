@@ -652,7 +652,28 @@ Moving `rows` and `placements` next to the config *before* reinstalling avoids i
 participants on the command line fixes them for the life of the relay; a **roster file** lets you
 add and remove agents while it runs.
 
-### Start it
+### Build the roster without typing the grammar
+
+```sh
+# on the Mac
+agb-peer-setup ~/peers
+```
+
+It lists your live rows, you pick one and give it a short name, it asks how the relay reaches that
+agent, and it prints the exact `agb-peer relay --roster ~/peers` command when you save. Press `w`
+to write, `q` to leave.
+
+Two things it does that a hand-written file usually gets wrong. It writes the row's **label**, not
+the title you see in the sidebar — the title contains spaces and a roster line is split on
+whitespace, so a pasted title silently is not a spec. And it refuses the "just use the row's own
+host" option when your config remaps that host, because the relay uses the host **verbatim** — that
+combination produces a file that looks completely correct and never delivers a message.
+
+`agb-peer-setup validate ~/peers` answers "would the relay start with this?" without starting it.
+
+⚠️ It is not installed by `install.sh`: symlink it onto your `$PATH` beside `agb-peer`.
+
+### Or write it by hand
 
 ```sh
 # on the Mac
@@ -664,6 +685,11 @@ EOF
 
 agb-peer relay --roster ~/peers
 ```
+
+⚠️ **If you edit this file while the relay is running, write it atomically** — edit a copy and `mv`
+it into place. A file rewritten in place can be read half-written, and a truncated roster parses
+*cleanly* as a shorter one, so the relay drops whoever was on the missing lines. `agb-peer-setup`
+does this for you.
 
 The names on the left are how the agents address each other — pick short ones. `agb-peer --list`
 shows the rows and their titles.

@@ -1682,6 +1682,56 @@ which is indistinguishable from a real removal. An empty read is refused as no-i
 line boundary cannot be; the window is about a millisecond against an eight-second tick, and `mv`
 closes it entirely.
 
+### `agb-peer-setup` — build that file without typing the grammar
+
+```
+agb-peer-setup <roster-file>            # the interactive editor
+agb-peer-setup validate <roster-file>   # would `agb-peer relay` START with it?
+```
+
+A picker over live agterm rows, plus one writer that gets the atomicity right. Menu:
+`[a] add [d] delete [e] edit raw [v] view [w] write & exit [q] quit`.
+
+⚠️ **The `<row>` it writes is the row's LABEL, not the title agterm shows.** The title is
+`label · host · cwd · pane · beat` and a roster line is split on **whitespace**, so a title can
+never be a spec; the `beat` field is an age that changes on every repaint; and the row **id** is
+worse in a way that looks fine, because it works today and breaks at the next `agb-refresh`. So the
+tool strips a leading `[?] ` or `[done] `, takes the first ` · ` component, refuses one containing
+whitespace, `@` or `:`, and confirms the result resolves to **the row you picked** — not merely to
+exactly one row, because an id-prefix match beats a label match and can be a different row entirely.
+
+⚠️ **It assumes the default `row_fields` order**, where the label is first. With
+`row_fields = host,label` it would propose the host; the uniqueness check is what catches that.
+
+The transport prompt maps one-to-one onto what gets written, rather than onto "where is this peer",
+which has no single answer for a row that agterm, ssh and tmux each locate differently:
+
+| | writes | when it is offered |
+|---|---|---|
+| `[a]` the row's own host | no `@…` | **only** when `host_<name>` does not remap that host — see below |
+| `[l]` tmux on this Mac | `@local:<tmux>` | always |
+| `[s]` ssh to a tmux host | `@<target>` | always; offers this instance's `host_<name>` table |
+| `[t]` ssh, explicit tmux | `@<target>:<tmux>` | always |
+
+⚠️ **`[a]` is withheld when a `host_<name>` mapping applies, and that is not fussiness.** The relay
+hands the row's `--host` to ssh **verbatim** — it never applies the mapping — so on a host that
+needs an alias, `[a]` produces a roster that parses, validates, prints a working-looking next
+command, and then silently never delivers.
+
+**Writing is gated on the file's bytes.** If the roster changed since the session opened it, nothing
+is written, your draft is saved to `<roster>.conflict` **before you are asked anything**, and you
+get `[v]` view / `[r]` reload / `[q]` quit / `enter` back. Nothing is ever merged: these lines
+encode a participant and a transport, not prose. An **unreadable** roster is a conflict too, for
+the same reason — refusing to write is the only safe answer when the gate cannot be read.
+
+⚠️ **Fewer than two participants is a warning, not a refusal**, because that is how you *remove*
+somebody from a running relay. `validate` is the opposite and applies `minimum=2`, because it
+answers "why will my relay not start".
+
+The file is written `0600`, restated on every save, so a roster loosened by hand tightens again.
+
+`agb-peer-setup` is **not installed by `install.sh`** — symlink it onto `$PATH` beside `agb-peer`.
+
 ⚠️ **`--roster` and positional participants together are refused** — two sources of truth have no
 answer to *who is in this conversation* that does not depend on which one you read.
 
