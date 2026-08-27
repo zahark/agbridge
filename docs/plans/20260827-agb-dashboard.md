@@ -743,39 +743,76 @@ four defects, and every downstream "three, or four if…" now reads four.
 - Modify: `agb-dashboard`
 - Modify: `tests/test_agb_dashboard.py`
 
-- [ ] implement `resolve_selectors(sessions, selectors)` **here, not in `agb-peer`** — its only
+- [x] implement `resolve_selectors(sessions, selectors)` **here, not in `agb-peer`** — its only
       caller is this command, and `agb-peer` is re-parsed by every agent on every `send`. It takes a
       single already-fetched tree, classifies on `len(match_sessions(...))`, separates unresolved
       from ambiguous, names an ambiguous selector's matches, and **dedupes by row id**
-- [ ] on any unresolved or ambiguous selector: print each with its reason and exit non-zero
+      — ⚠️ **[deviation]** it dedupes by **`(id, pane)`**, not "by row id". This checkbox's wording
+      is stale against the plan's own *Technical Details*, which decided the wider key and says why:
+      `X:left` and `X:right` are two legitimate cells and a roster may hold `alice=<label>` beside
+      `split=<same label>:right`, so an id-only key silently drops one — the same missing-cell class
+      the command exists to remove. Pinned by `…the_dedupe_key_is_id_AND_pane_not_the_id_alone`
+      — ➕ it takes an optional third `peer=None` argument (defaulting to `load_peer()`), because the
+      two-argument signature the plan names has nowhere to get `match_sessions` from. The signature
+      test asserts the first two parameters and that **`ctl` is not among them**, which is the
+      property the plan was protecting
+      — ➕ a bare **string** item is accepted as `(selector, DEFAULT_PANE)`, so the defaulting rule
+      lives with the resolution rather than being re-spelled at each call site
+- [x] on any unresolved or ambiguous selector: print each with its reason and exit non-zero
       **without calling `agtermctl dashboard`**. ⚠️ Not "without calling agtermctl at all" — one
       `tree --json` has already run by this design, so the test asserts on the *dashboard* call
-- [ ] preflight `DASHBOARD_MAX_CELLS` after deduping, refusing with a message naming the cap
-- [ ] build cells with `dashboard_cells`, open through the new `Ctl.dashboard`, print the resolved
+      — ➕ **[decision]** *no rows at all* gets its own refusal (exit 2) instead of N identical
+      "no row matches" lines: with an empty tree the answer is about agterm, not about what was typed
+- [x] preflight `DASHBOARD_MAX_CELLS` after deduping, refusing with a message naming the cap
+- [x] build cells with `dashboard_cells`, open through the new `Ctl.dashboard`, print the resolved
       mapping so what was opened is on the record
-- [ ] ⚠️ treat a non-empty `excluded` as a **shortfall here**, unlike in the relay: this command's
+      — ➕ printed **after** a clean open, not before it: a mapping printed first would describe a
+      grid the strict check is about to close
+      — ➕ the id/pane line is deliberately not spelled `"%s:%s"`; Task 2b's AST guard covers this
+      file too, and `dashboard_cells` stays the only place a cell string is built
+- [x] ⚠️ treat a non-empty `excluded` as a **shortfall here**, unlike in the relay: this command's
       whole contract is fail-closed on asserted membership, so a `--roster` naming a `scratch`
       participant must refuse rather than open a grid quietly missing it
-- [ ] ⚠️ treat `unresolved:` **in stdout** as a failure despite exit 0 — the one place the exit
+- [x] ⚠️ treat `unresolved:` **in stdout** as a failure despite exit 0 — the one place the exit
       status is deliberately not trusted, and the reason Task 1 changed the return shape
-- [ ] 🔴 **and CLOSE the grid before exiting on it.** `unresolved:` is printed *after* agterm has
+- [x] 🔴 **and CLOSE the grid before exiting on it.** `unresolved:` is printed *after* agterm has
       already opened the grid with the rest, so refusing and exiting leaves exactly the
       partially-populated grid this command exists to remove. Close what this invocation opened,
       then exit non-zero
-- [ ] `--roster` parses with **`minimum=1`**, not the default 2: this plan's own measured table says
+      — ➕ a close that **fails** says so in the message (`AND THE GRID IS STILL UP: …`), with a test:
+      the grid is up, nothing else will close it, and a tidy-sounding refusal would hide that
+      — ➕ a `dashboard` call that returns **not ok** does *not* close: agterm refuses an invalid id
+      and a wholly unresolvable set before opening anything, so closing there would dismiss whatever
+      somebody else had up
+- [x] `--roster` parses with **`minimum=1`**, not the default 2: this plan's own measured table says
       one cell is valid, and a one-participant roster is a legal thing to want to watch
-- [ ] write tests: one bad selector among three → **no `agtermctl dashboard` call**, non-zero exit,
+- [x] write tests: one bad selector among three → **no `agtermctl dashboard` call**, non-zero exit,
       the bad one named; mutation-check by making it open the rest. ⚠️ Not "no agtermctl call" — one
       `tree --json` has already run by this design, and a test asserting otherwise would push an
       implementer back into the per-selector-subprocess shape revision 1 rejected
-- [ ] write tests: an ambiguous selector is refused and names its matches
-- [ ] write tests: two selectors resolving to the **same row** are deduped, not double-billed
-- [ ] write tests: ten selectors refused before any call; nine accepted (the boundary, both sides)
-- [ ] write tests: exit 0 **with** `unresolved:` on stdout is treated as a failure, **and the grid
+      — ➕ the test asserts the `tree` call **is** there, so the design is pinned rather than merely
+      tolerated
+- [x] write tests: an ambiguous selector is refused and names its matches
+- [x] write tests: two selectors resolving to the **same row** are deduped, not double-billed
+- [x] write tests: ten selectors refused before any call; nine accepted (the boundary, both sides)
+- [x] write tests: exit 0 **with** `unresolved:` on stdout is treated as a failure, **and the grid
       is closed** before the non-zero exit — the regression for shipping the bug the command exists
       to fix
-- [ ] write tests: a one-participant `--roster` is accepted
-- [ ] run tests — must pass before task 5
+      — ➕ plus the companion a "nothing happened" test needs: a clean open with ordinary stdout is
+      **not** read as unresolved, or the check could pass while unable to fire at all
+- [x] write tests: a one-participant `--roster` is accepted
+      — ➕ and one that a roster's `:right` pane is **preserved**, which is the property the pane is
+      carried through the resolver for
+- [x] run tests — must pass before task 5
+      — ➕ **52** in `test_agb_dashboard.py`, **2561** in the full suite
+      — ➕ Task 3's `…reaches_a_stub_rather_than_a_refusal` was narrowed to `--mru`: the selector and
+      roster argvs now reach a real implementation, and leaving them asserting exit 70 would have
+      failed. Its non-vacuity job passes to the `run_grid` tests, which assert the argv handed to
+      `agtermctl`
+      — ➕ mutation-checked **six** guards, each dying against a named test: the close-before-exit
+      dropped; `unresolved_lines` returning `[]`; the dedupe key narrowed to the id; the cap
+      preflight removed; the `excluded` shortfall downgraded; and the unresolved-selector refusal
+      removed
 
 ### Task 5: Lifecycle — hold, detach and `--mru`
 
