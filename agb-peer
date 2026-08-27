@@ -2874,11 +2874,13 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
             # trigger never fires again. The MESSAGE is throttled instead, which
             # is the same trade `missing` makes: a persistent failure says so
             # once rather than once per tick.
+            #
+            # ⚠️ And `opened` comes back UNTOUCHED, which is the ownership
+            # latch: a re-open that failed does not mean the grid already up
+            # went away, so clearing it here would strand somebody else's
+            # screen full of cells this relay put there.
             _throttled(say, notes, ("dash-open",))("dashboard: %s" % (why,))
             return shown, opened
-        # ⚠️ Latched, never cleared here: a re-open that FAILS does not mean the
-        # earlier grid went away, so forgetting ownership would strand somebody
-        # else's screen full of cells this relay put there.
         opened = True
         if notes is not None:
             notes.pop(("said", ("dash-open",)), None)

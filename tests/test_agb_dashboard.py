@@ -727,6 +727,31 @@ def test_a_ONE_participant_roster_is_accepted(dashboard, tmp_path):
     assert ctl.opened() == [["AAAA1111:left"]]
 
 
+def test_an_EMPTY_roster_is_refused_before_anything_opens(dashboard, tmp_path):
+    """A file with no participants in it -- all comments, or truncated by the
+    editor that was writing it. `minimum=1` is what answers this: a grid needs
+    nobody to talk to, but it does need somebody to show."""
+    roster = tmp_path / "peers"
+    roster.write_text("# everyone left\n\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    with pytest.raises(Exception) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert "roster is empty" in str(err.value)
+    assert ctl.opened() == []
+
+
+def test_a_session_with_NO_NAME_is_reported_by_id_rather_than_crashing(
+        dashboard):
+    """⚠️ agterm's `name` is what the bridge renamed the row to, and a row it
+    has not renamed yet has none. The report is the record of what went on the
+    screen, so it must survive that -- by id and pane, with the label blank."""
+    ctl = GridCtl([{"id": "AAAA1111"}])
+    out = Out()
+    assert grid(dashboard, ["AAAA1111"], ctl, out) == 0
+    assert ctl.opened() == [["AAAA1111:left"]]
+    assert "AAAA1111 left" in out.text, out.text
+
+
 def test_a_dashboard_that_will_not_open_is_reported_and_not_closed(dashboard):
     """agterm refuses an invalid id, and a wholly unresolvable set, BEFORE
     opening anything -- so there is no grid to close on this path, and closing
