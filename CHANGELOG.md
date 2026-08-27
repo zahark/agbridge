@@ -230,6 +230,17 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-peer relay --dashboard` left its grid on the screen after it exited.** agterm has exactly
+  **one** dashboard grid, so a relay that opened one and then took its documented exit — Ctrl-C —
+  left the departed conversation's cells sitting in the only grid the Mac has. The next thing that
+  wanted a grid found somebody else's dead agents in it.
+
+  The relay now closes the grid on the way out, and **only a grid it opened this run**: there is no
+  ownership token on agterm's side, so an unconditional close would dismiss whatever you had up.
+  The close is best-effort to the point of swallowing exceptions — it runs from a `finally` on the
+  Ctrl-C path, where a raise would replace your Ctrl-C with a traceback out of the cleanup, and a
+  grid that will not close is cosmetic while a relay that dies reporting it is not.
+
 - **A message delivered to a *working* Codex was typed and never submitted.** Intermittent by
   nature: the same delivery to an idle Codex submits itself, so it depended entirely on whether the
   peer happened to be mid-turn when the reply came back. The relay logged `delivered` either way.

@@ -484,18 +484,37 @@ do not depend on it. Both questions are currently **ASSUMED**, and both decide c
 - Modify: `agb-peer`
 - Modify: `tests/test_agb_peer.py`
 
-- [ ] add `Ctl.dashboard_close()` calling `dashboard --close`, best-effort like every call in that class
-- [ ] track whether **this run** opened a grid; close only that one, and never a grid this run did
+- [x] add `Ctl.dashboard_close()` calling `dashboard --close`, best-effort like every call in that class
+      — ➕ already landed in Task 1; unchanged here
+- [x] track whether **this run** opened a grid; close only that one, and never a grid this run did
       not open — per the ownership policy
-- [ ] ⚠️ wrap the relay loop in `try/finally` so the close happens on `Ctrl-C`, which is the relay's
+      — ➕ the flag is **latched, never cleared**: a re-open that *fails* does not mean the earlier
+      grid went away, so clearing it would strand cells this relay put there
+- [x] ⚠️ wrap the relay loop in `try/finally` so the close happens on `Ctrl-C`, which is the relay's
       documented exit (`agb-peer:2596` prints "Ctrl-C to stop") and reaches neither of the **two**
       in-loop `return`s (`:2600`, `:2604`)
-- [ ] ⚠️ check the 12 existing `cmd_relay(` tests that assert on `ctl.said`: a `finally` now runs on
+- [x] ⚠️ check the 12 existing `cmd_relay(` tests that assert on `ctl.said`: a `finally` now runs on
       every exit, so anything the close says appears in output those tests pin
-- [ ] write tests: a relay that opened a grid closes it on `KeyboardInterrupt`; one that never
+      — ➕ none needed changing. `cmd_relay`'s `say` writes to `out`, not `ctl.said`, and the only
+      test passing `dashboard=True` discards `out`. The close is silent for every other test
+      because `opened_grid` is false
+- [x] write tests: a relay that opened a grid closes it on `KeyboardInterrupt`; one that never
       opened one closes nothing
-- [ ] write tests: a failing close does not raise into the loop
-- [ ] run tests — must pass before task 2b
+      — ➕ plus the `return 0` path (`once=True`) and an open that *failed* (closes nothing)
+- [x] write tests: a failing close does not raise into the loop
+      — ➕ two shapes, not one: a close that **reports** failure and a close that **raises**. The
+      second is what the `finally` needs — an exception there would replace the KeyboardInterrupt
+      with a traceback out of the cleanup — plus a `say` that raises, since `out` can be closed by
+      then. `close_grid` is a module-level function so that last case is directly testable
+- [x] run tests — must pass before task 2b
+      — ➕ 356 in `test_agb_peer.py`, 2489 in the full suite. Three mutations checked, each
+      naming a distinct failing test: `finally` removed, close made unconditional, close's
+      `except` removed
+- [x] ➕ **CHANGELOG entry added here, not in 2b-i.** 2b-i's bullet says it carries the entry "for
+      the user-visible half of Task 2a and this task", but 2c's bullet says the opposite — "Tasks
+      2a, 2b-i and 2b-ii carry their own, per the repo rule that an entry lands in the same commit
+      as its code" — and CLAUDE.md's rule is binding, so the entry ships with its code. 2b-i now
+      only owes an entry for itself
 
 ### Task 2b-i: Route the relay's cells through `dashboard_cells` — UNCONDITIONAL
 
