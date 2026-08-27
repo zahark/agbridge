@@ -843,6 +843,25 @@ What agterm actually puts on the wire for `"\n"` is **not observable from the fa
 does not matter: `\r` is what a real Return key sends and it is the only one of the two both TUIs
 agree about. `agb-peer`'s `SUBMIT_KEY` is `"\r"`.
 
+### 🔴 And an idle Codex submits where a working one does not
+
+MEASURED 2026-08-26. `session type "\r"` submits an **idle** Codex composer — verified live, twice,
+with nothing else touching the pane. Delivered into a **working** Codex the identical call typed the
+body and left the Return in the composer as a newline. That is what made the whole thing read as
+intermittent.
+
+`agb-peer` does not chase the key semantics for that case; it refuses to type into a working peer at
+all, which is the right behaviour under any reading. The signal is on the pane, because the agterm
+row status cannot help: it comes from the agent's own agbridge hooks and **Codex fires none**.
+
+| agent | what it renders while working |
+|---|---|
+| Codex | `• Working (6s • esc to interrupt)` — and `tab to queue message` once the composer has text |
+| Claude | `⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents` |
+
+⚠️ Claude's line is **transient and never reaches the scrollback** — grepping history for it returns
+nothing on an agent that has worked all evening. It was caught by polling the pane every half second.
+
 ⚠️ **`agb pane`'s menu still gets a literal `"\n"`, and merging the two would break it silently.**
 That prompt is a shell `read` on a tty in **canonical** mode, where the line discipline's `ICRNL`
 makes CR and LF equivalent — and that path is verified as it stands. A TUI puts the tty in **raw**

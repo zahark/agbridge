@@ -339,6 +339,74 @@ def test_text_that_never_rendered_is_never_submitted(peer):
     assert ctl.typed == [body], "it must not press Return after a failed verify"
 
 
+BUSY_SCREEN = "\n\u203a Ask Codex to do anything\n" \
+    "\u2022 Working (6s \u2022 esc to interrupt)\n"
+
+CLAUDE_BUSY_SCREEN = COMPOSER + \
+    "\u23f5\u23f5 bypass permissions on (shift+tab to cycle) \u00b7 " \
+    "esc to interrupt \u00b7 \u2190 for agents\n"
+
+
+def test_a_working_peer_is_read_off_its_pane(peer):
+    """⚠️ MEASURED 2026-08-26 on live panes, both agents. The relay's other busy
+    gate reads the agterm row status, which comes from the agent's own agbridge
+    hooks -- and Codex fires none, so its row says `completed` for ever. This is
+    the only gate that can see a working Codex."""
+    assert peer.pane_busy(BUSY_SCREEN)
+    assert peer.pane_busy(CLAUDE_BUSY_SCREEN)
+
+
+def test_an_idle_pane_is_not_read_as_working(peer):
+    """The companion, and not decoration: a mark that matched everything would
+    hold every message for ever and every busy test above would still pass."""
+    assert peer.pane_busy(COMPOSER) is None
+    assert peer.pane_busy("\n\u203a Ask Codex to do anything\n") is None
+    assert peer.pane_busy("") is None
+    assert peer.pane_busy(None) is None
+
+
+def test_a_working_peer_is_held_even_with_a_clean_status(peer):
+    """⚠️ The whole point: status is `completed` and the composer is EMPTY --
+    cursor at column 2 -- which both read as ready. Only the pane says
+    otherwise. Held (code 3), never dropped, so the next tick retries."""
+    ctl = RelayCtl({"AAAA1111": BUSY_SCREEN, "BBBB2222": COMPOSER})
+    with pytest.raises(peer.PeerError) as caught:
+        peer.wait_ready(ctl, session(status="completed"), "left", 0, 0, False,
+                        500, lambda m: None)
+    assert caught.value.code == 3
+    assert "working" in str(caught.value), caught.value
+
+
+def test_the_same_peer_is_ready_once_it_stops_working(peer):
+    """The differ-by-one-variable companion. Without it the test above passes
+    against a gate that can never open."""
+    ctl = RelayCtl({"AAAA1111": COMPOSER, "BBBB2222": COMPOSER})
+    peer.wait_ready(ctl, session(status="completed"), "left", 0, 0, False,
+                    500, lambda m: None)
+
+
+def test_force_still_bypasses_a_working_peer(peer):
+    """`--force` means "type anyway", and it has always bypassed the status
+    gate. A new gate it did not bypass would silently narrow the flag."""
+    ctl = RelayCtl({"AAAA1111": BUSY_SCREEN, "BBBB2222": COMPOSER})
+    peer.wait_ready(ctl, session(status="active"), "left", 0, 0, True,
+                    500, lambda m: None)
+
+
+def test_an_unreadable_pane_holds_rather_than_passing(peer):
+    """A read failure is no information, and no information may not mean ready."""
+
+    class Unreadable(RelayCtl):
+        def text(self, target, pane, lines, whole=False):
+            return "", "boom"
+
+    ctl = Unreadable({"AAAA1111": COMPOSER, "BBBB2222": COMPOSER})
+    with pytest.raises(peer.PeerError) as caught:
+        peer.wait_ready(ctl, session(status="completed"), "left", 0, 0, False,
+                        500, lambda m: None)
+    assert caught.value.code == 3
+
+
 def test_the_submit_key_is_a_carriage_return(peer):
     """⚠️ MEASURED 2026-08-26 on live panes, after a Codex peer spent an evening
     receiving messages it never acted on:

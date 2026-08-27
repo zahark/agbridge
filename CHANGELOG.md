@@ -144,6 +144,35 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A message delivered to a *working* Codex was typed and never submitted.** Intermittent by
+  nature: the same delivery to an idle Codex submits itself, so it depended entirely on whether the
+  peer happened to be mid-turn when the reply came back. The relay logged `delivered` either way.
+
+  ⚠️ **The relay could not tell.** `peer_busy` reads the agterm row's status, which comes from the
+  agent's own agbridge hooks — and **Codex fires none**: `agb-codex` mints its row `completed` and
+  it stays there for the life of the agent. The cursor gate cannot help either, because a working
+  Codex has an **empty** composer, caret at column 2, which reads as ready. So the one agent that
+  needed the gate was the one agent invisible to it.
+
+  `pane_busy` reads it off the pane instead. MEASURED on live panes, both agents:
+
+  ```
+  Codex    • Working (6s • esc to interrupt)
+  Claude   ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt · ← for agents
+  ```
+
+  One marker covers both. ⚠️ Claude's is **transient and never reaches the scrollback** — it was
+  caught by polling a live pane every half second, which is worth knowing before anyone tries to
+  confirm it from history and concludes it is not there.
+
+  A busy peer is now **held**, not typed into: exit 3, retried next tick, nothing lost. `--force`
+  still bypasses it, as it always has for the status gate. ⚠️ And an unreadable pane holds too — a
+  read failure is no information, and no information may not mean ready.
+
+  ⚠️ **`tab to queue message` is deliberately not the marker.** It is what Codex shows once
+  something is already in the composer — so as a gate it arrives one step too late, and Enter is not
+  what queues.
+
 - **Nothing delivered to a Codex peer was ever submitted — the Return arrived as a newline.** The
   message was typed, verified, and the Return went out; Codex put a newline in its composer and sat
   there. Every message to a Codex row has needed a human to press Enter since Codex support was

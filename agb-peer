@@ -230,6 +230,41 @@ MODE_UNKNOWN = "unknown"
 # calls its "Dialog Window Vulnerability".
 BUSY_STATUSES = ("active", "blocked")
 
+# ⚠️ **What "the agent is working" looks like ON THE PANE -- the gate for an
+# agent that reports no status at all.** `peer_busy` reads the agterm row's
+# status, which comes from the agent's own agbridge hooks, and **Codex fires
+# none**: its row is minted `completed` by `agb-codex` and stays there for ever.
+# So the status gate is blind for exactly the agent that needed it, and the
+# cursor gate cannot help -- a working Codex has an EMPTY composer, cursor at
+# column 2, which reads as ready.
+#
+# MEASURED 2026-08-26 on a live Codex pane, which is where these strings come
+# from and the only place a third one may come from:
+#
+#   idle              `> Ask Codex to do anything`
+#   working           `- Working (6s - esc to interrupt)`
+#   working, with
+#   something typed   `tab to queue message`   <- and Enter is NOT what queues
+#
+# The failure this exists for: a message delivered into a working Codex had its
+# body typed and its Return taken as a NEWLINE, so it sat in the composer while
+# the relay logged `delivered`. The identical delivery to an idle Codex submits.
+# Holding is the whole fix -- the relay retries next tick and nothing is lost,
+# which is why this is a reason and not an error.
+#
+# ⚠️ `tab to queue message` is deliberately NOT in the list. It appears only
+# once something is already in the composer, so as a gate it would arrive one
+# step too late; `esc to interrupt` is on screen for the whole turn.
+#
+# ⚠️ **One entry, not one per agent -- and that is MEASURED, not assumed.** A
+# working Claude renders the same phrase, on its hint line rather than in a
+# spinner: `bypass permissions on (shift+tab to cycle) - esc to interrupt -
+# for agents`. Caught by polling a live pane every half second while it
+# worked, because the line is transient and never reaches the scrollback --
+# which is worth knowing before anyone tries to confirm it from history and
+# concludes it is not there.
+BUSY_MARKS = ("esc to interrupt",)
+
 PEER_FLAGS = ("--stdin", "--no-send", "--no-arm", "--dry-run", "--list",
               "--force", "--version", "--once", "--dashboard")
 PEER_VALUE_ARGS = ("--to", "--pane", "--from", "--retries", "--interval",
@@ -394,6 +429,25 @@ def classify(text):
         if glyph in text:
             return MODE_COMPOSER
     return MODE_UNKNOWN
+
+
+def pane_busy(text):
+    """A reason not to type, read off the PANE itself, or None.
+
+    The companion to `peer_busy`, and needed because that one is only as good as
+    the agent's hooks. See `BUSY_MARKS` for what was measured and why holding is
+    the whole fix.
+
+    ⚠️ Searched over the WHOLE capture, deliberately. The hint sits just above
+    the composer, which Claude anchors to the bottom of the pane and Codex does
+    not -- reading a tail is what hid Codex's composer from `classify` once
+    already, and the same mistake is available here.
+    """
+    low = (text or "").lower()
+    for mark in BUSY_MARKS:
+        if mark in low:
+            return "the peer is working (%r is on its screen)" % (mark,)
+    return None
 
 
 def peer_busy(status):
@@ -1336,6 +1390,14 @@ def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
     attempt = 0
     while True:
         reason = None if force else peer_busy(session.get("status"))
+        if reason is None and not force:
+            # ⚠️ Second, and before the cursor: a working agent has an EMPTY
+            # composer, so the caret gate reads it as ready. An unreadable pane
+            # HOLDS rather than passing -- `ensure_composer` read it a moment
+            # ago, so a failure here is transient and the next tick is free.
+            text, err = ctl.text(target, pane, lines)
+            reason = ("the peer's pane could not be read: %s" % (err,)
+                      if err else pane_busy(text))
         if reason is None:
             column, err = ctl.cursor(surface)
             if err:
