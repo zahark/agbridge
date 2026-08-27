@@ -231,10 +231,162 @@ def main(argv, out=None, peer=None, ctl=None, read_line=None):
     return run_grid(opts, out, peer=peer, ctl=ctl, read_line=read_line)
 
 
+# The pane a BARE selector means. Panes reach this command only through
+# `--roster`, whose grammar already carries one per participant; a positional
+# selector names a row and says nothing about which half of it to show.
+DEFAULT_PANE = "left"
+
+
+def resolve_selectors(sessions, selectors, peer=None):
+    """`[(want, pane)]` -> `([(id, pane)], [problem, ...])`.
+
+    ⚠️ **It takes `sessions`, not a `ctl`.** One `agtermctl tree --json`,
+    fetched once by the caller. Taking the `ctl` would mean one subprocess per
+    selector -- nine of them for a full grid -- and the row set can move
+    between them, so two selectors could be answered by two different worlds.
+
+    ⚠️ **It classifies on `len(match_sessions(...))` rather than calling
+    `resolve`.** `resolve` raises one `PeerError` with code 2 for unresolved,
+    ambiguous AND agterm-has-no-rows-at-all alike, so telling those apart
+    through it would mean string-matching an error message.
+
+    ⚠️ **The dedupe key is `(id, pane)`, NOT the id alone.** `X:left` and
+    `X:right` are two legitimate, distinct cells, and a roster may hold
+    `alice=<label>` beside `split=<same label>:right`. Deduping by id would
+    silently drop one -- the same class of missing cell this command exists to
+    remove. First-seen order is kept, and it is a DEDUPE rather than a refusal:
+    two ways of naming one cell is not a user error, spending two of the nine
+    cells on it is the bug.
+
+    A bare string selector is accepted as `(selector, DEFAULT_PANE)` -- the
+    defaulting rule lives here, with the resolution, rather than being spelled
+    at each call site.
+    """
+    peer = peer or load_peer()
+    resolved, problems, seen = [], [], set()
+    for item in selectors:
+        if isinstance(item, str):
+            want, pane = item, DEFAULT_PANE
+        else:
+            want, pane = item
+        matches = peer.match_sessions(sessions, want)
+        if not matches:
+            problems.append("%s: no row matches it -- `agb-peer --list` shows "
+                            "them" % (want,))
+            continue
+        if len(matches) > 1:
+            names = ", ".join(str(s.get("name") or s.get("id"))
+                              for s in matches[:5])
+            problems.append("%s: matches %d rows (%s) -- use a longer prefix "
+                            "or the row id" % (want, len(matches), names))
+            continue
+        key = (matches[0]["id"], pane)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved.append(key)
+    return resolved, problems
+
+
+def wanted_from(opts, peer):
+    """What this argv asks to be shown, as `(want, pane)` pairs.
+
+    The roster is parsed with **`minimum=1`**, not the default 2. agterm
+    accepts a one-cell grid (measured), and a one-participant roster is a legal
+    thing to want to watch -- a relay needs somebody to talk to, a grid does
+    not. `agb-peer-setup` records the same asymmetry deliberately.
+    """
+    if opts["roster"]:
+        spec = peer.parse_roster_text(peer.read_roster_file(opts["roster"]),
+                                      minimum=1)
+        return [(spec[name][0], spec[name][1]) for name in sorted(spec)]
+    return [(want, DEFAULT_PANE) for want in opts["selectors"]]
+
+
+def unresolved_lines(text):
+    """The `unresolved: <id>` lines agterm printed, if any.
+
+    ⚠️ **On STDOUT, and beside exit 0.** When only some cells resolve agterm
+    opens the grid without the rest, says so here, and succeeds -- so this is
+    the one place in the family where the exit status is deliberately not
+    trusted. It is why `Ctl.dashboard` returns stdout at all.
+    """
+    return [line.strip() for line in (text or "").splitlines()
+            if line.strip().startswith("unresolved:")]
+
+
 def run_grid(opts, out, peer=None, ctl=None, read_line=None):
-    # Task 4 (resolution, preflight, the strict `unresolved:` failure) and
-    # Task 5 (the hold and `--detach`) fill this in.
-    raise DashError("opening a grid is not implemented yet", 70)
+    """Resolve, preflight, open -- and refuse rather than show a partial grid.
+
+    ⚠️ **Fail-closed on asserted membership.** Selectors and a roster both say
+    "these are the agents I want to watch", so anything short of all of them is
+    a shortfall and opens nothing: an unresolved selector, an ambiguous one, a
+    participant in a pane the grid cannot express, or a cell agterm itself
+    dropped. `--mru` is the exempt mode precisely because it asserts no
+    membership.
+    """
+    peer = peer or load_peer()
+    ctl = ctl if ctl is not None else peer.Ctl()
+    wanted = wanted_from(opts, peer)
+    sessions = peer.sessions_of(ctl.tree())
+    if not sessions:
+        # Its own message rather than N identical "no row matches" lines: with
+        # no rows at all the answer is about agterm, not about what was typed.
+        raise DashError("agterm reports no sessions at all -- is it running, "
+                        "and is a bridge up?", 2)
+    resolved, problems = resolve_selectors(sessions, wanted, peer)
+    if problems:
+        # ⚠️ Refused **without calling `agtermctl dashboard`** -- not without
+        # calling agtermctl at all: the `tree --json` above has already run, by
+        # design. Opening the rest is exactly what this command exists not to
+        # do, and there is no `--partial`: shipping one unrequested would
+        # reintroduce the behaviour being removed, behind a flag nobody knows
+        # to avoid.
+        raise DashError("nothing opened -- %d selector(s) did not resolve:"
+                        "\n  %s" % (len(problems), "\n  ".join(problems)), 2)
+    if len(resolved) > peer.DASHBOARD_MAX_CELLS:
+        # ⚠️ **After the dedupe**, so two spellings of one cell do not spend
+        # two of the nine. Preflighted rather than left to agterm because every
+        # cell carries an explicit pane, which turns agterm's cap on PANES into
+        # a cap on agents and makes this count exact.
+        raise DashError("agterm's dashboard shows %d cells; got %d"
+                        % (peer.DASHBOARD_MAX_CELLS, len(resolved)), 2)
+    cells, excluded = peer.dashboard_cells(resolved)
+    if excluded:
+        # ⚠️ **A shortfall HERE, unlike in the relay**, where the same exclusion
+        # is reported and the grid opens anyway. The relay's grid is an adjunct
+        # to carrying messages; this command's entire output is the grid, so a
+        # roster naming a `scratch` participant must refuse rather than open one
+        # quietly missing them.
+        raise DashError("nothing opened -- agterm's grid takes only %s panes, "
+                        "and these are elsewhere: %s"
+                        % ("/".join(peer.DASHBOARD_PANES),
+                           ", ".join("%s (%s)" % (row[:8], pane)
+                                     for row, pane in excluded)), 2)
+    ok, said, why = ctl.dashboard(cells)
+    if not ok:
+        # agterm refuses an invalid id and a wholly unresolvable set BEFORE
+        # opening anything (measured), so there is no grid to close here.
+        raise DashError("the dashboard would not open: %s" % (why,), 2)
+    missed = unresolved_lines(said)
+    if missed:
+        # 🔴 **CLOSE FIRST, THEN REFUSE.** agterm prints `unresolved:` *after*
+        # it has already opened the grid with the rest, so exiting on it would
+        # leave exactly the silently-partial grid this command exists to
+        # remove -- and with no hold running, nothing else would ever close it.
+        closed, why_close = ctl.dashboard_close()
+        raise DashError(
+            "agterm opened the grid without every row and said so on stdout: "
+            "%s -- %s" % ("; ".join(missed),
+                          "closed it again" if closed
+                          else "AND THE GRID IS STILL UP: " + why_close), 2)
+    named = dict((s["id"], s.get("name")) for s in sessions)
+    out.write("agb-dashboard: %d cell(s)\n" % (len(cells),))
+    for row, pane in resolved:
+        out.write("  %s %s %s\n" % (row[:8], pane, named.get(row) or ""))
+    # Task 5 puts the foreground hold and `--detach` here. Until then the grid
+    # is left open, which is what `--detach` will make explicit.
+    return 0
 
 
 def run_mru(opts, out, peer=None, ctl=None, read_line=None):

@@ -283,15 +283,17 @@ def test_a_refusal_opens_nothing_and_writes_nothing(dashboard, argv):
     assert out.text == ""
 
 
-@pytest.mark.parametrize("argv", [["alice", "bob"], ["--roster", "/tmp/r"],
-                                  ["--mru"]])
-def test_an_accepted_argv_reaches_a_stub_rather_than_a_refusal(dashboard, argv):
+def test_an_accepted_argv_reaches_a_stub_rather_than_a_refusal(dashboard):
     """The non-vacuity companion to the refusals above: without it every test
-    in this file would pass against a `main` that refused EVERYTHING. Tasks 4
-    and 5 replace the stubs; the exit code 70 is what says "accepted, not yet
-    built"."""
+    in this file would pass against a `main` that refused EVERYTHING.
+
+    ⚠️ Task 4 replaced `run_grid`, so the selector and roster argvs no longer
+    stop here -- they are covered by the whole `run_grid` section below, which
+    asserts on the argv handed to `agtermctl`. `--mru` is Task 5's, and the
+    exit code 70 is what still says "accepted, not yet built"."""
     with pytest.raises(dashboard.DashError) as err:
-        dashboard.main(argv, out=Out(), ctl=NoCtl(), read_line=no_read_line)
+        dashboard.main(["--mru"], out=Out(), ctl=NoCtl(),
+                       read_line=no_read_line)
     assert err.value.code == 70
     assert "not implemented yet" in str(err.value)
 
@@ -348,3 +350,275 @@ def test_the_guard_handles_KeyboardInterrupt_in_a_clause_of_its_own():
     assert handled, "no except handler found -- the walk is broken"
     assert "KeyboardInterrupt" in handled
     assert "DashError" in handled
+
+
+# ---------------------------------------------------------------------------
+# Task 4: resolution, the preflight, and the strict `unresolved:` failure
+#
+# This is the command's whole reason to exist. agterm opens the grid WITHOUT
+# the cells it could not resolve, says so on stdout, and exits 0 -- so a
+# wrapper that trusts the status shows a grid quietly missing the agent it was
+# opened to watch.
+# ---------------------------------------------------------------------------
+
+def tree_of(sessions):
+    """A `tree --json` reply carrying these sessions, in agterm's shape."""
+    return {"result": {"tree": {"workspaces": [{"sessions": list(sessions)}]}}}
+
+
+def rows(*pairs):
+    return [{"id": row, "name": name} for row, name in pairs]
+
+
+class GridCtl(object):
+    """Records what was asked of agterm, and answers what the test says.
+
+    ⚠️ `dashboard` returns the THREE-tuple `Ctl.dashboard` returns -- Task 1
+    widened it precisely so stdout is visible -- and `dashboard_close` the
+    two-tuple. A fake that modelled either as a bool would make the strict
+    check untestable, which is the failure `agb-peer-setup`'s spinning
+    `read_line` fake is the family's other example of.
+    """
+
+    def __init__(self, sessions=(), said="", ok=True, why="exit 1",
+                 close=(True, "")):
+        self.sessions = list(sessions)
+        self._said, self._ok, self._why, self._close = said, ok, why, close
+        self.calls = []
+
+    def tree(self):
+        self.calls.append(("tree",))
+        return tree_of(self.sessions)
+
+    def dashboard(self, members):
+        self.calls.append(("dashboard", list(members)))
+        return self._ok, self._said, self._why
+
+    def dashboard_close(self):
+        self.calls.append(("close",))
+        return self._close
+
+    def opened(self):
+        return [c[1] for c in self.calls if c[0] == "dashboard"]
+
+
+def grid(dashboard, argv, ctl, out=None):
+    return dashboard.main(argv, out=out or Out(), ctl=ctl,
+                          read_line=no_read_line)
+
+
+# --- resolve_selectors itself ---------------------------------------------
+
+def test_resolve_selectors_takes_sessions_not_a_ctl(dashboard):
+    """⚠️ The signature is the property. Taking a `ctl` would mean one
+    `agtermctl tree --json` per selector -- nine subprocesses for a full grid,
+    and the row set can move between them, so two cells could be answered by
+    two different worlds."""
+    import inspect
+    names = list(inspect.signature(dashboard.resolve_selectors).parameters)
+    assert names[:2] == ["sessions", "selectors"]
+    assert "ctl" not in names
+
+
+def test_a_bare_selector_defaults_to_the_left_pane(dashboard, peer):
+    got, problems = dashboard.resolve_selectors(
+        rows(("AAAA1111", "alice")), ["alice"], peer)
+    assert problems == []
+    assert got == [("AAAA1111", "left")]
+
+
+def test_unresolved_and_ambiguous_are_told_apart(dashboard, peer):
+    """⚠️ Classified on `len(match_sessions(...))`, not by calling `resolve`:
+    that raises one `PeerError` code 2 for unresolved, ambiguous and
+    no-sessions-at-all alike, so telling them apart through it would mean
+    string-matching an error message."""
+    sessions = rows(("AAAA1111", "api"), ("BBBB2222", "api-refactor"))
+    got, problems = dashboard.resolve_selectors(
+        sessions, ["api", "nobody"], peer)
+    assert got == []
+    assert len(problems) == 2
+    assert "matches 2 rows" in problems[0] and "api-refactor" in problems[0]
+    assert "no row matches" in problems[1] and "nobody" in problems[1]
+
+
+def test_two_selectors_naming_one_cell_are_DEDUPED_not_refused(dashboard, peer):
+    """Two ways of naming one row is not a user error; spending two of the nine
+    cells on it is the bug. First-seen order is kept."""
+    sessions = rows(("AAAA1111", "alice"), ("BBBB2222", "bob"))
+    got, problems = dashboard.resolve_selectors(
+        sessions, ["alice", "bob", "AAAA1111", "ALIC"], peer)
+    assert problems == []
+    assert got == [("AAAA1111", "left"), ("BBBB2222", "left")]
+
+
+def test_the_dedupe_key_is_id_AND_pane_not_the_id_alone(dashboard, peer):
+    """⚠️ `X:left` and `X:right` are two legitimate, distinct cells, and a
+    roster may hold `alice=<label>` beside `split=<same label>:right`. Deduping
+    by id would silently drop one -- the same missing-cell class this command
+    exists to remove."""
+    sessions = rows(("AAAA1111", "alice"))
+    got, problems = dashboard.resolve_selectors(
+        sessions, [("alice", "left"), ("alice", "right"), ("alice", "left")],
+        peer)
+    assert problems == []
+    assert got == [("AAAA1111", "left"), ("AAAA1111", "right")]
+
+
+# --- the refusals, none of which may call `agtermctl dashboard` ------------
+
+def test_one_bad_selector_among_three_opens_NOTHING(dashboard):
+    """⚠️ "no `agtermctl dashboard` call", NOT "no agtermctl call": the
+    `tree --json` has already run by design, and a test asserting otherwise
+    would push an implementer back into the per-selector-subprocess shape."""
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
+    out = Out()
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice", "carol", "bob"], ctl, out)
+    assert err.value.code != 0
+    assert "carol" in str(err.value)
+    assert ctl.opened() == []
+    assert ("tree",) in ctl.calls, "the tree fetch is the design, not a defect"
+    assert out.text == ""
+
+
+def test_an_ambiguous_selector_is_refused_and_NAMES_ITS_MATCHES(dashboard):
+    ctl = GridCtl(rows(("AAAA1111", "api"), ("BBBB2222", "api-refactor")))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["api"], ctl)
+    assert "api-refactor" in str(err.value)
+    assert ctl.opened() == []
+
+
+def test_no_rows_at_all_says_so_rather_than_naming_every_selector(dashboard):
+    ctl = GridCtl([])
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice", "bob"], ctl)
+    assert "no sessions" in str(err.value)
+    assert ctl.opened() == []
+
+
+def test_ten_selectors_are_refused_before_the_dashboard_call(dashboard, peer):
+    """The cap, from the side that must refuse. It names the cap, because
+    "too many" without the number is a refusal you cannot act on."""
+    sessions = rows(*[("ROW%d" % n, "agent%d" % n) for n in range(10)])
+    ctl = GridCtl(sessions)
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["agent%d" % n for n in range(10)], ctl)
+    assert str(peer.DASHBOARD_MAX_CELLS) in str(err.value)
+    assert ctl.opened() == []
+
+
+def test_nine_selectors_are_accepted(dashboard, peer):
+    """The other side of the same boundary. Without it the refusal above passes
+    against an implementation that refuses every grid."""
+    assert peer.DASHBOARD_MAX_CELLS == 9, "the boundary moved; so must this"
+    sessions = rows(*[("ROW%d" % n, "agent%d" % n) for n in range(9)])
+    ctl = GridCtl(sessions)
+    assert grid(dashboard, ["agent%d" % n for n in range(9)], ctl) == 0
+    assert len(ctl.opened()) == 1
+    assert len(ctl.opened()[0]) == 9
+
+
+def test_a_scratch_participant_is_a_SHORTFALL_here(dashboard, tmp_path):
+    """⚠️ Unlike in the relay, where the same exclusion is reported and the grid
+    opens anyway. The relay's grid is an adjunct to carrying messages; this
+    command's entire output IS the grid, so a roster naming a participant the
+    grid cannot show must refuse rather than open one quietly missing them."""
+    roster = tmp_path / "peers"
+    roster.write_text("alice=alice\ndrawer=bob:scratch\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert "scratch" in str(err.value)
+    assert ctl.opened() == []
+
+
+# --- opening, and the strict check on stdout ------------------------------
+
+def test_a_grid_is_opened_with_explicit_panes_and_reported(dashboard):
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
+    out = Out()
+    assert grid(dashboard, ["alice", "bob"], ctl, out) == 0
+    assert ctl.opened() == [["AAAA1111:left", "BBBB2222:left"]]
+    # On the record: what was opened, by row and pane, with the label that
+    # named it -- so a screenshot of the terminal explains the screen.
+    assert "AAAA1111" in out.text and "alice" in out.text
+    assert "bob" in out.text
+
+
+def test_a_roster_pane_is_PRESERVED_not_forced_to_left(dashboard, tmp_path):
+    roster = tmp_path / "peers"
+    roster.write_text("alice=alice\nsplit=alice:right\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    assert grid(dashboard, ["--roster", str(roster)], ctl) == 0
+    assert ctl.opened() == [["AAAA1111:left", "AAAA1111:right"]]
+
+
+def test_a_ONE_participant_roster_is_accepted(dashboard, tmp_path):
+    """⚠️ `minimum=1`, not the parser's default 2. A relay needs somebody to
+    talk to; a grid does not, and agterm accepts a one-cell grid (measured)."""
+    roster = tmp_path / "peers"
+    roster.write_text("alice=alice\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    assert grid(dashboard, ["--roster", str(roster)], ctl) == 0
+    assert ctl.opened() == [["AAAA1111:left"]]
+
+
+def test_a_dashboard_that_will_not_open_is_reported_and_not_closed(dashboard):
+    """agterm refuses an invalid id, and a wholly unresolvable set, BEFORE
+    opening anything -- so there is no grid to close on this path, and closing
+    would dismiss whatever somebody else had up."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), ok=False, why="boom")
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice"], ctl)
+    assert "boom" in str(err.value)
+    assert ("close",) not in ctl.calls
+
+
+def test_unresolved_on_STDOUT_is_a_failure_despite_exit_zero(dashboard):
+    """🔴 The regression for shipping the bug the command exists to fix.
+
+    agterm exits 0 while printing `unresolved: <id>` and opening the grid
+    without those cells, so this is the one place the exit status is
+    deliberately not trusted."""
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")),
+                  said="unresolved: BBBB2222\n")
+    out = Out()
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice", "bob"], ctl, out)
+    assert err.value.code != 0
+    assert "BBBB2222" in str(err.value)
+
+
+def test_the_strict_failure_CLOSES_the_grid_before_exiting(dashboard):
+    """🔴 `unresolved:` is printed AFTER agterm has already opened the grid with
+    the rest, so refusing and exiting would leave exactly the partially
+    populated grid this command exists to remove -- and with no hold running,
+    nothing else would ever close it."""
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")),
+                  said="unresolved: BBBB2222\n")
+    with pytest.raises(dashboard.DashError):
+        grid(dashboard, ["alice", "bob"], ctl)
+    kinds = [c[0] for c in ctl.calls]
+    assert "close" in kinds, "the partial grid was left on the screen"
+    assert kinds.index("close") > kinds.index("dashboard")
+
+
+def test_a_close_that_FAILS_is_said_out_loud(dashboard):
+    """The grid is still up and nothing else will close it, so the message has
+    to say so rather than read as a tidy refusal."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), said="unresolved: ZZZZ\n",
+                  close=(False, "no such dashboard"))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice"], ctl)
+    assert "STILL UP" in str(err.value)
+    assert "no such dashboard" in str(err.value)
+
+
+def test_a_clean_open_is_not_read_as_unresolved(dashboard):
+    """The companion to the two above: a test that something did not happen
+    needs one that differs only in the variable under test, or it passes
+    against a check that can never fire."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), said="opened 1 cell\n")
+    assert grid(dashboard, ["alice"], ctl) == 0
+    assert ("close",) not in ctl.calls
