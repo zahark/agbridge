@@ -7,6 +7,7 @@ of them says no -- and the stub knows nothing of `tree`, `session text` or
 something did NOT happen, which is the shape most of these are.
 """
 
+import ast
 import importlib.util
 import io
 import os
@@ -3684,3 +3685,182 @@ def test_roster_conflict_is_a_peer_error(peer):
     tool can single it out for recovery."""
     assert issubclass(peer.RosterConflict, peer.PeerError)
     assert peer.RosterConflict("x").code == 1
+
+
+# ---------------------------------------------------------------------------
+# write_roster_file / write_draft_file -- Task 2.
+# ---------------------------------------------------------------------------
+
+def test_write_roster_file_creates_when_absent(peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A", "bob=B"], peer.ROSTER_ABSENT)
+    assert io.open(path, encoding="utf-8").read() == "alice=A\nbob=B\n"
+
+
+def test_write_roster_file_replaces_on_a_matching_gate(peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+    peer.write_roster_file(path, ["alice=A", "bob=B"], peer.roster_bytes(path))
+    assert io.open(path, encoding="utf-8").read() == "alice=A\nbob=B\n"
+
+
+def test_a_stale_gate_refuses_and_leaves_the_file_byte_identical(peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+    stale = peer.roster_bytes(path)
+    peer.write_roster_file(path, ["alice=A", "bob=B"], stale)   # somebody else
+    now = peer.roster_bytes(path)
+    with pytest.raises(peer.RosterConflict):
+        peer.write_roster_file(path, ["mine=M"], stale)
+    assert peer.roster_bytes(path) == now
+
+
+def test_a_refused_write_leaves_no_temp_behind(peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+    with pytest.raises(peer.RosterConflict):
+        peer.write_roster_file(path, ["mine=M"], b"something else")
+    assert [f for f in os.listdir(str(tmp_path)) if ".tmp." in f] == []
+
+
+def test_an_unreadable_roster_raises_ROSTER_CONFLICT_specifically(peer, tmp_path):
+    """⚠️ The CLASS is the assertion, not merely that it raises.
+
+    An unreadable roster is a reason not to write, exactly like a changed one.
+    It arrives from `roster_bytes` as a bare `PeerError`, which sails past the
+    caller's `except RosterConflict` -- so the draft never reaches a recovery
+    file and is lost silently, with every test green. `pytest.raises(PeerError)`
+    passes on the unconverted code and proves nothing.
+    """
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+    gate = peer.roster_bytes(path)
+    os.chmod(path, 0o000)
+    try:
+        with pytest.raises(peer.RosterConflict):
+            peer.write_roster_file(path, ["bob=B"], gate)
+    finally:
+        os.chmod(path, 0o600)
+
+
+def test_the_written_mode_is_the_chosen_literal(peer, tmp_path):
+    """0600, restated on every write -- so a roster loosened by hand tightens
+    again on the next save. Asserted as a number because inheriting a
+    precedent's default is how the mode question gets skipped."""
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+    assert os.stat(path).st_mode & 0o777 == 0o600
+    os.chmod(path, 0o644)
+    peer.write_roster_file(path, ["alice=A", "bob=B"], peer.roster_bytes(path))
+    assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def test_the_mode_survives_a_umask_that_strips_owner_bits(peer, tmp_path):
+    """⚠️ This is the test that makes `fchmod` non-vacuous, and it was added
+    because a mutation proved the previous one was not.
+
+    `O_CREAT`'s mode argument is umask-FILTERED. Under the ordinary 022 nobody
+    notices, because 022 does not touch owner bits -- so deleting the `fchmod`
+    left every mode assertion green. MEASURED under `umask 0600`: `O_CREAT`
+    with 0600 produces **0000**, a roster the relay cannot read, and the
+    `fchmod` is the only thing that fixes it.
+
+    The general form is CLAUDE.md's: a test that exercises one value of the
+    variable is a test that variable does not appear in.
+    """
+    old = os.umask(0o600)
+    try:
+        path = str(tmp_path / "roster")
+        peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+        assert os.stat(path).st_mode & 0o777 == 0o600
+    finally:
+        os.umask(old)
+
+
+def test_the_file_ends_with_a_newline(peer, tmp_path):
+    path = str(tmp_path / "roster")
+    peer.write_roster_file(path, ["alice=A"], peer.ROSTER_ABSENT)
+    assert io.open(path, encoding="utf-8").read().endswith("\n")
+
+
+def test_two_temps_in_one_directory_do_not_collide(peer, tmp_path):
+    """The concurrency this whole feature exists to survive: two setup
+    sessions, or one plus a hand edit. `write_chat_file`'s fixed `.tmp` name
+    would have them share one path and publish a torn read."""
+    path = str(tmp_path / "roster")
+    names = set(peer._roster_temp(path) for _ in range(200))
+    assert len(names) == 200
+    for name in names:
+        assert os.path.dirname(name) == str(tmp_path)
+
+
+def test_write_draft_file_is_ungated(peer, tmp_path):
+    """⚠️ Its caller is the RosterConflict handler.
+
+    A gated writer here would raise `RosterConflict` from inside the conflict
+    handler, losing the draft it was called to save. The path was just minted
+    and belongs to nobody, so there is nothing to compare against.
+    """
+    path = str(tmp_path / "roster.conflict.draft")
+    peer.write_draft_file(path, ["alice=A", "bob=B"])
+    assert io.open(path, encoding="utf-8").read() == "alice=A\nbob=B\n"
+    peer.write_draft_file(path, ["changed=C"])           # no gate, no refusal
+    assert io.open(path, encoding="utf-8").read() == "changed=C\n"
+
+
+def _fn(peer_path, name):
+    tree = ast.parse(io.open(peer_path, encoding="utf-8").read())
+    found = [n for n in ast.walk(tree)
+             if isinstance(n, ast.FunctionDef) and n.name == name]
+    assert found, "%s is gone" % (name,)
+    return found[0]
+
+
+def test_both_writers_temp_then_rename(peer):
+    """⚠️ An actual `rename` CALL, not a substring of the AST dump -- the
+    existing guard's comment records that its first version passed against the
+    docstring, which says "temp+rename"."""
+    for name in ("write_roster_file", "write_draft_file", "_write_roster_temp"):
+        fn = _fn(PEER_PATH, name)
+        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        attrs = [n.func.attr for n in calls if isinstance(n.func, ast.Attribute)]
+        assert attrs, "%s makes no calls at all" % (name,)
+        if name == "_write_roster_temp":
+            assert "open" in attrs and "fchmod" in attrs, attrs
+        else:
+            assert "rename" in attrs, "%s must rename: %s" % (name, attrs)
+
+
+def test_write_draft_file_consults_no_gate(peer):
+    """The structural half of "ungated": it must not read the target back."""
+    fn = _fn(PEER_PATH, "write_draft_file")
+    names = [n.id for n in ast.walk(fn) if isinstance(n, ast.Name)]
+    assert names, "write_draft_file references nothing"
+    assert "roster_bytes" not in names, names
+    assert "RosterConflict" not in names, names
+
+
+def test_write_roster_file_converts_to_roster_conflict(peer):
+    """The structural companion to the unreadable test: the handler exists."""
+    fn = _fn(PEER_PATH, "write_roster_file")
+    raised = [n.exc.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Raise) and isinstance(n.exc, ast.Call)
+              and isinstance(n.exc.func, ast.Name)]
+    assert raised, "write_roster_file raises nothing"
+    assert set(raised) == {"RosterConflict"}, raised
+
+
+def test_agb_peer_never_imports_tempfile(peer):
+    """⚠️ Measured at 12-14 ms on this project's 3.6.8 floor, because it pulls
+    `shutil` -- and `agb-peer send` is parsed by every agent on every message.
+    Same order as the `argparse` import this project already refuses.
+    `_roster_temp` is what replaces it."""
+    tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
+    imported = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.extend(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported.append(node.module or "")
+    assert imported, "no imports found at all -- the walk is broken"
+    assert "tempfile" not in imported, imported

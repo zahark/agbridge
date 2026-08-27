@@ -53,7 +53,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 CTL = os.environ.get("AGB_AGTERMCTL", "agtermctl")
 
@@ -1127,6 +1127,129 @@ def render_roster_lines(entries):
                 text += ":%s" % (tmux_target,)
         lines.append(text)
     return lines
+
+
+ROSTER_MODE = 0o600
+
+
+def _roster_temp(path):
+    """`<name>.tmp.<pid>.<rand>`, in the SAME directory as `path`.
+
+    ⚠️ **This is `agb.temp_name` minus the host component, on purpose.** That
+    one is `<name>.tmp.<host>.<pid>.<rand>` because two HOSTS may write one
+    target over NFS. A roster is edited by a person sitting at the Mac the
+    relay runs on, so the host adds nothing here -- and taking it would mean
+    spelling `own_host()` a third time (`agb-claude` and `agb-codex` already
+    hold copies, and CLAUDE.md invariant 14 records what that costs). The pid
+    and the random suffix carry the whole job: two setup sessions, or one plus
+    a hand edit, must not collide on the temp itself.
+
+    Same directory because `rename()` is only atomic within a filesystem.
+    """
+    head, base = os.path.split(path)
+    return os.path.join(head, "%s.tmp.%d.%s"
+                        % (base, os.getpid(), os.urandom(4).hex()))
+
+
+def _write_roster_temp(path, lines, mode=ROSTER_MODE):
+    """Write the lines to a fresh same-dir temp and return its path.
+
+    `O_CREAT|O_EXCL` so a temp that somehow exists is an error rather than a
+    silent overwrite, and `fchmod` because `O_CREAT`'s mode argument is
+    umask-filtered -- both copied from `agb.atomic_write`, which is the shape
+    this file has settled on for content that must not tear.
+    """
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    temp = _roster_temp(path)
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.fchmod(fd, mode)
+        written = os.write(fd, payload)
+        while written < len(payload):
+            written += os.write(fd, payload[written:])
+    except BaseException:
+        os.close(fd)
+        _unlink_roster_temp(temp)
+        raise
+    os.close(fd)
+    return temp
+
+
+def _unlink_roster_temp(path):
+    try:
+        os.unlink(path)
+    except (IOError, OSError):
+        pass
+
+
+def write_roster_file(path, lines, expect):
+    """Replace the roster, but only if it still says what `expect` says.
+
+    ⚠️ **temp+rename, never in place.** A file rewritten in place can be read
+    truncated at a line boundary, and a truncated roster parses *cleanly* as a
+    shorter one -- indistinguishable from a real removal, so the relay would
+    apply a leave nobody asked for. `docs/commands.md` states this as a rule
+    for whoever edits the file; this is the tool that keeps it.
+
+    ⚠️ **`roster_bytes`' failure becomes a `RosterConflict`, and that
+    conversion is load-bearing.** An unreadable roster is a reason not to
+    write, exactly like a changed one -- but it arrives as a bare `PeerError`,
+    which sails past the caller's `except RosterConflict`. The draft then never
+    reaches a recovery file and is lost silently, with every test green. So the
+    rule here is: anything that means *do not write* leaves through one door.
+
+    ⚠️ **The gate is not a lock, and the docstring says so on purpose.** A
+    writer landing between the comparison and the `rename` is still lost. The
+    window is microseconds against a human deciding what to type, and closing
+    it needs a lockfile whose failure modes are worse than the one it removes;
+    if that trade ever changes, change it here rather than at a call site.
+
+    `mode` is `ROSTER_MODE` (0600) and is **restated on every write**, so an
+    existing roster loosened by hand tightens again the first time this tool
+    saves it. That is a real behaviour change to somebody's file and it is
+    chosen rather than inherited -- `agb.FILE_MODE` happens to be the same
+    number, and inheriting a default is how the mode question gets skipped.
+    """
+    try:
+        current = roster_bytes(path)
+    except PeerError as exc:
+        raise RosterConflict("%s -- nothing was written" % (exc,))
+    if current != expect:
+        raise RosterConflict(
+            "the roster changed on disk since this session read it "
+            "-- nothing was written to %s" % (path,))
+    temp = _write_roster_temp(path, lines)
+    try:
+        os.rename(temp, path)
+    except BaseException:
+        _unlink_roster_temp(temp)
+        raise
+    return path
+
+
+def write_draft_file(path, lines):
+    """Write a recovery draft. **Ungated, and that is the whole point.**
+
+    ⚠️ **Do not "improve" this by routing it through `write_roster_file`.**
+    Its caller is the `RosterConflict` handler, and the path it hands over was
+    just minted and belongs to nobody -- so there is nothing to compare
+    against, `expect` has no honest value, and any gate would raise
+    `RosterConflict` *from inside the conflict handler*, losing the draft it
+    was called to save. The one path standing between a conflict and lost work
+    cannot itself be conditional.
+
+    It still goes temp+rename, which is belt and braces on a unique path
+    nothing else can see: it means a crash mid-write leaves the recovery file
+    **absent** rather than half-written, so what survives is either the whole
+    draft or a clean nothing.
+    """
+    temp = _write_roster_temp(path, lines)
+    try:
+        os.rename(temp, path)
+    except BaseException:
+        _unlink_roster_temp(temp)
+        raise
+    return path
 
 
 def parse_roster_text(data, minimum=2):

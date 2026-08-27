@@ -467,43 +467,49 @@ No auto-merge anywhere.
 - Modify: `tests/test_agb_peer.py`
 - Modify: `CHANGELOG.md`
 
-- [ ] add `write_roster_file(path, lines, expect)` in the **`agb.atomic_write` shape**
+- [x] add `write_roster_file(path, lines, expect)` in the **`agb.atomic_write` shape**
       (`agb:315-334`) — same-directory temp, `O_CREAT|O_EXCL`, `os.fchmod` to restate the mode past
       umask, unlink-on-failure — and **no `tempfile` import** (12.5–14 ms, measured; correction 8)
-- [ ] ⚠️ **name the mode as a literal, and do not inherit the precedent's default** (R4):
+- [x] ⚠️ **name the mode as a literal, and do not inherit the precedent's default** (R4):
       `agb.FILE_MODE` is **`0o600`** (`agb:41`) — the very trap correction 8 named. A roster is read
       by a relay the same user runs, so `0o600` is defensible, but it must be **chosen and written
       down**, not inherited. Decide: `0o600`, and state that an **existing** file's mode is not
       preserved (the rename replaces it) so a hand-loosened roster silently tightens on first write
-- [ ] ⚠️ **enumerate which `temp_name` components are copied** (R4): `agb.temp_name` is
+- [x] ⚠️ **enumerate which `temp_name` components are copied** (R4): `agb.temp_name` is
       `<name>.tmp.<host>.<pid>.<rand>` (`agb:280-289`) and **`agb-peer` has no `own_host`, `getpid`
       or `urandom`** (measured: zero occurrences). The host component exists because *two hosts* may
       write one target over NFS; this tool is Mac-local and single-user, so copy
       **`<name>.tmp.<pid>.<rand>`** and **record the omission and its reason** — adding an
       `own_host` spelling here would be an unregistered instance of CLAUDE.md invariant 14's
       `own_host` agreement (which already names `agb-claude` and `agb-codex`)
-- [ ] ⚠️ **convert `roster_bytes`' `PeerError` into `RosterConflict`** (R3): compare
+- [x] ⚠️ **convert `roster_bytes`' `PeerError` into `RosterConflict`** (R3): compare
       `roster_bytes(path)` to `expect` immediately before `os.rename`, raising `RosterConflict` on
       mismatch **and** on the unreadable raise. Without the conversion, Task 12's
       `except RosterConflict` never fires for that case, **no recovery draft is written, and the
       draft is lost** — with the guard and its test both green
-- [ ] add `write_draft_file(path, lines)` — the **ungated** sibling for recovery drafts; same
+- [x] add `write_draft_file(path, lines)` — the **ungated** sibling for recovery drafts; same
       temp+rename shape, no comparison, because a freshly minted unique path has nothing to conflict
       with
-- [ ] document the residual TOCTOU window in `write_roster_file`'s docstring — a writer landing
+- [x] document the residual TOCTOU window in `write_roster_file`'s docstring — a writer landing
       between the compare and the rename is still lost — and why that is acceptable here
-- [ ] bump `agb-peer`'s `VERSION` (`agb-peer:56`)
-- [ ] write tests: `write_roster_file` succeeds on a matching gate; on a mismatched gate raises
+- [x] bump `agb-peer`'s `VERSION` (`agb-peer:56`)
+- [x] write tests: `write_roster_file` succeeds on a matching gate; on a mismatched gate raises
       `RosterConflict`, leaves the target **byte-identical**, and leaves **no** temp behind
-- [ ] write tests: against an **unreadable** existing file it raises **`RosterConflict`
+- [x] write tests: against an **unreadable** existing file it raises **`RosterConflict`
       specifically** — `pytest.raises(peer.RosterConflict)`, not `PeerError` (R3: the loose
       assertion passes on the wrong class and hides the lost-draft bug). Mutation-check this one
-- [ ] write tests: the written file's mode is the **chosen literal**, asserted as a number
-- [ ] write **AST guards** modelled on `tests/test_agb_peer.py:1799`: `write_roster_file` contains a
+- [x] write tests: the written file's mode is the **chosen literal**, asserted as a number
+- [x] write **AST guards** modelled on `tests/test_agb_peer.py:1799`: `write_roster_file` contains a
       real `rename` `Call`; `write_draft_file` contains a `rename` and **no** `roster_bytes`
       comparison; **no** `import tempfile` anywhere in `agb-peer`. Each with its non-vacuity assertion
-- [ ] add the `CHANGELOG.md` entry in **this** commit (repo rule: same commit as the code)
-- [ ] run tests — must pass before task 3
+- [x] add the `CHANGELOG.md` entry in **this** commit (repo rule: same commit as the code)
+- [x] run tests — **339 passed**
+- [x] ➕ mutation-checked five guards: dropped conversion, skipped gate, gated draft writer,
+      fixed temp name, dropped `fchmod`. ⚠️ **The fifth was VACUOUS at first** — `O_CREAT` mode
+      `0600` under the ordinary umask `022` needs no restatement, so deleting `fchmod` left every
+      mode assertion green. Measured under `umask 0600`: `O_CREAT` yields **0000**. Added
+      `test_the_mode_survives_a_umask_that_strips_owner_bits`; the mutation now fails. The guard
+      was right, the test was not.
 
 ### Task 3: `agb-peer-setup` skeleton, sibling loading, and module identity
 

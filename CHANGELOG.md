@@ -108,7 +108,49 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
-- **`agb-peer` is 0.3.0** — `who` is a new verb, and `--version` is the only way to tell which side
+- **`agb-peer` can now write a roster file safely, which is what an interactive builder needs.**
+  Editing a `--roster` file by hand while a relay runs means knowing that the write has to be
+  atomic: a file rewritten in place can be read truncated at a line boundary, and a truncated
+  roster parses *cleanly* as a shorter one — indistinguishable from somebody leaving, so the relay
+  applies a departure nobody asked for. `docs/commands.md` stated that as a rule for whoever edits
+  the file; `write_roster_file` is the code that keeps it.
+
+  It is **gated on the file's bytes**, not on a `(mtime, size, inode)` key — matching the byte gate
+  `RosterReader` already uses, and for the reason written there: `os.stat` on a network mount is
+  served from the attribute cache, so comparing what you read satisfies invariant 6 by construction
+  rather than by a comment. An editor re-saving identical content is therefore *not* a conflict,
+  which a stat key would have got wrong.
+
+  ⚠️ **`roster_bytes` has three answers where `read_roster_file` has two**, and the third is a
+  raise. Folding "unreadable" into "absent" would make the gate compare `None == None` and rename
+  straight over a roster nobody could read — vacuous exactly when it matters. That is invariant
+  12's rule ("I could not answer" is not "the answer is nothing") applied to the one file this tool
+  writes.
+
+  ⚠️ **`RosterConflict` is its own exception class because its caller must *recover*, not print and
+  exit** — an in-memory draft is still good and has to be persisted before anything else happens.
+  Everything meaning *do not write*, including the unreadable case, leaves through that one door;
+  anything reaching the handler as a bare `PeerError` would lose the draft silently, with every
+  test green.
+
+  `write_draft_file` is the **ungated** sibling, for exactly that recovery draft. Routing it
+  through the gated writer would raise `RosterConflict` from inside the conflict handler and lose
+  the draft it was called to save — so the one path standing between a conflict and lost work
+  cannot itself be conditional.
+
+  The temp name is `agb.temp_name` **minus the host component** (`<name>.tmp.<pid>.<rand>`): that
+  one carries a host because two machines may write one target over NFS, and a roster is edited by
+  a person at the Mac the relay runs on. Taking it would have meant spelling `own_host()` a third
+  time. A **fixed** `.tmp` name — the shape `write_chat_file` uses, which is right for a
+  per-message-id file — would have two editing sessions share one temp and publish the torn read
+  this whole mechanism exists to prevent.
+
+  Mode is `0600`, **chosen rather than inherited**, and restated with `fchmod` on every write
+  because `O_CREAT`'s mode argument is umask-filtered. Under the ordinary `022` that restatement
+  looks like dead code; measured under `umask 0600` it is the only thing standing between the relay
+  and a roster at mode `0000`. A roster loosened by hand therefore tightens again on the next save.
+
+- **`agb-peer` is 0.4.0** — `who` is a new verb (0.3.0), the roster writers are new here, and `--version` is the only way to tell which side
   of an independently-installed pair is old. ⚠️ `install.sh` does not install `agb-peer`, so both
   the relay's copy and the agent's come from a checkout and can drift.
 
