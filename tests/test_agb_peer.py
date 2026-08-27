@@ -19,14 +19,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 
 
-@pytest.fixture(scope="session")
-def peer():
-    loader = SourceFileLoader("agb_peer", PEER_PATH)
-    spec = importlib.util.spec_from_file_location("agb_peer", PEER_PATH,
-                                                  loader=loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+# ⚠️ The `peer` fixture moved to conftest.py, and the move was not cosmetic.
+# The copy that lived here never registered the module in `sys.modules`, so
+# `agb-peer-setup.load_peer` would load a SECOND copy with its own PeerError
+# class. A fixture defined here would also shadow conftest's, quietly undoing
+# the fix. See conftest.PEER_MODULE.
 
 
 MENU = "  [enter] attach   [s] split   [d] drawer   [q] quit > "

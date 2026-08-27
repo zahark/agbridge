@@ -140,6 +140,53 @@ def agb():
     return module
 
 
+# ⚠️ The key is a CROSS-FILE AGREEMENT with `agb-peer-setup`'s PEER_MODULE
+# (CLAUDE.md invariant 14). If the two disagree, `load_peer` builds a SECOND
+# module object and `setup.PeerError is peer.PeerError` fails -- which reads
+# like a loader bug rather than a naming disagreement.
+PEER_MODULE = "agb_peer"
+PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
+SETUP_PATH = os.path.join(REPO_ROOT, "agb-peer-setup")
+
+
+@pytest.fixture(scope="session")
+def peer():
+    """`agb-peer` as a module, REGISTERED under the shared key.
+
+    ⚠️ The registration is the point, and this fixture did not always do it.
+    `agb-peer-setup.load_peer` returns `sys.modules[PEER_MODULE]` when it is
+    there; without this line it loads its own copy, and the two modules have
+    different `PeerError` classes -- so `except peer.PeerError` around a call
+    into the setup script does not catch. Same shape as the `agb` fixture
+    above, for the same reason.
+    """
+    module = sys.modules.get(PEER_MODULE)
+    if module is not None:
+        return module
+    loader = SourceFileLoader(PEER_MODULE, PEER_PATH)
+    spec = importlib.util.spec_from_file_location(PEER_MODULE, PEER_PATH,
+                                                  loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[PEER_MODULE] = module
+    loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="session")
+def setup(peer):
+    """`agb-peer-setup`, loaded after `peer` so it adopts that module object.
+
+    Depending on `peer` is not decoration: it forces the shared registration to
+    happen first, which is exactly the property the identity test asserts.
+    """
+    loader = SourceFileLoader("agb_peer_setup", SETUP_PATH)
+    spec = importlib.util.spec_from_file_location("agb_peer_setup", SETUP_PATH,
+                                                  loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 @pytest.fixture(scope="session")
 def mac(agb):
     """The Mac-side module, loaded through `agb._load_mac()`.

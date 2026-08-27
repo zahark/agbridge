@@ -519,37 +519,42 @@ No auto-merge anywhere.
 - Modify: `tests/conftest.py`
 - Modify: `tests/test_agb_peer.py`
 
-- [ ] create `agb-peer-setup` (`#!/usr/bin/env python3`, executable, own `VERSION`/`--version`)
-- [ ] implement `_load_peer(path=None)` with **`SourceFileLoader`** + `spec_from_file_location`,
+- [x] create `agb-peer-setup` (`#!/usr/bin/env python3`, executable, own `VERSION`/`--version`)
+- [x] implement `_load_peer(path=None)` with **`SourceFileLoader`** + `spec_from_file_location`,
       defaulting to `agb-peer` beside **`os.path.realpath(__file__)`** (R8) — citing
       `agb.sibling_path` (`agb:2626-2632`), whose docstring is exactly this case, because this
       plan's only install instruction is to **symlink** the tool
-- [ ] early-return `sys.modules.get(key)`, and `del sys.modules[key]` on a failed `exec_module` —
+- [x] early-return `sys.modules.get(key)`, and `del sys.modules[key]` on a failed `exec_module` —
       both from `agb._load_sibling` (`agb:2643-2675`); the second because a half-initialised module
       would otherwise be returned by the next call as if it had loaded
-- [ ] ⚠️ **move the `peer` fixture from `tests/test_agb_peer.py:21-28` into `tests/conftest.py`,
+- [x] ⚠️ **move the `peer` fixture from `tests/test_agb_peer.py:21-28` into `tests/conftest.py`,
       delete the local definition, AND make it register the module in `sys.modules` under the
       pinned key before `exec_module`** (R5). The existing fixture does **not** do this; conftest's
       `agb` fixture does (`tests/conftest.py:138`). A verbatim move leaves `_load_peer`'s lookup a
       miss, builds a second module object, and **fails** the identity test below
-- [ ] pin the `sys.modules` key as a named cross-file agreement (CLAUDE.md invariant 14) — the
+- [x] pin the `sys.modules` key as a named cross-file agreement (CLAUDE.md invariant 14) — the
       fixture's key and `_load_peer`'s key are one string. Note `_load_sibling` uses `setdefault`
       where conftest uses assignment; pick one and say which
-- [ ] define `USAGE`; implement `main(argv)` dispatching `validate <file>` (body in Task 13) and
+- [x] define `USAGE`; implement `main(argv)` dispatching `validate <file>` (body in Task 13) and
       bare `<file>` (body in Task 10) — **the dispatch table is written once, here**
-- [ ] implement the `__main__` guard: `PeerError`, `KeyboardInterrupt`, **`agb.AgbError`**
+- [x] implement the `__main__` guard: `PeerError`, `KeyboardInterrupt`, **`agb.AgbError`**
       (`agb_ops:1859-1888`) **and `OSError`/`IOError`** (R1) — `agb.read_config` re-raises every
       errno except `ENOENT`/`ENOTDIR` (`agb:152-170`), and an unreadable config must not traceback
       out of a menu. `AgbError` lazily, since `agb` may not be loaded
-- [ ] write tests: `setup.PeerError is peer.PeerError` — the named identity guard
-- [ ] write tests: `_load_peer()` resolves `parse_roster_text`/`parse_participants`/`Ctl`/
+- [x] write tests: `setup.PeerError is peer.PeerError` — the named identity guard
+- [x] write tests: `_load_peer()` resolves `parse_roster_text`/`parse_participants`/`Ctl`/
       `match_sessions`, asserting the walk found them before asserting content
-- [ ] write tests: a failed `exec_module` leaves **nothing** in `sys.modules` under that key
-- [ ] write tests: `_load_peer` resolves through a **symlinked** entry point (R8) — the install
+- [x] write tests: a failed `exec_module` leaves **nothing** in `sys.modules` under that key
+- [x] write tests: `_load_peer` resolves through a **symlinked** entry point (R8) — the install
       shape, which a checkout-relative test cannot see
-- [ ] write tests: no path argument → usage, exit 1, **no filesystem write**
-- [ ] run `python3 -m pytest tests/test_agb_peer.py tests/test_agb_peer_setup.py -q` — both files,
-      because the fixture moved. Must pass before task 4
+- [x] write tests: no path argument → usage, exit 1, **no filesystem write**
+- [x] run both files — **339 + 10 passed**; full suite **2357 passed**
+- [x] ➕ the `__main__` guard needed a **fourth** class shape: the four names cannot be spelled in
+      an `except` clause without importing the sibling first, which a usage error must not
+      require — so they are matched by `type(error).__name__`, with a structural test
+- [x] ➕ that structural test's **first version asserted over an empty set** — `type(e).__name__`
+      is an `Attribute` over a `Call`, not a `Call`, so the walk matched nothing. Caught by its
+      own non-vacuity assertion, which is what that convention is for
 
 ### Task 4: Discovery, and deriving a roster-legal `<row>` from a picked row
 

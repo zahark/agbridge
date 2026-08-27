@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+# agb-peer-setup -- build an `agb-peer relay --roster` file, interactively.
+#
+# The roster grammar is `name=<row>[:<pane>][@<target>[:<tmux>]]`, and writing
+# one by hand means knowing three things that are not obvious:
+#
+#   * **What text goes in `<row>`.** Not the row title agterm shows -- that is
+#     `label · host · cwd · pane · beat`, and `parse_roster_text` splits on
+#     WHITESPACE, so a title cannot be a spec at all. Not the row id either:
+#     `agb-refresh` re-mints every row and every id changes, which is why
+#     `docs/commands.md` says to name a label substring.
+#   * **The suffix grammar**, including that `:<tmux>` without `@<target>`
+#     reparses as a pane rather than meaning what it looks like.
+#   * **That the write has to be ATOMIC.** A roster rewritten in place can be
+#     read truncated at a line boundary, and a truncated roster parses cleanly
+#     as a shorter one -- so the relay applies a departure nobody asked for.
+#
+# So this is a picker over live rows plus one writer that gets the third right.
+#
+# ⚠️ **Why this is a separate script and not a fourth `agb-peer` verb.**
+# `agb-peer send` runs on cluster hosts, inside agents, on every message, and
+# CPython caches no bytecode for a `__main__` -- so everything in that file is
+# re-parsed by every agent every time. A menu loop, a picker and config
+# resolution belong on the other side of that line. It is the same argument
+# that produced `agb`/`agb_mac`/`agb_ops`, one tier down.
+#
+# What it shares rather than reimplements: the roster grammar, its validation,
+# the byte gate and both writers all live in `agb-peer`, which stays the single
+# owner of the file format. This script loads it by path and calls it.
+#
+# Usage:
+#
+#   agb-peer-setup <roster-file>          # the interactive editor
+#   agb-peer-setup validate <roster-file> # would `agb-peer relay` start?
+
+import os
+import sys
+
+VERSION = "0.1.0"
+
+# ⚠️ The `sys.modules` key is a CROSS-FILE AGREEMENT with tests/conftest.py's
+# `peer` fixture (CLAUDE.md invariant 14). Both must register the module under
+# this exact string, or a test gets a second module object and
+# `setup.PeerError is peer.PeerError` fails -- in a way that reads like a
+# loader bug rather than a naming disagreement.
+PEER_MODULE = "agb_peer"
+
+USAGE = """usage:
+  agb-peer-setup <roster-file>            build or edit a relay roster
+  agb-peer-setup validate <roster-file>   would `agb-peer relay` start with it?
+  agb-peer-setup --version
+"""
+
+
+def peer_path():
+    """Where `agb-peer` is: beside the REAL path of this file.
+
+    ⚠️ `realpath`, not `dirname(__file__)`, and the install instruction is why:
+    this script is symlinked onto `$PATH` beside `agb-peer`, so an unresolved
+    `__file__` looks in the symlink's directory and finds nothing. `agb`'s own
+    `sibling_path` carries the same note for the same reason -- and a test run
+    from the checkout would never notice, because there the two coincide.
+    """
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "agb-peer")
+
+
+def load_peer(path=None):
+    """`agb-peer` as a module, loaded once and shared.
+
+    Mirrors `agb._load_sibling`: an early return out of `sys.modules` so two
+    callers get one module object, an explicit `SourceFileLoader` because the
+    file has no `.py` extension and `spec_from_file_location` alone would leave
+    `spec.loader` as None, and a `del` on failure -- without which a
+    half-initialised module is returned by the next call as if it had loaded,
+    turning the second failure into a baffling AttributeError.
+    """
+    mod = sys.modules.get(PEER_MODULE)
+    if mod is not None:
+        return mod
+    import importlib.util
+    from importlib.machinery import SourceFileLoader
+    target = path or peer_path()
+    loader = SourceFileLoader(PEER_MODULE, target)
+    spec = importlib.util.spec_from_file_location(PEER_MODULE, target,
+                                                  loader=loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[PEER_MODULE] = mod
+    try:
+        loader.exec_module(mod)
+    except BaseException:
+        del sys.modules[PEER_MODULE]
+        raise
+    return mod
+
+
+def main(argv, out=None, peer=None, read_line=None, ctl=None):
+    out = out or sys.stdout
+    if not argv:
+        raise SetupError(USAGE.rstrip("\n"), 1)
+    if argv[0] in ("--version", "version"):
+        out.write("agb-peer-setup %s\n" % (VERSION,))
+        return 0
+    if argv[0] == "validate":
+        if len(argv) != 2:
+            raise SetupError("validate takes one roster file", 1)
+        return cmd_validate(argv[1], out, peer=peer)
+    if len(argv) != 1 or argv[0].startswith("-"):
+        raise SetupError(USAGE.rstrip("\n"), 1)
+    return run_editor(argv[0], out, peer=peer, read_line=read_line, ctl=ctl)
+
+
+class SetupError(Exception):
+    """This script's own one-line-message-plus-exit-code error.
+
+    Separate from `agb-peer`'s `PeerError` only because it is raised before the
+    sibling is necessarily loaded -- usage errors happen with no module in hand.
+    """
+
+    def __init__(self, message, code=1):
+        Exception.__init__(self, message)
+        self.code = code
+
+
+def cmd_validate(path, out, peer=None):
+    raise SetupError("validate is not implemented yet", 70)
+
+
+def run_editor(path, out, peer=None, read_line=None, ctl=None):
+    raise SetupError("the interactive editor is not implemented yet", 70)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except SetupError as error:
+        sys.stderr.write("agb-peer-setup: %s\n" % (error,))
+        sys.exit(error.code)
+    except KeyboardInterrupt:
+        sys.stderr.write("agb-peer-setup: interrupted\n")
+        sys.exit(1)
+    except Exception as error:
+        # ⚠️ FOUR classes reach here, not one, and each was a real escape.
+        #   * `PeerError` -- the sibling's own, for anything it refuses.
+        #   * `AgbError`  -- `agb_ops.parse_pane_args` raises it for an argv it
+        #     will not read, and a picked row's `foreground` is arbitrary.
+        #   * `OSError`/`IOError` -- `agb.read_config` re-raises every errno
+        #     except ENOENT/ENOTDIR, so an unreadable instance config arrives
+        #     as one of these while looking up an ssh target.
+        # They cannot be named in the `except` clause above without importing
+        # the sibling first, which usage errors must not require -- so they are
+        # matched here by class name instead.
+        if type(error).__name__ in ("PeerError", "RosterConflict", "AgbError",
+                                    "OSError", "IOError"):
+            sys.stderr.write("agb-peer-setup: %s\n" % (error,))
+            sys.exit(getattr(error, "code", 1))
+        raise
