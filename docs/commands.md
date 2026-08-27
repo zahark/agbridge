@@ -1550,10 +1550,21 @@ agent sends by **printing a line**; the relay reads panes and types the payload 
 composer. Nothing in it knows where an agent runs, which is what makes one mechanism cover
 farm↔farm, farm↔Mac and Mac↔Mac. `agb-peer send` calls no `agtermctl` at all and runs anywhere.
 
-⚠️ **`dashboard` is a MODAL overlay: agterm takes no input while it is open.** So `--dashboard` on
-the relay is for an unattended run, not for a session you are also talking in — it opens at startup
-and blocks the keyboard until dismissed. Open and close it by hand from a terminal *outside* agterm
-instead, which is where `agtermctl` is being driven from anyway:
+⚠️ **CORRECTED 2026-08-27.** This section used to say `dashboard` was a modal overlay that blocked
+all input, and therefore that `--dashboard` was "for an unattended run, not for a session you are
+also talking in". **That is wrong for the path that matters, and it was never sourced** — the claim
+lived here alone, with no entry in `agtermctl.md`, which is the one file whose job is tagging each
+clause with its evidence. **MEASURED with a grid open**: `session type --target <row> --pane left`
+returns ok and the text lands, verified by reading it back with `session text`. That is the exact
+call the relay makes, so a dashboard does **not** stop delivery and `--dashboard` is usable during a
+live conversation.
+
+⚠️ What remains **ASSUMED** is narrower and worth keeping: whether the grid takes *physical keyboard*
+focus in the GUI is untested — nobody has typed at the machine with one open. The correction is
+about the control socket, not about what your hands can do.
+
+Open and close it by hand from a terminal outside agterm if you prefer, which is where `agtermctl`
+is being driven from anyway:
 
 ```sh
 agtermctl dashboard <a-id>:left <b-id>:left

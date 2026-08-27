@@ -1252,3 +1252,28 @@ if that ever matters.
 - does `session close` exist, and does it take `--target`?
 - ~~is any status outside the four-word vocabulary accepted (it must not be)?~~ **ANSWERED
   2026-08-24: no — `error: invalid status`, exit 1.**
+
+### What `dashboard` actually does — **CONFIRMED live 2026-08-27**
+
+Captured against the installed binary, because a claim about this command had been asserted in
+`docs/commands.md` with **no entry here at all** and turned out to be wrong. That is the failure this
+file exists to prevent.
+
+| clause | class |
+|---|---|
+| cells are `<id>` or `<id>:left` / `<id>:right`; **ids or unique prefixes, never names** | CONFIRMED |
+| **`session type` still works while a grid is open** — returns ok, and the text is there on read-back | CONFIRMED |
+| whether the grid takes **physical keyboard** focus in the GUI | **ASSUMED** — untested |
+| a bare id takes **every pane** of the session, and the 9-cell cap counts **panes**, not sessions | CONFIRMED (help text) |
+| `--mru` opens a grid of the window's most-recently-used sessions with **no ids given** | CONFIRMED (help text) |
+| one cell alone is valid; there is no minimum of two | CONFIRMED |
+| every id unresolvable → `error: no dashboard sessions resolved`, **exit 1**, nothing opens | CONFIRMED |
+| ⚠️ **some ids unresolvable → prints `unresolved: <id>`, exit 0, and OPENS with the rest** | CONFIRMED |
+| a malformed suffix (`id:notapane`, `a::b`) → invalid-id error, **exit 1**, rejected before opening | CONFIRMED |
+| `:right` on a session with no split is *unresolved*, not an error | CONFIRMED |
+
+⚠️ **The partial-success row is the one with teeth for a caller.** A mix of good and bad cells exits
+**0** and opens a grid missing a participant, announcing it only on stdout. Anything wrapping this
+must read the output for `unresolved:` rather than trusting the status, or a silently absent agent
+reads as a working dashboard.
+
