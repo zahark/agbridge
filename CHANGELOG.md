@@ -248,9 +248,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   participant you were least likely to be watching.
 
   A grid cell is now built in exactly one place, which drops a pane agterm's grid cannot show and
-  opens the grid with the rest. ⚠️ **It is dropped silently for now** — saying which participant is
-  missing is a separate change; until then, a grid with fewer cells than participants means one of
-  them is in a drawer.
+  opens the grid with the rest — **and says who it dropped**, by name and pane:
+
+  ```
+  dashboard: not shown -- carol (scratch); agterm's grid takes only left/right panes
+  ```
+
+  ⚠️ **The line matters as much as the fix.** A dropped cell turns an all-or-nothing failure you
+  could see into a participant quietly missing from a grid that otherwise looks right — the same
+  class of defect, one layer down. It is said **once**, not once per relay tick: the grid is
+  re-opened on every row-id change (an `agb-refresh` re-mints them all), and an unthrottled line
+  would repeat for ever and bury everything else the relay says. A change in *who* is excluded still
+  gets through, because the throttle is on the message rather than on the clock.
 
 - **A message delivered to a *working* Codex was typed and never submitted.** Intermittent by
   nature: the same delivery to an idle Codex submits itself, so it depended entirely on whether the

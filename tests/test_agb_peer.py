@@ -4181,3 +4181,74 @@ def test_the_relay_asks_dashboard_cells_for_its_cells():
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     assert names, "cmd_relay calls no bare-name function -- walk is wrong"
     assert "dashboard_cells" in names
+
+
+# ---------------------------------------------------------------------------
+# A scratch participant is dropped from the grid, and SAID -- Task 2b-ii.
+# Plan: docs/plans/20260827-agb-dashboard.md
+#
+# agterm refuses a `:scratch` cell at parse time (measured 2026-08-27), so the
+# whole `dashboard` call failed and the relay opened NO GRID AT ALL -- every
+# participant lost, because one of them was in the drawer. Routing through
+# `dashboard_cells` fixed that; these pin the half that is left, which is that
+# the drop must not be silent.
+# ---------------------------------------------------------------------------
+
+def test_a_scratch_participant_does_not_stop_the_grid_opening(peer):
+    ctl = RelayCtl(dict(panes(), CCCC3333=COMPOSER))
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222",
+                         "carol=CCCC3333:scratch"], 500, 0, True,
+                   io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards == [["AAAA1111:left", "BBBB2222:left"]]
+
+
+def test_an_excluded_participant_is_named(peer):
+    """⚠️ By NAME, not by row id. The operator wrote `carol=...:scratch`; a
+    hex prefix would make them go and look up which participant vanished.
+
+    ⚠️ Asserted on the REPORT LINE, not on the whole output, and that is what
+    the mutation check found: the relay already prints `carol  CCCC3333:scratch`
+    in the roster it lists every re-resolve, so `"carol" in out.getvalue()` was
+    green with the report deleted.
+    """
+    out = io.StringIO()
+    ctl = RelayCtl(dict(panes(), CCCC3333=COMPOSER))
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222",
+                         "carol=CCCC3333:scratch"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    report = [line for line in out.getvalue().splitlines()
+              if "not shown" in line]
+    assert len(report) == 1, out.getvalue()
+    assert "carol" in report[0] and "scratch" in report[0], report[0]
+
+
+def test_nothing_is_said_when_every_participant_fits(peer):
+    """The companion the "nothing happened" assertion needs: this differs from
+    the test above in the one variable under test, so it cannot pass against a
+    report that can never fire."""
+    out = io.StringIO()
+    ctl = RelayCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    assert "not shown" not in out.getvalue(), out.getvalue()
+
+
+def test_the_exclusion_is_reported_once_not_per_reopen(peer, tmp_path):
+    """⚠️ The grid is re-opened on every membership change, and the excluded
+    participant is still excluded each time. Unthrottled, a long-lived relay
+    repeats the same line for ever and buries everything else it says."""
+    path = roster_file(
+        tmp_path, "alice=AAAA1111\nbob=BBBB2222\ncarol=CCCC3333:scratch\n")
+    surfaces = dict(panes(), CCCC3333=COMPOSER, DDDD4444=COMPOSER)
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n"
+                                  "carol=CCCC3333:scratch\ndave=DDDD4444\n")
+    ctl = TickingCtl(surfaces, edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3,
+                   dashboard=True, fetch=Fetcher())
+    assert len(ctl.dashboards) > 1, (
+        "the grid never re-opened -- the throttle was not exercised")
+    assert out.getvalue().count("not shown") == 1, out.getvalue()

@@ -1254,9 +1254,13 @@ def write_draft_file(path, lines):
 
 # Which participant panes the DASHBOARD can show. agterm's grid takes a
 # `:left`/`:right` suffix; `PANE_KINDS` is wider because a participant may live
-# in the scratch drawer, which is a place an agent can be but -- pending the
-# measurement in the agb-dashboard plan's Task 0 -- may not be a cell agterm
-# will accept. This tuple is the single line that answer changes.
+# in the scratch drawer, which is a place an agent can be but NOT a cell agterm
+# will accept. ⚠️ Measured 2026-08-27 (agb-dashboard plan, Task 0): `:scratch`
+# is refused with `invalid session id ... use <id>, <id>:left, or <id>:right`,
+# and refused AT PARSE TIME -- byte-identical whether the row has a scratch pane
+# open or not -- so the suffix vocabulary is fixed before agterm looks at any
+# row state. That is why exclusion is the only option here: there is no state a
+# caller could arrange that would make the cell work.
 DASHBOARD_PANES = ("left", "right")
 
 # agterm's own cap. ⚠️ It counts PANES, not sessions: a BARE id takes every pane
@@ -2633,11 +2637,33 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                     # no-op for them -- but it was a second place where a cell
                     # spelling lived, and a second place is how a bare id
                     # (which takes every pane of its session) gets emitted by
-                    # one caller and not the other. `excluded` is not read yet;
-                    # reporting it is the scratch task's job.
-                    grid_cells, _excluded = dashboard_cells(
+                    # one caller and not the other.
+                    grid_cells, excluded = dashboard_cells(
                         [(resolved[n][0], resolved[n][1])
                          for n in sorted(resolved)])
+                    if excluded:
+                        # ⚠️ REPORTED, because a silent drop is the worse bug.
+                        # agterm refuses `:scratch` at parse time, so the whole
+                        # dashboard call used to fail and NO grid opened at all;
+                        # routing through `dashboard_cells` fixed that, and
+                        # would otherwise have replaced a visible failure with a
+                        # participant quietly missing from the grid.
+                        #
+                        # ⚠️ Once, not per tick: this block re-runs on every id
+                        # change, and `_throttled` dedupes on the MESSAGE, so a
+                        # change in who is excluded still gets through while a
+                        # steady state says nothing. `resolved` is inverted here
+                        # rather than carried alongside because `dashboard_cells`
+                        # speaks in rows, and a row names a participant only
+                        # because `_one_name_per_row` guarantees the map is 1:1.
+                        named = dict((resolved[n][0], n) for n in resolved)
+                        _throttled(say, notes, ("dash-excluded",))(
+                            "dashboard: not shown -- %s; agterm's grid takes "
+                            "only %s panes"
+                            % (", ".join(
+                                "%s (%s)" % (named.get(row, row[:8]), pane)
+                                for row, pane in excluded),
+                               "/".join(DASHBOARD_PANES)))
                     ok, _out, why = ctl.dashboard(grid_cells)
                     # ⚠️ Latched, never cleared: a re-open that FAILS does not
                     # mean the earlier grid went away, so forgetting ownership

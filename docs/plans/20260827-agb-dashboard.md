@@ -579,12 +579,46 @@ nobody wrote, and the no-bare-id property reverted to a human read.
 ✅ **Task 0 measured `:scratch` as REJECTED, so this task IS built.** The conditional is resolved:
 four defects, and every downstream "three, or four if…" now reads four.
 
-- [ ] exclude a `scratch`-paned participant from the cell set, via `dashboard_cells`' `excluded`
-- [ ] report an excluded participant **once**, not per tick
-- [ ] write tests: a `scratch` participant no longer prevents the grid opening
-- [ ] mutation-check by passing the participant pane through unchecked
-- [ ] add the `CHANGELOG.md` entry naming this as **a bug users may have hit**
-- [ ] run tests — must pass before task 2c
+- [x] exclude a `scratch`-paned participant from the cell set, via `dashboard_cells`' `excluded`
+      — ➕ **already true when this task started**: 2b-i's routing dropped the cell, so the headline
+      symptom (agterm refuses `:scratch` at parse time, the whole call fails, **no grid at all**)
+      was already gone. What was left was that the drop was *silent* — `cmd_relay` captured
+      `_excluded` and never read it — which is the same "looks correct and is not" class one layer
+      down. This task is the report, not the exclusion
+- [x] report an excluded participant **once**, not per tick
+      — ➕ through the existing `_throttled(say, notes, ("dash-excluded",))`. It dedupes on the
+      **message**, so a change in *who* is excluded still gets through while a steady state is
+      silent — the clock never enters it
+      — ➕ ⚠️ **by NAME, not by row id.** `dashboard_cells` speaks in `(row, pane)`, so `resolved` is
+      inverted at the call site; that inversion is only sound because `_one_name_per_row` already
+      guarantees the map is 1:1, which is worth knowing before anyone moves this code
+- [x] write tests: a `scratch` participant no longer prevents the grid opening
+      — ➕ four, not one: the grid opens with the other two cells; the excluded participant is named
+      **and** its pane said; a **companion** asserting nothing is said when everyone fits (a
+      "nothing happened" test alone passes against a report that can never fire); and once-ness
+      across a real re-open, driven by a roster edit through `TickingCtl`, with
+      `len(ctl.dashboards) > 1` asserted first so the throttle is provably exercised
+- [x] mutation-check by passing the participant pane through unchecked
+      — ➕ three mutations, each naming a distinct failing test: `DASHBOARD_PANES` widened to
+      `PANE_KINDS` (`…does_not_stop_the_grid_opening`, plus two Task 1 tests); the `if excluded:`
+      report deleted (`…excluded_participant_is_named`); and the throttle replaced by a bare `say`
+      (`…reported_once_not_per_reopen`)
+      — ⚠️ **the second mutation caught a VACUOUS test**, which is the whole reason for running it:
+      `…excluded_participant_is_named` first asserted `"carol" in out.getvalue()`, and the relay
+      already prints `carol  CCCC3333:scratch` in the participant list it emits on every
+      re-resolve — so it was green with the report deleted. It now selects the line containing
+      `not shown` and asserts on that. A test about a NEW message must not be satisfiable by an old
+      one that happens to contain the same word
+- [x] add the `CHANGELOG.md` entry naming this as **a bug users may have hit**
+      — ➕ **extended 2b-i's existing entry rather than adding a second**: same symptom, and that
+      entry already carried the silent-drop gap as its open caveat. It now shows the line verbatim
+      and says why once-ness is part of the fix
+- [x] ➕ **stale comment above `DASHBOARD_PANES` rewritten.** It said the scratch question was
+      "pending the measurement in the agb-dashboard plan's Task 0"; Task 0 has been measured, so it
+      now states the measured fact and its date (2026-08-27) — including that the refusal is at
+      **parse time**, which is why exclusion is the only available answer
+- [x] run tests — must pass before task 2c
+      — ➕ 363 in `test_agb_peer.py`, 2496 in the full suite
 
 ### Task 2c: The membership trigger (defects 2 and 3)
 
