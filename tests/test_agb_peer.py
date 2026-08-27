@@ -1065,6 +1065,97 @@ def test_cmd_relay_opens_no_dashboard_by_default(peer):
     assert ctl.dashboards == []
 
 
+# The relay used to leave its grid on the screen after it exited -- agterm has
+# exactly one grid, so the next thing that wanted one found the dead relay's
+# cells in it. Defect 1 of the agb-dashboard plan; Task 2a.
+
+class InterruptedRelayCtl(RelayCtl):
+    """Ctrl-C at the first sleep -- the relay's own documented exit, which
+    reaches neither of `cmd_relay`'s in-loop `return`s."""
+
+    def sleep(self, seconds):
+        raise KeyboardInterrupt
+
+
+def test_cmd_relay_closes_the_grid_it_opened_on_ctrl_c(peer):
+    ctl = InterruptedRelayCtl(panes())
+    with pytest.raises(KeyboardInterrupt):
+        peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, False,
+                       io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards, "the grid never opened -- the test proves nothing"
+    assert ctl.closes == 1
+
+
+def test_cmd_relay_closes_the_grid_it_opened_on_return(peer):
+    """`once=True` returns from inside the loop; the `finally` covers it too."""
+    ctl = RelayCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True,
+                   io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards and ctl.closes == 1
+
+
+def test_cmd_relay_closes_no_grid_it_did_not_open(peer):
+    """agterm has ONE grid and no ownership token, so a relay that never
+    opened one must not close whatever somebody else has up."""
+    ctl = InterruptedRelayCtl(panes())
+    with pytest.raises(KeyboardInterrupt):
+        peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, False,
+                       io.StringIO(), fetch=Fetcher())
+    assert ctl.dashboards == [] and ctl.closes == 0
+
+
+def test_cmd_relay_closes_nothing_when_the_open_failed(peer):
+    """Nothing was opened, so there is no ownership to claim."""
+
+    class NoGrid(RelayCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            return False, "", "no agterm"
+
+    ctl = NoGrid(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True,
+                   io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards and ctl.closes == 0
+
+
+def test_cmd_relay_survives_a_close_that_reports_failure(peer):
+    ctl = RelayCtl(panes())
+    ctl.dashboard_close = lambda: (False, "no such grid")
+    out = io.StringIO()
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    assert "dashboard: no such grid" in out.getvalue()
+
+
+def test_cmd_relay_survives_a_close_that_raises(peer):
+    """The close runs from a `finally`; an exception there would replace the
+    real exit -- a KeyboardInterrupt, or a clean return -- with a traceback
+    out of the cleanup."""
+
+    def boom():
+        raise RuntimeError("agtermctl vanished")
+
+    ctl = RelayCtl(panes())
+    ctl.dashboard_close = boom
+    out = io.StringIO()
+    assert peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0,
+                          True, out, dashboard=True, fetch=Fetcher()) == 0
+    assert "could not close" in out.getvalue()
+
+
+def test_close_grid_survives_a_say_that_raises(peer):
+    """`out` can be closed by the time the `finally` runs."""
+
+    def boom(message):
+        raise ValueError("I/O operation on closed file")
+
+    class Broken(object):
+        def dashboard_close(self):
+            return True, ""
+
+    peer.close_grid(Broken(), boom)
+
+
 # --------------------------------------------------------------- the skill
 
 SKILL_PATH = os.path.join(REPO_ROOT, "skills", "agb-peer", "SKILL.md")

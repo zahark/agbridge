@@ -2579,89 +2579,128 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
         reader.raw, reader.spec = read_roster_file(roster), spec
     priming = True
     remaining = ticks
-    while True:
-        # ⚠️ **THE ROSTER IS READ BEFORE `resolve_all`, NOT AFTER IT.** An
-        # earlier draft resolved first, on the OLD spec, so a joiner was not in
-        # `resolved` on the tick it joined and every later step silently skipped
-        # it -- and, since the file did not change again, there was no second
-        # attempt. Leaves happen to work under either ordering; joins do not.
-        if reader is not None:
-            arrived = reader.poll(say, notes)
-            if arrived is not None:
-                left = set(spec) - set(arrived)
-                joined = set(arrived) - set(spec)
-                rebound = set(name for name in set(spec) & set(arrived)
-                              if spec[name] != arrived[name])
-                spec = arrived
-                apply_leaves(left, rebound, seen, pending, resolved,
-                             needs_prime, notes, say)
-                needs_prime.update(joined)
-                if left or joined or rebound:
-                    say("roster: %s" % (", ".join(
-                        ["+" + n for n in sorted(joined)]
-                        + ["-" + n for n in sorted(left)]
-                        + ["~" + n for n in sorted(rebound)]) or "unchanged"))
-        fresh = resolve_all(ctl, spec, say, resolved, notes)
-        if fresh != resolved:
-            if resolved:
-                # ⚠️ Names the two causes it now has. It used to blame
-                # `agb-refresh` unconditionally, which became wrong the moment a
-                # roster edit could move this set too.
-                say("participant rows changed -- re-resolved (a roster edit, "
-                    "or an `agb-refresh` re-minting every row)")
-            resolved = fresh
-            for name in sorted(resolved):
-                row, pane, target, tmux_target = resolved[name]
-                say("%-12s %s:%s%s%s"
-                    % (name, row[:8], pane,
-                       "  via " + target if target else "",
-                       "  tmux " + tmux_target if tmux_target else ""))
-            if dashboard and len(resolved) > 1:
-                # Re-opened on every move for the same reason the ids are
-                # re-resolved: a grid built on dead ids shows dead cells.
-                grid_cells = ["%s:%s" % (resolved[n][0], resolved[n][1])
-                              for n in sorted(resolved)]
-                ok, _out, why = ctl.dashboard(grid_cells)
-                say("dashboard: %s" % ("open" if ok else why))
-        if needs_prime:
-            # ⚠️ Before the scan, and the scan skips whatever is still pending:
-            # a joiner whose pane has not been read must not have its backlog
-            # picked up by the ordinary pass and delivered as new.
-            sessions = {}
-            for session in sessions_of(ctl.tree()):
-                sessions[session["id"]] = session
-            prime_joiners(ctl, sessions, needs_prime, resolved, seen, lines,
-                          say, fetch, notes, chat_dir)
-        # ⚠️ A SECOND LINE OF DEFENCE, not the first, and worth saying so: a
-        # prime that succeeds already writes `seen`, so the scan would find the
-        # participant caught up anyway. This makes the guarantee structural
-        # instead of a consequence of two functions agreeing -- a mutation of it
-        # alone changes no observable behaviour, which is the honest reason
-        # there is no test that only it can fail.
-        scanning = dict((name, resolved[name]) for name in resolved
-                        if name not in needs_prime)
-        # ⚠️ `spec`, not `resolved`: membership is what the operator asked for,
-        # and a participant whose row has not appeared yet must have its mail
-        # HELD rather than dropped. See try_deliver. ⚠️ And `pending` is
-        # delivered for EVERYONE, including names still being primed: a name
-        # skipped as a SENDER must still be reachable as a RECIPIENT, or its
-        # incoming mail waits out the whole prime budget for no reason. The
-        # property is pinned on `relay_tick` itself rather than here, because at
-        # this level the difference is a delay rather than a loss.
-        relay_tick(ctl, scanning, seen, pending, lines, say, fetch,
-                   deliver_new=not priming, notes=notes, chat_dir=chat_dir,
-                   members=set(spec), deliver_to=resolved)
-        if priming:
-            say("primed on %d doorbell(s); relaying every %ss -- Ctrl-C to stop"
-                % (len(seen), interval))
-            priming = False
-        if once:
-            return 0
-        if remaining is not None:
-            remaining -= 1
-            if remaining <= 0:
+    # ⚠️ **Only a grid THIS RUN opened may be closed.** agterm has exactly one
+    # grid and no ownership token, so an unconditional close on the way out
+    # would dismiss whatever somebody else had up, and there is nothing to ask:
+    # a flag is the only ownership record that exists.
+    opened_grid = False
+    try:
+        while True:
+            # ⚠️ **THE ROSTER IS READ BEFORE `resolve_all`, NOT AFTER IT.** An
+            # earlier draft resolved first, on the OLD spec, so a joiner was not
+            # in `resolved` on the tick it joined and every later step silently
+            # skipped it -- and, since the file did not change again, there was
+            # no second attempt. Leaves happen to work under either ordering;
+            # joins do not.
+            if reader is not None:
+                arrived = reader.poll(say, notes)
+                if arrived is not None:
+                    left = set(spec) - set(arrived)
+                    joined = set(arrived) - set(spec)
+                    rebound = set(name for name in set(spec) & set(arrived)
+                                  if spec[name] != arrived[name])
+                    spec = arrived
+                    apply_leaves(left, rebound, seen, pending, resolved,
+                                 needs_prime, notes, say)
+                    needs_prime.update(joined)
+                    if left or joined or rebound:
+                        say("roster: %s" % (", ".join(
+                            ["+" + n for n in sorted(joined)]
+                            + ["-" + n for n in sorted(left)]
+                            + ["~" + n for n in sorted(rebound)])
+                                   or "unchanged"))
+            fresh = resolve_all(ctl, spec, say, resolved, notes)
+            if fresh != resolved:
+                if resolved:
+                    # ⚠️ Names the two causes it now has. It used to blame
+                    # `agb-refresh` unconditionally, which became wrong the
+                    # moment a roster edit could move this set too.
+                    say("participant rows changed -- re-resolved (a roster "
+                        "edit, or an `agb-refresh` re-minting every row)")
+                resolved = fresh
+                for name in sorted(resolved):
+                    row, pane, target, tmux_target = resolved[name]
+                    say("%-12s %s:%s%s%s"
+                        % (name, row[:8], pane,
+                           "  via " + target if target else "",
+                           "  tmux " + tmux_target if tmux_target else ""))
+                if dashboard and len(resolved) > 1:
+                    # Re-opened on every move for the same reason the ids are
+                    # re-resolved: a grid built on dead ids shows dead cells.
+                    grid_cells = ["%s:%s" % (resolved[n][0], resolved[n][1])
+                                  for n in sorted(resolved)]
+                    ok, _out, why = ctl.dashboard(grid_cells)
+                    # ⚠️ Latched, never cleared: a re-open that FAILS does not
+                    # mean the earlier grid went away, so forgetting ownership
+                    # here would strand somebody else's screen full of cells
+                    # this relay put there.
+                    opened_grid = opened_grid or ok
+                    say("dashboard: %s" % ("open" if ok else why))
+            if needs_prime:
+                # ⚠️ Before the scan, and the scan skips whatever is still
+                # pending: a joiner whose pane has not been read must not have
+                # its backlog picked up by the ordinary pass and delivered as
+                # new.
+                sessions = {}
+                for session in sessions_of(ctl.tree()):
+                    sessions[session["id"]] = session
+                prime_joiners(ctl, sessions, needs_prime, resolved, seen, lines,
+                              say, fetch, notes, chat_dir)
+            # ⚠️ A SECOND LINE OF DEFENCE, not the first, and worth saying so: a
+            # prime that succeeds already writes `seen`, so the scan would find
+            # the participant caught up anyway. This makes the guarantee
+            # structural instead of a consequence of two functions agreeing -- a
+            # mutation of it alone changes no observable behaviour, which is the
+            # honest reason there is no test that only it can fail.
+            scanning = dict((name, resolved[name]) for name in resolved
+                            if name not in needs_prime)
+            # ⚠️ `spec`, not `resolved`: membership is what the operator asked
+            # for, and a participant whose row has not appeared yet must have
+            # its mail HELD rather than dropped. See try_deliver. ⚠️ And
+            # `pending` is delivered for EVERYONE, including names still being
+            # primed: a name skipped as a SENDER must still be reachable as a
+            # RECIPIENT, or its incoming mail waits out the whole prime budget
+            # for no reason. The property is pinned on `relay_tick` itself
+            # rather than here, because at this level the difference is a delay
+            # rather than a loss.
+            relay_tick(ctl, scanning, seen, pending, lines, say, fetch,
+                       deliver_new=not priming, notes=notes, chat_dir=chat_dir,
+                       members=set(spec), deliver_to=resolved)
+            if priming:
+                say("primed on %d doorbell(s); relaying every %ss -- "
+                    "Ctrl-C to stop" % (len(seen), interval))
+                priming = False
+            if once:
                 return 0
-        ctl.sleep(interval)
+            if remaining is not None:
+                remaining -= 1
+                if remaining <= 0:
+                    return 0
+            ctl.sleep(interval)
+    finally:
+        # ⚠️ `finally`, because the relay's DOCUMENTED exit is Ctrl-C -- it
+        # says so itself, above -- which reaches neither of the `return 0`s
+        # this loop also has. One place covers all three.
+        if opened_grid:
+            close_grid(ctl, say)
+
+
+def close_grid(ctl, say):
+    """Best-effort like every other grid call, and here it has to be: this
+    runs from a `finally` on the Ctrl-C path, where an exception would replace
+    the KeyboardInterrupt with a traceback out of the cleanup -- and a grid
+    that will not close is cosmetic, while a relay that dies reporting it is
+    not. `say` writes to `out`, which can be closed by then, so even the
+    report is guarded.
+    """
+    try:
+        ok, why = ctl.dashboard_close()
+        say("dashboard: %s" % ("closed" if ok else why))
+    except Exception as exc:
+        try:
+            say("dashboard: could not close (%s)" % (exc,))
+        except Exception:
+            pass
 
 
 def main(argv, out=None, ctl=None):
