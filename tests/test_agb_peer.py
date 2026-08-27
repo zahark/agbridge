@@ -1151,7 +1151,11 @@ def test_cmd_relay_survives_a_close_that_raises(peer):
 
 
 def test_close_grid_survives_a_say_that_raises(peer):
-    """`out` can be closed by the time the `finally` runs."""
+    """`out` can be closed by the time the `finally` runs.
+
+    ⚠️ It had NO ASSERTION AT ALL, so it proved only that nothing raised --
+    and the return value is what an in-loop caller uses to drop its ownership
+    flag, so `return True` unconditionally survived the suite."""
 
     def boom(message):
         raise ValueError("I/O operation on closed file")
@@ -1160,7 +1164,31 @@ def test_close_grid_survives_a_say_that_raises(peer):
         def dashboard_close(self):
             return True, ""
 
-    peer.close_grid(Broken(), boom)
+    assert peer.close_grid(Broken(), boom) is True
+
+
+def test_close_grid_reports_whether_the_grid_IS_GONE(peer):
+    """The ownership flag is cleared only on a close that WORKED, so a close
+    that failed must come back False -- otherwise the relay forgets a grid that
+    is still on the screen and the `finally` never tries again."""
+
+    class Worked(object):
+        def dashboard_close(self):
+            return True, ""
+
+    class Refused(object):
+        def dashboard_close(self):
+            return False, "no such dashboard"
+
+    class Raised(object):
+        def dashboard_close(self):
+            raise RuntimeError("agtermctl vanished")
+
+    said = []
+    assert peer.close_grid(Worked(), said.append) is True
+    assert peer.close_grid(Refused(), said.append) is False
+    assert peer.close_grid(Raised(), said.append) is False
+    assert len(said) == 3, said
 
 
 # --------------------------------------------------------------- the skill
@@ -4011,6 +4039,31 @@ def test_dashboard_cells_reports_what_it_dropped(peer):
     assert excluded == [("BBBB", "scratch")]
 
 
+def test_unresolved_lines_reads_agterms_own_drop_report(peer):
+    """agterm exits 0, opens the grid without the cells it could not resolve,
+    and names them here -- on stdout, which is why `Ctl.dashboard` returns it.
+
+    ⚠️ It lives in `agb-peer` because BOTH callers need it: `agb-dashboard`
+    refuses on it, the relay says so and carries on. While it lived in
+    `agb-dashboard` alone the relay could not see this cause at all."""
+    assert peer.unresolved_lines("unresolved: BBBB2222\n") == [
+        "unresolved: BBBB2222"]
+    assert peer.unresolved_lines("opened 2 cells\n") == []
+    assert peer.unresolved_lines("") == []
+    assert peer.unresolved_lines(None) == []
+
+
+def test_unresolved_lines_matches_the_START_of_a_line(peer):
+    """⚠️ `startswith`, not `in`. A row TITLE can contain the word -- titles are
+    `label · host · cwd · pane · beat` and a label is whatever the operator
+    typed -- so a substring test would read agterm's ordinary output as a
+    dropped cell and refuse a perfectly good grid. Mutating `startswith` to
+    `in` survived, because the negative case shared no word with the pattern."""
+    assert peer.unresolved_lines("opened cell for unresolved: nothing") == []
+    assert peer.unresolved_lines("  unresolved: AAAA1111  ") == [
+        "unresolved: AAAA1111"]
+
+
 def test_the_dashboard_pane_vocabulary_is_narrower_than_PANE_KINDS(peer):
     """⚠️ The gap is the point, and it is one constant wide.
 
@@ -4152,8 +4205,17 @@ def _owned_strings(tree):
             if isinstance(child, ast.FunctionDef):
                 visit(child, child.name)
                 continue
+            # ast.Str on 3.6-3.7, ast.Constant from 3.8 -- the floor is 3.6.8
+            # and CI may be newer, so both spellings have to be read. The same
+            # guard in test_agb_dashboard.py already did; this one saw only
+            # `ast.Str`, and on a newer interpreter that is a guard covering
+            # nothing while its non-vacuity assertion still passes on the other
+            # file.
             if isinstance(child, ast.Str):
                 owned.setdefault(owner, []).append(child.s)
+            elif isinstance(child, ast.Constant) and isinstance(child.value,
+                                                                str):
+                owned.setdefault(owner, []).append(child.value)
             visit(child, owner)
 
     visit(tree, None)
@@ -4241,6 +4303,12 @@ def test_an_excluded_participant_is_named(peer):
               if "not shown" in line]
     assert len(report) == 1, out.getvalue()
     assert "carol" in report[0] and "scratch" in report[0], report[0]
+    # ⚠️ And NOT also reported as missing. Carol resolved perfectly well; her
+    # pane is merely not something a grid can express. Recomputing `missing`
+    # from the grid cells instead of from `resolved` -- the contradictory double
+    # diagnosis the comment above it exists to prevent -- survived the suite
+    # until this line.
+    assert "no row for" not in out.getvalue(), out.getvalue()
 
 
 def test_nothing_is_said_when_every_participant_fits(peer):
@@ -4273,6 +4341,54 @@ def test_the_exclusion_is_reported_once_not_per_reopen(peer, tmp_path):
     assert len(ctl.dashboards) > 1, (
         "the grid never re-opened -- the throttle was not exercised")
     assert out.getvalue().count("not shown") == 1, out.getvalue()
+
+
+def test_a_participant_who_LEAVES_THE_DRAWER_AND_RETURNS_is_named_again(peer,
+                                                                       tmp_path):
+    """⚠️ The throttle note is CLEARED once everybody fits, for exactly the
+    reason the missing-member note is cleared: a second disappearance would
+    otherwise be silent. MEASURED before the fix -- carol in the drawer was
+    reported, left the roster, came back to the drawer, and the grid dropped
+    her without a word. The two notes had the same argument and only one of
+    them applied it."""
+    path = roster_file(
+        tmp_path, "alice=AAAA1111\nbob=BBBB2222\ncarol=CCCC3333:scratch\n")
+    surfaces = dict(panes(), CCCC3333=COMPOSER)
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n")
+        if tick == 2:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n"
+                                  "carol=CCCC3333:scratch\n")
+    ctl = TickingCtl(surfaces, edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=4,
+                   dashboard=True, fetch=Fetcher())
+    assert ctl.tick >= 3, "the roster never got back to the drawer"
+    assert out.getvalue().count("not shown") == 2, out.getvalue()
+
+
+def test_a_member_who_GOES_MISSING_TWICE_is_named_twice(peer, tmp_path):
+    """The same property on the other note, and the one that was already
+    written: the `notes.pop` states it in a comment ("a second disappearance
+    would be silent") and nothing exercised it -- disabling the pop survived
+    the whole suite."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n"
+                                 "carol=NOSUCHROW\n")
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n")
+        if tick == 2:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n"
+                                  "carol=NOSUCHROW\n")
+    ctl = TickingCtl(panes(), edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=4,
+                   dashboard=True, fetch=Fetcher())
+    assert ctl.tick >= 3, "the roster never lost carol a second time"
+    assert out.getvalue().count("no row for") == 2, out.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -4378,6 +4494,10 @@ def test_an_unresolvable_participant_is_named_and_the_rest_are_gridded(peer):
     report = [line for line in out.getvalue().splitlines()
               if "no row for" in line]
     assert len(report) == 1 and "carol" in report[0], out.getvalue()
+    # ⚠️ And ONLY carol: a report naming everyone in the roster is not a
+    # report. `", ".join(missing)` -> `", ".join(sorted(set(spec)))` survived
+    # the suite without this.
+    assert "alice" not in report[0] and "bob" not in report[0], report[0]
 
 
 def test_nothing_is_said_when_every_member_has_a_row(peer):
@@ -4455,6 +4575,28 @@ def test_one_name_per_row_records_its_drops_in_notes(peer):
     assert notes[peer.ALIAS_DROPS] == set(["bob"])
 
 
+def test_the_alias_drop_KEY_cannot_collide_with_a_throttle_note(peer):
+    """⚠️ `notes` is one flat dict shared by three writers, so the claim in the
+    comment above `ALIAS_DROPS` -- "a one-element tuple, so it cannot collide"
+    -- is a real property with a real failure behind it: a collision means a
+    throttle note is read as a set of dropped names, or the drop set is
+    overwritten by a message string and every alias is reported as missing.
+
+    Nothing tested it: re-spelling `ALIAS_DROPS` as `("said", ("alias", "bob"))`
+    survived the whole suite. Asserted on the SHAPE, because that is what makes
+    it true of keys nobody has written yet."""
+    assert len(peer.ALIAS_DROPS) == 1, peer.ALIAS_DROPS
+    notes = {}
+    peer._throttled(lambda m: None, notes, ("dash-missing",))("x")
+    peer._one_name_per_row({"alice": ("AAAA1111", "left", None, None),
+                            "bob": ("AAAA1111", "left", None, None)},
+                           lambda m: None, notes)
+    assert peer.ALIAS_DROPS not in [k for k in notes if k != peer.ALIAS_DROPS]
+    assert all(len(k) == 2 and k[0] == "said"
+               for k in notes if k != peer.ALIAS_DROPS), sorted(notes)
+    assert notes[peer.ALIAS_DROPS] == set(["bob"])
+
+
 def test_the_alias_drop_set_is_rebuilt_not_accumulated(peer):
     """⚠️ THE STALENESS TRAP. Every other `notes` entry persists -- that is what
     makes `_throttled` work -- so a drop set read as an accumulator would go on
@@ -4495,3 +4637,200 @@ def test_a_failing_grid_does_not_stop_a_message(peer):
     assert ctl.dashboards, "the grid never even tried -- the test proves nothing"
     assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
         "[chat from alice] hello"]
+
+
+def test_a_grid_call_that_RAISES_does_not_stop_a_message(peer):
+    """🔴 THE SAME CONTRACT, MODELLED THE WAY THE REAL `Ctl` FAILS.
+
+    The test above models a grid failure as a returned `(False, "", why)` --
+    which is what `Ctl.dashboard` returns for a tool that RAN and refused. But
+    `_spawn` RAISES `PeerError` when agtermctl cannot be started at all: a
+    removed binary, a `$PATH` an agterm pane did not inherit, the
+    `/proc/<pid>/exe (deleted)` case after an upgrade, EMFILE. MEASURED before
+    the fix: the relay died with `PeerError agtermctl: [Errno 2] No such file
+    or directory` and the queued `[chat from alice] hello` was never typed.
+
+    ⚠️ The fake is the whole point: one that can only return a status describes
+    a world where this failure does not exist, and the contract test passed the
+    entire time it was broken.
+    """
+
+    class ExplodingGrid(TickingCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            raise peer.PeerError("agtermctl: [Errno 2] No such file or "
+                                 "directory")
+
+    def ring(tick):
+        if tick == 1:
+            ctl.current["AAAA1111"] = COMPOSER + bell("aaa")
+    ctl = ExplodingGrid(panes(), ring)
+    assert peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8,
+                          False, io.StringIO(), ticks=2, dashboard=True,
+                          fetch=Fetcher(framed(("aaa", "bob", "hello")))) == 0
+    assert ctl.dashboards, "the grid never even tried -- the test proves nothing"
+    assert [t for (_, _, t) in ctl.typed if t not in ("\n", "\r")] == [
+        "[chat from alice] hello"]
+
+
+def test_a_grid_call_that_raises_is_REPORTED_not_swallowed(peer):
+    """A failure nobody can see is the other half of the bug: the relay must
+    survive it AND say what stopped the grid, or a missing grid looks like a
+    feature that was never asked for."""
+
+    class ExplodingGrid(RelayCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            raise peer.PeerError("agtermctl: [Errno 2] No such file")
+
+    out = io.StringIO()
+    ctl = ExplodingGrid(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    assert "Errno 2" in out.getvalue(), out.getvalue()
+
+
+def test_a_say_that_raises_does_not_strand_the_grid(peer):
+    """⚠️ `out` can be closed under a running relay -- `agb-peer relay | head`
+    closes it the moment `head` exits. An exception from the report unwound
+    before `cmd_relay` assigned `opened_grid`, so the `finally` did not know
+    there was a grid to close and left it on the only screen agterm has."""
+
+    class ClosedOut(object):
+        """Writable until `head` exits, and raising for ever afterwards --
+        which is when this matters: the grid is already up."""
+
+        def __init__(self):
+            self.dead = False
+
+        def write(self, text):
+            if self.dead:
+                raise ValueError("I/O operation on closed file")
+
+        def flush(self):
+            pass
+
+    class DiesOnReport(RelayCtl):
+        def dashboard(self, members):
+            got = RelayCtl.dashboard(self, members)
+            out.dead = True                 # the reader went away just now
+            return got
+
+    out = ClosedOut()
+    ctl = DiesOnReport(panes())
+    try:
+        peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True,
+                       out, dashboard=True, fetch=Fetcher())
+    except ValueError:
+        # A later, unguarded `say` may still end the relay -- that is the
+        # documented `| head` exit and not what this test is about. The grid
+        # must be closed either way, and only the `finally` can do it.
+        pass
+    assert ctl.dashboards, "the grid never opened -- the test proves nothing"
+    assert ctl.closes == 1, ctl.grid_log
+
+
+def test_ownership_is_LATCHED_across_a_later_failure(peer, tmp_path):
+    """⚠️ The latch, from the side that can lose a grid. A re-open that fails
+    does not mean the grid that is up went away, so a run whose SECOND open
+    fails must still close on the way out. Mutating the latch to `opened = ok`
+    survived every test until this one."""
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+
+    class FailsTheReopen(TickingCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            self.grid_log.append(("open", list(members)))
+            if len(self.dashboards) == 1:
+                return True, "", ""
+            return False, "", "no agterm"
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\n")
+    ctl = FailsTheReopen(panes(), edit)
+    peer.cmd_relay(ctl, [], 500, 8, False, io.StringIO(), roster=path, ticks=3,
+                   dashboard=True, fetch=Fetcher())
+    assert len(ctl.dashboards) > 1, "the re-open never happened"
+    assert ctl.closes == 1, ctl.grid_log
+
+
+def test_a_failed_open_is_RETRIED_on_the_next_tick(peer):
+    """⚠️ MEASURED before the fix: one transient failure and there was no grid
+    for the rest of the run. `shown` was advanced whatever the outcome, so with
+    membership unchanged the trigger never fired again -- while
+    `docs/commands.md` advertised a grid that "repairs itself within a tick"."""
+
+    class FlakyGrid(TickingCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            self.grid_log.append(("open", list(members)))
+            if len(self.dashboards) == 1:
+                return False, "", "agterm was starting up"
+            return True, "", ""
+
+    ctl = FlakyGrid(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8, False,
+                   io.StringIO(), ticks=3, dashboard=True, fetch=Fetcher())
+    assert len(ctl.dashboards) >= 2, ctl.grid_log
+    assert ctl.closes == 1, "the retry that worked was not owned"
+
+
+def test_a_persistent_open_failure_is_said_ONCE_not_per_tick(peer):
+    """The companion the retry needs: retrying every tick means complaining
+    every tick unless the message is throttled, which is the same trade the
+    missing-member line makes."""
+
+    class NoGrid(TickingCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            return False, "", "no agterm"
+
+    out = io.StringIO()
+    ctl = NoGrid(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8, False, out,
+                   ticks=3, dashboard=True, fetch=Fetcher())
+    assert len(ctl.dashboards) >= 2, "the retry never happened"
+    assert out.getvalue().count("no agterm") == 1, out.getvalue()
+
+
+def test_agterms_OWN_dropped_cell_is_reported_by_the_relay(peer):
+    """🔴 THE THIRD CAUSE OF A PARTIAL GRID, and the one the relay could not
+    see. agterm exits **0**, opens the grid without the cells it could not
+    resolve, and names them as `unresolved: <id>` on **stdout alone** -- so the
+    status the relay was reading says the grid is fine. The other two causes
+    (no row at all, a pane the grid cannot express) each had a line already,
+    while `docs/commands.md` promised that a partial grid is always marked."""
+    out = io.StringIO()
+    ctl = RelayCtl(panes())
+    ctl.dashboard_out = "unresolved: BBBB2222\n"
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    report = [line for line in out.getvalue().splitlines()
+              if "dropped" in line]
+    assert len(report) == 1 and "BBBB2222" in report[0], out.getvalue()
+
+
+def test_a_clean_open_is_not_reported_as_dropped(peer):
+    """The companion: differs in the one variable under test, so it cannot pass
+    against a report that can never fire."""
+    out = io.StringIO()
+    ctl = RelayCtl(panes())
+    ctl.dashboard_out = "opened 2 cells\n"
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True, out,
+                   dashboard=True, fetch=Fetcher())
+    assert "dropped" not in out.getvalue(), out.getvalue()
+    assert "dashboard: open" in out.getvalue(), "the grid never opened"
+
+
+def test_a_dropped_cell_does_NOT_close_the_relays_grid(peer):
+    """⚠️ Deliberately different from `agb-dashboard`, which refuses. The
+    relay's grid is an adjunct to a message pump: it says what agterm dropped
+    and grids the rest, for the same reason a member with no row does not close
+    it."""
+    ctl = RelayCtl(panes())
+    ctl.dashboard_out = "unresolved: BBBB2222\n"
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True,
+                   io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.grid_log == [("open", ["AAAA1111:left", "BBBB2222:left"]),
+                            ("close",)], ctl.grid_log

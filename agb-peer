@@ -1296,6 +1296,29 @@ def dashboard_cells(pairs):
     return cells, excluded
 
 
+def unresolved_lines(text):
+    """The `unresolved: <id>` lines agterm printed, if any.
+
+    ⚠️ **On STDOUT, and beside exit 0.** When only some cells resolve agterm
+    opens the grid without the rest, says so here, and succeeds -- so this is
+    the one place in the family where the exit status is deliberately not
+    trusted. It is why `Ctl.dashboard` returns stdout at all.
+
+    ⚠️ **It lives here, beside `dashboard_cells`, because there are TWO
+    callers**: `agb-dashboard` treats a dropped cell as a shortfall and
+    refuses, the relay says so and carries on. It was written in
+    `agb-dashboard` alone, and for as long as it was, the third cause of a
+    silently partial grid -- agterm's own drop -- was unread by the relay while
+    the docs said a partial grid is always marked.
+
+    ⚠️ `startswith`, not `in`: `unresolved:` is how agterm OPENS such a line,
+    and a substring test would also match a row whose title happens to contain
+    the word.
+    """
+    return [line.strip() for line in (text or "").splitlines()
+            if line.strip().startswith("unresolved:")]
+
+
 def parse_roster_text(data, minimum=2):
     """A roster file's participants. Same grammar as the positional form.
 
@@ -2378,6 +2401,23 @@ def scan_participant(ctl, sessions, name, binding, seen, lines, say,
     return SCAN_FETCHED, messages
 
 
+def _quiet(say):
+    """A `say` that cannot raise, for reports whose failure must not matter.
+
+    ⚠️ `out` is not guaranteed to be open: `agb-peer relay | head` closes it
+    the instant `head` exits, and a write to it then raises. That is fine for a
+    report about the grid -- which is an adjunct -- and fatal for the relay
+    carrying the message. `close_grid` has always wrapped its own `say`; this
+    is the same guarantee, in the one other place a grid talks.
+    """
+    def quiet(message):
+        try:
+            say(message)
+        except Exception:
+            pass
+    return quiet
+
+
 def _throttled(say, notes, key):
     """A `say` that repeats itself only when the message changes.
 
@@ -2732,8 +2772,19 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
     whose failures are meant to stay cosmetic.
 
     Every outcome is best-effort, like the rest of `Ctl`'s grid calls: nothing
-    here may stop a message being carried.
+    here may stop a message being carried. ⚠️ That sentence was written as a
+    description and was FALSE -- `Ctl.dashboard` returns a status for a tool
+    failure but `_spawn` raises when the tool cannot be started at all, and
+    neither the open nor the reports were guarded. It is enforced below now,
+    once for the call and once for `say`.
     """
+    # ⚠️ Every report below goes through a `say` that CANNOT RAISE. `say` writes
+    # to `out`, which can be closed under a running relay -- `agb-peer relay |
+    # head` closes it the moment head exits -- and an exception here unwinds
+    # before `cmd_relay` assigns `opened_grid`, so the `finally` would not know
+    # there was a grid to close. `close_grid` guards its own report for the same
+    # reason; the open side did not.
+    say = _quiet(say)
     cells = [(name, resolved[name][0], resolved[name][1])
              for name in sorted(resolved)]
     grid_cells, excluded = dashboard_cells([(c[1], c[2]) for c in cells])
@@ -2753,6 +2804,12 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
             % (", ".join("%s (%s)" % (named.get(row, row[:8]), pane)
                          for row, pane in excluded),
                "/".join(DASHBOARD_PANES)))
+    elif notes is not None:
+        # Cleared once everyone fits, for the same reason the missing note is
+        # below: a participant who moves out of the drawer and back in again
+        # would otherwise be dropped from the grid in silence the second time.
+        # The two notes had the same argument and only one of them applied it.
+        notes.pop(("said", ("dash-excluded",)), None)
     # ⚠️ **What is ACCOUNTED FOR is wider than what is in the grid**, and each
     # of the three has its own line already. A participant that resolved is in
     # `resolved` -- including one whose pane the grid cannot express, which the
@@ -2779,12 +2836,47 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
     if fresh == shown:
         return shown, opened
     if grid_cells:
-        ok, _out, why = ctl.dashboard(grid_cells)
+        try:
+            ok, said, why = ctl.dashboard(grid_cells)
+        except Exception as exc:
+            # 🔴 **GUARDED FOR THE SAME REASON `close_grid` IS -- and it was
+            # not, three lines above a close that has been guarded since it was
+            # written.** `_spawn` RAISES `PeerError` when agtermctl cannot be
+            # started at all: a removed binary, a `$PATH` the pane did not
+            # inherit, the `/proc/<pid>/exe (deleted)` case after an upgrade,
+            # EMFILE. MEASURED -- the relay died with `PeerError agtermctl:
+            # [Errno 2] No such file or directory` and the queued delivery was
+            # never typed. The grid is an adjunct to a message pump; a cosmetic
+            # failure that kills the pump is the one outcome forbidden here.
+            ok, said, why = False, "", "%s" % (exc,)
+        if not ok:
+            # ⚠️ `shown` is deliberately NOT advanced on a failure, so the next
+            # tick tries again -- otherwise one transient failure meant no grid
+            # for the rest of the run, because the cell set is unchanged and the
+            # trigger never fires again. The MESSAGE is throttled instead, which
+            # is the same trade `missing` makes: a persistent failure says so
+            # once rather than once per tick.
+            _throttled(say, notes, ("dash-open",))("dashboard: %s" % (why,))
+            return shown, opened
         # ⚠️ Latched, never cleared here: a re-open that FAILS does not mean the
         # earlier grid went away, so forgetting ownership would strand somebody
         # else's screen full of cells this relay put there.
-        opened = opened or ok
-        say("dashboard: %s" % ("open" if ok else why))
+        opened = True
+        if notes is not None:
+            notes.pop(("said", ("dash-open",)), None)
+        dropped = unresolved_lines(said)
+        # ⚠️ **THE THIRD CAUSE OF A PARTIAL GRID, and the only one the relay
+        # could not see.** agterm exits **0**, opens the grid without the cells
+        # it could not resolve, and names them on stdout alone -- so a caller
+        # reading only the status shows a grid quietly missing an agent. The
+        # other two causes (no row at all, a pane the grid cannot express) have
+        # had a line each since Task 2c; this one had none, while the docs said
+        # a partial grid is always marked. Reachable with a documented shape: a
+        # `:right` cell whose split has since closed is *unresolved, not an
+        # error*. Said and not closed, like every other relay grid outcome.
+        say("dashboard: open" + (
+            " -- but agterm dropped %s" % ("; ".join(dropped),)
+            if dropped else ""))
     elif opened:
         # Nobody left to show. Closing is the only honest rendering -- agterm
         # has no empty grid -- and it is cleared only on a close that WORKED, so
@@ -2804,17 +2896,23 @@ def close_grid(ctl, say):
     Returns whether the grid is believed GONE, so an in-loop caller can drop
     its ownership flag on a close that worked and keep it on one that did not.
     The `finally` ignores it, there being nothing left to retry by then.
+
+    ⚠️ **The REPORT is outside the try that decides the answer**, and it was
+    not: a `say` that raised -- `agb-peer relay | head` closes `out` under a
+    running relay -- landed in the same handler as a close that failed, so a
+    grid that HAD gone was reported as still owned. The relay then kept its
+    ownership flag and closed again on the way out, which by then may be
+    somebody else's grid. What the caller asked is whether the grid is gone;
+    only `dashboard_close` can answer that, and only it is asked here.
     """
+    say = _quiet(say)
     try:
         ok, why = ctl.dashboard_close()
-        say("dashboard: %s" % ("closed" if ok else why))
-        return bool(ok)
     except Exception as exc:
-        try:
-            say("dashboard: could not close (%s)" % (exc,))
-        except Exception:
-            pass
+        say("dashboard: could not close (%s)" % (exc,))
         return False
+    say("dashboard: %s" % ("closed" if ok else why))
+    return bool(ok)
 
 
 def main(argv, out=None, ctl=None):

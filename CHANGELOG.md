@@ -280,6 +280,60 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A grid that would not open KILLED THE RELAY and lost the message it was carrying.** The one
+  outcome the grid's whole error policy forbids. `Ctl.dashboard` returns a status for an agtermctl
+  that *ran* and refused — but the relay's open was unguarded, and `_spawn` **raises** when agtermctl
+  cannot be started at all: a removed binary, a `$PATH` an agterm pane did not inherit, the
+  `/proc/<pid>/exe (deleted)` case after an upgrade, EMFILE. Measured:
+
+  ```
+  RELAY DIED: PeerError agtermctl: [Errno 2] No such file or directory
+  typed: []      # the queued "[chat from alice] hello" was never delivered
+  ```
+
+  ⚠️ **The close three lines below it had been guarded since the day it was written**, with the
+  reason in a comment and a test to match; the open was written later and did not carry the lesson.
+  The contract test that should have caught it modelled a failure as a returned `(False, "", why)` —
+  a fake that describes a world where the real failure cannot happen, which is why it passed for as
+  long as the bug existed. It now has a sibling whose fake **raises**.
+
+  The report is guarded too, and for a related reason: `say` writes to `out`, which
+  `agb-peer relay | head` closes the moment `head` exits. A raise there unwound *before* the relay
+  recorded that it owned a grid, so the `finally` did not know there was one to close — leaving the
+  cells on the only grid the Mac has. And `close_grid` no longer lets a failed **report** change its
+  answer about whether the grid is **gone**: it did, so a close that worked came back as "still
+  owned" and the relay closed a second time on the way out, by then possibly over somebody else's
+  grid.
+
+- **The relay could not see the third cause of a partially populated grid.** agterm exits **0**,
+  opens the grid without the cells it could not resolve, and names them as `unresolved: <id>` on
+  **stdout alone** — so the status the relay was reading says the grid is fine. Two causes had a
+  line each (a member with no row; a member in a pane the grid cannot express) and this one had
+  none, while `docs/commands.md` promised that a partial grid is always marked. It is reachable with
+  a shape agterm documents: a `:right` cell whose split has since closed is *unresolved, not an
+  error*.
+
+  ```
+  dashboard: open -- but agterm dropped unresolved: BBBB2222
+  ```
+
+  Said, and the grid stays up — deliberately unlike `agb-dashboard`, which refuses. The relay's grid
+  is an adjunct to a message pump and its failures stay cosmetic. `unresolved_lines` moved from
+  `agb-dashboard` into `agb-peer`, beside `dashboard_cells`, because there are now two callers and
+  the file that owns the grid vocabulary should own this too.
+
+- **One transient failure meant no grid for the rest of the run.** The cell set was recorded as
+  shown whether or not the open worked, so with membership unchanged the trigger never fired again —
+  while the docs advertised a grid that "repairs itself within a tick". Measured: a single failure
+  then four ticks of identical membership produced **one** attempt. The open is retried until it
+  works; the *message* is throttled instead, the same trade the missing-member line makes.
+
+- **A participant who left the scratch drawer and came back was dropped from the grid in silence.**
+  The exclusion note was never cleared, so the throttle that stops it repeating every tick also
+  stopped it ever firing again. The missing-member note beside it had had the clear — and the
+  comment explaining why — since it was written; the two had the same argument and only one applied
+  it.
+
 - **`agb-peer relay --dashboard` left its grid on the screen after it exited.** agterm has exactly
   **one** dashboard grid, so a relay that opened one and then took its documented exit — Ctrl-C —
   left the departed conversation's cells sitting in the only grid the Mac has. The next thing that
