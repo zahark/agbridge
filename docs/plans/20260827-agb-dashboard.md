@@ -1,6 +1,13 @@
 # agb-dashboard: watch several agent rows at once
 
-> **Revision 3**, after a second review (7 critical + 9 important). Revision 2 repeated the failure
+> **Revision 4**, after a third review (5 critical + 7 important).
+>
+> ⚠️ **Revision 3 made the same mistake twice in one document**: correction 3 diagnosed a return
+> shape changed without converting its caller, fixed it in Task 1, and then Task 2c did the
+> identical thing to `_one_name_per_row`. That is recorded rather than quietly fixed, because it
+> is the argument for implementing rather than reviewing a fourth time — see *Where this stands*.
+>
+> Revision 3, after a second review (7 critical + 9 important). Revision 2 repeated the failure
 > it was written to fix — three corrections stated a property at the top that the named call could
 > not deliver — and introduced two contradictions of its own. Most seriously it would have shipped
 > the headline feature **with the bug it exists to remove**. See *Corrections from revision 2*.
@@ -31,7 +38,8 @@ agb-dashboard --roster ~/peers          # everyone in a relay roster
 agb-dashboard --mru                     # whatever you were just using
 ```
 
-It also fixes **four defects** in the existing `agb-peer relay --dashboard`, which stays. The two
+It also fixes **three defects** in the existing `agb-peer relay --dashboard` — **or four**, if
+Task 0 finds that agterm rejects a `:scratch` cell. `relay --dashboard` stays. The two
 features are different and both are wanted — see *Solution Overview*.
 
 **Benefits**: a grid you can open by name rather than by id; one that refuses to lie about its
@@ -247,7 +255,7 @@ They also differ in lifetime. `relay --dashboard` **follows**: it re-resolves ev
 when ids move. `agb-dashboard` is a one-shot open with a foreground hold; `--follow` is deliberately
 out of scope (see *What Goes Where*).
 
-### The four defects in `relay --dashboard`
+### The defects in `relay --dashboard` — three certain, one conditional
 
 Found by reading `agb-peer:2560` against the measured behaviour. The first three are the same class:
 **a visual surface that looks correct and is not.** The fourth is worse — a surface that never
@@ -352,13 +360,20 @@ against: whoever opens last wins, because agterm gives us nothing finer to work 
 through it would mean string-matching an error message.
 
 Reports **unresolved** and **ambiguous** separately, naming the matches for an ambiguous one.
-⚠️ It **dedupes by row id**, keeping first-seen order — decided once, here. Two selectors can
-resolve to the same row (`alice` and an id prefix of it), and naming one row two ways is not a user
-error; spending two of the nine cells on it is the bug. It is **not** a refusal, and no acceptance
-criterion may say otherwise.
+⚠️ It **dedupes by `(id, pane)`**, keeping first-seen order — decided once, here, and the **key is
+not the id alone**. `X:left` and `X:right` are two legitimate, distinct cells, and a roster may
+legitimately hold `alice=<label>` beside `split=<same label>:right` (`agb-peer:1383-1385` supports
+exactly that). Deduping by id would silently drop one — the same class of missing cell this command
+exists to remove. Two selectors naming one row **and one pane** is not a user error; spending two of
+the nine cells on it is the bug. It is **not** a refusal, and no acceptance criterion may say
+otherwise.
 
 ⚠️ **A bare positional selector carries no pane**, so it defaults to `left`. Panes reach this command
 only through `--roster`, where a participant spelled `:right` or `:scratch` already has one.
+
+⚠️ **`resolved` therefore carries `(id, pane)`, not bare ids** — `dashboard_cells` takes pairs, and
+revision 3 left nothing bridging a flat list of selector strings to them. `resolve_selectors` returns
+the pane alongside each id: `left` for a bare selector, the participant's own for a roster entry.
 Ambiguity is real but narrow: labels collide when two hosts run `agb-tmux <same name>`, or when one
 label is a prefix of another (`api` vs `api-refactor`, which the docs already warn about).
 
@@ -382,6 +397,23 @@ cannot orphan the grid the hold exists to own. `--detach` prints the literal clo
 - **Implementation Steps** — all code, tests and docs below.
 - **Post-Completion** — anything needing a live agterm, plus `--follow`, which is **deferred by
   decision**: v1 holds but does not follow, and says so in its own output.
+
+## Where this stands
+
+⚠️ **Three review rounds: 6, then 7, then 5 criticals.** Not converging quickly, and revision 3 made
+the *same* mistake twice in one document — correction 3 diagnosed a return shape changed without its
+caller, fixed it in Task 1, and Task 2c then did it to `_one_name_per_row`.
+
+That pattern is the argument for **implementing rather than reviewing a fourth time**. The plan is
+now ~660 lines describing perhaps 450 of implementation, and the last two rounds' findings are
+increasingly about the document's internal consistency rather than about the world. On the previous
+feature the same signal appeared at the same point, the call was to implement, and it was right: the
+first hour of coding found a missing import no review had, and the live run found two defects that
+2462 tests and three rounds had not.
+
+⚠️ **The remaining uncertainty is a measurement, not a document.** Task 0's two questions —
+does agterm accept `:scratch`, and can a held grid be typed at — gate Tasks 2b-ii and 5 and are
+unanswered. Nothing in Tasks 1, 2a, 2b-i, 3 or 4 depends on them.
 
 ## Implementation Steps
 
@@ -433,29 +465,54 @@ do not depend on it. Both questions are currently **ASSUMED**, and both decide c
 - [ ] track whether **this run** opened a grid; close only that one, and never a grid this run did
       not open — per the ownership policy
 - [ ] ⚠️ wrap the relay loop in `try/finally` so the close happens on `Ctrl-C`, which is the relay's
-      documented exit (`agb-peer:2585` prints "Ctrl-C to stop") and reaches none of the three
-      in-loop `return`s
+      documented exit (`agb-peer:2596` prints "Ctrl-C to stop") and reaches neither of the **two**
+      in-loop `return`s (`:2600`, `:2604`)
+- [ ] ⚠️ check the 12 existing `cmd_relay(` tests that assert on `ctl.said`: a `finally` now runs on
+      every exit, so anything the close says appears in output those tests pin
 - [ ] write tests: a relay that opened a grid closes it on `KeyboardInterrupt`; one that never
       opened one closes nothing
 - [ ] write tests: a failing close does not raise into the loop
 - [ ] run tests — must pass before task 2b
 
-### Task 2b: Build the relay's cells through `dashboard_cells` (defect 4)
+### Task 2b-i: Route the relay's cells through `dashboard_cells` — UNCONDITIONAL
 
 **Files:**
 - Modify: `agb-peer`
 - Modify: `tests/test_agb_peer.py`
 
-⚠️ **Skip this task entirely if Task 0 found `:scratch` is accepted** — then defect 4 does not exist
-and the only change is routing through the shared helper.
+⚠️ **This half runs whatever Task 0 answered.** Revision 3 made the whole of 2b skippable while
+Task 6 named its AST guard as evidence — so on the skip branch an acceptance criterion cited a guard
+nobody wrote, and the no-bare-id property reverted to a human read.
 
 - [ ] convert `agb-peer:2563`'s cell construction to `dashboard_cells`
+- [ ] write the AST guard that cell strings are built only in `dashboard_cells`, over `agb-peer`
+      **and** `agb-dashboard`, with its non-vacuity assertion
+- [ ] ⚠️ **two walks, one tree each — not `functions(peer_tree, dash_tree)`.**
+      `tests/conftest.py`'s `functions()` raises on any non-dunder name defined in two trees, and
+      both files define `main`. Revision 3's parenthetical "the `conftest` helpers take any tree" was
+      false and would have sent an implementer into an assertion about duplicate definitions
+- [ ] add `DASH_PATH` to `tests/conftest.py` beside `PEER_PATH`/`SETUP_PATH`, which the guard needs
+      to parse the new file
+- [ ] write tests: the relay's cells still match what it produced before, for a roster of `left` and
+      `right` participants — the no-behaviour-change proof for the routing itself
+- [ ] add a `CHANGELOG.md` entry for the user-visible half of Task 2a and this task
+- [ ] run tests — must pass before task 2b-ii
+
+### Task 2b-ii: Exclude `scratch` from the grid (defect 4) — CONDITIONAL
+
+**Files:**
+- Modify: `agb-peer`
+- Modify: `tests/test_agb_peer.py`
+- Modify: `CHANGELOG.md`
+
+⚠️ **Skip this task entirely if Task 0 found `:scratch` is ACCEPTED** — then defect 4 does not exist,
+there are three defects rather than four, and every downstream mention must read that way.
+
+- [ ] exclude a `scratch`-paned participant from the cell set, via `dashboard_cells`' `excluded`
 - [ ] report an excluded participant **once**, not per tick
-- [ ] write the AST guard that cell strings are built only in `dashboard_cells`, **over both
-      `agb-peer` and `agb-dashboard`** (the `conftest` helpers take any tree), with its non-vacuity
-      assertion
 - [ ] write tests: a `scratch` participant no longer prevents the grid opening
 - [ ] mutation-check by passing the participant pane through unchecked
+- [ ] add the `CHANGELOG.md` entry naming this as **a bug users may have hit**
 - [ ] run tests — must pass before task 2c
 
 ### Task 2c: The membership trigger (defects 2 and 3)
@@ -465,17 +522,27 @@ and the only change is routing through the shared helper.
 - Modify: `tests/test_agb_peer.py`
 - Modify: `CHANGELOG.md`
 
-- [ ] ⚠️ have `_one_name_per_row` (`agb-peer:2469`) **report the names it dropped** as same-row
-      aliases — it currently returns only the collapsed dict (`:2489`), so after `resolve_all` an
-      alias-drop and an unresolved name are indistinguishable, and the message would say "waiting
-      for bob" about a name that resolved fine
+- [ ] ⚠️ have `_one_name_per_row` (`agb-peer:2469`) record its alias drops **in the `notes` dict it
+      already receives** — NOT by changing its return shape. `agb-peer:2466` is
+      `return _one_name_per_row(...)`, so it **is** `resolve_all`'s return value: changing it would
+      change `resolve_all`'s shape across **8 call sites**, four of which index the result as a
+      dict. That is the identical error correction 3 diagnosed for `Ctl.dashboard` and this plan
+      then repeated one task later
+- [ ] the `notes` route is nearly free — `_throttled(say, notes, ("alias", name))` at `agb-peer:2477`
+      already writes `notes[("said", ("alias", name))]`. ⚠️ **But it has a staleness trap**: the note
+      persists after the alias goes away, so the drop set must be rebuilt per tick rather than read
+      as an accumulator
 - [ ] ⚠️ track the **`(name, id, pane)` cell set**, not the set of names. An `agb-refresh` changes
       every id while the names are identical — that is exactly what `fresh != resolved` was
       catching, and a name-set trigger would silently reintroduce the dead-cell defect the code
       already handled
-- [ ] replace `len(resolved) > 1`: re-open with the full cell set when every roster member is
-      **accounted for** (gridded, or excluded as `scratch`); **close** this run's grid and say
-      `dashboard: waiting for <name>` when any is genuinely missing
+- [ ] replace `len(resolved) > 1`: re-open with the cell set on every change, and ⚠️ **when a member
+      is missing, OPEN WITH THE REST AND SAY SO** — do not close. Defect 3's symptom is a partial
+      grid *"with nothing saying carol is missing"*, so the minimal fix is the marker, not the
+      closure. ⚠️ Closing would be a worse regression: `resolve_all` throttles an unresolvable name
+      **for ever** (`agb-peer:2458-2465` calls a mistyped label a steady state), so one typo would
+      mean **no grid at all for the life of the relay** — and it contradicts this plan's own framing
+      of the relay's grid as an adjunct whose failures stay cosmetic
 - [ ] ⚠️ compute it **outside** `if fresh != resolved:` — a roster edit adding an unresolvable member
       leaves `fresh == resolved`, so a fix inside it never fires — and throttle the message through
       `_throttled` (`agb-peer:2318`). ⚠️ `_throttled` dedupes on message **text**, not time, so it
@@ -489,8 +556,8 @@ and the only change is routing through the shared helper.
 - [ ] write tests: the "waiting" message is throttled, not per-tick
 - [ ] write tests: a failing `dashboard` call does not stop a queued message being delivered
 - [ ] mutation-check the defect-2 fix by restoring the `> 1` guard
-- [ ] add the `CHANGELOG.md` entry for all four defects in this commit, naming the `scratch` one (if
-      it exists) as **a bug users may have hit** rather than an internal tidy
+- [ ] add the `CHANGELOG.md` entry for **this task's** defects (2 and 3). Tasks 2a, 2b-i and 2b-ii
+      carry their own, per the repo rule that an entry lands in the same commit as its code
 - [ ] run tests — must pass before task 3
 
 ### Task 3: `agb-dashboard` skeleton, loading and argument parsing
@@ -532,6 +599,9 @@ and the only change is routing through the shared helper.
 - [ ] preflight `DASHBOARD_MAX_CELLS` after deduping, refusing with a message naming the cap
 - [ ] build cells with `dashboard_cells`, open through the new `Ctl.dashboard`, print the resolved
       mapping so what was opened is on the record
+- [ ] ⚠️ treat a non-empty `excluded` as a **shortfall here**, unlike in the relay: this command's
+      whole contract is fail-closed on asserted membership, so a `--roster` naming a `scratch`
+      participant must refuse rather than open a grid quietly missing it
 - [ ] ⚠️ treat `unresolved:` **in stdout** as a failure despite exit 0 — the one place the exit
       status is deliberately not trusted, and the reason Task 1 changed the return shape
 - [ ] 🔴 **and CLOSE the grid before exiting on it.** `unresolved:` is printed *after* agterm has
@@ -540,8 +610,10 @@ and the only change is routing through the shared helper.
       then exit non-zero
 - [ ] `--roster` parses with **`minimum=1`**, not the default 2: this plan's own measured table says
       one cell is valid, and a one-participant roster is a legal thing to want to watch
-- [ ] write tests: one bad selector among three → **no** agtermctl call, non-zero exit, the bad one
-      named; mutation-check by making it open the rest
+- [ ] write tests: one bad selector among three → **no `agtermctl dashboard` call**, non-zero exit,
+      the bad one named; mutation-check by making it open the rest. ⚠️ Not "no agtermctl call" — one
+      `tree --json` has already run by this design, and a test asserting otherwise would push an
+      implementer back into the per-selector-subprocess shape revision 1 rejected
 - [ ] write tests: an ambiguous selector is refused and names its matches
 - [ ] write tests: two selectors resolving to the **same row** are deduped, not double-billed
 - [ ] write tests: ten selectors refused before any call; nine accepted (the boundary, both sides)
@@ -588,11 +660,12 @@ and the only change is routing through the shared helper.
 - [ ] an unresolvable or ambiguous selector opens nothing and exits non-zero; a **duplicate** is
       **deduped**, not refused — decided once, in *Technical Details*
 - [ ] a strict failure on `unresolved:` **closes** the grid agterm already opened
-- [ ] ten selectors refused before agtermctl is called
+- [ ] ten selectors refused before **`agtermctl dashboard`** is called (the tree fetch precedes it)
 - [ ] `--roster` grids a one-participant roster; `--mru` works alone and is refused alongside selectors
 - [ ] the hold closes on enter, EOF and `Ctrl-C`; `--detach` prints the close command
-- [ ] `relay --dashboard` leaves no stale, orphaned or silently-partial grid, opens for a `scratch`
-      roster, and no grid outcome stops a message
+- [ ] `relay --dashboard` leaves no stale or orphaned grid, marks a partial one instead of hiding
+      it, and no grid outcome stops a message. ⚠️ **"opens for a `scratch` roster" applies only if
+      Task 0 found `:scratch` is rejected** — otherwise there was never anything to fix
 - [ ] ⚠️ confirm `agb` is untouched **against the plan's base commit** recorded in the header:
       `git diff --stat 98210e5..HEAD -- agb` — not `HEAD`, which a later `CHANGELOG` commit hides
 - [ ] run the full suite: `python3 -m pytest tests/ -q`
@@ -612,7 +685,8 @@ and the only change is routing through the shared helper.
 - [ ] ⚠️ `docs/commands.md` — **also update the EXISTING `relay --dashboard` prose** (`:1553-1580`)
       and the `agb-refresh` survival table (`:1673`), whose behaviour Task 2 changes: it now closes
       on exit and on an incomplete roster
-- [ ] `docs/agtermctl.md` — the pane-suffix row (`:scratch` is an invalid id), and Task 0's answer
+- [ ] `docs/agtermctl.md` — ⚠️ Task 0 already wrote both answers there; this checkbox only confirms
+      the row says what was **measured**, not what revision 2 assumed
 - [ ] `docs/cookbook.md` — a "watch two agents talk" recipe beside the relay recipe, with the
       one-line difference between the two features
 - [ ] `docs/design.md` — the *adjunct versus primary effect* distinction, and the one-global-grid
@@ -637,9 +711,10 @@ still need a fix after live use — twice in the last four, and twice again this
 - ⚠️ Grid a row that has a **split open** and confirm it still costs one cell — the whole reason for
   `:left`, and invisible to any test.
 - Force ambiguity with two rows whose labels are prefixes of one another, and confirm nothing opens.
-- ⚠️ Run `relay --dashboard` with a **`scratch`** participant in the roster and confirm the grid now
-  opens without it, naming the exclusion — defect 4, and the case most likely to have bitten
-  somebody already without being recognised.
+- ⚠️ **Only if Task 0 found `:scratch` is rejected**: run `relay --dashboard` with a `scratch`
+  participant and confirm the grid now opens without it, naming the exclusion — defect 4, and the
+  case most likely to have bitten somebody already without being recognised. If Task 0 found it is
+  accepted, confirm instead that such a participant simply gets a cell.
 - Run an `agb-refresh` while a grid is **held**, and confirm the documented limitation is what
   actually happens — dead cells, not a crash.
 - `--detach`, then close using only the printed command.
