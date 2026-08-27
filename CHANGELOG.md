@@ -126,6 +126,20 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   cookbook's own hand-written roster example carries a comment on line 1, so the documented way to
   author one produced a file this tool ate without a word.
 
+  ⚠️ **It exits on an exhausted stdin instead of spinning.** `sys.stdin.readline()` returns `""`
+  at end of input — it does not raise `EOFError`, which is what `input()` does — so treating that as
+  an ordinary answer made every re-prompting loop run for ever. Measured against the real binary
+  with stdin closed: **305,869 menu prints and 1.8 million lines in six seconds.** Any
+  non-interactive invocation did it: a pipe that runs out, a closed stdin, a here-doc shorter than
+  the prompts. The discriminator is the newline — pressing enter gives `"\n"` and means "take the
+  default", EOF gives `""` — so the raw value is tested before stripping, because stripping makes
+  the two indistinguishable and the dangerous one becomes the harmless one.
+
+  Found by the first live run. The test fake raised `EOFError`, which real stdin never does, so the
+  harness described a world where this could not happen and the EOF test passed against the broken
+  code throughout. The fake now returns lines with their newline and `""` when exhausted, which is
+  what `readline` does.
+
   Not installed by `install.sh`; symlink it beside `agb-peer`.
 
 - **`agb-peer` can now write a roster file safely, which is what an interactive builder needs.**

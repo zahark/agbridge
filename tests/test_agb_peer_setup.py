@@ -651,7 +651,23 @@ def test_index_of_finds_and_misses(setup, peer, tmp_path):
 # ---------------------------------------------------------------------------
 
 class Script(object):
-    """A canned sequence of answers, plus everything that was said to us."""
+    """A canned sequence of answers, plus everything that was said to us.
+
+    ⚠️ **THIS FAKE MODELS `readline`, AND ITS FIRST VERSION DID NOT.**
+    It used to raise `EOFError` when exhausted, which `sys.stdin.readline()`
+    NEVER does -- at end of input it returns `""`. So the harness described a
+    world where an exhausted stdin was impossible, `ask` treated the real `""`
+    as an ordinary answer, and every re-prompting loop spun for ever. Measured
+    against the real binary: 305,869 menu prints in six seconds. A live run
+    found it; `test_eof_is_a_cancel_not_a_crash` passed against the broken code
+    the whole time.
+
+    So: answers come back WITH a trailing newline, exactly as `readline`
+    delivers them, and exhaustion returns `""` -- which is how `ask`
+    distinguishes "the user pressed enter" (`"\n"`, meaning take the default)
+    from "there is no more input" (`""`). A fake simpler than reality fails
+    nothing.
+    """
 
     def __init__(self, *answers):
         self.answers = list(answers)
@@ -659,8 +675,8 @@ class Script(object):
 
     def read_line(self):
         if not self.answers:
-            raise EOFError()
-        return self.answers.pop(0)
+            return ""                        # readline at EOF, not EOFError
+        return self.answers.pop(0) + "\n"
 
     def say(self, message):
         self.said.append(message)
@@ -867,6 +883,60 @@ def test_eof_is_a_cancel_not_a_crash(setup, peer, ops):
     draft = draft_of(setup)
     assert setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops) is False
     assert draft.entries == []
+
+
+def test_an_exhausted_stdin_does_not_SPIN(setup, peer, ops):
+    """⚠️ The regression for the worst bug found live.
+
+    `readline` returns `""` at EOF rather than raising, so treating it as an
+    ordinary answer makes every re-prompting loop spin. Bounded here by
+    counting reads: an unfixed `ask` never stops asking, so the count runs away
+    instead of settling at one per prompt.
+    """
+    reads = [0]
+
+    def exhausted():
+        reads[0] += 1
+        if reads[0] > 50:
+            raise AssertionError("ask() is spinning on EOF: %d reads"
+                                 % (reads[0],))
+        return ""                                     # always at end of input
+
+    said = []
+    draft = draft_of(setup)
+    assert setup.cmd_add(peer, draft, FakeCtl([AGBRIDGE_ROW]), exhausted,
+                         said.append, ops=ops) is False
+    assert draft.entries == []
+    assert reads[0] <= 2, "one prompt, one read: %d" % (reads[0],)
+
+
+def test_pressing_enter_is_not_mistaken_for_EOF(setup, peer, ops):
+    """The companion that makes the fix non-vacuous, and the reason the RAW
+    value is tested before stripping: `"\n"` strips to `""` and legitimately
+    means "take the default", while `""` means there is no more input. Strip
+    first and the two become indistinguishable."""
+    ctl = FakeCtl([AGBRIDGE_ROW])
+    s = Script("1", "alice", "", "a")           # "" -> "\n" -> default pane
+    draft = draft_of(setup)
+    assert setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops) is True
+    assert peer.render_roster_lines(draft.entries) == ["alice=work"]
+
+
+def test_the_menu_loop_exits_on_an_exhausted_stdin(setup, peer, tmp_path):
+    """The same property one layer up, where the measured spin actually
+    happened -- the menu re-prompts too."""
+    reads = [0]
+
+    def exhausted():
+        reads[0] += 1
+        if reads[0] > 50:
+            raise AssertionError("main_loop is spinning: %d reads" % (reads[0],))
+        return ""
+
+    draft = setup.Draft(str(tmp_path / "roster"), THREE, None)
+    assert setup.main_loop(peer, draft, FakeCtl(), exhausted,
+                           lambda _m: None) == 0
+    assert reads[0] <= 2, reads[0]
 
 
 def test_picking_a_row_whose_label_resolves_ELSEWHERE_is_refused(setup, peer,

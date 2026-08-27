@@ -475,15 +475,37 @@ CANCEL = object()
 
 
 def ask(read_line, say, prompt, default=None):
-    """One line from the user, or `CANCEL`. EOF is a cancel, not a crash."""
+    """One line from the user, or `CANCEL`.
+
+    ⚠️ **EOF IS AN EMPTY STRING, NOT AN EXCEPTION, AND EVERY LOOP HERE DEPENDS
+    ON GETTING THAT RIGHT.** `sys.stdin.readline()` returns `""` at end of
+    input -- it does not raise `EOFError`, which is what `input()` does. Treat
+    `""` as an ordinary answer and every re-prompting loop in this file spins
+    for ever: MEASURED against the real binary with stdin closed, 305,869 menu
+    prints and 1.8 million lines of output in six seconds before the timeout
+    killed it. Any non-interactive invocation does this -- a pipe that runs
+    out, a closed stdin, a here-doc shorter than the prompts.
+
+    ⚠️ **The discriminator is the NEWLINE, so the raw value must be tested
+    before stripping.** A user pressing enter gives `"\n"`, which strips to
+    `""` and legitimately means "take the default". EOF gives `""` with no
+    newline at all. Strip first and the two become indistinguishable -- and the
+    one that matters silently becomes the harmless one.
+
+    ⚠️ Found by a live run, not by a test: the test fake raised `EOFError`,
+    which real stdin never does, so the harness modelled a world where this
+    could not happen and `test_eof_is_a_cancel_not_a_crash` passed against the
+    broken code. `Script.read_line` now returns lines WITH their newline and
+    `""` only when exhausted, which is what `readline` actually does.
+    """
     say(prompt)
     try:
-        answer = read_line()
-    except EOFError:
+        raw = read_line()
+    except EOFError:                    # `input()`-shaped readers still work
         return CANCEL
-    if answer is None:
+    if raw is None or raw == "":
         return CANCEL
-    answer = answer.strip()
+    answer = raw.strip()
     if answer in ("q", "cancel"):
         return CANCEL
     return answer or (default if default is not None else "")
