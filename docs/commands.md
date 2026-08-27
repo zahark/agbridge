@@ -1718,6 +1718,13 @@ hands the row's `--host` to ssh **verbatim** — it never applies the mapping �
 needs an alias, `[a]` produces a roster that parses, validates, prints a working-looking next
 command, and then silently never delivers.
 
+⚠️ **`[a]` is missing for two different reasons, and the tool says which.** Besides the remapped-host
+case above, a row that was **not opened through agbridge** carries no `agb pane` command, so there is
+no host recorded on it to fall back to at all — a plain agterm shell, or a Mac-side agent nobody
+clicked through to. Both drop the same option; the message tells you whether it is "this host is
+remapped" or "this row has no host". Only a bridge-opened row whose host resolves to **itself** gets
+`[a]` offered.
+
 ⚠️ **It rewrites the file as generated output, so `#` comments and blank lines are NOT preserved.**
 An entry is the only thing the editor models, so a comment has nowhere to attach — it may belong to
 the file, to the entry below it, or to the gap. It says so **when it opens the file**, not when you

@@ -1389,3 +1389,43 @@ def test_a_hash_inside_a_row_is_not_counted_as_a_comment(setup, peer,
     setup.load_draft(peer, roster(tmp_path, "alice=build#7\nbob=RowB\n",
                                   name="c5"), said.append)
     assert not any("comment" in m.lower() for m in said), said
+
+
+def test_a_row_with_no_host_hint_says_WHY_there_is_no_row_default(setup, peer,
+                                                                  ops):
+    """⚠️ Three paths drop `[a]`, and this one used to do it silently.
+
+    Not "this host is remapped" but "this row has no host recorded at all" --
+    `agbridge_hint` returns None unless the foreground carries an `agb pane`
+    argv, so a plain agterm session can never offer the row default whatever
+    the config says. Both cases drop the same option; only one explained
+    itself, so the other read as the menu misfiring.
+    """
+    ctl = FakeCtl([PLAIN_ROW])
+    s = Script("1", "mac", "", "l", "sometmux")
+    draft = draft_of(setup)
+    setup.cmd_add(peer, draft, ctl, s.read_line, s.say, ops=ops)
+    assert "not opened through agbridge" in s.text
+    assert "[a]" not in s.text
+
+
+def test_the_two_reasons_for_a_missing_row_default_are_DISTINCT(setup, peer,
+                                                                ops, tmp_path):
+    """The companion that makes the test above mean something: same missing
+    option, and the message must say which of the two reasons applies."""
+    cfg = tmp_path / "config"
+    cfg.write_text("host_box01 = box01.example\n")
+    argv = list(PANE_ARGV) + ["--config", str(cfg)]
+    mapped = Script("1", "a", "", "s", "1")
+    setup.cmd_add(peer, draft_of(setup), FakeCtl([dict(AGBRIDGE_ROW,
+                  foreground=argv)]), mapped.read_line, mapped.say, ops=ops,
+                  agb=sys.modules["agb"])
+
+    nohint = Script("1", "b", "", "l", "t")
+    setup.cmd_add(peer, draft_of(setup), FakeCtl([PLAIN_ROW]),
+                  nohint.read_line, nohint.say, ops=ops)
+
+    assert "uses the row's host VERBATIM" in mapped.text
+    assert "not opened through agbridge" not in mapped.text
+    assert "not opened through agbridge" in nohint.text
+    assert "uses the row's host VERBATIM" not in nohint.text

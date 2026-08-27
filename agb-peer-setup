@@ -650,6 +650,24 @@ def ask_transport(peer, ops, agb, hint, read_line, say):
             say("note: %s maps to %s in this instance's config, and the relay "
                 "uses the row's host VERBATIM -- so an ssh target is needed "
                 "rather than the row default." % (hint["host"], mapped))
+    else:
+        # ⚠️ THE THIRD PATH, and it used to be the silent one.
+        #
+        # `[a]` is missing here for a completely different reason than above:
+        # not "this host is remapped" but "this row has no host to read at
+        # all". `agbridge_hint` returns None unless the row's `foreground`
+        # carries an `agb pane` argv, so a plain agterm session -- a shell, a
+        # Mac-side agent nobody opened through the bridge -- can never offer
+        # it, whatever the config says.
+        #
+        # Both cases drop the same option; only one of them explained itself,
+        # so the other read as the menu being inconsistent. Found when a live
+        # tester was asked to confirm `[a]` appears for an unmapped host, went
+        # to a Mac-local row to do it, and got no `[a]` and no reason -- an
+        # answer that looks like the gate misfiring and is not.
+        say("note: this row was not opened through agbridge (no `agb pane` "
+            "command), so there is no host recorded on it to fall back to -- "
+            "say where its tmux is below.")
     options.extend([
         ("l", "tmux on this Mac"),
         ("s", "ssh to a host running tmux"),
