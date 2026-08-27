@@ -1999,6 +1999,12 @@ Same arrangement as `agb-peer` and `agb-peer-setup`, and inherited from them: it
 path from beside itself, so the two travel together and `--version` is per-file. It runs on the
 **Mac**, because that is where `agtermctl` is.
 
+⚠️ **"Beside itself" is beside its REAL path, not beside the symlink** — `peer_path` resolves
+`__file__` first, for exactly this reason. So the two symlinks need not live in the same directory,
+which matters here: `agb-peer` belongs somewhere `login` exports (`/opt/homebrew/bin`) because an
+*agent* invokes it inside an agterm pane, while this one you type yourself and `~/.local/bin` is
+fine. Both resolve back into the checkout, where they are genuinely side by side.
+
 | flag | |
 |---|---|
 | `<selector>` | a substring of the row's label, its id, or an id prefix — the tiers `agb-peer` resolves in. Prefer the label: an id dies at the next `agb-refresh` |
