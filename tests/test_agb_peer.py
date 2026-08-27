@@ -2825,6 +2825,12 @@ class TickingCtl(RelayCtl):
 
     def sleep(self, seconds):
         self.tick += 1
+        # Stamped into the shared grid log too, so a test can say WHEN a grid
+        # call happened relative to the ticks. Without it, "closed mid-run and
+        # therefore not on the way out" and "never closed until the way out"
+        # produce the identical log -- measured: a mutation that closed on a
+        # missing member survived a `grid_log == [open, close]` assertion.
+        self.grid_log.append(("tick", self.tick))
         self.on_tick(self.tick)
 
 
@@ -4405,7 +4411,7 @@ def test_a_member_added_with_no_row_is_named_though_nothing_resolved(peer,
     peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=3,
                    dashboard=True, fetch=Fetcher())
     assert ctl.grid_log == [("open", ["AAAA1111:left", "BBBB2222:left"]),
-                            ("close",)], ctl.grid_log
+                            ("tick", 1), ("tick", 2), ("close",)], ctl.grid_log
     report = [line for line in out.getvalue().splitlines()
               if "no row for" in line]
     assert len(report) == 1 and "carol" in report[0], out.getvalue()

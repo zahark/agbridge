@@ -668,7 +668,13 @@ four defects, and every downstream "three, or four if…" now reads four.
 - [x] write tests: a name dropped by `_one_name_per_row` is **not** reported as unresolved
 - [x] write tests: the "waiting" message is throttled, not per-tick
 - [x] write tests: a failing `dashboard` call does not stop a queued message being delivered
-- [x] mutation-check the defect-2 fix by restoring the `> 1` guard
+- [x] mutation-check the defect-2 fix by restoring the `> 1` guard — ➕ **eight** mutations were
+      run, not one, and the sixth (*close the grid when a member is missing*) **survived**: the
+      test's `grid_log == [open, close]` could not tell a mid-run close followed by no exit close
+      from no mid-run close followed by the exit one. `TickingCtl.sleep` now stamps `("tick", n)`
+      into the same log, so the assertion is ordered and the mutation dies. The same shape as this
+      repo's "a test asserting that nothing happened needs a companion differing in the variable
+      under test" — here the missing variable was *time*
 - [x] add the `CHANGELOG.md` entry for **this task's** defects (2 and 3). Tasks 2a, 2b-i and 2b-ii
       carry their own, per the repo rule that an entry lands in the same commit as its code
 - [x] run tests — must pass before task 3
