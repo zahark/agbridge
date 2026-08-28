@@ -10,6 +10,30 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A third label-collision variant, found in live agent names: one label NESTED in another — and
+  the shorter one is what breaks.** `data-pipeline` and `data-pipeline-2`, both real
+  keys on one host. The longer row's title contains the shorter name entirely, so the selector
+  `data-pipeline` matches **both**, while `data-pipeline-2` stays unique and keeps
+  working. ⚠️ **So the agent that gets broken is the one that was there FIRST**, by the later one
+  being named after it — and the person who caused it is the one whose agent still works, which is
+  why nothing draws their attention to it.
+
+  ⚠️ **The `_2` suffix manufactures it**, which is what everyone reaches for when they want a second
+  of something. ⚠️ **And it can lie dormant**: the measured case is safe only because the shorter
+  agent is **dead**. The day it comes back while `_2` has a row, the collision arrives with **neither
+  row stale and neither name wrong** — nothing about the state on the day you look tells you it is
+  coming. `docs/cookbook.md` already warned that no session name may be a prefix of another; what it
+  did not carry, and now does, is **who breaks**, **that the convention causes it**, and **that it
+  can be latent**.
+
+- **Corrected: `agb-refresh` on an instance with orphaned bindings is usually a REPAIR, not a
+  hazard.** An earlier entry framed the documented cleanup as the thing that detonates the litter.
+  Measured across both sides: of six orphaned bindings on one instance, **three are inert** (key
+  already reaped), and of the three that are live, **two have no row at all** — for them a refresh
+  is exactly what gives them one back. **Only one is dangerous**, because only one duplicates a live
+  row's label. ⚠️ **The hazard is not re-minting; it is re-minting into a duplicate label**, and the
+  test needs a third question nobody was asking: *does this orphan's label duplicate a live row's?*
+
 - **A sandboxed agent could not use `agb-peer send` at all, and the refusal did not say so.**
   MEASURED on the second live hangout attempt: a **Codex** ran the *correct* command this time and
   got `error connecting to /tmp/tmux-…/default (Operation not permitted)` — its sandbox refuses a

@@ -32,6 +32,31 @@ predated the row that collided with it.
 history — at which point it failed loudly, at the worst moment, for a reason introduced hours
 earlier.
 
+## Three variants, and only the first was known
+
+Found across one evening, all in live data:
+
+| variant | example | what makes it hard |
+|---|---|---|
+| **label vs cwd** | `agbridge-public` (label) vs `codexpeer · agbridge-public` (cwd) | neither name is wrong; the cwd is invisible as a *name* |
+| **label vs its own corpse** | a relaunched row while the `[done]` one is still in the tree | `[done] ` is a **prefix**, not a field, so it is inside the searched title |
+| **label nested in label** | `data-pipeline` ⊂ `data-pipeline-2` | ⚠️ **neither row is stale and neither name is wrong** |
+
+⚠️ **The third has an asymmetry that decides who pays: the SHORTER name is the one that breaks.**
+`data-pipeline-2` stays unique and keeps working; `data-pipeline` becomes
+unresolvable. **So the agent that gets broken is the one that was there first, by the later one being
+named after it** — and the person who caused it is the one whose agent still works, which is why
+nothing draws their attention to it.
+
+⚠️ **It is manufactured by the `_2` suffix convention**, the thing everyone reaches for when they
+want a second of something — and ⚠️ **it can lie dormant**: in the measured case it was safe only
+because the shorter agent was dead. The day it comes back while `_2` has a row, the collision arrives
+with nothing having changed about either name.
+
+`docs/cookbook.md` already warned that no session name may be a prefix of another. What it did not
+carry, and now does, is **who breaks**, **that the `_2` convention causes it**, and **that it can be
+latent**.
+
 ## What is NOT true
 
 The reporter concluded there is *no* single word that disambiguates, because `<row>` may not contain

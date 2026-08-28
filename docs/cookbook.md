@@ -748,6 +748,22 @@ participant is absent until you fix it. You cannot disambiguate with more of the
 roster line is split on whitespace and a label with a space in it becomes two words; and a pane id
 moves when rows are re-minted, which is the whole reason labels exist. Rename the session.
 
+⚠️ **And when one name NESTS in another, it is the SHORTER one that breaks — which is the one that
+was there first.** Found in real agent names, 2026-08-28: `data-pipeline` and
+`data-pipeline-2`. The longer row's title contains the shorter name entirely, so the selector
+`data-pipeline` matches **both**, while `data-pipeline-2` stays unique and keeps
+working. **The agent that gets broken is the original, by the later one being named after it** — and
+the person who caused it is the one whose agent still works, so nothing draws their attention to it.
+
+⚠️ **The `_2` suffix manufactures this**, and it is what everyone reaches for when they want a second
+of something. `hangout` and `hangout-2` collide immediately; `alice` and `alice-old` collide; a
+sibling name that merely *starts differently* does not.
+
+⚠️ **It can also lie dormant and arm later.** In the case above it was safe only because the shorter
+agent was **dead** — its key was in the map as `done`. The day it comes back while `_2` has a row,
+the collision arrives with **neither row stale and neither name wrong**. Nothing about the state on
+the day you look tells you it is coming.
+
 ⚠️ **A label can also collide with another row's `cwd`, which is far less obvious** — found live,
 2026-08-27. The match is a substring of the **whole title**, and a title is `row_fields` joined by
 `·` (by default `label · host · cwd · pane · beat`). So two agents started in the same directory
