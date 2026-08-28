@@ -1815,6 +1815,57 @@ def test_spawn_still_returns_promptly_with_no_grandchild(peer):
     assert monotonic() - start < 10
 
 
+def test_a_missing_agtermctl_names_the_form_that_works(peer, monkeypatch):
+    """🔴 Observed live 2026-08-28. A Codex on a cluster host ran the direct
+    form, got `agtermctl: [Errno 2] No such file or directory`, told its user
+    that agb-peer's "required agtermctl dependency isn't installed", and
+    stopped.
+
+    Every word of that was defensible and the conclusion was wrong: `send`
+    needs no agtermctl and was available the whole time. ⚠️ **An error that
+    names a true fact and leads somewhere false is worse than a vague one,
+    because it gets believed.**
+    """
+    monkeypatch.setattr(peer, "CTL", "/nonexistent/agtermctl")
+    with pytest.raises(peer.PeerError) as caught:
+        peer.run_ctl(["tree", "--json"])
+    said = str(caught.value)
+    assert "agb-peer send" in said, said
+    assert "no agtermctl" in said, "it must say why that form is different"
+    assert "AGB_AGTERMCTL" in said, "and the case where agterm IS here"
+
+
+def test_other_agtermctl_failures_are_not_dressed_up_as_this_one(peer):
+    """The companion: only a MISSING binary gets the hint.
+
+    Without this, the branch could fire on any failure at all -- telling
+    somebody whose agterm merely returned an error to go and use a different
+    command, which would not help and would hide the real message.
+    """
+    def refused(argv, timeout=None):
+        raise peer.PeerError("agtermctl: permission denied")
+
+    import agb_peer as _mod  # noqa: F401  (registered by the fixture)
+    saved = peer._spawn
+    try:
+        peer._spawn = refused
+        with pytest.raises(peer.PeerError) as caught:
+            peer.run_ctl(["tree", "--json"])
+        assert "permission denied" in str(caught.value)
+        assert "agb-peer send" not in str(caught.value), str(caught.value)
+    finally:
+        peer._spawn = saved
+
+
+def test_the_usage_leads_with_the_form_an_agent_can_run(peer):
+    """⚠️ An agent copies the FIRST usage line, and the first line used to be
+    the one that cannot work on a cluster host -- it needs agterm, which is on
+    the Mac. `send` is the form that works where agents actually run."""
+    first = peer.USAGE.splitlines()[0]
+    assert "agb-peer send" in first, first
+    assert "no agtermctl" in first, first
+
+
 def test_both_runners_share_the_timing_out_spawner(peer):
     import ast
     tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())

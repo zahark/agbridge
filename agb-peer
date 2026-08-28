@@ -296,8 +296,8 @@ PEER_FLAGS = ("--stdin", "--no-send", "--no-arm", "--dry-run", "--list",
 PEER_VALUE_ARGS = ("--to", "--pane", "--from", "--retries", "--interval",
                    "--lines", "--chat-dir", "--roster")
 
-USAGE = """usage: agb-peer --to <peer> [<message> | --stdin] [options]
-       agb-peer send --to <name> <message>          # tmux only; no agtermctl
+USAGE = """usage: agb-peer send --to <name> --stdin  # from an AGENT; no agtermctl
+       agb-peer --to <peer> [<message> | --stdin] [options]   # needs agterm
        agb-peer relay a=<label> b=<label>[:pane][@host[:nfs]] [--dashboard]
        agb-peer relay --roster <file>               # the same, re-read as it changes
        agb-peer who                                 # ask the relay who is here
@@ -1699,8 +1699,33 @@ def run_local(argv, timeout=SUBPROCESS_TIMEOUT):
 
 
 def run_ctl(argv, timeout=SUBPROCESS_TIMEOUT):
-    """(rc, stdout, stderr) for an agtermctl call."""
-    return _spawn([CTL] + list(argv), timeout)
+    """(rc, stdout, stderr) for an agtermctl call.
+
+    🔴 **A missing `agtermctl` is reported with the way OUT, because without it
+    the true message produces a false conclusion.** Observed live 2026-08-28: a
+    Codex on a cluster host ran the direct form, got
+    `agtermctl: [Errno 2] No such file or directory`, and told its user that
+    *"agb-peer's required agtermctl dependency isn't installed"* -- then stopped.
+
+    Every word of that is defensible and the conclusion is wrong. `agtermctl`
+    is not a dependency of `agb-peer`; it is a dependency of the **direct
+    delivery path**, which types into a row and therefore only exists where
+    agterm does. `agb-peer send` needs **no agtermctl at all** -- it stashes the
+    body in a tmux pane option and rings a doorbell -- and it was available the
+    whole time. An error that names a true fact and leads somewhere false is
+    worse than a vague one, because it gets believed.
+    """
+    try:
+        return _spawn([CTL] + list(argv), timeout)
+    except PeerError as error:
+        if "No such file or directory" not in str(error):
+            raise
+        raise PeerError(
+            "%s -- this form talks to agterm, which lives on the Mac. On a "
+            "machine without it, use `agb-peer send --to <name> --stdin`, "
+            "which needs no agtermctl: it stashes the message in tmux for the "
+            "relay to collect. Set $AGB_AGTERMCTL if agterm IS here under "
+            "another path." % (error,))
 
 
 class Ctl(object):

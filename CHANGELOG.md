@@ -10,6 +10,24 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 A missing `agtermctl` sent an agent away from a transport that was working.** Observed on the
+  first live hangout: a **Codex on a cluster host** ran the direct form, got
+  `agtermctl: [Errno 2] No such file or directory`, told its user that *"agb-peer's required
+  agtermctl dependency isn't installed"* — and stopped.
+
+  ⚠️ **Every word of that was defensible and the conclusion was wrong.** `agtermctl` is not a
+  dependency of `agb-peer`; it is a dependency of the **direct delivery path**, which types into a
+  row and so only exists where agterm does. **`agb-peer send` needs no agtermctl at all** — it
+  stashes the body in a tmux pane option and rings a doorbell — and it was available the whole time.
+  **An error that names a true fact and leads somewhere false is worse than a vague one, because it
+  gets believed.** The message now names `send`, says why that form is different, and mentions
+  `$AGB_AGTERMCTL` for the case where agterm *is* present under another path. Only a *missing*
+  binary gets the hint — an agterm that ran and refused still reports what it said.
+
+- **The first line of `agb-peer`'s usage was the one an agent cannot run.** It led with the direct
+  form — which needs agterm, i.e. the Mac — while `send` sat on the second line. ⚠️ **An agent copies
+  the first line**, and every agent that matters here runs on a cluster host. `send` leads now.
+
 - **🔴 Recorded, not fixed: the documented repair for an orphaned row binding is the exact command
   that detonates it.** An entry can be **bound to a row agterm no longer has** — minted, then the row
   closed, the binding surviving. Measured on one live instance: **11 of 18 bindings name a session
