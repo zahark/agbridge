@@ -1196,32 +1196,60 @@ def test_close_grid_reports_whether_the_grid_IS_GONE(peer):
 SKILL_PATH = os.path.join(REPO_ROOT, "skills", "agb-peer", "SKILL.md")
 
 
-def test_the_skill_exists_and_has_frontmatter(peer):
-    body = io.open(SKILL_PATH, encoding="utf-8").read()
-    assert body.startswith("---\n"), "a skill needs YAML frontmatter"
-    head = body.split("---", 2)[1]
-    assert "name:" in head and "description:" in head
+def skill_paths():
+    """Every skill in `skills/`, not just `agb-peer`'s.
+
+    ⚠️ Discovered rather than listed. `agb-hangout` is prose over `agb-peer
+    send` exactly as `agb-peer`'s own file is, so it inherits the same
+    cross-file agreement -- and a hand-kept list is a thing the next skill is
+    added without. The directory is the enumeration.
+    """
+    import glob
+    return sorted(glob.glob(os.path.join(REPO_ROOT, "skills", "*", "SKILL.md")))
 
 
-def test_every_flag_the_skill_names_is_a_real_flag(peer):
+def test_every_skill_has_frontmatter(peer):
+    paths = skill_paths()
+    # Non-vacuity, and specifically that the walk found MORE than the one file
+    # this section was written about: a glob that silently matched nothing --
+    # or only `agb-peer` -- would pass every assertion below it.
+    assert len(paths) >= 2, paths
+    assert SKILL_PATH in paths, paths
+    for path in paths:
+        body = io.open(path, encoding="utf-8").read()
+        assert body.startswith("---\n"), "%s: a skill needs YAML frontmatter" % path
+        head = body.split("---", 2)[1]
+        assert "name:" in head and "description:" in head, path
+
+
+def test_every_flag_any_skill_names_is_a_real_flag(peer):
     """A cross-file agreement with no single source of truth.
 
-    The skill is prose an agent follows literally. A flag renamed in the parser
-    and left in the skill sends every agent down a path that exits 1 with
-    `unknown option`, and nothing in the suite would notice -- the skill is not
+    A skill is prose an agent follows literally. A flag renamed in the parser
+    and left in a skill sends every agent down a path that exits 1 with
+    `unknown option`, and nothing in the suite would notice -- a skill is not
     code and is never executed.
+
+    ⚠️ Every skill, not `agb-peer`'s alone. `agb-hangout` names `--to` and
+    `--stdin` too, and the file that names a flag is not always the file the
+    flag belongs to.
     """
     import re
-    body = io.open(SKILL_PATH, encoding="utf-8").read()
     known = set(peer.PEER_FLAGS) | set(peer.PEER_VALUE_ARGS)
-    named = set()
-    for line in body.splitlines():
-        if "agb-peer" not in line:
-            continue
-        named.update(re.findall(r"--[a-z][a-z-]*", line))
-    assert named, "the walk found no flags -- the skill or this parser changed"
-    assert named <= known, "the skill names flags agb-peer does not have: %s" % (
-        sorted(named - known),)
+    paths = skill_paths()
+    assert len(paths) >= 2, paths
+    walked = 0
+    for path in paths:
+        body = io.open(path, encoding="utf-8").read()
+        named = set()
+        for line in body.splitlines():
+            if "agb-peer" not in line:
+                continue
+            named.update(re.findall(r"--[a-z][a-z-]*", line))
+        walked += len(named)
+        assert named <= known, "%s names flags agb-peer does not have: %s" % (
+            path, sorted(named - known))
+    assert walked, "the walk found no flags -- the skills or this parser changed"
 
 
 def test_the_verbs_the_skill_names_are_dispatched(peer):

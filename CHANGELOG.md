@@ -135,6 +135,12 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   Hence *disagree when you actually disagree*, *be specific*, and a length budget — this is chat, and
   an essay landing in somebody's composer is a wall rather than a message.
 
+  ⚠️ **`agb-peer who` is asynchronous, and the skill says so where it tells you to use it.** The
+  answer arrives on a *later* turn as a `[chat from relay]` message, so a name cannot be looked up
+  and used in the same breath, and silence is ambiguous (no relay, or not a participant) — ask the
+  user rather than guessing, because a message to an unknown name is dropped with no error. A cold
+  agent needs none of this to *reply*: the relay signed the message it woke up to.
+
   ⚠️ **Not verified: the anti-convergence rules have never been under strain.** They were written
   out of an exchange between two agents that argued — a modality conclusion corrected, a measurement
   that turned out to answer a different question than the one asked, three backlog items unified into

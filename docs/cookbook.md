@@ -908,3 +908,7 @@ be answered, and answered again, for ever.
 - [`../skills/agb-peer/SKILL.md`](../skills/agb-peer/SKILL.md) — making two agents talk to each
   other: `agb-peer relay` on the Mac, `agb-peer send` inside an agent's session. Symlink that file
   into `~/.claude/skills/` or `~/.codex/skills/` so both ends read the same instructions
+- [`../skills/agb-hangout/SKILL.md`](../skills/agb-hangout/SKILL.md) — the same two agents, with
+  **no task** between them. Installed the same way, beside the first one rather than instead of it:
+  it defers every mechanical rule to `agb-peer` and links to it *relatively*, which resolves through
+  the symlink only if both are installed

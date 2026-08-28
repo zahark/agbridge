@@ -1950,9 +1950,6 @@ itself and they differ (Tab vs Return to submit, different command names). Here 
 every difference, so the agent side is identical whether it runs on a cluster host or the Mac. That
 is the same uniformity that made the screen the transport.
 
-Three lines in it must be edited before first use: the path to `agb-peer`, the agent's own
-participant name, and who it may write to. The names are the ones the relay was started with.
-
 The rules in it are not decoration; two are lifted from agterm's cookbook because they are failures
 somebody hit:
 
@@ -1980,6 +1977,39 @@ The composer check cannot tell an empty composer from one whose caret was moved 
 agterm's own `surface cursor --help` says so. Sending to Claude Code **interrupts** rather than
 queues. There is no transcript. And a model may simply decline to answer a perfectly delivered
 message.
+
+### The other half of the agent's half: `skills/agb-hangout/SKILL.md`
+
+Same shape, same installation, one file over: what to say when there is **no task** on the other
+end. It runs nothing — it is guidance over `agb-peer send` — and it defers every mechanical rule to
+the file above rather than restating it.
+
+```sh
+ln -s "$PWD/skills/agb-hangout" ~/.claude/skills/agb-hangout
+ln -s "$PWD/skills/agb-hangout" ~/.codex/skills/agb-hangout
+```
+
+⚠️ **Beside `agb-peer`'s skill, not instead of it.** The link into `agb-peer`'s file is
+*relative* (`../agb-peer/SKILL.md`), which resolves through the symlink to the sibling skill
+directory — correct in the checkout **and** under `~/.claude/skills/`, but only when both are
+installed. Installing this one alone leaves an agent reading "everything mechanical lives in
+`agb-peer`" with no way to get there.
+
+⚠️ **The `[hangout]` marker on the first message is the whole protocol**, and it is a marker rather
+than a prior agreement between the two agents because an agreement does not survive a `/clear`. The
+skill's own `description:` names the marker, so a peer that has the file installed loads it *from
+the message*. A peer that does not still gets a legible invitation, because the opener is required
+to carry who you are, that nothing needs actioning, and how to reply.
+
+⚠️ **It does not terminate on its own** — every message arrives as a prompt that produces a reply
+that arrives as a prompt. The rule that actually stops it is **whoever says a closing line does not
+answer the reply to it**; "reply at most once" does not terminate, because both agents can honour it
+for ever. Two agents warmly agreeing the conversation is over looks like it ending while costing a
+turn on both machines every round — a failure that reports itself as success.
+
+⚠️ **Not verified: the anti-convergence rules have never been under strain.** They were written out
+of an exchange that argued throughout, which cannot show whether they *prevent* convergence or
+whether the friction was already there.
 
 ## `agb-dashboard` — watch several rows at once, by name
 

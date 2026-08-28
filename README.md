@@ -321,6 +321,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 | [`docs/agtermctl.md`](docs/agtermctl.md) | the `agtermctl` contract the bridge codes against |
 | [`docs/cookbook.md`](docs/cookbook.md) | **start here** — step-by-step onboarding and troubleshooting |
 | [`skills/agb-peer/SKILL.md`](skills/agb-peer/SKILL.md) | what an *agent* needs to know to talk to a peer — symlink it into `~/.claude/skills/` or `~/.codex/skills/` |
+| [`skills/agb-hangout/SKILL.md`](skills/agb-hangout/SKILL.md) | the same, for a conversation with **no task attached** — what to say, and how it ends. Guidance over `agb-peer send`; nothing new runs |
 | [`CHANGELOG.md`](CHANGELOG.md) | what changed in each release, and why |
 | [`CLAUDE.md`](CLAUDE.md) | architecture and invariants, for working on this codebase |
 
