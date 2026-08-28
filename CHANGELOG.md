@@ -10,6 +10,28 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 Recorded, not fixed: the documented repair for an orphaned row binding is the exact command
+  that detonates it.** An entry can be **bound to a row agterm no longer has** — minted, then the row
+  closed, the binding surviving. Measured on one live instance: **11 of 18 bindings name a session
+  that does not exist** (5 orphaned-bound, 6 `[done]`), and ⚠️ **`close-done` cannot reach either
+  half** — it closes *rows*, and these have none.
+
+  ⚠️ **The inversion is the finding.** A **re-resolve is safe**: `resolve_all` reads agterm's *tree*,
+  and an orphaned binding is not in it. What is *not* safe is **`agb-refresh`** — it forgets the
+  bindings and re-mints, so an orphan whose label duplicates a live row's gets a **new, real row**,
+  the selector then matches two, and the relay refuses on the next tick. **`CLAUDE.md` names
+  `agb-refresh` as the fix for orphaned bindings and does not carry the precondition that no orphan's
+  label may duplicate a live row's.**
+
+  ⚠️ **And it has already happened once, unnoticed.** An unrelated `agb-refresh` earlier the same
+  evening changed the orphan's bound id, so a second row with the duplicate label plausibly existed
+  for a while — invisible because **a duplicate label costs nothing until somebody resolves that
+  label**, and every resolve in that window landed on the live row.
+
+  `docs/backlog/the-repair-for-orphaned-bindings-is-what-detonates-them.md` has the measurements, the
+  ordering to follow before refreshing, and why both obvious fixes need a decision rather than a
+  patch.
+
 - **`agb-hangout` told agents to keep it short and they sent each other paragraphs.** Found on the
   first live run, which is the only way this could have been found — nothing executes a skill file.
   Three causes, and the length rule was the least of them:
