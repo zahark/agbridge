@@ -387,6 +387,31 @@ treats "not on screen" as "not delivered" needs a retry budget rather than one r
 (`agb-peer` reads `VERIFY_READS = 4` times at 1 s intervals, which is what makes it usually survive
 this.)
 
+### 🔴 A polled caret can see a STABLE state and never a TRANSIENT one
+
+**Measured 2026-08-28**, as a *negative* result, and worth as much as the positive ones because both
+uses look identical in a shell.
+
+The question was whether a delivery's text ever reached a peer's composer. The proposed test — poll
+`surface cursor` and watch for a column above `EMPTY_COLUMN` — was run at **1 s sampling for 25 s**
+and read **flat at 2 throughout**. ⚠️ **That is evidence for nothing.** A delivery *types* and then
+*presses Return*, so the composer fills and empties in **well under a second**: "nothing landed" and
+"something landed and was submitted between two samples" produce the identical trace.
+
+⚠️ **And no achievable rate fixes it.** The state is sub-second by construction, and each sample is
+an `agtermctl` round trip. **The observer is slower than the thing observed.**
+
+**So the two caret uses in this project are not the same technique**, and they look the same:
+
+| use | what it reads | polling works? |
+|---|---|---|
+| *is this pane at a trust prompt / holding a draft?* | a **stable** state that persists until something changes it | ✅ yes — this is how column 1 vs 2 vs 11 was measured |
+| *did a delivery's text arrive?* | a **transient** that exists between two calls the relay makes | ❌ **no, at any rate** |
+
+⚠️ **The only observer fast enough is the one making the change.** `deliver` already reads the pane
+*before* typing and again after; a capture kept from a failed verify would answer this outright.
+Nothing outside that loop can.
+
 ### `session type` has no observed size limit — **MEASURED 2026-08-28**
 
 The help says nothing about length, and this doc carried no clause for it at all until a message
