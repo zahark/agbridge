@@ -92,18 +92,48 @@ AGB_PARSE_BUDGET = 105300
 # one broken EOF path into a suite that never finishes and reports nothing.
 SUBPROCESS_TIMEOUT = 30
 
+# How long to wait for the pipes AFTER killing a timed-out child. Short: the
+# direct child is dead, so anything still holding them is a grandchild we did
+# not kill -- see `communicate`.
+REAP_TIMEOUT = 5
+
+# ⚠️ `install.sh` is the one thing here that is genuinely SLOW -- a full mac
+# install measured **25.4 s** on an idle host, against a 30 s global budget.
+# That is 85% of its own hang-guard, so the guard was not protecting the test,
+# it was racing it: `test_what_a_default_install_renders_leaves_the_bridge_where_it_was`
+# failed on a host at load average 34, reporting "subprocess did not exit
+# within 30s", which reads exactly like a hang in `install.sh`. Raising the
+# GLOBAL would have weakened every other test's guard to hide one slow one, so
+# the slow one gets its own budget and the global keeps its meaning.
+INSTALL_SH_TIMEOUT = 180
+
 
 def communicate(proc, stdin=None, timeout=SUBPROCESS_TIMEOUT):
     """`proc.communicate()` that can never hang, and always reaps the child.
 
     On timeout the child is killed and drained before the error propagates, so
     a hung subprocess cannot outlive the test that started it.
+
+    🔴 **"Can never hang" was FALSE, and this was the THIRD copy of the same
+    mistake** -- `agb-peer._spawn` and `agb_mac._run_command` had it too, each
+    with a docstring asserting the property it did not have. `kill()` ends the
+    direct child; the `communicate()` after it took no timeout and waited for
+    EOF on the pipes, which a **grandchild inherits**. A test whose subprocess
+    left a background child would hang the SUITE rather than fail it -- the
+    precise outcome this helper exists to prevent, and the one `CLAUDE.md`
+    warns about under "Always pass `timeout=` to `communicate()`". Bounded now.
     """
     try:
         return proc.communicate(stdin, timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
-        out, err = proc.communicate()
+        out, err = b"", b""
+        try:
+            out, err = proc.communicate(timeout=REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # A grandchild still holds the pipes. `poll()` reaps the corpse
+            # without waiting on them; `wait()` would block again.
+            proc.poll()
         raise AssertionError(
             "subprocess did not exit within %ss: %r\nstdout=%r\nstderr=%r"
             % (timeout, getattr(proc, "args", None), out, err))

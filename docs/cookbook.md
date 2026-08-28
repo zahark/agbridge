@@ -748,6 +748,26 @@ participant is absent until you fix it. You cannot disambiguate with more of the
 roster line is split on whitespace and a label with a space in it becomes two words; and a pane id
 moves when rows are re-minted, which is the whole reason labels exist. Rename the session.
 
+⚠️ **A label can also collide with another row's `cwd`, which is far less obvious** — found live,
+2026-08-27. The match is a substring of the **whole title**, and a title is `row_fields` joined by
+`·` (by default `label · host · cwd · pane · beat`). So two agents started in the same directory
+collide even when their labels share nothing:
+
+```
+agbridge-public · agbridge-public · %141      <- label is agbridge-public
+codexpeer · agbridge-public · %143            <- label is codexpeer; only its CWD matches
+
+agb-peer: alice: 'agbridge-public' matches 2 rows (...) -- use a longer prefix or the row id
+```
+
+⚠️ **And a roster entry that was valid when you wrote it can become ambiguous later**, because
+ambiguity is a property of the *set of live rows*, not of the entry. `agb-peer-setup` refuses this
+correctly at write time, but nothing re-runs that check when a new agent starts. The relay now says
+so on every fallback (once, until the reason changes), naming the rival rows — before that it kept
+the previously-resolved row **silently** and only failed at the next restart, hours after the cause.
+If a participant's messages stop arriving, read the relay's output first. **The fix is to give the
+colliding agents different working directories, or to rename one.**
+
 ⚠️ **Names are letters, digits, dot, underscore and hyphen.** The row part on the right has no such
 rule, so `bob=/home/you/project` is fine.
 

@@ -2785,11 +2785,28 @@ def resolve_all(ctl, spec, say, previous=None, notes=None):
         row, pane, target, tmux_target = spec[name]
         try:
             resolved[name] = (resolve(ctl, row)["id"], pane, target, tmux_target)
+            if notes is not None:
+                notes.pop(("said", ("stale", name)), None)
         except PeerError as error:
             if name in previous:
                 # Keep the old binding rather than dropping a participant on a
                 # transient: a row is briefly absent while it is re-minted.
                 resolved[name] = previous[name]
+                # ⚠️ **But SAY so.** This fallback was silent, and silence is
+                # only right for the case it was written for. A re-mint is
+                # transient and resolves itself; **ambiguity does not** -- a new
+                # row whose cwd basename equals this label collides for ever
+                # (`match_sessions`' third tier searches the whole title), and
+                # the fallback then masks it until the relay is restarted with
+                # no `previous`, at which point it fails loudly, at the worst
+                # possible moment, for a cause introduced hours earlier.
+                # `resolve` already names the rival rows; nothing printed it.
+                # Throttled, so a re-mint costs ONE line and an unresolved
+                # collision costs one line rather than one per tick -- and
+                # cleared above on success, or a fixed collision would stay
+                # "reported" for the life of the relay.
+                _throttled(say, notes, ("stale", name))(
+                    "%s: %s -- keeping the row resolved earlier" % (name, error))
             else:
                 # ⚠️ Throttled, because a roster turns this from a startup typo
                 # the operator sees and Ctrl-Cs into a STEADY STATE: a mistyped

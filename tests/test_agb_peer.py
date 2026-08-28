@@ -1047,6 +1047,70 @@ def test_an_unresolvable_new_participant_is_reported(peer):
     assert said
 
 
+class _Colliding(object):
+    """Two rows whose TITLES both contain `agbridge-public`, one by label and
+    one only by its cwd. `match_sessions`' third tier searches the whole title,
+    so the selector is ambiguous -- and the second row's label shares nothing
+    with it. Found live 2026-08-27."""
+
+    def tree(self):
+        return tree_of(
+            session("AAAA1111", name="agbridge-public · agbridge-public · %141"),
+            session("BBBB2222", name="codexpeer · agbridge-public · %143"))
+
+
+def test_a_stale_fallback_says_why_and_names_the_rivals(peer):
+    """⚠️ The fallback was SILENT, and silence is right only for the case it
+    was written for.
+
+    A vanished row is transient and resolves itself. An ambiguous one does not:
+    a row whose cwd basename equals this label collides for ever, and keeping
+    the previous binding masks it until a restart with no `previous` -- at
+    which point it fails loudly, at the worst moment, for a cause introduced
+    hours earlier. `resolve` already names the rival rows; nothing printed it.
+    """
+    said = []
+    spec = {"alice": ("agbridge-public", "left", None, None)}
+    previous = {"alice": ("AAAA1111", "left", None, None)}
+    got = peer.resolve_all(_Colliding(), spec, said.append, previous, {})
+    assert got["alice"] == previous["alice"], "the binding is still kept"
+    assert said, "but the reason is no longer swallowed"
+    line = " ".join(said)
+    assert "matches 2 rows" in line, line
+    # The rivals by NAME, which is the whole value of the line: it is what tells
+    # an operator that the collision is a cwd rather than a second label.
+    assert "codexpeer" in line, line
+
+
+def test_the_stale_reason_is_throttled_and_cleared_on_success(peer):
+    """Two properties, and the second is the one that rots quietly.
+
+    Throttled: the relay re-resolves every tick, so an unfixed collision would
+    otherwise print the same line for the life of the relay. Cleared: without
+    the `notes.pop` on the success path, a collision that was FIXED stays
+    "already reported", and its recurrence is silent for ever after.
+    """
+    notes = {}
+    spec = {"alice": ("agbridge-public", "left", None, None)}
+    previous = {"alice": ("AAAA1111", "left", None, None)}
+
+    said = []
+    for _tick in range(3):
+        peer.resolve_all(_Colliding(), spec, said.append, previous, notes)
+    assert len(said) == 1, said
+
+    # The collision is fixed -- `alice` now resolves unambiguously.
+    said = []
+    peer.resolve_all(RelayCtl(panes()), {"alice": ("AAAA1111", "left", None, None)},
+                     said.append, previous, notes)
+    assert said == [], said
+
+    # …and if it comes back, it is reported again rather than staying silent.
+    said = []
+    peer.resolve_all(_Colliding(), spec, said.append, previous, notes)
+    assert len(said) == 1, said
+
+
 # --------------------------------------------------------------- cmd_relay
 
 def test_cmd_relay_primes_before_it_delivers(peer):

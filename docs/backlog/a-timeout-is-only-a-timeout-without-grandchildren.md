@@ -12,6 +12,18 @@ becomes reachable is a day nobody would think to look here.
 >
 > The rest of this entry is kept because the measurement and the choice between the two fixes are
 > still the live guidance.
+>
+> 🔴 **AND IT WAS THREE COPIES, NOT ONE.** Searching for the shape rather than waiting for the next
+> report found the identical `kill()` + untimed `communicate()` in **`agb_mac._run_command`** and
+> **`tests/conftest.communicate`** — each with a docstring asserting the property it did not have
+> (*"can never wedge the bridge … a process that never returns"*, *"`proc.communicate()` that can
+> never hang"*). The `agb_mac` one is the worst: it is the **bridge's rendering path**, so a
+> grandchild holding the pipes stops every row updating. All three are bounded now.
+>
+> ⚠️ **That is the transferable part.** One instance was found live; the other two were found by
+> *reading for the shape*, one file over, in code whose comments claimed immunity. `CLAUDE.md`'s
+> shape C — a rule argued on one side and not carried to the other — and the tell each time was a
+> docstring making a promise about behaviour rather than describing code.
 
 ## What is guaranteed, and what is not
 

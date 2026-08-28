@@ -1861,17 +1861,75 @@ def test_the_row_id_is_never_parsed_only_echoed_back(bridge):
 
 def test_a_hung_agtermctl_is_killed_rather_than_waited_on(mac):
     """A wedged local binary must not become a wedged bridge: the failure has to
-    come back as data, like every other one."""
+    come back as data, like every other one.
+
+    ⚠️ It answers `TIMED_OUT`, not `None`. Both were `None` until 2026-08-28,
+    so `_agtermctl` logged "could not run" about a command that HAD run --
+    sending the reader to check whether agtermctl is installed, the one thing
+    that was not wrong. `rc == 0` is still the only success test, so nothing
+    downstream changed.
+    """
     started = time.time()
     rc, _out, err = mac._run_command(["sh", "-c", "sleep 30"], timeout=0.3)
-    assert rc is None
+    assert rc == mac.TIMED_OUT
+    assert rc != 0, "and it must still read as a failure"
     assert "timed out" in err
     assert time.time() - started < 10
 
 
 def test_a_missing_agtermctl_is_data_not_an_exception(mac):
+    """The companion the test above needs: `None` still means COULD NOT RUN.
+
+    Without it, `_run_command` returning `TIMED_OUT` for everything would
+    satisfy the timeout test and lose the distinction it was made for.
+    """
     rc, _out, err = mac._run_command(["/nonexistent/agtermctl", "session"])
     assert rc is None and err
+    assert rc != mac.TIMED_OUT
+
+
+def test_the_three_failure_reasons_are_distinguishable_in_the_log(mac):
+    """⚠️ The point of the split is what an operator READS.
+
+    Three facts, three sentences -- and the middle one did not exist. A
+    reader told "could not run" about a wedged agterm goes and checks the
+    install, which is the one thing that is fine.
+    """
+    assert mac._rc_reason(None) == "could not run"
+    assert mac._rc_reason(mac.TIMED_OUT) == "ran but did not answer in time"
+    assert mac._rc_reason(1) == "exit 1"
+    assert len({mac._rc_reason(None), mac._rc_reason(mac.TIMED_OUT),
+                mac._rc_reason(1)}) == 3, "three facts, three answers"
+
+
+def test_run_command_returns_when_a_grandchild_holds_the_pipes(mac, monkeypatch):
+    """🔴 The twin of `agb-peer._spawn`'s bug, in the BRIDGE'S rendering path.
+
+    `_run_command`'s docstring promised that "a process that never returns"
+    comes back as data rather than a hang. It did not: `kill()` ends the direct
+    child and the `communicate()` after it waited for EOF on pipes a grandchild
+    inherits. Found by reading one file over from the fix, not by failing.
+
+    ⚠️ Daemon thread on purpose -- a regression here does not make the bridge
+    slow, it stops it rendering at all, so an elapsed-time assertion would hang
+    the suite instead of failing it.
+    """
+    import threading
+    monkeypatch.setattr(mac, "AGTERMCTL_REAP_TIMEOUT", 1)
+    result = {}
+
+    def call():
+        result["v"] = mac._run_command(["sh", "-c", "sleep 20 & sleep 20"],
+                                       timeout=1)
+
+    worker = threading.Thread(target=call)
+    worker.daemon = True
+    worker.start()
+    worker.join(15)
+    assert not worker.is_alive(), (
+        "_run_command never returned -- the reap after kill() is unbounded "
+        "again, and this one wedges the bridge")
+    assert result["v"][0] == mac.TIMED_OUT
 
 
 # ---------------------------------------------------------------------------

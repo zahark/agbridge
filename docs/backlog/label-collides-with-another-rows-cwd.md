@@ -49,12 +49,17 @@ disappears without touching the roster grammar.
 ⚠️ It is a behaviour change to a function the relay resolves through on every tick, so it wants its
 own plan, its own tests, and thought about what it breaks for anyone deliberately matching on cwd.
 
-Two smaller things worth doing either way:
+Two smaller things worth doing either way — ✅ **both done, 2026-08-28:**
 
-- have the relay say *why* a resolve failed when the cause is ambiguity, naming the rival rows —
-  today the failure and the fallback are both quiet
-- note in `docs/cookbook.md`, beside the existing "no session name is a prefix of another" warning,
-  that **a label can also collide with another row's cwd**, which is far less obvious
+- ✅ **The relay says why.** `resolve_all`'s fallback kept the previous binding **silently**; it now
+  reports the reason through `_throttled`, and `resolve` already names the rival rows, so the line
+  is what tells an operator the collision is a **cwd** rather than a second label. ⚠️ The silence was
+  right for the case it was written for — a row briefly absent while `agb-refresh` re-mints it is
+  transient and heals — and wrong for this one, which is permanent. One fallback, two causes, and
+  only one of them wanted quiet. The throttle is **cleared on a successful resolve**, or a collision
+  that was fixed would stay "already reported" and its recurrence would be silent for ever.
+- ✅ **`docs/cookbook.md`** carries it beside the prefix warning, with the measured two-row example
+  and the note that an entry valid when written can become ambiguous later.
 
 ## Not scheduled
 

@@ -108,6 +108,44 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 The unbounded reap was in THREE places, and two of them promised in writing that it was not.**
+  After fixing `agb-peer._spawn`, searching for the *shape* rather than waiting for the next report
+  found the identical `kill()` + untimed `communicate()` in **`agb_mac._run_command`** — whose
+  docstring says *"the reason `agtermctl` failing can never wedge the bridge: … a process that never
+  returns … comes back as data rather than as an exception or a hang"* — and in
+  **`tests/conftest.communicate`**, whose first line is *"`proc.communicate()` that can never
+  hang"*. A grandchild inherits the pipes, so both blocked for ever. ⚠️ The `agb_mac` one is the
+  worst of the three: it is the **bridge's rendering path**, so one wedged helper stops every row
+  updating. All three bounded now, `poll()` rather than `wait()` on the way out. ⚠️ **The tell, each
+  time, was a docstring making a promise about behaviour rather than describing code** — worth
+  carrying, because the two found by reading were both in files whose comments claimed immunity.
+
+- **`_run_command` stops saying "could not run" about a command that ran.** It answered `None` for
+  both *could not be started* and *timed out*, so a wedged agterm was logged as a missing binary —
+  sending the reader to check the install, the one thing that was fine. Now `TIMED_OUT` for the
+  second, with `_rc_reason` giving three sentences for three facts. Only one caller read `rc is
+  None` and it was that log string; `rc == 0` is still the only success test. (The *hard* half of
+  `a-timed-out-session-new-can-mint-a-second-row` — what `_new` should do with "unknown" — is
+  untouched.)
+
+- **A label colliding with another row's `cwd` is no longer silent.** `resolve_all` kept the
+  previously-resolved row without a word when a label stopped resolving. ⚠️ **One fallback, two
+  causes, and only one of them wanted quiet**: a row briefly absent while `agb-refresh` re-mints it
+  is transient and heals, while an ambiguous label is permanent — and the silence masked it until
+  the next restart, which is when it failed loudly, at the worst moment, for a cause introduced
+  hours earlier. The reason is now reported once per unchanged message, and since `resolve` names
+  the rival rows, the line is what tells you the collision is a **cwd** and not a second label. The
+  throttle is cleared on a successful resolve, or a fixed collision would stay "already reported"
+  and its recurrence would be silent for ever. `docs/cookbook.md` carries the warning beside the
+  existing prefix one.
+
+- **One test was racing its own hang-guard.** `test_what_a_default_install_renders_leaves_the_bridge_where_it_was`
+  failed on a host at load average 34, reporting *"subprocess did not exit within 30s"* — which reads
+  exactly like a hang in `install.sh`. It is not flaky by accident: a full `install.sh mac` measures
+  **25.4 s** against `conftest`'s **30 s** global budget, so the guard was protecting nothing. Given
+  its own 180 s budget rather than raising the global, which would have weakened every other test's
+  guard to accommodate one slow one.
+
 - **`agb-peer`'s timeout is now actually a timeout.** `_spawn` killed a timed-out child and then
   called `communicate()` with **no timeout**, waiting for EOF on the pipes — and a grandchild
   inherits those pipes, so a command spawning a helper that outlived it blocked that second wait

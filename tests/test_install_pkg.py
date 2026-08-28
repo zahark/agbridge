@@ -806,7 +806,12 @@ def run_sh(tmp_path, fake_home):
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, env=environ,
                                 cwd=str(tmp_path))
-        out, err = conftest.communicate(proc)
+        # ⚠️ Its OWN budget, not the global 30 s. A full mac install measured
+        # 25.4 s idle, so the global guard was racing the test rather than
+        # protecting it -- and it lost, on a loaded host, reporting a timeout
+        # that reads like a hang in `install.sh`. See `conftest.INSTALL_SH_TIMEOUT`.
+        out, err = conftest.communicate(proc,
+                                        timeout=conftest.INSTALL_SH_TIMEOUT)
         return (proc.returncode, out.decode("utf-8", "replace"),
                 err.decode("utf-8", "replace"))
     return run

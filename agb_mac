@@ -1342,6 +1342,19 @@ AGTERMCTL = "agtermctl"
 # A wedged `agtermctl` must not become a wedged bridge.
 AGTERMCTL_TIMEOUT = 10.0
 
+# How long `_run_command` waits for the pipes to close AFTER killing a timed-out
+# child. The direct child is already dead, so anything still holding them is a
+# grandchild we did not kill and will not out-wait -- see `_run_command`.
+AGTERMCTL_REAP_TIMEOUT = 5.0
+
+# `_run_command`'s answer for "it RAN and did not answer in time", as against
+# `None` for "it could not be started at all". 124 is the shell's convention and
+# what `agb-peer` spells it; the two files are independent processes and neither
+# imports the other, so this is a convention rather than one of invariant 14's
+# agreements -- nothing breaks if they diverge, but a reader comparing them
+# should not have to wonder.
+TIMED_OUT = 124
+
 TITLE_SEP = " · "
 TITLE_STALE = "[?] "
 TITLE_DONE = "[done] "
@@ -1694,12 +1707,29 @@ def jump_for(session, settings):
 
 
 def _run_command(argv, timeout=None):
-    """Run one local command; returns (rc, stdout, stderr). rc None = no run.
+    """Run one local command; returns (rc, stdout, stderr).
+
+    `rc is None` = it could not be started. `rc == TIMED_OUT` = it RAN and did
+    not answer. Those are different facts and were the same value until
+    2026-08-28, so the log said "could not run" about a command that had run --
+    which is the wrong thing to go and check.
 
     The single subprocess site on the Mac's rendering path, and the reason
     `agtermctl` failing can never wedge the bridge: every failure mode --
     missing binary, non-zero exit, a process that never returns -- comes back as
     data rather than as an exception or a hang.
+
+    🔴 **That last clause was FALSE, in exactly the way `agb-peer._spawn` was.**
+    `kill()` ends the direct child; the `communicate()` after it took no timeout
+    and waited for EOF on the pipes, which a **grandchild inherits**. So a tool
+    that spawned a helper outliving it blocked this call for ever -- and this is
+    the bridge's rendering path, so "can never wedge the bridge" was the one
+    claim it could not keep. Bounded now by `AGTERMCTL_REAP_TIMEOUT`.
+
+    ⚠️ **The twin was found by reading, not by failing** -- one file over, with
+    a docstring asserting the property it did not have. `CLAUDE.md`'s shape C: a
+    rule argued on one side and not carried to the other. If you fix something
+    in `_spawn`, look here, and the reverse.
     """
     import subprocess
     if timeout is None:
@@ -1713,9 +1743,30 @@ def _run_command(argv, timeout=None):
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
-        out, err = proc.communicate()
-        return (None, _text(out), "timed out after %gs" % (timeout,))
+        out = b""
+        try:
+            out, _err = proc.communicate(timeout=AGTERMCTL_REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # The direct child is dead; a grandchild still holds the pipes.
+            # `poll()` reaps the corpse without waiting on them -- `wait()`
+            # here would reintroduce the block this exists to avoid.
+            proc.poll()
+        return (TIMED_OUT, _text(out), "timed out after %gs" % (timeout,))
     return (proc.returncode, _text(out), _text(err))
+
+
+def _rc_reason(rc):
+    """Why a command failed, in the three ways it can.
+
+    ⚠️ Three, not two. `None` and a timeout were one value until 2026-08-28, so
+    a wedged agterm was logged as "could not run" -- which sends the reader to
+    check whether `agtermctl` is installed, the one thing that was not wrong.
+    """
+    if rc is None:
+        return "could not run"
+    if rc == TIMED_OUT:
+        return "ran but did not answer in time"
+    return "exit %s" % (rc,)
 
 
 def _text(data):
@@ -1866,7 +1917,7 @@ class RowRenderer(object):
             return out
         self._warn("%s %s failed (%s): %s"
                    % (AGTERMCTL, " ".join(args[:2]),
-                      "could not run" if rc is None else "exit %s" % (rc,),
+                      _rc_reason(rc),
                       err.strip() or "no output"))
         # A bound row id agterm no longer knows -- an app reinstall, a state
         # reset -- is unrecoverable from inside the bridge: a row id is never

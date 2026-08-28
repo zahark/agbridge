@@ -14,11 +14,19 @@ something different. The **root** is that the indefiniteness originates in one p
 | caller | what it does with "did not answer" | what that costs |
 |---|---|---|
 | `Ctl.dashboard` (`agb-peer`) | **now** treats it as *unknown* — says "the grid MAY BE UP", closes nothing, prints the close command | fixed 2026-08-28; was "would not open" |
-| `agb_mac._run_command` → `RowRenderer._new` | reads it as *the row does not exist* | ⚠️ re-issues `session new`; if agterm made the row and only failed to answer, the agent gets a **second row** and the first is orphaned in **no map at all** — unreachable by `close-done`, `forget-rows` or `agb-refresh`. See [a-timed-out-session-new-can-mint-a-second-row.md](a-timed-out-session-new-can-mint-a-second-row.md) |
+| `agb_mac._run_command` → `RowRenderer._new` | **half done** — the value can now SAY "timed out" (`TIMED_OUT`, as against `None` for *could not start*), but `_new` still reads any non-zero as *the row does not exist* | ⚠️ unchanged in effect: re-issues `session new`; if agterm made the row and only failed to answer, the agent gets a **second row** and the first is orphaned in **no map at all** — unreachable by `close-done`, `forget-rows` or `agb-refresh`. See [a-timed-out-session-new-can-mint-a-second-row.md](a-timed-out-session-new-can-mint-a-second-row.md) |
 | `Ctl.type` → `try_deliver` | flattens it to a default-code `PeerError`, decided by code alone | ⚠️ **retries** a delivery whose text may already be in the composer — verbatim what the exit-4 rule exists to prevent. See [a-timed-out-session-type-is-retried-and-can-double-deliver.md](a-timed-out-session-type-is-retried-and-can-double-deliver.md) |
-| `_spawn` itself | claims the timeout is always a timeout | ⚠️ true only while the command has no surviving children; a grandchild holding the pipes makes the post-kill `communicate()` wait for an EOF that never comes. See [a-timeout-is-only-a-timeout-without-grandchildren.md](a-timeout-is-only-a-timeout-without-grandchildren.md) |
+| `_spawn` itself | ✅ **fixed 2026-08-28** — the post-kill reap is bounded (`REAP_TIMEOUT`), worst case `timeout + 5 s` | was: an unbounded hang with no output whenever a grandchild held the pipes. ⚠️ And it turned out to be **three copies** — `agb_mac._run_command` and `tests/conftest.communicate` had it too, both bounded in the same pass. See [a-timeout-is-only-a-timeout-without-grandchildren.md](a-timeout-is-only-a-timeout-without-grandchildren.md) |
 
-Three of the four are still open. Only the grid one has been fixed.
+**One fixed outright** (`_spawn`), **one fixed earlier** (the grid), **one half done**, **one open.**
+
+🔴 **And the half-done one is this entry's own warning happening, so it is flagged rather than
+counted as progress.** Making `_run_command` able to *express* the third outcome is the shared fix
+this entry argues for — but `_new` does not yet *read* it, so the shape has landed without the
+decision, which is the outcome the section below says is worse than leaving it alone. It is recorded
+here as **half** deliberately: the ledger must not let "the value can now say it" read as "somebody
+acted on it". ⚠️ **If you are in `agb_mac` for any reason, that is the file, and `_new` is the
+function.**
 
 ## Why one write-up rather than three fixes
 

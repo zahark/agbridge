@@ -44,6 +44,18 @@ condition that produced the two-minute `agb-peer send` hang recorded in `agb-pee
 rare, and the symptom — a duplicate row — reads like an `agb-refresh` artefact rather than like a
 timeout.
 
+> ✅ **The free half is DONE, 2026-08-28.** `_run_command` now answers **`TIMED_OUT`** for *ran and
+> did not answer* and keeps `None` for *could not be started*, and `_agtermctl` logs the three
+> reasons through `_rc_reason` instead of two. Only one caller read `rc is None` and it was that log
+> string, so the blast radius was zero; `rc == 0` is still the only success test. **The hard half —
+> what `_new` should DO with "unknown" — is untouched and is what the rest of this entry is about.**
+>
+> ⚠️ And a defect found in the same function while doing it, unrelated to this entry and worse:
+> `_run_command`'s reap after `kill()` was **unbounded**, so a tool spawning a helper that outlived
+> it would hang the bridge's rendering path for ever — with the docstring promising the opposite.
+> Bounded now; see `a-timeout-is-only-a-timeout-without-grandchildren.md`, which turned out to have
+> **three** instances, not one.
+
 ## The fix worth considering
 
 Split the two `None`s. `_run_command` already knows which it is; something like an
