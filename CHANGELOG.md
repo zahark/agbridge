@@ -1775,7 +1775,22 @@ keep the `agb pane` code they were *created* with until `agb-refresh` re-mints t
   placeholder means it already renders every instance's plist, named ones included. Cosmetic, and
   out of scope.
 
-### Not verified
+### Verified live, 2026-08-28
+
+`agb-dashboard` has now been run against a real agterm. All six paths pass: two rows by label; a row
+with a **split open still costing one cell** (the reason every cell is `<id>:left`, and invisible to
+any test); the fail-closed refusal opening **nothing**; `--detach` closed using only the command it
+printed; `--roster`; and `--mru`.
+
+Two failure modes were forced deliberately and behave as documented. `agtermctl` **absent** exits 1
+naming the binary and the errno. `agtermctl` **wedged** — a fake passing `tree` through and hanging
+on `dashboard` — returned at 31 s against a 30 s budget with *"the dashboard MAY BE UP"*, closed
+nothing, and printed the close command. That is the `TIMED_OUT` branch a review pass added, doing
+exactly what it claims.
+
+⚠️ Still not verified: two `agb-dashboard` runs against each other, or one against a live
+`relay --dashboard` — the single-grid contention the docs describe. And `session scratch`'s own
+behaviour, unchanged from before.
 
 - **Nothing in `agb-dashboard` has been run against a live agterm, and neither have the
   `relay --dashboard` fixes.** agterm's own `dashboard` behaviour *was* measured against the binary
@@ -2235,7 +2250,22 @@ is not there.** All three resolve `~/.config/agbridge/config` unconditionally an
 (`docs/design.md` §5, limitation 3). That limitation gets *worse* on a Mac where every instance is
 named, and giving them a `--config` is deliberately not part of this change.
 
-### Not verified
+### Verified live, 2026-08-28
+
+`agb-dashboard` has now been run against a real agterm. All six paths pass: two rows by label; a row
+with a **split open still costing one cell** (the reason every cell is `<id>:left`, and invisible to
+any test); the fail-closed refusal opening **nothing**; `--detach` closed using only the command it
+printed; `--roster`; and `--mru`.
+
+Two failure modes were forced deliberately and behave as documented. `agtermctl` **absent** exits 1
+naming the binary and the errno. `agtermctl` **wedged** — a fake passing `tree` through and hanging
+on `dashboard` — returned at 31 s against a 30 s budget with *"the dashboard MAY BE UP"*, closed
+nothing, and printed the close command. That is the `TIMED_OUT` branch a review pass added, doing
+exactly what it claims.
+
+⚠️ Still not verified: two `agb-dashboard` runs against each other, or one against a live
+`relay --dashboard` — the single-grid contention the docs describe. And `session scratch`'s own
+behaviour, unchanged from before.
 
 - ~~**Two bridges, live, through a sweep.**~~ **Done, and it earned its keep.** Verified on a Mac
   with two named instances: `agb instances` listed both, a bare `agb-refresh` swept both, clicking a
@@ -2811,7 +2841,22 @@ named, and giving them a `--config` is deliberately not part of this change.
   otherwise one broken `agtermctl` would silently stop the bridge painting anything at all, which is
   far worse than the noise it replaces.
 
-### Not verified
+### Verified live, 2026-08-28
+
+`agb-dashboard` has now been run against a real agterm. All six paths pass: two rows by label; a row
+with a **split open still costing one cell** (the reason every cell is `<id>:left`, and invisible to
+any test); the fail-closed refusal opening **nothing**; `--detach` closed using only the command it
+printed; `--roster`; and `--mru`.
+
+Two failure modes were forced deliberately and behave as documented. `agtermctl` **absent** exits 1
+naming the binary and the errno. `agtermctl` **wedged** — a fake passing `tree` through and hanging
+on `dashboard` — returned at 31 s against a 30 s budget with *"the dashboard MAY BE UP"*, closed
+nothing, and printed the close command. That is the `TIMED_OUT` branch a review pass added, doing
+exactly what it claims.
+
+⚠️ Still not verified: two `agb-dashboard` runs against each other, or one against a live
+`relay --dashboard` — the single-grid contention the docs describe. And `session scratch`'s own
+behaviour, unchanged from before.
 
 - **Instances have never been run live.** All of the above is covered by tests only — nobody has yet
   had two bridges up on one Mac. The check that matters is **clicking a row from each instance and
@@ -2929,7 +2974,22 @@ One feature, one fix.
   a `--command` that `session split` has no equivalent for, so the drawer may yet become a single
   call. Merging them is not a tidy-up.
 
-### Not verified
+### Verified live, 2026-08-28
+
+`agb-dashboard` has now been run against a real agterm. All six paths pass: two rows by label; a row
+with a **split open still costing one cell** (the reason every cell is `<id>:left`, and invisible to
+any test); the fail-closed refusal opening **nothing**; `--detach` closed using only the command it
+printed; `--roster`; and `--mru`.
+
+Two failure modes were forced deliberately and behave as documented. `agtermctl` **absent** exits 1
+naming the binary and the errno. `agtermctl` **wedged** — a fake passing `tree` through and hanging
+on `dashboard` — returned at 31 s against a 30 s budget with *"the dashboard MAY BE UP"*, closed
+nothing, and printed the close command. That is the `TIMED_OUT` branch a review pass added, doing
+exactly what it claims.
+
+⚠️ Still not verified: two `agb-dashboard` runs against each other, or one against a live
+`relay --dashboard` — the single-grid contention the docs describe. And `session scratch`'s own
+behaviour, unchanged from before.
 
 `session scratch`'s **behaviour** has not been exercised against a live agterm. Its spelling is
 `--help`-verified and its call path is mutation-tested against the `[s]` split it copies, but nobody

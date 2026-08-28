@@ -1276,7 +1276,7 @@ file exists to prevent.
 | a malformed suffix (`id:notapane`, `a::b`) → invalid-id error, **exit 1**, rejected before opening | CONFIRMED |
 | `:right` on a session with no split is *unresolved*, not an error | CONFIRMED |
 | `dashboard --close` closes **"the open one"** — there is exactly one grid and no ownership token | CONFIRMED (help text) |
-| ⚠️ what `--close` answers when **no** grid is open — a status, an error, or silence | **ASSUMED**, and never run. Both callers already treat a failed close as cosmetic: the relay says so and keeps its ownership flag, `agb-dashboard` says the grid is still up, in capitals, and prints the literal command — on both of its paths. So the tools are correct under either reading, which is the same argument that leaves `--blink`'s stickiness assumed |
+| ⚠️ `--close` with **no grid open** answers `ok`, **exit 0** | **CONFIRMED live 2026-08-28**. Both callers were already correct under either reading, which is why it was safe to leave assumed. ⚠️ But it means **`--close` cannot answer "did anything open?"** — the obvious probe for testing a fail-closed path does not distinguish the two cases, and a test written on it would pass against a command that opened a partial grid. Use the absence of the hold prompt instead, which is what the live tester did |
 | ⚠️ whether `--close` can fail by **raising** rather than answering | **CONFIRMED**, but about `agtermctl` the *process*, not about this subcommand: `_spawn` raises when the binary cannot be started at all. Every caller of `--close` in this repo is wrapped for it — two were not, and one of them destroyed the message naming the grid it had left up |
 
 ⚠️ **The partial-success row is the one with teeth for a caller.** A mix of good and bad cells exits

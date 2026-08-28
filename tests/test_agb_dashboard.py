@@ -1506,3 +1506,34 @@ def test_the_mru_path_loads_the_sibling_for_itself_too(dashboard):
     assert dashboard.main(["--mru", "--detach"], out=Out(), ctl=ctl,
                           read_line=no_read_line) == 0
     assert ctl.opened() == [["--mru"]]
+
+
+def test_a_roster_run_names_the_PARTICIPANT_not_only_the_row(dashboard,
+                                                             tmp_path):
+    """⚠️ Found live: "you asked for the roster's members and got a list of
+    rows, with the mapping between them left implicit."
+
+    A roster line is `carol=<row>`, so `carol` is the token the operator wrote
+    and will search the file for, while the cell shows a title `carol` may
+    appear nowhere in. Printing only the title hides the case worth catching --
+    a roster entry resolving to a row nobody expected.
+    """
+    roster = tmp_path / "peers"
+    roster.write_text("carol=work\n")
+    out = Out()
+    ctl = GridCtl(rows(("AAAA1111", "work \u00b7 box01 \u00b7 %7")))
+    grid(dashboard, ["--roster", str(roster)], ctl, out=out)
+    assert "carol -> " in out.text, out.text
+    assert "work \u00b7 box01 \u00b7 %7" in out.text, "the title is still the record"
+
+
+def test_a_SELECTOR_run_does_not_repeat_itself(dashboard):
+    """The companion that keeps the test above honest: for a positional
+    selector the name IS the selector and the title contains it -- that is how
+    it matched -- so repeating it would be noise. A rule that always printed
+    the name would pass the test above while being wrong here."""
+    out = Out()
+    ctl = GridCtl(rows(("AAAA1111", "work \u00b7 box01 \u00b7 %7")))
+    grid(dashboard, ["work"], ctl, out=out)
+    assert " -> " not in out.text, out.text
+    assert "work \u00b7 box01 \u00b7 %7" in out.text

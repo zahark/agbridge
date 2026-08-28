@@ -516,13 +516,27 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
                                "%s" % (why_close, CLOSE_COMMAND)), 2)
     named = dict((s["id"], s.get("name")) for s in sessions)
     out.write("agb-dashboard: %d cell(s)\n" % (len(cells),))
-    for _name, row, pane in resolved:
-        # `_name`: the report is the record of what went on the SCREEN, so it
-        # names each cell the way agterm does. The REFUSALS name what the
-        # OPERATOR wrote instead -- `asked()`, the participant name and its
-        # label -- because there the answer is a file to go and edit. Two
-        # different questions, deliberately answered with two different tokens.
-        out.write("  %s %s %s\n" % (row[:8], pane, named.get(row) or ""))
+    for name, row, pane in resolved:
+        # The report is the record of what went on the SCREEN, so it names each
+        # cell the way agterm does. The REFUSALS name what the OPERATOR wrote
+        # instead -- `asked()`, the participant name and its label -- because
+        # there the answer is a file to go and edit. Two different questions,
+        # deliberately answered with two different tokens.
+        #
+        # ⚠️ **Except when the operator's token is nowhere on the screen**, and
+        # that is a `--roster` run. A roster line is `carol=<row>`, so `carol`
+        # is what was typed and what the file will be searched for, while the
+        # cell shows a title `carol` may appear nowhere in. Printing only the
+        # title answers a question nobody asked and, worse, hides the case
+        # worth catching: a roster entry resolving to a row you did not expect.
+        # For a positional selector the name IS the selector and the title
+        # contains it -- that is how it matched -- so it adds nothing and is
+        # left out. FOUND LIVE 2026-08-28: "you asked for the roster's members
+        # and got a list of rows, with the mapping between them left implicit".
+        title = named.get(row) or ""
+        shown = name if name.lower() not in title.lower() else ""
+        out.write("  %s %s %s%s\n"
+                  % (row[:8], pane, shown + " -> " if shown else "", title))
     for name, kept in folded:
         # ⚠️ **Said, not silent.** A dedupe is not a shortfall -- two ways of
         # naming one cell is not a user error -- so it does not refuse. But the
@@ -616,11 +630,16 @@ def grid_unknown(why):
 #     only in the docs is deliberate -- the person who needs it is looking at
 #     the grid, not at `docs/commands.md`.
 HOLD_NOTE = (
-    "  Run this from a terminal OUTSIDE agterm -- that is where the hold was\n"
-    "  measured to stay responsive while a grid is up.\n"
-    "  This grid does NOT follow: an `agb-refresh` re-mints every row id and\n"
-    "  leaves dead cells here. `agb-peer relay --dashboard` is the one that\n"
-    "  re-resolves and re-opens.\n"
+    # ⚠️ The blank line and the flush-left prose are not decoration. MEASURED
+    # live 2026-08-28: indented two spaces like the cell lines above it, this
+    # advice "momentarily reads as more cells" when the reader is scanning. The
+    # mapping is a list of things on screen; this is not.
+    "\n"
+    "Run this from a terminal OUTSIDE agterm -- that is where the hold was\n"
+    "measured to stay responsive while a grid is up.\n"
+    "This grid does NOT follow: an `agb-refresh` re-mints every row id and\n"
+    "leaves dead cells here. `agb-peer relay --dashboard` is the one that\n"
+    "re-resolves and re-opens.\n"
     "press enter to close the grid (Ctrl-C closes it too)\n")
 
 
