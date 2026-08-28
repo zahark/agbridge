@@ -101,10 +101,59 @@ re-measurement drove **`--stdin`**. If agtermctl brackets one form and not the o
 measurements are right about different commands, and **only the argv form is on our path**. Until
 that is run, neither the 843 figure nor "no placeholder to 8 KB" should be quoted as settled.
 
+✅ **The discriminator ran: argv and `--stdin` are IDENTICAL — no collapse on either**, 800 through
+8000 bytes, fresh composer each time. The variable was worth controlling and turned out not to be
+the difference. So the 843-character figure **cannot be reproduced on either form** against the
+current Claude Code build; treat it as **version-stale rather than wrong** (it was a live symptom),
+and do not quote it as current.
+
+**Which settles the consequence**: nothing on our path brackets, so a relay-delivered body arrives
+as ordinary typed text, lands in full, and **never reaches the `pasted` branch**. Hole 2 is real and
+**unreachable from the relay**. Hole 1 — the tail probe — is fully live and is now the only one.
+And **the lost head has no mechanism**; the paste theory is out.
+
+## The composer renders both ENDS and elides the MIDDLE
+
+**Measured 2026-08-28**, and it changes this entry's own conclusion. `session text` does not show the
+body — it shows a **rendered, elided** view. A 3488-character filler body with distinct head and tail
+markers came back as **1459 visible characters, with both markers present.**
+
+⚠️ **So the stated reason for not probing both ends was WRONG.** This entry said a head probe might
+fail because "an unpasted long body's head may legitimately have scrolled out of the `--lines`
+window". It does not scroll out: the head is one of the two ends the composer keeps. **A both-ends
+probe is available.** (It still cannot see middle loss — the middle is elided, so nothing on screen
+can.)
+
+## …and the second measurement makes it less attractive, not more
+
+⚠️ **The rendered view is still SETTLING when it is read.** Same body, two runs, nothing about the
+delivery different — only *when* the pane was read: the first found the tail marker **absent**, the
+second, slightly later, found it present. So `rendered` can return a **false negative** on a message
+that arrived perfectly.
+
+**What that costs is not a duplicate — it is a DROP, and a draft left in someone's composer.**
+`deliver` raises code **4** when the probe never appears, and `try_deliver` ends
+`return error.code == 4`, with the reasoning stated in its own docstring: *"Exit 4 is dropped, not
+retried — typing it again would leave two copies in the composer."* And the Return is sent **after**
+the verification, so on that path the body **is in the peer's composer, unsubmitted**, while the
+relay says it was not sent and drops it. The next message typed to that peer lands after the
+leftover.
+
+⚠️ **Mitigating, and it bounds how often this can happen**: the read is retried `VERIFY_READS = 4`
+times with `ctl.sleep(1)` before each, so the repaint has roughly four seconds. A false negative
+needs settling slower than that, not merely slower than one read.
+
+⚠️ **So the two findings pull in opposite directions, and that is the decision.** The elision makes a
+both-ends probe **possible**; the settling makes any **stricter** probe more likely to false-negative,
+and a false negative is a **dropped message plus a stranded draft**. The fix became available and
+*less* attractive in the same measurement. Anyone implementing it owes an answer to: what does the
+extra condition cost in drops, and should a verify failure still drop rather than hold?
+
 **Still open:**
 
-- The argv-vs-`--stdin` discriminator above. It decides whether hole 2 is reachable at all.
-- Where in the composer the head goes, and from what size.
+- Where the lost head actually came from. Every stage is now measured clean and the paste theory is
+  dead, so this is back to no mechanism at all.
+- Whether a both-ends probe is worth its false-negative cost, per the trade above.
 
 ## Why it is not fixed here
 

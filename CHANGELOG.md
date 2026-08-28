@@ -108,6 +108,41 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agtermctl session text` is a RENDERED, ELIDED view — it draws the two ends and drops the
+  middle.** Measured: a 3488-character body with distinct head and tail markers read back as **1459
+  visible characters, both markers present**. ✅ So a head check is as available as a tail check —
+  which **refutes the stated reason** `agb-peer`'s probe was tail-only ("the head may have scrolled
+  out"); it does not scroll out. ⚠️ And nothing on screen can see the middle, so any screen-based
+  verification is structurally blind to a body damaged between its ends.
+
+  ⚠️ **The view is also still SETTLING when it is read.** The same body, delivered identically, read
+  twice: the first found the tail marker **absent**, a slightly later read found it present. So the
+  verification can **false-negative on a message that arrived perfectly** — and what that costs is
+  not a duplicate but a **drop**: `deliver` raises code 4, `try_deliver` ends `return error.code ==
+  4`, and the Return is sent *after* the verification — so the body sits in the peer's composer
+  **unsubmitted** while the relay reports it was not sent. (`VERIFY_READS = 4` at 1 s intervals is
+  what usually saves it.)
+
+  ⚠️ **The two results pull opposite ways, and that is the decision they leave.** The elision makes a
+  both-ends probe **possible**; the settling makes any **stricter** probe more likely to
+  false-negative, and a false negative drops the message and strands a draft. The fix became
+  available and *less* attractive in the same measurement.
+
+- **The paste theory of the truncated message is dead, and the head has no mechanism again.** The
+  argv-vs-`--stdin` discriminator ran: **identical, no collapse on either**, 800–8000 bytes. So the
+  843-character figure in `COMPOSER_GLYPHS` cannot be reproduced on the current build — **version-
+  stale rather than wrong**, since it was a live symptom, but not to be quoted as current. Nothing on
+  our path brackets, so a relay-delivered body arrives as ordinary typed text and **never reaches
+  `rendered`'s `pasted` branch**: that hole is real and **unreachable from the relay**, and the
+  tail-probe hole is the only live one.
+
+- **❌ The empty bracketed-paste probe does nothing** — `\033[200~\033[201~` into a live composer
+  leaves the screen byte-identical. So the zero-content probe for "is this a real composer?" does not
+  exist, and any probe of that shape must **carry a body**. ⚠️ That is a different proposition and
+  has to be argued on its own: typing content into a pane you are unsure about is the thing the
+  trust-prompt entry exists to prevent. "Cannot answer the prompt" is a weaker guarantee than
+  "changes nothing", and only the second made the idea attractive.
+
 - **🔴 Two measurements now disagree about what makes Claude Code collapse an injection into
   `[Pasted text #1]`, and the discriminator is written down rather than guessed.** `COMPOSER_GLYPHS`'
   comment has said **843 characters** — a length — since it was written. Re-measured on a fresh

@@ -72,7 +72,13 @@ keystroke** — so the probe cannot answer the prompt it is probing. A text matc
 prompt's wording fails *open* when the wording changes; this fails *closed*, because no response
 means no evidence of a composer.
 
-It needs its own measurement before anything is built on it: does an **empty** `\033[200~\033[201~`
-produce any visible change at all? If it does, there is a zero-content probe. If it does not, the
-probe has to carry a body, and a probe that types something into a pane you are unsure about is a
-different proposition entirely.
+❌ **Measured 2026-08-28: the empty probe does nothing.** `\033[200~\033[201~` into a live composer
+produces **no visible change** — baseline and post-probe screens byte-identical. So the zero-content
+probe does not exist, and any probe of this shape has to **carry a body**.
+
+⚠️ **That is a materially different proposition and must be argued on its own, not inherited from
+the idea above.** Typing content into a pane you are unsure about is the thing this entry exists to
+prevent; a probe that does it in order to find out whether it was safe has to justify itself against
+the case where the answer is *no*. The content-not-a-keystroke property still holds — a paste cannot
+select an option — but "cannot answer the prompt" is a weaker guarantee than "changes nothing", and
+only the second one was what made the idea attractive.

@@ -329,6 +329,26 @@ USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--t
 `--select`'s constraint is **unchanged** across the two, which is what keeps both consequences below
 true.
 
+### ⚠️ `session text` is a RENDERED, ELIDED view — **MEASURED 2026-08-28**
+
+It does not give you the composer's contents. A **3488**-character body typed in with distinct head
+and tail markers read back as **1459 visible characters, both markers present** — the composer draws
+the two **ends** and drops the **middle**.
+
+Two consequences, and they point opposite ways:
+
+- ✅ **Both ends are readable.** A check on the head is as available as one on the tail; the head does
+  not scroll out. `agb-peer`'s tail-only probe was not forced by what is on screen.
+- ⚠️ **Nothing on screen can see the middle.** Any screen-based verification is structurally blind to
+  a body damaged between its ends.
+
+⚠️ **And the view is still SETTLING when it is read.** The same body, delivered identically, read
+back twice: the first read found the tail marker **absent**, a slightly later one found it present.
+So a screen check can return a **false negative** on text that arrived perfectly, and any code that
+treats "not on screen" as "not delivered" needs a retry budget rather than one read.
+(`agb-peer` reads `VERIFY_READS = 4` times at 1 s intervals, which is what makes it usually survive
+this.)
+
 ### `session type` has no observed size limit — **MEASURED 2026-08-28**
 
 The help says nothing about length, and this doc carried no clause for it at all until a message
