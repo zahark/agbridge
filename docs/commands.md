@@ -1990,10 +1990,23 @@ ln -s "$PWD/skills/agb-hangout" ~/.codex/skills/agb-hangout
 ```
 
 ⚠️ **Beside `agb-peer`'s skill, not instead of it.** The link into `agb-peer`'s file is
-*relative* (`../agb-peer/SKILL.md`), which resolves through the symlink to the sibling skill
-directory — correct in the checkout **and** under `~/.claude/skills/`, but only when both are
-installed. Installing this one alone leaves an agent reading "everything mechanical lives in
-`agb-peer`" with no way to get there.
+*relative* (`../agb-peer/SKILL.md`), and installing this one alone leaves an agent reading
+"everything mechanical lives in `agb-peer`" with a link that may not go there.
+
+⚠️ **"May", because `..` after a symlink has two answers and you cannot control which one the
+reader uses.** MEASURED, with only `agb-hangout` symlinked into `~/.claude/skills/`:
+
+| how the path is resolved | result |
+|---|---|
+| **kernel `open()`** — follows the symlink, *then* applies `..` | lands in the **checkout**, and reads fine |
+| `os.path.realpath` | same — the checkout |
+| **lexical** (`os.path.normpath`, and what a markdown renderer does) | `~/.claude/skills/agb-peer/SKILL.md` — **does not exist** |
+
+So the split is **lexical versus everything else**, not checkout versus installed: a tool that
+simply opens the path works whether or not `agb-peer` is installed, and one that normalises the
+string first breaks. Install both — but for that reason, not because the link is otherwise dead.
+⚠️ And note the working case is working *by accident of the checkout still being there*: it reads
+the repo copy, not the installed one, which is the same answer only while they agree.
 
 ⚠️ **The `[hangout]` marker on the first message is the whole protocol**, and it is a marker rather
 than a prior agreement between the two agents because an agreement does not survive a `/clear`. The
