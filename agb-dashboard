@@ -493,7 +493,12 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
                                "%s" % (why_close, CLOSE_COMMAND)), 2)
     named = dict((s["id"], s.get("name")) for s in sessions)
     out.write("agb-dashboard: %d cell(s)\n" % (len(cells),))
-    for name, row, pane in resolved:
+    for _name, row, pane in resolved:
+        # `_name`: the report is the record of what went on the SCREEN, so it
+        # names each cell the way agterm does. The selector that asked for it
+        # is what the REFUSALS use, where the operator has to go and edit
+        # something -- two different questions, deliberately answered with two
+        # different tokens.
         out.write("  %s %s %s\n" % (row[:8], pane, named.get(row) or ""))
     for name, kept in folded:
         # ⚠️ **Said, not silent.** A dedupe is not a shortfall -- two ways of
