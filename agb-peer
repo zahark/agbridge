@@ -1888,8 +1888,30 @@ def ensure_composer(ctl, session, pane, arm, lines, say):
                     "be a shell, or the ssh may be slow or failing", 3)
 
 
-def caret_reason(column):
+def caret_reason(column, again=None):
     """Why a caret that is not `EMPTY_COLUMN` means we must not type.
+
+    ⚠️ **`again` is a SECOND reading, and only the below-2 branch needs it.**
+    The split below rests on a composer sitting at 2 -- true of a *settled*
+    one, and the rendered view is measurably unstable (a 16 KB body read at 6 s
+    showed less than the same body at 2 s: longer is not better). A composer
+    caught mid-repaint, before its glyph is drawn, could plausibly read 0 or 1
+    -- which is the branch that says "not a composer at all, a human is
+    needed". That would be a confident, alarming, WRONG diagnosis about a
+    perfectly healthy agent, produced by reading at the wrong moment.
+
+    ⚠️ **Hypothesised, not sighted**: nobody has measured a repainting composer
+    reading below 2. The shape is what earns the guard, not a sighting -- so
+    the guard costs one extra read on an already-failing path and nothing else.
+
+    ⚠️ **Above 2 needs no such care** -- a draft that appears is a draft -- so
+    the cost falls only on the branch making the scary claim.
+
+    ⚠️ **And the DECISION is deliberately unchanged in every case: we refuse.**
+    Only the sentence differs. That is what makes this safe to land without a
+    live run -- a wrong reading can now only mis-word a refusal, never permit a
+    delivery. If the two reads disagree, the honest answer is that the pane was
+    repainting, and the next tick will settle it.
 
     ⚠️ **Two different situations, and this used to report both as the first.**
     MEASURED 2026-08-28, all three:
@@ -1911,6 +1933,11 @@ def caret_reason(column):
     measured, rather than asserting an identification.
     """
     if column < EMPTY_COLUMN:
+        if again is not None and again != column:
+            return ("the caret read %s then %s -- the pane is repainting, so "
+                    "this is not a stable answer about anything. Refusing this "
+                    "tick; the next one will settle it"
+                    % (column, again))
         return ("the caret is at column %s, below an empty composer's %s -- so "
                 "it is not in a composer at all. Claude Code's startup trust "
                 "prompt reads 1 (measured); it needs a HUMAN, and until one "
@@ -1949,7 +1976,16 @@ def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
                 raise PeerError("cannot read the composer's cursor: %s" % (err,))
             if column == EMPTY_COLUMN:
                 return
-            reason = caret_reason(column)
+            # ⚠️ A second reading ONLY for the alarming branch. `caret_reason`
+            # explains why: below-2 is the answer a repaint could manufacture,
+            # and it is the one that sends an operator looking for a human.
+            again = None
+            if column < EMPTY_COLUMN:
+                ctl.sleep(1)
+                again, second_err = ctl.cursor(surface)
+                if second_err:
+                    again = None
+            reason = caret_reason(column, again)
         attempt += 1
         if attempt > retries:
             # ⚠️ `retries=0` is the RELAY's setting -- it must not block, so it

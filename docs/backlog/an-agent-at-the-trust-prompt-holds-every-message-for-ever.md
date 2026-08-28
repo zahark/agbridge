@@ -49,6 +49,22 @@ see. `caret_reason` now splits the two, on the measurement above:
 ⚠️ It reports the column it actually read, and it does **not** claim a 1 *is* the trust prompt — that
 is the one measured instance, not an identification.
 
+⚠️ **And the below-2 branch must be STABLE across two reads before it makes that claim.** The split
+rests on a composer sitting at 2 — true of a **settled** one, and the rendered view is measurably
+unstable (a 16 KB body read at 6 s showed *less* than the same body at 2 s). A composer caught
+mid-repaint, before its glyph is drawn, could plausibly read 0 or 1 — and that is precisely the
+branch that sends an operator looking for a human. Two disagreeing reads now say *repainting*
+instead.
+
+⚠️ **Hypothesised, not sighted.** Nobody has measured a repainting composer reading below 2; it is
+the *shape* that earns the guard. So the guard was made to cost as little as a guard can: one extra
+read, on an already-failing path, on the alarming branch only. Above 2 is a draft, and a draft that
+appears is a draft.
+
+⚠️ **And the DECISION is unchanged in every case — we refuse.** Only the sentence differs, which is
+what makes this safe to land with no live run: a wrong reading can now mis-word a refusal and can
+never permit a delivery.
+
 ## What is still open
 
 Nothing dangerous, and no code change is obviously right. The relay cannot answer a trust prompt and

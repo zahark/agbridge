@@ -1100,6 +1100,75 @@ def test_the_caret_reason_tells_a_prompt_from_a_draft(peer):
     assert below != above, "two situations, two sentences"
 
 
+def test_an_unstable_below_2_caret_does_not_claim_a_trust_prompt(peer):
+    """⚠️ The below-2 branch is the one a REPAINT could manufacture.
+
+    The split rests on a settled composer sitting at 2, and the rendered view
+    is measurably unstable. A composer caught mid-repaint could read 0 or 1 --
+    and that is the branch saying "not a composer at all, a human is needed",
+    which would be a confident, alarming, wrong diagnosis about a healthy
+    agent. Two disagreeing reads must say *repainting*, not *trust prompt*.
+    """
+    unstable = peer.caret_reason(1, again=2)
+    assert "repainting" in unstable, unstable
+    assert "HUMAN" not in unstable, "it must not send anyone looking for a human"
+    assert "1" in unstable and "2" in unstable, "and it must show both readings"
+
+
+def test_a_STABLE_below_2_caret_still_names_the_prompt(peer):
+    """The companion, and without it the guard above could be satisfied by a
+    `caret_reason` that never made the trust-prompt claim at all."""
+    stable = peer.caret_reason(1, again=1)
+    assert "not in a composer at all" in stable
+    assert "HUMAN" in stable
+    # ⚠️ And a single reading with no second one keeps the confident wording:
+    # the guard is for a CONTRADICTION, not for the absence of a re-read.
+    assert "not in a composer at all" in peer.caret_reason(1)
+
+
+def test_only_the_alarming_branch_pays_for_a_second_read(peer):
+    """⚠️ Above 2 is a draft, and a draft that appears is a draft -- so the cost
+    of the guard falls only on the claim that needs it.
+
+    Stated as behaviour rather than as a promise: an above-2 reading ignores
+    `again` entirely, so no caller can be made to pay for it.
+    """
+    assert peer.caret_reason(11, again=2) == peer.caret_reason(11)
+    assert "draft" in peer.caret_reason(11, again=2)
+
+
+def test_wait_ready_actually_takes_the_second_reading(peer):
+    """⚠️ Non-vacuity for the guard above: every `caret_reason` test passes
+    against a `wait_ready` that never passes `again` at all.
+
+    This is the caller half -- a ctl whose caret reads 1 and then 2 must
+    produce the *repainting* wording, which is only reachable if the second
+    read happened.
+    """
+    ctl = RelayCtl(panes(), cursors=[1, 2])
+    with pytest.raises(peer.PeerError) as caught:
+        peer.wait_ready(ctl, session(), "left", 0, 0, False, 500, lambda m: None)
+    assert "repainting" in str(caught.value), str(caught.value)
+    assert caught.value.code == 3, "and the DECISION is unchanged: still refuse"
+
+
+def test_wait_ready_does_not_pay_for_a_second_read_above_2(peer):
+    """The companion: a draft is believed on one reading.
+
+    ⚠️ `cursors=[11]` is a single-element queue, which `RelayCtl` returns
+    repeatedly rather than popping -- so this cannot prove "only one call" by
+    exhaustion. It proves the thing that matters instead: the wording is the
+    draft one, which the two-read branch can never produce.
+    """
+    ctl = RelayCtl(panes(), cursors=[11])
+    with pytest.raises(peer.PeerError) as caught:
+        peer.wait_ready(ctl, session(), "left", 0, 0, False, 500, lambda m: None)
+    said = str(caught.value)
+    assert "draft" in said, said
+    assert "repainting" not in said, said
+    assert ctl.sleeps == 0, "an above-2 answer must not pay the extra second"
+
+
 def test_the_caret_reason_reports_the_column_it_saw(peer):
     """The companion: without it, two hardcoded sentences would pass the test
     above while telling an operator nothing about what was actually read."""

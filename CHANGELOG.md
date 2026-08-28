@@ -108,6 +108,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **The caret diagnosis now has to be stable before it makes the alarming claim.** `caret_reason`'s
+  below-2 branch says *"not a composer at all — it needs a human"*, and that split rests on a
+  composer sitting at column 2 — true of a **settled** one. ⚠️ The rendered view is measurably
+  unstable (a 16 KB body read at 6 s showed *less* than the same body at 2 s), so a composer caught
+  mid-repaint could plausibly read 0 or 1 and produce **a confident, alarming, wrong diagnosis about
+  a healthy agent**. Two disagreeing reads now say *repainting* instead, and show both numbers.
+  ⚠️ **Hypothesised, not sighted** — the shape earns the guard, not a sighting, so it costs exactly
+  one extra read, on an already-failing path, on the alarming branch only; above 2 is a draft and a
+  draft that appears is a draft. ⚠️ **The decision is unchanged in every case — we refuse** — which
+  is what makes it safe to land with no live run: a wrong reading can now mis-word a refusal and can
+  never permit a delivery.
+
 - **✅ Measured: the caret gate catches the trust prompt, so a message can never answer that dialog.**
   The report was filed as *"both gates miss it"* with the hazard that a delivered message might
   **select an option**. Measured — trust prompt **column 1**, empty composer **2**, composer with a
