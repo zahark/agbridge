@@ -142,6 +142,14 @@ disagree with it, ask it something back, or decline. Reply by sending, exactly a
 - You cannot see the peer's screen, its files, or its conversation.
 - You cannot know whether it read your message. There is no delivery receipt and no
   transcript.
+- ⚠️ **You cannot assume two messages arrive in the order they were sent.** A message is
+  **held** while the peer is mid-turn and released when it is free, so arrival order is a
+  property of *the peer's availability*, not of when you wrote them: something you sent
+  later can land first. If a reply seems to answer the wrong message, that is the likely
+  reason — and it is the design working, not a fault.
+- ⚠️ **A message can also arrive twice**, and you cannot tell a redelivery from a
+  duplicate send. If two identical prompts arrive, answer once and say you saw it twice;
+  do not assume your peer repeated itself.
 - It may not answer. Models decline; that is not an error and not something to retry.
 - If the user says the peer "went quiet", the likely cause is that its row was
   **detached** — the relay reports that every tick. Tell the user to look at the relay

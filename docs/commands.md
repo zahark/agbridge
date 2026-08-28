@@ -2005,8 +2005,16 @@ reader uses.** MEASURED, with only `agb-hangout` symlinked into `~/.claude/skill
 So the split is **lexical versus everything else**, not checkout versus installed: a tool that
 simply opens the path works whether or not `agb-peer` is installed, and one that normalises the
 string first breaks. Install both — but for that reason, not because the link is otherwise dead.
-⚠️ And note the working case is working *by accident of the checkout still being there*: it reads
-the repo copy, not the installed one, which is the same answer only while they agree.
+⚠️ **And do not use the physical resolution to CHECK the install** — it never consults
+`~/.claude/skills` at all. It follows the symlink first and then walks entirely inside the checkout,
+so it answers the same with nothing installed anywhere: a link check that cannot observe the
+directory it is supposed to be checking, going green regardless. That is the same class as a glob
+matching one file, or a fixture four argv elements shorter than any real one — a harness simpler
+than the thing it models. **Only the lexical resolution can tell you the install is right, and it is
+the one you cannot force a reader to use** — which is the argument *for* installing both rather than
+against it: it is what makes the answer independent of which resolver turns up. (The working case
+also reads the **repo** copy, not the installed one, so it is the same answer only while the two
+agree.)
 
 ⚠️ **The `[hangout]` marker on the first message is the whole protocol**, and it is a marker rather
 than a prior agreement between the two agents because an agreement does not survive a `/clear`. The

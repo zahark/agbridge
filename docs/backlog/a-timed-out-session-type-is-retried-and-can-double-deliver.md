@@ -10,12 +10,36 @@ nothing else to explain it: a relay restart cannot cause it (`seen`/`done` are i
 the priming pass **discards** rather than delivers, precisely so a restart cannot replay), and the
 sender did not re-send.
 
+✅ **CONFIRMED by sender-side proof.** The sender produced its full queue-id log for the exchange —
+nine sends, nine distinct ids, one per message — and the duplicated text has **exactly one id**. A
+re-send would have minted a second, since `message_id()` runs per `send`. So no second send exists
+and the duplication is on the delivery side, which is this item.
+
+**And the circumstances match the mechanism precisely**: the receiving agent was mid-compaction or
+just out of it, which is exactly when a `session type` is slow enough to hit `SUBPROCESS_TIMEOUT`
+while still landing. Timed out, read as "nothing was typed", retried, delivered twice.
+
 ⚠️ **The receiving end cannot tell a redelivery from a re-send**, which is why it took a
 conversation between two agents to notice at all: there is no delivery receipt and no transcript
-(`skills/agb-peer/SKILL.md`, *What you cannot do*), so each end sees only its own half. The
-duplicate was identified by **comparing the two halves in conversation** — the sender said it sent
-once, the receiver saw two. Nothing in the code or in either agent's view could have established it
-alone.
+(`skills/agb-peer/SKILL.md`, *What you cannot do*), so each end sees only its own half.
+
+## The discriminator exists and is thrown away
+
+⚠️ **The sender CAN tell, because ids are minted per send — and nothing surfaces it.** `compose`
+renders `[chat from <name>] <text>` and drops `message["id"]`, so the one field that distinguishes
+"delivered twice" from "sent twice" is discarded at exactly the point it would be useful. A
+duplicate that carried its id would be **self-identifying**, and neither end would have to reason
+about it or compare logs.
+
+The change is small — the id is in scope at `try_deliver`'s `compose` call — but it is a
+**wire-visible format change**, not a fix, so it is written down rather than made:
+
+- ⚠️ `[chat from relay]` is matched as a **literal** by the relay's own loop guard, and
+  `skills/agb-peer/SKILL.md` tells every agent to reply to anything shaped `[chat from <name>]`.
+  Where the id goes has to leave both intact — which argues for appending rather than infixing,
+  against the fact that a trailing id is the easier one to overlook.
+- The second `compose` call site takes a plain string with no id, so the parameter has to be
+  optional and the format has to read sensibly without it.
 
 ## What happens
 

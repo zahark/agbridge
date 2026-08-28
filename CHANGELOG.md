@@ -133,12 +133,26 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   keep coming back in a new costume:
   `docs/backlog/both-gates-miss-the-startup-trust-prompt.md`.
 
-- **The double-delivery item has a live sighting.** `a-timed-out-session-type-is-retried-and-can-
-  double-deliver.md` was found by search and said "Not observed live"; a peer's message then landed
-  **twice, verbatim**, in a receiving agent's composer. ⚠️ **Neither end could have established that
-  alone** — no delivery receipt, no transcript, so the sender sees one send and the receiver sees two
-  arrivals, and it took comparing the two halves *in conversation* to notice. A relay restart is
-  ruled out: `seen`/`done` are per-run and the priming pass discards rather than delivers.
+- **The double-delivery item is CONFIRMED, with sender-side proof.**
+  `a-timed-out-session-type-is-retried-and-can-double-deliver.md` was found by search and said "Not
+  observed live"; a peer's message then landed **twice, verbatim**, in a receiving agent's composer.
+  The sender produced its full queue-id log — nine sends, nine distinct ids — and the duplicated text
+  has **exactly one**. A re-send mints a new id, so no second send exists. The circumstances match
+  the mechanism exactly: the receiver was mid-compaction, which is precisely when a `session type` is
+  slow enough to hit the 30 s timeout while still landing.
+
+  ⚠️ **The discriminator exists and is thrown away.** `compose` renders `[chat from <name>] <text>`
+  and drops `message["id"]` — so the one field that separates *delivered twice* from *sent twice* is
+  discarded exactly where it would be useful, and it took two agents comparing logs to establish
+  what one line of output would have made self-evident. Written down rather than changed: it is a
+  wire-visible format change, `[chat from relay]` is matched as a **literal** by the relay's own loop
+  guard, and `SKILL.md` tells every agent to reply to anything shaped `[chat from <name>]`.
+
+- **`SKILL.md` now says arrival order is not send order, and that a message can arrive twice.** A
+  message is **held** while the peer is mid-turn, so arrival order is a property of *the peer's
+  availability* — something sent later can land first, and a reply that seems to answer the wrong
+  message usually has that explanation. Both caveats sit beside the no-receipt one, because all
+  three are the same thing: each end can see only its own half.
 
 - **A message can arrive with its head missing while both ends report success — recorded, not yet
   fixed.** A peer agent's message landed in a composer starting mid-sentence; the sender read
