@@ -2228,8 +2228,34 @@ def clear_composer(ctl, session, pane):
         # Best-effort by contract: this runs on a path that is already
         # reporting a failure, and raising here would replace that report.
         return False
-    column, err = ctl.cursor(surface)
-    return not err and column == EMPTY_COLUMN
+    # 🔴 **ONE READ IS NOT ENOUGH, and this function shipped with one.** The
+    # caret is measurably unstable: a healthy, working composer was observed
+    # reading column 0 and then column 1, minutes apart, on a live row. So a
+    # single non-empty reading here is not evidence the clear failed -- and the
+    # cost of believing it is the terminal branch: exit 4 instead of 3, a
+    # dropped message, and an alarming "the composer could not be cleared, this
+    # peer may stop receiving" about a peer that is fine. **Observed live
+    # 2026-08-28, on the row carrying this project's own conversation.**
+    #
+    # ⚠️ **The asymmetry is what makes retrying sound.** After `\003` the
+    # composer either IS empty -- in which case it reads `EMPTY_COLUMN` as soon
+    # as it settles, and stays there -- or it holds text, which reads above it
+    # CONSISTENTLY. **An empty reading is trustworthy; a non-empty one during a
+    # repaint is not.** So the first `EMPTY_COLUMN` is believed and a non-empty
+    # one is re-read, rather than requiring agreement, which would fail exactly
+    # the transient case this exists for.
+    #
+    # ⚠️ **This is `caret_reason`'s guard, which was written hours earlier and
+    # not carried here** -- the same author, the same evening, the same
+    # measurement. `CLAUDE.md` shape C: a rule argued on one side of a branch
+    # and not carried to the other.
+    for attempt in range(VERIFY_READS):
+        if attempt:
+            ctl.sleep(1)
+        column, err = ctl.cursor(surface)
+        if not err and column == EMPTY_COLUMN:
+            return True
+    return False
 
 
 def deliver(ctl, session, pane, body, send, lines, say):

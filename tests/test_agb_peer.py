@@ -2120,6 +2120,45 @@ def test_clear_composer_answers_False_to_every_uncertainty(peer):
     assert peer.clear_composer(RelayCtl(panes()), good, "left") is True
 
 
+def test_a_transient_non_empty_caret_does_not_condemn_the_clear(peer):
+    """🔴 OBSERVED LIVE 2026-08-28, on the row carrying this project's own
+    conversation: the relay reported *"the composer could not be cleared, so a
+    draft may be left in it and this peer may stop receiving"* about a peer
+    that was fine.
+
+    The caret is measurably unstable — a healthy composer was seen reading
+    column 0 and then 1, minutes apart. `clear_composer` read it **once** and
+    treated a single non-empty reading as proof the clear had failed, which
+    costs the terminal branch: exit 4 instead of 3, a dropped message, and an
+    alarming line about a healthy row.
+
+    ⚠️ The asymmetry is what makes retrying sound: after `\003` the composer
+    either IS empty and settles at `EMPTY_COLUMN`, or holds text and reads
+    above it **consistently**.
+    """
+    ctl = RelayCtl(panes())
+    ctl.cursors = [0, 1, peer.EMPTY_COLUMN]      # two repaint reads, then settled
+    assert peer.clear_composer(ctl, session(), "left") is True
+
+
+def test_a_composer_that_really_holds_text_is_still_condemned(peer):
+    """The companion, and it is what stops the retry becoming "always True":
+    a genuine draft reads above `EMPTY_COLUMN` every time, so exhausting the
+    reads must still answer False."""
+    ctl = RelayCtl(panes())
+    ctl.cursors = [17]                            # single-element: returned forever
+    assert peer.clear_composer(ctl, session(), "left") is False
+
+
+def test_the_clear_gives_up_rather_than_reading_for_ever(peer):
+    """⚠️ Bounded, like every other retry here. A relay must not block, and
+    this runs on a path that is already reporting a failure."""
+    ctl = RelayCtl(panes())
+    ctl.cursors = [17]
+    peer.clear_composer(ctl, session(), "left")
+    assert ctl.sleeps == peer.VERIFY_READS - 1, ctl.sleeps
+
+
 def test_a_cleared_delivery_is_HELD_by_the_relay_not_dropped(peer):
     """The end-to-end consequence, and the reason the code changed at all.
 

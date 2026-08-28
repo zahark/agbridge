@@ -10,6 +10,39 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 `clear_composer` read the caret ONCE, and condemned a healthy row for it.** Observed live on
+  the row carrying this project's own conversation: the relay reported *"the composer could not be
+  cleared, so a draft may be left in it and this peer may stop receiving"* about a peer that was
+  fine and kept receiving throughout. The caret is measurably unstable — a healthy composer was seen
+  reading column **0** and then **1**, minutes apart — so a single non-empty reading is not evidence
+  the clear failed, and believing it costs the terminal branch: **exit 4 instead of 3, a dropped
+  message, and an alarming line about a working peer.**
+
+  ⚠️ **The asymmetry is what makes retrying sound, rather than just softer.** After `\003` the
+  composer either **is** empty — in which case it settles at `EMPTY_COLUMN` and stays there — or it
+  holds text, which reads above it **consistently**. So an *empty* reading is trustworthy and a
+  *non-empty* one during a repaint is not: the first `EMPTY_COLUMN` is believed, and a non-empty one
+  is re-read. Requiring **agreement** would have failed exactly the transient case this exists for.
+
+  🔴 **And the false negative landed on the TERMINAL branch, which is what justifies the retry.** It
+  did not merely produce a misleading line: exit **4** instead of **3** means **dropped instead of
+  retried**, so the cheapest possible error — one transient caret sample — had the most expensive
+  possible consequence. That is a different claim from *"the wording was wrong"*.
+
+  🔴 **The guard existed forty lines away and was not carried across** — `caret_reason`, written
+  hours earlier the same evening, by the same author, from the same measurement. `CLAUDE.md` shape C,
+  in new code, after the shape was written down.
+
+  ⚠️ **And the phrasing that carried it was itself the trap: "require two agreeing reads" is correct
+  for one site and WRONG for the other.** The two have opposite error costs — for `caret_reason`'s
+  below-2 branch the *alarming claim* is expensive, so demand agreement before making it; for
+  `clear_composer` the *empty* reading is trustworthy and a non-empty one may be a repaint, so
+  believe the first empty and re-read the rest. **Same measurement, opposite guards, and the
+  direction is set by which way being wrong hurts — not by the data.** That is
+  `one-timeout-four-callers`' own conclusion one level up: **a policy offered without its call site
+  is the same mistake as a caller guessing without the information**, and it is more dangerous
+  because it sounds like a general rule.
+
 - **🔴 Repairing a participant's transport destroyed the message the repair existed to deliver.**
   MEASURED live: a participant's roster entry was missing its transport hint, so the relay took the
   tmux branch every tick and **never once called `drain_files`** — two files sat uncollected for
