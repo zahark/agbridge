@@ -10,6 +10,35 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 `agb-hangout` stalled on the very first real use, and it was an ORDERING defect — the same
+  one as the `agb-peer` usage line, in a section that had just been reviewed.** A user said *"hang
+  out with codex — no task, just talk"*. The agent loaded the skill, ran **one** command
+  (`agb-peer who`), said it would wait for the answer rather than poll, and **ended its turn having
+  sent nothing.**
+
+  ⚠️ **It did exactly what the file said.** `## Starting one` opened with *"If you do not already
+  know your peer's name, `agb-peer who` asks the relay for it"*, and the opener followed as
+  *"**Then** open with something."* — so the send was made **sequentially dependent on an
+  asynchronous step**. ⚠️ And the guard was **false**: the user *had* named the peer. It ran `who`
+  anyway, because it was first and "Then" implies order. **No line was wrong; the order was**, which
+  is precisely the usage-line defect one file over.
+
+  🔴 **And the warning I added hours earlier made it worse.** Emphasising that `who`'s answer
+  arrives on a *later turn* was correct and necessary — and it is exactly what told the agent that
+  waiting was the right move. **A true caveat attached to a wrongly-ordered step makes the wrong
+  behaviour more reliable, not less.** That is not a fix causing a regression; it is a fix making a
+  latent ordering defect fire every time.
+
+  ⚠️ **It is also shape E.** The review that added that warning *also* noted, in the paragraph
+  immediately below, that a cold agent needs no lookup at all because *the relay signed the
+  message*. That insight never reached the paragraph **above** it, which still gated the opener on
+  `who` — same file, adjacent sections, one writer, one pass.
+
+  **Fixed by inverting it**: *send the opener* is now the first and only step, `who` is demoted to
+  *If you have no name at all* — explicitly a fallback rather than a step — and the file now says
+  what to do while one is outstanding, which was unspecified and is the gap the agent fell into:
+  **do not end your turn in silence.** That is not "not polling", it is disappearing.
+
 - **A third label-collision variant, found in live agent names: one label NESTED in another — and
   the shorter one is what breaks.** `data-pipeline` and `data-pipeline-2`, both real
   keys on one host. The longer row's title contains the shorter name entirely, so the selector
