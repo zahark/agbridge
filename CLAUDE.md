@@ -601,6 +601,24 @@ trade `docs/commands.md`'s throttle rows made after four corrections.
   fanning out into four callers that each guessed differently reads as four unrelated bugs —
   `docs/backlog/one-timeout-four-callers-four-different-guesses.md` is the worked example, and three
   of its four are still open.
+- **F — reasoning from the function you have OPEN to a claim about the function you have not.**
+  Diagnosed by a peer agent about its own two errors in one evening, which is why it is stated as a
+  tell rather than as an instance. **"Both gates miss the trust prompt"**: read `peer_busy`'s
+  docstring, which *argues* about two gates, and reported two — without reading `wait_ready`, which
+  runs **four**. **"During the zero-window anything delivered lands nowhere"**: read `resolve_all`,
+  which does keep a stale binding, and asserted what *delivery* does with it — without opening
+  `try_deliver`, which checks the id against the current tree and **holds**.
+  ⚠️ **The tell is identical and is available BEFORE you are wrong: the claim's noun was not the
+  function's noun.** *"`resolve_all` keeps a stale id"* is a fact about **resolution**; *"anything
+  delivered lands nowhere"* is a claim about **delivery**. Evidence for the first, asserted the
+  second. **Check:** name the function your claim is about, and confirm it is the one you read —
+  being one function away is the normal case, not a warning sign, which is exactly why it does not
+  feel like a gap.
+  ⚠️ **And the reason it survives care: an explanation that FITS feels like arrival.** Both stops
+  that evening felt equally like the end of the investigation and only one was; the difference was
+  not effort but **whether the explanation had been checked against the code that implements it**.
+  A theory that fits the observation is where you stop looking, which is the same trap as the paste
+  theory that survived three measurements before dying.
 - **E — a document asserting a thing and its negation, where BOTH halves were true when written.**
   Not a stale comment: nobody was wrong, and there was never a moment when one person held both
   statements. `CHANGELOG.md`'s 0.7.0 section opened *"`agb-dashboard` has now been run against a
