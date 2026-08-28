@@ -143,11 +143,55 @@ leftover.
 times with `ctl.sleep(1)` before each, so the repaint has roughly four seconds. A false negative
 needs settling slower than that, not merely slower than one read.
 
+## 🔴 Exit 4's stated justification is false: the cost is not "one lost message"
+
+Two facts already in the tree, never connected — and connecting them is the finding.
+
+**Half one, in `try_deliver`:** *"Exit 4 is dropped, not retried. It means the text WAS typed and
+could not be verified — typing it again would leave two copies in the composer, which is a worse
+outcome than **one lost message and a loud line**."*
+
+**Half two, in the same function's throttle comment:** *"a peer whose composer has a draft in it
+stays that way until a human looks — which produced the same line every eight seconds for as long as
+nobody did."*
+
+⚠️ **Exit 4 is a PRODUCER of that draft.** It types the body, fails to verify it, and drops the
+message — leaving exactly the state half two describes. The chain, all from code already here:
+
+1. Verify false-negative (a slow repaint, per the settling measurement above) → `deliver` raises
+   code **4** → `try_deliver` returns `True` → **dropped**, with the body sitting unsubmitted in the
+   peer's composer.
+2. The next message to that peer → `wait_ready` reads the caret, sees `column != EMPTY_COLUMN`,
+   raises code **3** → `try_deliver` returns `False` → **held, and retried every tick, for ever.**
+3. That peer now receives **nothing at all**, and the *sender* sees `queued for <name>` and exit 0
+   with no error anywhere on its side.
+
+**So "one lost message and a loud line" understates it by the whole rest of the conversation.** The
+real cost of a verify false-negative is one lost message, a loud line, and **a peer that goes deaf
+until a human clears its composer.**
+
+⚠️ **And the relay cannot clean up after itself — MEASURED 2026-08-28.** `\025` (Ctrl-U) and Escape
+through `session type` both do **nothing** to a Claude composer; a 500-byte body was still on screen
+while a 900-byte one was typed after it. There is no keystroke the relay can send to undo the state
+it just created.
+
+⚠️ **Which settles the question the section below leaves open, in the opposite direction to the
+current code:** dropping is only the safer choice if the composer is left clean, and it is **not**.
+
+## What to watch for, if it recurs
+
+The concatenation the direct-typing measurement showed does **not** happen through the relay — the
+caret gate holds the next message rather than typing after the leftover. So the signature is not a
+message with an unexpected prefix; it is **a peer that silently stops receiving**, with a repeating
+"the composer is not empty … somebody has a draft in it" line in the relay log and nothing wrong at
+the sender. ⚠️ **The relay log is the only place it is visible**, which is worth knowing because
+neither agent can see it.
+
 ⚠️ **So the two findings pull in opposite directions, and that is the decision.** The elision makes a
-both-ends probe **possible**; the settling makes any **stricter** probe more likely to false-negative,
-and a false negative is a **dropped message plus a stranded draft**. The fix became available and
-*less* attractive in the same measurement. Anyone implementing it owes an answer to: what does the
-extra condition cost in drops, and should a verify failure still drop rather than hold?
+both-ends probe **possible**; the settling makes any **stricter** probe more likely to false-negative
+— and per the section above, a false negative is not a lost message but a **wedged peer**. Anyone
+implementing it owes an answer to: what does the extra condition cost in wedges, and should a verify
+failure hold rather than drop given that dropping does not leave a clean composer?
 
 **Still open:**
 

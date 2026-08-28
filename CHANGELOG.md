@@ -108,6 +108,28 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 Exit 4's stated cost — "one lost message and a loud line" — is wrong, and the correction came
+  from connecting two comments already in the same function.** `try_deliver` drops a message whose
+  text was typed but could not be verified, on the reasoning that one lost message beats two copies
+  in a composer. Twelve lines away, its own throttle comment describes *"a peer whose composer has a
+  draft in it stays that way until a human looks"*. ⚠️ **Exit 4 is a producer of that draft.** The
+  chain: a verify false-negative drops the message with the body left unsubmitted → the next message
+  hits `wait_ready`'s caret gate, raises code 3, and is **held every tick for ever** → that peer
+  receives **nothing at all**, while the sender sees `queued` and exit 0 with no error on its side.
+  So the real price is a lost message, a loud line, **and a deaf peer**.
+
+  ⚠️ **And the relay cannot clean up after itself** — MEASURED: `\025` (Ctrl-U) and Escape through
+  `session type` both do **nothing** to a Claude composer; a 500-byte body stayed on screen while a
+  900-byte one was typed after it. There is no keystroke that undoes the state this branch creates,
+  which is what makes "drop is safer than retry" fail on contact: it would be true if dropping left a
+  clean composer.
+
+- **The recurrence signature is not what it looked like.** Direct typing concatenates, but **the
+  relay does not** — the caret gate holds the next message rather than typing after the leftover. So
+  what to watch for is not a message arriving with an unexpected prefix; it is **a peer that silently
+  stops receiving**, with a repeating "the composer is not empty … somebody has a draft in it" line
+  in the relay log. ⚠️ That log is the **only** place it is visible, and neither agent can see it.
+
 - **`agtermctl session text` is a RENDERED, ELIDED view — it draws the two ends and drops the
   middle.** Measured: a 3488-character body with distinct head and tail markers read back as **1459
   visible characters, both markers present**. ✅ So a head check is as available as a tail check —

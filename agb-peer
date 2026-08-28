@@ -2418,9 +2418,22 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
     forty seconds; here that would stall every other conversation, so the gates
     run with no retries and a refusal simply leaves the message pending.
 
-    ⚠️ **Exit 4 is dropped, not retried.** It means the text WAS typed and could
-    not be verified -- typing it again would leave two copies in the composer,
-    which is a worse outcome than one lost message and a loud line.
+    🔴 **Exit 4 is dropped, not retried -- AND ITS STATED COST IS WRONG.** It
+    means the text WAS typed and could not be verified; typing it again would
+    leave two copies in the composer, so it is dropped. This said the price was
+    "one lost message and a loud line". It is not. The body is left sitting in
+    the peer's composer, so the NEXT message hits `wait_ready`'s caret gate,
+    raises code 3, and is HELD -- every tick, for ever. That is the same draft
+    the throttle comment below describes as staying "until a human looks", and
+    nothing connected the two: **exit 4 is a producer of it.** The peer goes
+    deaf, and the sender sees `queued` and exit 0.
+
+    ⚠️ **The relay cannot clean up after itself** -- MEASURED: `\025` and Escape
+    through `session type` do nothing to a Claude composer. So there is no
+    keystroke that undoes the state this branch creates, which is why "drop is
+    safer than retry" does not survive contact: it would be, if dropping left a
+    clean composer.
+    docs/backlog/delivery-is-verified-on-the-one-end-a-lost-head-leaves-intact.md
 
     ⚠️ **MEMBERSHIP IS A QUESTION ABOUT THE ROSTER, NOT ABOUT WHAT RESOLVED.**
     `people` is the RESOLVED map -- names whose row is in agterm's tree right
