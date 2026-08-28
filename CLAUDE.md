@@ -596,7 +596,11 @@ trade `docs/commands.md`'s throttle rows made after four corrections.
   own **cost**, and the retry that is right for a definite failure is starvation when the failure is
   a 30-second block. **Check:** at every `if not ok` and every `else`, ask whether it is a **proof**
   or merely *not the yes* — and when the answer came from a subprocess, a network or another machine,
-  it is almost never a proof.
+  it is almost never a proof. ⚠️ **And ask whether the caller could even tell**: a value that cannot
+  express *unknown* made the guess upstream, so the call site is only where it surfaces. One timeout
+  fanning out into four callers that each guessed differently reads as four unrelated bugs —
+  `docs/backlog/one-timeout-four-callers-four-different-guesses.md` is the worked example, and three
+  of its four are still open.
 
 ## Testing conventions
 
