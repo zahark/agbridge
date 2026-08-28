@@ -1963,6 +1963,16 @@ somebody hit:
 - **Print the message and let the turn end.** The lines *are* the message, and a large print
   immediately afterwards scrolls them out of the buffer before the relay reads them.
 
+⚠️ **`AGB_PEER_FILE=1` forces the file transport**, for a sender whose tmux socket exists and is
+refused rather than absent. MEASURED 2026-08-28: a Codex sandbox answers `Operation not permitted`
+for a socket that is right there and belongs to it, so `socket_is_missing` correctly says *no* and
+`send` refused — leaving the feature unusable for that agent, with a working transport available the
+whole time. ⚠️ **An opt-in with no opposite**, on the `AGB_HOST_LOCAL` precedent: a process cannot
+tell *"my sandbox blocks this socket"* from *"this socket is broken"* by looking at itself, and no
+error string is a sound discriminator — so the case that needs it is the one you have to type. When
+set, `send` does not reach for the socket at all, and the refusal that would otherwise fire now
+**names the variable**.
+
 ⚠️ **`send` refuses `--from`.** There is no sender field on the wire: the relay signs a message with
 the participant name of the pane it was found in, because an agent cannot print into another agent's
 pane, so the place is the only part of the envelope that cannot be misstated. A `--from` would look

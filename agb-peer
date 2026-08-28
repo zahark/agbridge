@@ -708,6 +708,34 @@ def message_id(now=None):
 CHAT_SUBDIR = "chat"
 
 
+def file_transport_forced(env=None):
+    """Has the operator said "always use the file transport"? (`$AGB_PEER_FILE`)
+
+    ⚠️ **An opt-IN with no opposite, for the same reason `AGB_HOST_LOCAL` is
+    one: a process cannot tell "my sandbox is blocking this socket" from "this
+    socket is broken" by looking at itself.** So the case that needs it has to
+    be typed rather than guessed.
+
+    🔴 **The case it exists for, MEASURED live 2026-08-28.** A Codex ran
+    `agb-peer send` and got `error connecting to /tmp/tmux-.../default
+    (Operation not permitted)` -- its sandbox refuses the socket, which is
+    right there and belongs to it. `socket_is_missing` correctly answers False
+    (the socket IS on this machine), so `cmd_send` refused, and the agent
+    reported the error and stopped. **The file transport would have worked the
+    whole time.** Without this flag the feature is simply unavailable to an
+    agent in that sandbox, and no error string it could match would be a sound
+    discriminator -- which is why the answer is an operator's decision rather
+    than a cleverer sniff.
+
+    ⚠️ `"0"` and friends are FALSE, because a variable that silently means its
+    opposite is worse than one that does not exist -- the rule `config_flag`
+    already follows on the Mac side.
+    """
+    env = os.environ if env is None else env
+    value = (env.get("AGB_PEER_FILE") or "").strip().lower()
+    return value not in ("", "0", "no", "false", "off")
+
+
 def socket_is_missing(env=None):
     """True when `$TMUX` names a socket that is not on this machine.
 
@@ -2333,11 +2361,25 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
             raise PeerError("%s %s failed: %s" % (exe, args[0],
                                                   err.strip() or rc))
 
-    rc, base, err = run([exe, "show-options", "-pqv", "-t", pane,
-                         OPTION_BASE])
-    if rc != 0 and not socket_is_missing(env):
-        raise PeerError("cannot read tmux options for %s: %s"
-                        % (pane, err.strip() or rc))
+    forced = file_transport_forced(env)
+    if forced:
+        # Do not even reach for a socket the operator has said is unusable.
+        rc, base, err = 1, "", "forced by $AGB_PEER_FILE"
+    else:
+        rc, base, err = run([exe, "show-options", "-pqv", "-t", pane,
+                             OPTION_BASE])
+    if rc != 0 and not forced and not socket_is_missing(env):
+        # ⚠️ **Name the way out.** This used to end at the tmux error, and a
+        # sandboxed Codex read `Operation not permitted`, reported it, and
+        # stopped -- with a working transport one environment variable away.
+        # The same defect as `run_ctl`'s missing-agtermctl message: a true
+        # fact that leads somewhere false is worse than a vague one.
+        raise PeerError(
+            "cannot read tmux options for %s: %s. If this machine's tmux is "
+            "genuinely unreachable to you -- a sandbox refusing the socket is "
+            "the measured case -- set AGB_PEER_FILE=1 and the message goes by "
+            "file instead, which needs no tmux at all."
+            % (pane, err.strip() or rc))
     if rc != 0:
         # ⚠️ **The fallback, and it is NOT a silent one.** tmux being
         # unreachable is the normal state for an agent on a compute pool: it

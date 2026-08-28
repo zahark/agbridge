@@ -2357,6 +2357,61 @@ def test_the_socket_check_is_a_positive_signal(peer, tmp_path):
     assert peer.socket_is_missing({"TMUX": "/no/such/sock,1,0"}) is True
 
 
+def test_AGB_PEER_FILE_forces_the_file_transport(peer, tmp_path):
+    """🔴 MEASURED live 2026-08-28: a Codex sandbox answers `Operation not
+    permitted` for a socket that is right there and belongs to it.
+
+    `socket_is_missing` correctly says False, so `cmd_send` refused and the
+    agent stopped -- with a working transport available the whole time. No
+    error string is a sound discriminator here (the docstring on
+    `socket_is_missing` explains why), so the answer is an operator opt-in.
+    """
+    calls = []
+
+    def run(argv):
+        calls.append(argv)
+        return (1, "", "error connecting to /tmp/tmux-1/default "
+                       "(Operation not permitted)")
+
+    out = io.StringIO()
+    env = {"TMUX_PANE": "%99", "TMUX": "/tmp/tmux-1/default,1,99",
+           "AGB_STATEDIR": str(tmp_path), "AGB_PEER_FILE": "1"}
+    assert peer.cmd_send("bob", "hello", run, out, now=1.0, env=env) == 0
+    body = out.getvalue()
+    assert "(via file)" in body, body
+    assert "[peer #" in body, "the doorbell must still be printed"
+    # ⚠️ And it must not have gone looking for the socket at all: the operator
+    # has said it is unusable, so touching it can only produce noise.
+    assert calls == [], calls
+
+
+def test_the_refusal_names_the_way_out(peer, tmp_path):
+    """The companion: without `AGB_PEER_FILE` the refusal stands -- but it must
+    say what to do, or it is the `agtermctl` defect again in a second place."""
+    def run(argv):
+        return (1, "", "error connecting to /tmp/tmux-1/default "
+                       "(Operation not permitted)")
+
+    env = {"TMUX_PANE": "%99", "TMUX": str(tmp_path / "sock") + ",1,99",
+           "AGB_STATEDIR": str(tmp_path)}
+    (tmp_path / "sock").write_text("")          # the socket IS there
+    with pytest.raises(peer.PeerError) as caught:
+        peer.cmd_send("bob", "hello", run, io.StringIO(), now=1.0, env=env)
+    said = str(caught.value)
+    assert "AGB_PEER_FILE" in said, said
+    assert "Operation not permitted" in said, "and it must keep tmux's own words"
+
+
+def test_AGB_PEER_FILE_reads_0_as_off(peer, tmp_path):
+    """⚠️ `"0"` is truthy in Python, and a variable that silently means its
+    opposite is worse than one that does not exist."""
+    for off in ("0", "no", "false", "off", "", "   "):
+        assert peer.file_transport_forced({"AGB_PEER_FILE": off}) is False, off
+    for on in ("1", "yes", "true", "anything"):
+        assert peer.file_transport_forced({"AGB_PEER_FILE": on}) is True, on
+    assert peer.file_transport_forced({}) is False
+
+
 def test_no_TMUX_at_all_is_not_the_pool_case(peer):
     """We cannot tell, so the caller refuses -- the answer it gave before any
     of this existed."""

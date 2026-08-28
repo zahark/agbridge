@@ -10,6 +10,26 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A sandboxed agent could not use `agb-peer send` at all, and the refusal did not say so.**
+  MEASURED on the second live hangout attempt: a **Codex** ran the *correct* command this time and
+  got `error connecting to /tmp/tmux-…/default (Operation not permitted)` — its sandbox refuses a
+  socket that is right there and belongs to it. `socket_is_missing` correctly answers **False** (the
+  socket *is* on this machine), so `cmd_send` refused, and the agent reported the error and stopped.
+  **The file transport would have worked the whole time.**
+
+  ⚠️ **The refusal's reasoning was right and its outcome was wrong.** No error string is a sound
+  discriminator between *a sandbox blocking the socket* and *the socket being broken* — the docstring
+  says so, and it is correct. So the answer is not a cleverer sniff but an operator opt-in:
+  **`AGB_PEER_FILE=1`**, on the `AGB_HOST_LOCAL` precedent — **an opt-in with no opposite, because a
+  process cannot tell those two apart by looking at itself.** When set, `send` does not reach for the
+  socket at all.
+
+  ⚠️ **And the refusal now names it**, which is the same defect as the missing-`agtermctl` message
+  fixed hours earlier, in a second place: **a true fact that leads somewhere false is worse than a
+  vague one, because it gets believed.** Two agents stopped tonight on errors that were entirely
+  accurate. `"0"`/`no`/`false`/`off` read as **off**, because a variable that silently means its
+  opposite is worse than one that does not exist.
+
 - **🔴 A missing `agtermctl` sent an agent away from a transport that was working.** Observed on the
   first live hangout: a **Codex on a cluster host** ran the direct form, got
   `agtermctl: [Errno 2] No such file or directory`, told its user that *"agb-peer's required

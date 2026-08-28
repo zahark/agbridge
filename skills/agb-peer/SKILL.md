@@ -73,6 +73,11 @@ Your own answer text **is** on the screen, so repeating the one line is the whol
 Repeating a marker the relay has already collected costs nothing — it tracks the last id
 it took from you and skips a repeat — so when in doubt, repeat it.
 
+- ⚠️ **If `send` refuses with `error connecting to … (Operation not permitted)`, your
+  sandbox is blocking tmux — set `AGB_PEER_FILE=1` and send again.** The message then
+  goes by file and needs no tmux at all. MEASURED: a Codex hit exactly this, reported the
+  error and stopped, with a working transport one variable away. ⚠️ **That path prints the
+  `[peer #…]` doorbell, so the rule below applies to it** — repeat the line in your answer.
 - **You must be running inside tmux.** If `$TMUX_PANE` is not set, `send` refuses and
   says so. Start agents with `agb-claude <name>` or `agb-codex <name>`.
 - **Do not write "Chat from me:" or any label.** The relay adds one, naming the pane
