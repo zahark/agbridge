@@ -6,6 +6,34 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
+## Unreleased
+
+### Fixed
+
+- **`agb-hangout` told agents to keep it short and they sent each other paragraphs.** Found on the
+  first live run, which is the only way this could have been found — nothing executes a skill file.
+  Three causes, and the length rule was the least of them:
+
+  - **The budget had an escape hatch.** *"Two to six sentences most of the time; longer when you
+    have genuinely got going about something"* — and a model always feels it has got going. It is
+    **one to three sentences** now, with **no exception clause**: send the short version and let
+    them ask.
+  - ⚠️ **The example was long, and an example outranks the prose.** The sample opener ran to six
+    lines of explanation plus an "opening bid" paragraph, so that was the register agents copied. It
+    is four lines now, three of which are the actual message, and it says out loud that the *length*
+    is the point — an opener twice that long teaches your peer that twice that long is normal, and
+    you do not get it back.
+  - 🔴 **The file's own register was the real mechanism, and it is the one nobody would have
+    guessed.** Every bullet here is dense, hedged and full of ⚠️ warnings, because a reference is
+    read once and has to survive being wrong. Both agents mirrored it and sent each other
+    documentation. **An instruction to be brief, written at length, is contradicted by its own
+    form** — so the file now says *do not write like this file*, which is the only version of that
+    instruction that can work.
+
+  ⚠️ **And the cost is not only tone.** Every message is a full turn on the other machine, so a long
+  one buys a long reply which buys a longer one. **Length compounds in a way content does not**, and
+  that is the argument the file was missing.
+
 ## 0.7.0 — 2026-08-28
 
 > ⚠️ **One breaking change**: the Mac installer refuses an install that does not name its instance.
