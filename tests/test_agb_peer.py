@@ -1078,6 +1078,35 @@ def test_a_vanished_row_keeps_its_previous_binding(peer):
     assert got["alice"] == previous["alice"]
 
 
+def test_the_caret_reason_tells_a_prompt_from_a_draft(peer):
+    """⚠️ MEASURED 2026-08-28, all three columns:
+
+        trust prompt             1     (below empty)
+        empty composer           2     (EMPTY_COLUMN -- the instrument answers)
+        composer + 9-char draft  11    (2 + 9 exactly -- the caret tracks text)
+
+    So above `EMPTY_COLUMN` is a draft and below it is **not a composer at
+    all**. Both were reported as "somebody has a draft in it", which sends an
+    operator to clear a composer that does not exist -- and this line is the
+    ONLY thing they ever see, because the message is held every tick until a
+    human answers the prompt.
+    """
+    below = peer.caret_reason(1)
+    above = peer.caret_reason(11)
+    assert "not in a composer at all" in below, below
+    assert "draft" not in below, "a startup prompt is not somebody's draft"
+    assert "HUMAN" in below, "and the line must say what unblocks it"
+    assert "draft" in above, above
+    assert below != above, "two situations, two sentences"
+
+
+def test_the_caret_reason_reports_the_column_it_saw(peer):
+    """The companion: without it, two hardcoded sentences would pass the test
+    above while telling an operator nothing about what was actually read."""
+    assert "17" in peer.caret_reason(17)
+    assert "0" in peer.caret_reason(0)
+
+
 def test_an_unresolvable_new_participant_is_reported(peer):
     said = []
     peer.resolve_all(RelayCtl(panes()), {"z": ("NOPE", "left", None, None)}, said.append)

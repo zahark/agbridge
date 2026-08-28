@@ -108,6 +108,34 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **✅ Measured: the caret gate catches the trust prompt, so a message can never answer that dialog.**
+  The report was filed as *"both gates miss it"* with the hazard that a delivered message might
+  **select an option**. Measured — trust prompt **column 1**, empty composer **2**, composer with a
+  9-character draft **11** — so `wait_ready` refuses with code 3, nothing is typed, and the `\r`
+  second call never fires. **That hazard is deleted rather than softened.** ⚠️ Both controls were
+  load-bearing: without the empty-composer 2 a `1` could have been the tool failing, and without the
+  2 + 9 "not 2" would not have shown the reading tracks content at all.
+
+  ⚠️ **What it does cost is real**: code 3 means *held*, and the trust prompt persists until a
+  **human** answers it — so such a peer receives nothing while every sender sees `queued` and exit 0.
+  🔴 **Identical presentation to the exit-4 wedge, different cause** — the second entry to end at
+  that signature, so both now carry the same diagnostic: *if a peer stops answering, read the relay's
+  output first.*
+
+- **`wait_ready` stops calling a startup prompt "somebody's draft".** It reported *any* column that
+  was not `EMPTY_COLUMN` as *"the composer is not empty — somebody has a draft in it"*, so an
+  operator whose agent sat on a trust question was sent to clear a composer **that does not exist** —
+  and that line is the only thing they ever see, repeated until a human intervenes. `caret_reason`
+  splits it on the measurement: **above** 2 is a draft; **below** is *not a composer at all*, naming
+  the trust prompt as the measured case and saying it needs a human. ⚠️ It reports the column it
+  actually read and does **not** claim a 1 *is* the trust prompt — that is one measured instance, not
+  an identification.
+
+  ⚠️ **And the catch is luck, not a defence.** Nothing makes a modal put its caret anywhere in
+  particular; the next one may read 2. The open question — is there any *positive* signal that a pane
+  is a live composer rather than a picture of one — survives its motivating hazard, and is demoted
+  rather than closed.
+
 - **✅ Verified live: the label/cwd collision line.** On a real relay, in the shape the bug actually
   takes — bound first so the previous binding existed, *then* collided. One line, both rivals named,
   printed **once across ~21 ticks**, and diagnosable without being told: the rival's *label* is
@@ -317,8 +345,8 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   bug loses the **head**: a harness whose failure signature does not match the symptom is measuring
   something else. Both are in `docs/agtermctl.md` now, the trap recorded beside the result.
 
-- **🔴 Delivery gates miss Claude Code's startup trust prompt — and the report of it was itself
-  short by one gate.** Observed live: *"Is this a
+- **An agent at Claude Code's startup trust prompt holds every message for ever — and the dangerous
+  half of that report turned out not to exist.** Observed live: *"Is this a
   project you created or one you trust?"* renders `❯`, a `COMPOSER_GLYPH` — so `classify` calls a
   blocking modal `MODE_COMPOSER`, and because it appears **before the agent has ever run a turn**
   the hook-derived status is `-` rather than `active`, so `peer_busy` passes it too. ⚠️ This is
@@ -329,7 +357,7 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   message here plausibly **answers the prompt**. Recorded rather than patched, because a
   wording-match fails *open* and the general form — a modal wearing the composer's chrome — will
   keep coming back in a new costume:
-  `docs/backlog/the-gates-that-miss-the-startup-trust-prompt.md`.
+  `docs/backlog/an-agent-at-the-trust-prompt-holds-every-message-for-ever.md`.
 
 - **The double-delivery item is CONFIRMED, with sender-side proof.**
   `a-timed-out-session-type-is-retried-and-can-double-deliver.md` was found by search and said "Not

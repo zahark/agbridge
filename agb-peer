@@ -463,11 +463,17 @@ def classify(text):
     🔴 **A COMPOSER_GLYPH IS NOT PROOF OF A COMPOSER.** Observed live
     2026-08-28: Claude Code's startup trust prompt ("Is this a project you
     created or one you trust?") renders `❯`, so this returns MODE_COMPOSER for
-    a blocking modal. That is the cookbook's Dialog Window Vulnerability,
-    which `peer_busy` exists to catch -- except this one fires at STARTUP,
-    before the agent has ever been active, so the status is `-` and that gate
-    does not catch it either. Both gates miss it; see
-    docs/backlog/the-gates-that-miss-the-startup-trust-prompt.md.
+    a blocking modal, and `peer_busy` does not catch it either -- it fires at
+    STARTUP, before the agent has ever been active, so the status is `-`.
+
+    ✅ **`wait_ready`'s CARET gate does catch it** -- MEASURED 2026-08-28: the
+    trust prompt reads column **1**, an empty composer **2**, a 9-character
+    draft **11**. So nothing is typed and no message can answer that dialog.
+    ⚠️ **But that is luck rather than a defence** -- nothing makes a modal put
+    its caret anywhere in particular, and the next one may read 2. This
+    function is still wrong about what it saw, and the row still holds every
+    message until a human answers the prompt. See
+    docs/backlog/an-agent-at-the-trust-prompt-holds-every-message-for-ever.md.
     """
     if text is None:
         return MODE_UNKNOWN
@@ -522,19 +528,22 @@ def peer_busy(status):
     turn, so the status is `-` rather than `active` and this gate passes it
     too.
 
-    ⚠️ **There are THREE gates, not two, and the third is UNMEASURED against
-    this case.** `wait_ready` runs this one, then `pane_busy`, then the CARET
-    (`column == EMPTY_COLUMN`). A trust prompt is a select list rather than a
-    text input, so its caret has little reason to sit where an empty composer's
-    does -- if it does not, `wait_ready` already refuses and the hole is a
-    documentation defect rather than a delivery one. **One `surface cursor`
-    reading settles it, and nobody has taken it.** A defence nobody has tested
-    is not a defence you get to count, in either direction.
+    ✅ **And the CARET gate catches it** -- there are FOUR checks, not two:
+    this one, `classify`, `pane_busy`, and `column == EMPTY_COLUMN`. MEASURED:
+    the trust prompt reads column **1** against an empty composer's **2**, so
+    `wait_ready` refuses and nothing is typed. The message is HELD -- which
+    costs a peer that receives nothing until a human answers the prompt, but
+    not a dialog answered by a message.
+
+    ⚠️ **The count in that report was short, in the direction that made it
+    sound worse.** It named the two gates whose docstrings argue with each
+    other; `pane_busy` and the caret are argued in `wait_ready`'s body. An
+    enumeration of defences is itself a claim.
 
     The docstring below argues the two gates are non-redundant, which is
     true; it must not be read as saying they are jointly sufficient. Observed
     live 2026-08-28;
-    docs/backlog/the-gates-that-miss-the-startup-trust-prompt.md has what typing
+    docs/backlog/an-agent-at-the-trust-prompt-holds-every-message-for-ever.md has what typing
     into it would do.
 
     ⚠️ **And the dialog is not the only instance -- COMPACTION is a second
@@ -1879,6 +1888,38 @@ def ensure_composer(ctl, session, pane, arm, lines, say):
                     "be a shell, or the ssh may be slow or failing", 3)
 
 
+def caret_reason(column):
+    """Why a caret that is not `EMPTY_COLUMN` means we must not type.
+
+    ⚠️ **Two different situations, and this used to report both as the first.**
+    MEASURED 2026-08-28, all three:
+
+      trust prompt              column 1     <- BELOW empty
+      empty composer            column 2     <- EMPTY_COLUMN
+      composer, 9-char draft    column 11    <- 2 + 9, so it tracks content
+
+    So *above* is a draft, and *below* is **not a composer at all** -- the
+    caret is somewhere with no text field, which is what a startup prompt
+    looks like. Saying "somebody has a draft in it" about an agent sitting on
+    Claude Code's trust question sends an operator to clear a composer that
+    does not exist, and this line is the ONLY thing they ever see: the message
+    is held every tick, for ever, until a human answers that prompt.
+
+    ⚠️ Column 1 is measured for the trust prompt specifically; it is not proof
+    that a 1 IS the trust prompt. The wording says what is known -- the caret
+    is not in a composer -- and names the trust prompt as the case that was
+    measured, rather than asserting an identification.
+    """
+    if column < EMPTY_COLUMN:
+        return ("the caret is at column %s, below an empty composer's %s -- so "
+                "it is not in a composer at all. Claude Code's startup trust "
+                "prompt reads 1 (measured); it needs a HUMAN, and until one "
+                "answers it every message to this peer is held"
+                % (column, EMPTY_COLUMN))
+    return ("the composer is not empty (cursor at column %s, empty is %s) -- "
+            "somebody has a draft in it" % (column, EMPTY_COLUMN))
+
+
 def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
     """Block until the peer's status and composer both say it is safe to type.
 
@@ -1908,9 +1949,7 @@ def wait_ready(ctl, session, pane, retries, interval, force, lines, say):
                 raise PeerError("cannot read the composer's cursor: %s" % (err,))
             if column == EMPTY_COLUMN:
                 return
-            reason = ("the composer is not empty (cursor at column %s, empty "
-                      "is %s) -- somebody has a draft in it"
-                      % (column, EMPTY_COLUMN))
+            reason = caret_reason(column)
         attempt += 1
         if attempt > retries:
             # ⚠️ `retries=0` is the RELAY's setting -- it must not block, so it
