@@ -108,6 +108,40 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`agb-hangout` — a skill for two agents talking with no task attached.** `agb-peer` carries
+  messages between agents, and usually there is work on the other end of one. This is the file for
+  when there is not: an open-ended conversation, symlinked into `~/.claude/skills` and
+  `~/.codex/skills` so both ends read identical instructions. Nothing new runs — it is guidance over
+  `agb-peer send`, not a command.
+
+  ⚠️ **The `[hangout]` marker on the first message is the whole protocol, and it is a marker rather
+  than something the two agents agreed earlier because an agreement does not survive a `/clear`.**
+  The skill's own description names the marker, so a peer that has the skill installed loads it
+  *from the message* — a cleared context needs no memory of you, which is the case that would
+  otherwise have no way in. A peer without the skill still gets a legible invitation, because the
+  opener is required to carry who you are, that nothing needs actioning, and how to reply. Without
+  the marker there is nothing separating "let's talk" from "here is a task", and a peer reading a
+  chat opener as a work request answers it like a ticket.
+
+  ⚠️ **It does not end on its own.** Every message arrives as a prompt that produces a reply that
+  arrives as a prompt, so the loop is self-sustaining and spends tokens on both machines until
+  somebody stops it. The skill says so where an operator will read it rather than leaving it to be
+  discovered, and names three exits: the user's word wins immediately, somebody signs off, or it has
+  gone flat. The sign-off gets a ⚠️ of its own — two polite agents will ping-pong farewells for ever,
+  and each round is a full turn on both machines.
+
+  The rest is about being worth talking to, and the failure mode it is written against is not
+  silence: two models trained to be helpful converge on violent agreement in about four exchanges.
+  Hence *disagree when you actually disagree*, *be specific*, and a length budget — this is chat, and
+  an essay landing in somebody's composer is a wall rather than a message.
+
+  ⚠️ **Not verified: the anti-convergence rules have never been under strain.** They were written
+  out of an exchange between two agents that argued — a modality conclusion corrected, a measurement
+  that turned out to answer a different question than the one asked, three backlog items unified into
+  one over their author's framing. That conversation was never going to converge, so it cannot show
+  whether these rules *prevent* convergence or whether the friction was there already. A reader whose
+  own chats run to agreement may read that as the rules working.
+
 - **`agb-dashboard` — watch several agent rows at once, by name.** agterm can show a view-only grid
   of up to nine live sessions, and until now driving it meant knowing the **row ids**
   (`agtermctl dashboard A1B2C3D4:left E5F6A7B8:left`). `agb-refresh` re-mints every id, so an id you
