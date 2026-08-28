@@ -1,0 +1,61 @@
+# Both delivery gates miss Claude Code's startup trust prompt
+
+**Observed live**, 2026-08-28, by a peer agent starting a throwaway Claude to get a composer for an
+unrelated experiment. Not yet reached by a real delivery, and recorded because both mechanisms that
+exist to prevent exactly this are individually blind to it.
+
+## The two gates, and why each one misses
+
+`try_deliver` will not type into a peer unless **both** agree it is safe:
+
+- `classify(text)` — reads the pane and looks for `COMPOSER_GLYPHS = ("❯", "›")`.
+- `peer_busy(status)` — reads the agent's own hook-reported state and refuses `active` / `blocked`.
+
+Claude Code's startup trust prompt — *"Is this a project you created or one you trust?"* — **renders
+`❯`**. So:
+
+| gate | what it sees | verdict |
+|---|---|---|
+| `classify` | a `COMPOSER_GLYPH` in the buffer | `MODE_COMPOSER` — **there is somewhere to type** |
+| `peer_busy` | the agent has never run a turn, so the bridge has no state for it: `-` | **not busy** |
+
+⚠️ **This is the Dialog Window Vulnerability that `peer_busy`'s docstring cites as the whole reason
+the two gates are not redundant — arriving in the one variant where the second gate does not help.**
+The permission-dialog case it was written about happens *mid-session*, so the status is `blocked`
+and `peer_busy` catches it. The compaction case (recorded in the same docstring) happens mid-turn,
+so the status is `active` and `peer_busy` catches that too. This one fires **at startup, before the
+agent has ever been active**, which is precisely the window in which the status gate has nothing to
+say.
+
+**Non-redundant is not jointly sufficient.** Two gates that each cover what the other misses still
+leave whatever neither covers, and nothing in the code or the docstrings said so until now.
+
+## What typing into it would do
+
+Not measured, and it should be before anything is built on a guess. The hazard is that the trust
+prompt is a **choice**, and `deliver` types the body and then sends `SUBMIT_KEY` (`\r`) as a second
+call — so a message delivered here plausibly **answers the prompt** rather than being ignored, on
+whichever option the modal has focused. That would be a message destroying a decision, in the same
+family as `PANE_WORDS` (a message that reduces to `q` closing a live row) and worse in kind, because
+`PANE_WORDS` is guarded and this is not.
+
+The `rendered()` check does not save it either: the typed text may well appear on screen, so the
+verification passes and the Return is sent.
+
+## What would fix it, and why it is not done here
+
+The narrow fix is a `BUSY_MARKS`-style screen test for the trust prompt's own text — cheap, and in
+the mechanism that already exists for reading hazards off a pane. Two reasons to measure first:
+
+- **The prompt's exact wording is a moving target** across Claude Code versions, and a mark that
+  stops matching fails **open**, which is the direction that types into the dialog.
+- ⚠️ **The general form is the interesting one and a wording match does not address it.** A glyph is
+  evidence that *something drew a glyph*; a modal that borrows the composer's chrome will keep
+  defeating `classify` in a new costume. The question worth answering is whether there is any
+  positive signal that a pane is a **live composer** rather than a picture of one — and if there is
+  not, whether `peer_busy` should refuse an agent with **no** reported state at all, which today it
+  deliberately allows through (see its `idle` reasoning: refusing "no current information" would
+  strand every row whose bridge is briefly disconnected).
+
+That second question is a design change with a real cost on the other side, which is why it is
+written down rather than guessed at.

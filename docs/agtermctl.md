@@ -329,6 +329,41 @@ USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--t
 `--select`'s constraint is **unchanged** across the two, which is what keeps both consequences below
 true.
 
+### `session type` has no observed size limit — **MEASURED 2026-08-28**
+
+The help says nothing about length, and this doc carried no clause for it at all until a message
+arrived in an agent's composer **missing its head** and the transport became a suspect. Measured
+against a raw-mode reader run as an agterm session's `--command` — a script that puts the pty in raw
+mode and rewrites everything it receives to a file — driven with `session type --stdin`, each
+payload carrying a distinct head marker and tail marker:
+
+| bytes sent | received | markers |
+|---|---|---|
+| 216 / 1024 / 2048 / 4096 | identical | head **and** tail intact |
+| 8192 / 16384 / 32768 / 65536 | identical | head **and** tail intact |
+
+**Byte-exact at every size, no ceiling found at 64 KB** — four times past the 16336-byte tmux
+pane-option limit that bounds anything `agb-peer` can put into it, so the whole wire is clean well
+beyond what can reach it. `session type` is **eliminated** as the source of the truncation; the
+damage is in the receiving application.
+
+⚠️ **METHOD — a `cat`-based harness gives a confident wrong answer, and it is the obvious way to
+run this.** A pane whose command is `cat > file` puts the tty in **canonical** mode, where the line
+discipline caps a single line: **macOS `MAX_CANON` ≈ 1024 bytes; Linux 4096.** Measured on Linux,
+one canonical line, head and tail markers:
+
+| payload | echoed | head | tail |
+|---|---|---|---|
+| 1024 / 4093 / 4094 / **4095** | payload + newline | ✅ | ✅ |
+| **4096** | 4096 | ✅ | ❌ |
+| 8192 | 4096 | ✅ | ❌ |
+
+So `cat` would have shown loss beginning at ~1 KB on the Mac and pointed straight at `session type`
+— a confound that **does not exist on the real path**, because Claude Code's composer runs raw.
+⚠️ And note the second tell, which is the cheaper one to notice: the confound loses the **tail**,
+while the bug under investigation loses the **head**. A harness whose failure signature does not
+match the symptom is telling you it is measuring something else.
+
 ### ⚠️ The `--pane` vocabulary in 0.24.0's `--help` is WRONG — **MEASURED 2026-08-24**
 
 The help above says `primary/left/top, split/right/bottom, or scratch`. Four of those seven words

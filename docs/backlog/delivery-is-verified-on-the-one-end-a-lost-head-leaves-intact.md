@@ -64,16 +64,23 @@ that case and then probed at the one end that case leaves intact.
 
 ## What is still unknown, and who can measure it
 
-**Why the head was lost is not established.** Everything up to `ctl.type` is measured clean; the
-remaining suspects are `agtermctl session type` itself and Claude Code's composer under a large
-paste. `docs/agtermctl.md` records **no** size clause for `session type` at all — that is the gap.
+✅ **`session type` is ELIMINATED — measured 2026-08-28** against a raw-mode reader run as an
+agterm session's `--command`: byte-exact at 216 B through **64 KB**, head and tail markers intact at
+every size, no ceiling found. That is four times past the 16336-byte tmux limit that bounds anything
+`agb-peer` can send, so the whole wire is clean well beyond what can reach it. The measured clause,
+and the `cat`-based harness that would have incriminated it, are now in `docs/agtermctl.md`.
 
-The experiment needs a live agterm and a real agent row, so it cannot be run from a cluster host:
+**So the damage is in the receiving application** — where the analysis above already had it — and
+since ~3.5 KB is squarely in collapse territory, **the paste placeholder is the prime suspect rather
+than a dialog.** That also means hole 2 above is not merely the wider hole, it is very likely *the*
+hole: the message became a placeholder, and the branch that fires for placeholders checks nothing.
 
-- `session type` a body of known length with a distinctive **head** *and* tail marker, at 1 KB,
-  2 KB, 3 KB, 4 KB, 8 KB, then `session text` and check **which end** survives and from what size.
+**Still open**, and it needs a real composer:
+
 - Whether the placeholder's own `+N lines` / `NNNN chars` count matches the body — because if it
-  does, it is a cheap content-length check for the case where there is no content on screen.
+  does, it is a cheap content-length check for exactly the case where there is no content on screen,
+  and the fix follows from it.
+- Where in the composer the head goes, and from what size.
 
 ## Why it is not fixed here
 

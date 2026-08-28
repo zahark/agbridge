@@ -108,6 +108,38 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agtermctl session type` measured: no size limit to 64 KB, byte-exact — and the obvious way to
+  test that gives the wrong answer.** This doc carried no length clause at all, which is what let
+  the transport stay a suspect for a truncated message. Measured against a raw-mode reader run as an
+  agterm session's `--command`: **byte-exact at 216 B through 64 KB, head and tail markers intact at
+  every size**, four times past the 16336-byte tmux ceiling that bounds anything `agb-peer` can put
+  on the wire. `session type` is eliminated. ⚠️ **A `cat`-based harness would have incriminated it**:
+  a pane running `cat` puts the tty in **canonical** mode, where the line discipline caps one line at
+  **≈1024 bytes on macOS, 4096 on Linux** — a confound that does not exist on the real path, because
+  Claude Code's composer runs raw. The cheap tell is that the confound loses the **tail** while the
+  bug loses the **head**: a harness whose failure signature does not match the symptom is measuring
+  something else. Both are in `docs/agtermctl.md` now, the trap recorded beside the result.
+
+- **🔴 Both delivery gates miss Claude Code's startup trust prompt.** Observed live: *"Is this a
+  project you created or one you trust?"* renders `❯`, a `COMPOSER_GLYPH` — so `classify` calls a
+  blocking modal `MODE_COMPOSER`, and because it appears **before the agent has ever run a turn**
+  the hook-derived status is `-` rather than `active`, so `peer_busy` passes it too. ⚠️ This is
+  exactly the Dialog Window Vulnerability `peer_busy`'s docstring cites as the reason the two gates
+  are non-redundant, arriving in the one variant where the second gate has nothing to say. **Two
+  gates that each cover what the other misses still leave whatever neither covers**, and nothing
+  said so until now. The hazard is not a lost message: `deliver` sends `\r` as a second call, so a
+  message here plausibly **answers the prompt**. Recorded rather than patched, because a
+  wording-match fails *open* and the general form — a modal wearing the composer's chrome — will
+  keep coming back in a new costume:
+  `docs/backlog/both-gates-miss-the-startup-trust-prompt.md`.
+
+- **The double-delivery item has a live sighting.** `a-timed-out-session-type-is-retried-and-can-
+  double-deliver.md` was found by search and said "Not observed live"; a peer's message then landed
+  **twice, verbatim**, in a receiving agent's composer. ⚠️ **Neither end could have established that
+  alone** — no delivery receipt, no transcript, so the sender sees one send and the receiver sees two
+  arrivals, and it took comparing the two halves *in conversation* to notice. A relay restart is
+  ruled out: `seen`/`done` are per-run and the priming pass discards rather than delivers.
+
 - **A message can arrive with its head missing while both ends report success — recorded, not yet
   fixed.** A peer agent's message landed in a composer starting mid-sentence; the sender read
   `queued … as #id`, the relay read `delivered`, and the conversation ran two more exchanges before

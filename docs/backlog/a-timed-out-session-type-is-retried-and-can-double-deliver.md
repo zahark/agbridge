@@ -1,7 +1,21 @@
 # A timed-out `session type` is read as "nothing was typed", and the relay retries it
 
 **Found by search**, 2026-08-28, sweeping for more of `CLAUDE.md`'s shape **D** — *an indefinite
-outcome collapsed into a definite negative* — after fixing the grid timeout. Not observed live.
+outcome collapsed into a definite negative* — after fixing the grid timeout.
+
+⚠️ **OBSERVED LIVE the same day**, and this entry said "Not observed live" until it was. During the
+`agb-hangout` exchange one peer's message was delivered **twice, verbatim**, into the receiving
+agent's composer — two identical prompts, two turns spent. That is this item's failure mode with
+nothing else to explain it: a relay restart cannot cause it (`seen`/`done` are in-memory per run and
+the priming pass **discards** rather than delivers, precisely so a restart cannot replay), and the
+sender did not re-send.
+
+⚠️ **The receiving end cannot tell a redelivery from a re-send**, which is why it took a
+conversation between two agents to notice at all: there is no delivery receipt and no transcript
+(`skills/agb-peer/SKILL.md`, *What you cannot do*), so each end sees only its own half. The
+duplicate was identified by **comparing the two halves in conversation** — the sender said it sent
+once, the receiver saw two. Nothing in the code or in either agent's view could have established it
+alone.
 
 ## What happens
 

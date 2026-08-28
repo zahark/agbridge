@@ -433,6 +433,15 @@ def classify(text):
     shows neither marker may be an agent whose UI we do not recognise, a pane
     mid-redraw, or a shell. The caller refuses on it rather than guessing,
     because both wrong guesses are bad in different ways.
+
+    🔴 **A COMPOSER_GLYPH IS NOT PROOF OF A COMPOSER.** Observed live
+    2026-08-28: Claude Code's startup trust prompt ("Is this a project you
+    created or one you trust?") renders `❯`, so this returns MODE_COMPOSER for
+    a blocking modal. That is the cookbook's Dialog Window Vulnerability,
+    which `peer_busy` exists to catch -- except this one fires at STARTUP,
+    before the agent has ever been active, so the status is `-` and that gate
+    does not catch it either. Both gates miss it; see
+    docs/backlog/both-gates-miss-the-startup-trust-prompt.md.
     """
     if text is None:
         return MODE_UNKNOWN
@@ -477,6 +486,16 @@ def peer_busy(status):
     "Dialog Window Vulnerability", and THIS gate is the only thing that catches
     it -- the mode check cannot, and the cursor check would be measuring the
     dialog's caret.
+
+    🔴 **AND THERE IS A THIRD INSTANCE THAT THIS GATE DOES NOT CATCH.**
+    Claude Code's startup trust prompt renders a COMPOSER_GLYPH, so `classify`
+    calls it MODE_COMPOSER -- and it appears BEFORE the agent has ever run a
+    turn, so the status is `-` rather than `active` and this gate passes it
+    too. The docstring below argues the two gates are non-redundant, which is
+    true; it must not be read as saying they are jointly sufficient. Observed
+    live 2026-08-28;
+    docs/backlog/both-gates-miss-the-startup-trust-prompt.md has what typing
+    into it would do.
 
     ⚠️ **And the dialog is not the only instance -- COMPACTION is a second
     one, observed 2026-08-28.** A peer mid-autocompact reported `active` while
