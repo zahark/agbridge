@@ -10,6 +10,29 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 There is a second peer system on the same machine, and an agent used it to conclude a
+  reachable peer was unreachable.** Claude Code has a built-in `ListAgents`/`SendMessage` pair that
+  lists **Claude sessions on this machine**. `agb-peer` is a different system with **overlapping
+  vocabulary and disjoint membership**: a **Codex** peer and a peer on **another host** can never
+  appear in the built-in listing, and `agb-peer` membership lives in the **relay's roster**, on the
+  far side of the wire.
+
+  MEASURED on the first working hangout attempt: asked to open a chat with a Codex, the agent ran
+  `ListAgents`, got a confident five-name list that **could not have contained it**, and **refused to
+  send to a peer that was reachable the whole time.** ⚠️ Every step was reasonable — the list was
+  accurate about its own mechanism and irrelevant to the one it had been asked to use. **The third
+  "true fact, false conclusion" of the day**, after the missing `agtermctl` and the sandboxed socket.
+
+  ⚠️ **And the instruction that was meant to help is what left the gap.** It said *"do not run
+  `agb-peer who` first"* — correct, since `who` cannot answer in the same turn — which removed the
+  **right** lookup and left the agent reaching for the wrong one. Same shape as a true caveat arming
+  a wrongly-ordered step: the removal was justified and nothing replaced what it removed.
+
+  Both skills now carry it: **a name's absence from `ListAgents` is not evidence about `agb-peer`
+  reachability**, which is not discoverable from the agent's side at all — if you were told a name,
+  use it, and let the relay be the authority, since it now bounces a notice back when a name is
+  wrong.
+
 - **🔴 The repainting-composer caret was filed as a hypothesis and is now MEASURED, twice, on a
   healthy live row.** A relay log caught its own peer's composer reading **`column 0`** and then
   **`column 1`**, minutes apart, on an agent working perfectly throughout. ⚠️ **So without the

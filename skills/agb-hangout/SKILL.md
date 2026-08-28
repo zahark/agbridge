@@ -53,6 +53,12 @@ it. Either one is the name — use it and send. **Do not go looking for what you
 given.** That is the error this section exists to prevent, and it is not ignorance of the name:
 it is searching for something already in hand.
 
+🔴 **And do not look for it in `ListAgents`.** Claude Code's built-in listing shows **Claude
+sessions on this machine**; a Codex peer and a peer on another host can never appear in it.
+MEASURED: an agent checked there, got a confident list that could not have contained its peer, and
+refused to send to somebody who was reachable throughout. **A name's absence from that list is not
+evidence about anything here** — see `agb-peer`'s own skill for the table.
+
 Only if you genuinely have none. `agb-peer who` asks the relay — ⚠️ **but the answer does not
 come back from that command.** It arrives on a *later* turn as an ordinary `[chat from relay]`
 message, and silence is ambiguous: no relay, or you are not a participant.

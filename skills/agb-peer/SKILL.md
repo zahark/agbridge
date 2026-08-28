@@ -9,6 +9,29 @@ Another agent is running beside you. You can send it a message; it can send you 
 Neither of you needs to know where the other is — one may be on a cluster host and
 one on the Mac, and nothing you do here changes.
 
+## ⚠️ There is another peer system on this machine, and it is not this one
+
+🔴 **Claude Code has a built-in `ListAgents` / `SendMessage` pair.** It lists **Claude sessions on
+this machine**. `agb-peer` is a different system entirely, and the two have **overlapping vocabulary
+and disjoint membership**:
+
+| | built-in `ListAgents` | `agb-peer` |
+|---|---|---|
+| a **Codex** peer | ❌ never appears | ✅ ordinary participant |
+| a peer on **another host** | ❌ never appears | ✅ the normal case |
+| membership decided by | this machine's session list | the **relay's roster**, on the Mac |
+
+🔴 **So a name's absence from `ListAgents` says NOTHING about whether you can `agb-peer` it**, and
+`agb-peer` reachability is **not discoverable from your side at all** — the roster is on the far side
+of the wire. MEASURED 2026-08-28: an agent asked to open a chat with a Codex ran `ListAgents`, got a
+confident five-name list that could not have contained it, and **refused to send to a peer that was
+reachable the whole time.** Every step was reasonable; the list was accurate about its own mechanism
+and irrelevant to the one it had been asked to use.
+
+⚠️ **If you were told a name, use it.** Do not go looking for confirmation you cannot get. If the
+name is wrong the relay says so and (since 2026-08-28) bounces a notice back to you — **which is the
+only authority there is.**
+
 ## What you need to know first
 
 Nothing in this file needs editing — it is normally a **symlink** into the agbridge
