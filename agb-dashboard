@@ -29,9 +29,11 @@
 # What it shares rather than reimplements: row matching (`match_sessions`), the
 # roster grammar, `dashboard_cells` and the `Ctl` wrapper all stay in
 # `agb-peer`, which remains their single owner. This script loads it by path.
-# ⚠️ `close_grid` is the one thing with the same name on both sides and it is
-# NOT shared -- the two differ in arity and return type for a reason argued at
-# each of them, so read that before merging them.
+# ⚠️ `close_grid` is the one name that means DIFFERENT THINGS on the two sides
+# and is NOT shared -- they differ in arity and return type for a reason argued
+# at each of them, so read that before merging them. (`USAGE`, `VERSION`,
+# `main` and `parse_args` are spelled the same way in both too, and that is
+# nothing: every script in this family has them.)
 #
 # Usage:
 #
@@ -481,9 +483,14 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
         raise DashError("agterm's dashboard shows %d cells; got %d"
                         % (peer.DASHBOARD_MAX_CELLS, len(cells)), 2)
     ok, said, why = ctl.dashboard(cells)
+    if ok is None:
+        raise grid_unknown(why)
     if not ok:
         # agterm refuses an invalid id and a wholly unresolvable set BEFORE
         # opening anything (measured), so there is no grid to close here.
+        # ⚠️ That measurement is about a REFUSAL and does not reach the branch
+        # above -- see `grid_unknown`, which is the outcome it was read as
+        # covering and does not.
         raise DashError("the dashboard would not open: %s" % (why,), 2)
     # 🔴 **From here a grid is UP and this run owns it**, so nothing printed
     # may be able to abort the path that closes it. See `_Quiet`.
@@ -544,6 +551,11 @@ def run_mru(opts, out, peer=None, ctl=None, read_line=None):
     peer = peer or load_peer()
     ctl = ctl if ctl is not None else peer.Ctl()
     ok, _said, why = ctl.dashboard(["--mru"])
+    if ok is None:
+        # ⚠️ The same branch as `run_grid`'s and deliberately the same words --
+        # this is the shape where one side of a pair gets a rule and the other
+        # does not, and the two sides have nothing to differ about here.
+        raise grid_unknown(why)
     if not ok:
         raise DashError("the dashboard would not open: %s" % (why,), 2)
     # The grid is up and this run owns it -- see `_Quiet`, and `run_grid`.
@@ -554,13 +566,41 @@ def run_mru(opts, out, peer=None, ctl=None, read_line=None):
     return finish(opts, out, ctl, read_line)
 
 
-# The literal, copy-pasteable way to close the grid by hand. Printed at THREE
-# sites, which is the count to keep true: the `--detach` path, because that run
-# ends with a grid up and nothing owning it; the hold's own failed close; and
-# the `unresolved:` refusal's failed close. The last two are the same moment by
-# the same argument -- it is when a user most needs the command and least wants
-# to go and look it up -- and for a while only one of them printed it.
+# The literal, copy-pasteable way to close the grid by hand.
+#
+# ⚠️ **The RULE rather than a count of the sites, because the count went stale
+# the first time a site was added.** Print it wherever this run ends with a grid
+# that may be up and nothing owning it: the `--detach` hand-over, either failed
+# close, and the timeout where whether a grid went up is unknown. The moment a
+# user most needs this command is the moment they least want to go and look it
+# up, and for a while only one of the two failed closes printed it.
 CLOSE_COMMAND = "agtermctl dashboard --close"
+
+
+def grid_unknown(why):
+    """The refusal for an open that TIMED OUT -- which is not an open that failed.
+
+    🔴 **`Ctl.dashboard` answers `None`, not `False`, when agtermctl was KILLED
+    at the timeout**, and this branch is the whole reason it does. The refusal
+    beside it is sound because agterm rejects an invalid id and a wholly
+    unresolvable set *before* opening anything, measured -- but that measurement
+    is about a REFUSAL, and a timeout is the outcome where agterm may have done
+    the work and simply not answered. Reported as "would not open", it left the
+    one screen agterm has full of cells, said nothing about it and printed no
+    way to clear it: an indefinite outcome rendered as a definite negative.
+
+    ⚠️ **Nothing is closed here, and that is not timidity.** The close would be
+    a second blocking call into the same wedge, and closing on a maybe is
+    exactly the thing the ownership rule forbids -- with no proof this run
+    opened the grid, a close reaches for one that may be somebody else's. So the
+    operator gets the fact and the command, and decides.
+    """
+    return DashError(
+        "the dashboard MAY BE UP: %s. agtermctl was killed at the timeout, so "
+        "whether agterm opened the grid is unknown -- and nothing was closed, "
+        "because a run that cannot say it opened the grid must not close one "
+        "that may be somebody else's. If a grid is up, close it with:\n  %s"
+        % (why, CLOSE_COMMAND), 2)
 
 # ⚠️ Both facts are things the tool has to SAY, not only document.
 #

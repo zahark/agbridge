@@ -1649,9 +1649,26 @@ class Ctl(object):
         `agb-dashboard` refuses and closes; the relay says so, does not record
         the cells as shown, and retries. This docstring said the relay ignored
         it for as long as that was true, and went on saying it afterwards.
+
+        🔴 **`ok` IS THREE-VALUED: `True`, `False`, and `None` for "the tool
+        ran and was KILLED at the timeout, so nobody knows".** That third
+        outcome existed from the first line of `_spawn` and both callers spelled
+        it "would not open" -- a definite negative for an indefinite result,
+        which is invariant 1's shape and invariant 12's rule. It is the one
+        `not ok` where agterm may well have opened the grid: the timeout fires
+        against a WEDGED agterm client, and the measured wedge was a view-only
+        client attached to a **dashboard**. Reported as a refusal it left a grid
+        nobody would close and nothing on screen saying so. `if not ok` still
+        catches it, so a caller that does not care is unchanged; a caller that
+        must decide whether a grid is up asks `if ok is None` first.
+
+        ⚠️ A genuine agtermctl exit **124** is indistinguishable from our own
+        `TIMED_OUT`, and that is the harmless direction: it downgrades a
+        definite answer to an unknown one, never the reverse.
         """
         rc, out, err = self.run(["dashboard"] + list(members))
-        return (rc == 0), (out or ""), ((err or "").strip() or "exit %s" % (rc,))
+        return ((None if rc == TIMED_OUT else rc == 0), (out or ""),
+                ((err or "").strip() or "exit %s" % (rc,)))
 
     def dashboard_close(self):
         """(ok, reason). Closes THE grid -- agterm has exactly one.
@@ -2841,6 +2858,49 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
             close_grid(ctl, say)
 
 
+# ⚠️ **The back-off after a grid call TIMED OUT, counted in ticks.** A wedged
+# agterm answers nothing, so every grid call costs `SUBPROCESS_TIMEOUT` seconds
+# of a loop whose real job is carrying messages. Doubling from one tick to this
+# many means a wedge that lasts costs the pump a bounded fraction of its time,
+# while one that clears is picked up within a few ticks -- neither "give up for
+# the run" (a transient wedge would cost the grid for ever) nor "retry every
+# tick" (the starvation this exists to stop). Ticks rather than seconds because
+# `update_grid` has no clock and `--interval` is not its business.
+GRID_STALL_MAX_TICKS = 32
+
+# Its own key in `notes`, which is otherwise `("said", <key>)` and `ALIAS_DROPS`.
+GRID_STALL = ("dashboard", "stalled")
+
+
+def _grid_stall(notes):
+    """Arm or lengthen the back-off; returns how many ticks will be skipped.
+
+    ⚠️ **`notes is None` means there is nowhere to remember, so there is no
+    back-off** -- the same reading `_throttled` gives it. Every caller that runs
+    a loop passes a dict; the ones that pass `None` make a single call and have
+    nothing to starve.
+    """
+    if notes is None:
+        return 0
+    wait = min((notes.get(GRID_STALL) or (0, 0))[1] * 2 or 1, GRID_STALL_MAX_TICKS)
+    notes[GRID_STALL] = (wait, wait)
+    return wait
+
+
+def _grid_stalled(notes):
+    """Is this tick inside the back-off? Consumes one tick of it if so.
+
+    ⚠️ The doubling memory is kept at zero-remaining rather than deleted, so a
+    wedge that survives the retry lengthens instead of restarting at one tick.
+    Only a call that ANSWERED clears it, in `update_grid`.
+    """
+    remaining, wait = (None if notes is None else notes.get(GRID_STALL)) or (0, 0)
+    if remaining <= 0:
+        return False
+    notes[GRID_STALL] = (remaining - 1, wait)
+    return True
+
+
 def update_grid(ctl, spec, resolved, shown, opened, say, notes):
     """Keep the relay's grid honest about its membership -> (shown, opened).
 
@@ -2864,8 +2924,11 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
     here may stop a message being carried. ⚠️ That sentence was written as a
     description and was FALSE -- `Ctl.dashboard` returns a status for a tool
     failure but `_spawn` raises when the tool cannot be started at all, and
-    neither the open nor the reports were guarded. It is enforced below now,
-    once for the call and once for `say`.
+    neither the open nor the reports were guarded. It is enforced below now:
+    for the call, for `say` -- and for the outcome neither of those covers, a
+    call that neither answered nor raised but BLOCKED until it was killed, which
+    starves the pump by taking its time rather than by stopping it
+    (`_grid_stall`).
     """
     # ⚠️ Every report below goes through a `say` that CANNOT RAISE. `say` writes
     # to `out`, which can be closed under a running relay -- `agb-peer relay |
@@ -2942,6 +3005,11 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
     fresh = tuple(cells)
     if fresh == shown:
         return shown, opened
+    if _grid_stalled(notes):
+        # ⚠️ **AFTER the reports, before the agtermctl calls**, so a wedge
+        # silences the blocking calls and nothing else: the lines above are
+        # local and cost nothing. See `_grid_stall`.
+        return shown, opened
     if grid_cells:
         try:
             ok, said, why = ctl.dashboard(grid_cells)
@@ -2956,6 +3024,32 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
             # never typed. The grid is an adjunct to a message pump; a cosmetic
             # failure that kills the pump is the one outcome forbidden here.
             ok, said, why = False, "", "%s" % (exc,)
+        if ok is None:
+            # 🔴 **THE TOOL WAS KILLED AT THE TIMEOUT, so whether a grid went
+            # up is UNKNOWN -- and both of this branch's neighbours got that
+            # wrong in opposite directions.**
+            #
+            # `opened` is armed, because the latch's question is "might this run
+            # have put a grid on agterm's one screen"; leaving it False is a
+            # *proof* of not-opened that nothing established, and the `finally`
+            # would then walk past a grid this relay may well own. Closing a
+            # grid we did not open is the cost, and it is the smaller one.
+            #
+            # ⚠️ **And `shown` unadvanced is RIGHT and was NOT ENOUGH.** It
+            # makes the next tick retry, which for a wedge means another
+            # `SUBPROCESS_TIMEOUT`-second blocking call, every tick, for as long
+            # as it lasts -- `update_grid` runs BEFORE `relay_tick`, so at
+            # `--interval 2` the message pump drops to about one pass in
+            # fifteen. That is the outcome the guard three lines above forbids
+            # in as many words; the fix for shape B walked in underneath it. The
+            # retry therefore backs OFF rather than stopping: see `_grid_stall`.
+            _throttled(say, notes, ("dash-open",))(
+                "dashboard: %s -- a grid MAY be up; assuming this run owns it "
+                "and retrying in %d tick(s)" % (why, _grid_stall(notes)))
+            return shown, True
+        if notes is not None:
+            # The call ANSWERED, refusal or not, so agterm is not wedged.
+            notes.pop(GRID_STALL, None)
         if not ok:
             # ⚠️ `shown` is deliberately NOT advanced on a failure, so the next
             # tick tries again -- otherwise one transient failure meant no grid

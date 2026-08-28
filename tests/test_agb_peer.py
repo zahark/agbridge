@@ -1547,6 +1547,34 @@ def test_both_runners_share_the_timing_out_spawner(peer):
         assert "_spawn" in body, "%s must not start its own Popen" % (name,)
 
 
+def test_Ctl_dashboard_answers_UNKNOWN_when_the_tool_was_killed(peer):
+    """🔴 The fourth shape at its source: `_spawn` has THREE outcomes and this
+    wrapper had two.
+
+    A timeout is the one `not ok` where agtermctl RAN and the grid may be up --
+    it fires against a wedged agterm client, and the measured wedge was a
+    view-only client attached to a **dashboard**. Both callers spelled it "the
+    dashboard would not open", a definite negative for an indefinite result.
+    `None` is the third value; `if not ok` still catches it, so a caller that
+    does not care about the difference is unchanged."""
+    def timed_out(argv):
+        return peer.TIMED_OUT, "", "agtermctl did not answer within 30s"
+
+    ok, said, why = peer.Ctl(run=timed_out).dashboard(["AAAA1111:left"])
+    assert ok is None, "a timeout is not a refusal"
+    assert not ok, "and `if not ok` must still catch it"
+    assert "did not answer" in why
+
+
+def test_Ctl_dashboard_still_answers_TRUE_and_FALSE(peer):
+    """The companion the test above needs: same call, one variable changed.
+    Without it, `ok is None` unconditionally would pass."""
+    assert peer.Ctl(run=lambda a: (0, "", "")).dashboard([])[0] is True
+    ok, _said, why = peer.Ctl(run=lambda a: (1, "", "")).dashboard([])
+    assert ok is False, "a refusal is still a definite no"
+    assert why == "exit 1"
+
+
 def test_a_failed_tmux_read_refuses_instead_of_guessing(peer):
     """MEASURED: one transient tmux stall made `send` fall back to a hardcoded
     base name and then STORE it, permanently renaming the pane's doorbell base
@@ -5094,6 +5122,130 @@ def test_a_close_that_FAILS_does_not_record_the_grid_as_shown(peer):
     peer.update_grid(ctl, {}, {}, shown, opened, said.append, notes)
     assert ctl.closes == 2, "the close was never retried"
     assert len([m for m in said if "could not close" in m or "no such" in m]) == 1, said
+
+
+# ---------------------------------------------------------------------------
+# A grid call that TIMED OUT -- the fourth shape, on the relay side
+#
+# 🔴 An indefinite outcome collapsed into a definite negative, twice over. The
+# latch read "this run definitely opened nothing" from a call that was KILLED
+# rather than answered; and the shape-B fix for a failed open ("do not advance
+# `shown`, so the next tick retries") turned a wedged agterm into a 30-second
+# blocking call every tick -- `update_grid` runs BEFORE `relay_tick`, so it
+# starves the message pump, which is the one outcome forbidden three lines above
+# the guard it walked in underneath.
+# ---------------------------------------------------------------------------
+
+class WedgedGrid(RelayCtl):
+    """A `Ctl` whose `dashboard` was killed at the timeout: `ok is None`.
+
+    ⚠️ A fake returning `False` here describes a world where agtermctl always
+    ANSWERS, which is the world the code already handled. The real third
+    outcome is `_spawn` killing the tool after `SUBPROCESS_TIMEOUT` seconds --
+    it ran, agterm may have opened the grid, and nobody knows.
+    """
+
+    def dashboard(self, members):
+        self.dashboards.append(list(members))
+        self.grid_log.append(("open", list(members)))
+        return None, "", "agtermctl did not answer within 30s"
+
+
+PAIR = {"alice": ("AAAA1111", "left", None, None),
+        "bob": ("BBBB2222", "left", None, None)}
+
+
+def test_an_open_that_TIMED_OUT_arms_the_ownership_latch(peer):
+    """The latch's question is "might this run have put a grid on agterm's one
+    screen", so `False` is a claim of proof. Nothing proved it: agtermctl ran,
+    and the measured wedge is a view-only client attached to a **dashboard**.
+    Left False, `cmd_relay`'s `finally` walks past a grid this relay may own and
+    nothing ever closes it."""
+    said, notes = [], {}
+    ctl = WedgedGrid(panes())
+    shown, opened = peer.update_grid(ctl, PAIR, PAIR, None, False,
+                                     said.append, notes)
+    assert opened is True, "a maybe-open grid must still be closable on exit"
+    assert shown is None, "and an unknown open records no cells as shown"
+    assert any("MAY be up" in m for m in said), said
+
+
+def test_cmd_relay_CLOSES_a_grid_whose_open_timed_out(peer):
+    """End to end, which is where the latch is actually read. The companion is
+    `test_cmd_relay_closes_nothing_when_the_open_failed`: same run, and the only
+    thing that differs is whether agtermctl answered."""
+    ctl = WedgedGrid(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 0, True,
+                   io.StringIO(), dashboard=True, fetch=Fetcher())
+    assert ctl.dashboards and ctl.closes == 1
+
+
+def test_a_wedged_agterm_does_not_starve_the_message_pump(peer):
+    """🔴 The starvation itself. Every one of these calls costs
+    `SUBPROCESS_TIMEOUT` seconds in the real thing, so the count IS the
+    property: unbacked-off it is one per tick for the life of the wedge."""
+    said, notes = [], {}
+    ctl = WedgedGrid(panes())
+    shown, opened = None, False
+    for _tick in range(20):
+        shown, opened = peer.update_grid(ctl, PAIR, PAIR, shown, opened,
+                                         said.append, notes)
+    assert len(ctl.dashboards) == 5, ctl.dashboards  # 1,2,4,8,16 ticks apart
+    assert notes[peer.GRID_STALL][1] == 16, notes[peer.GRID_STALL]
+
+
+def test_a_refusal_is_still_retried_EVERY_tick(peer):
+    """The companion the back-off needs: same loop, one variable changed.
+
+    An agterm that REFUSES answers at once, so retrying costs nothing and the
+    shape-B rule stands unmodified -- a transient refusal must not cost the grid
+    for the rest of the run. Backing that off too would be the fix over-reaching
+    into the case it was not about."""
+
+    class Refuses(RelayCtl):
+        def dashboard(self, members):
+            self.dashboards.append(list(members))
+            return False, "", "no agterm"
+
+    said, notes = [], {}
+    ctl = Refuses(panes())
+    shown, opened = None, False
+    for _tick in range(20):
+        shown, opened = peer.update_grid(ctl, PAIR, PAIR, shown, opened,
+                                         said.append, notes)
+    assert len(ctl.dashboards) == 20, ctl.dashboards
+    assert opened is False, "a refusal IS proof that nothing opened"
+
+
+def test_the_back_off_is_forgotten_once_agterm_answers_again(peer):
+    """A wedge that clears must be picked up, and the next one must start over
+    at one tick rather than at the length the last one reached. Only a call that
+    ANSWERED clears it -- which is why the clear sits below the unknown branch
+    and above the refusal branch, where both outcomes reach it."""
+    said, notes = [], {}
+    ctl = WedgedGrid(panes())
+    shown, opened = peer.update_grid(ctl, PAIR, PAIR, None, False,
+                                     said.append, notes)
+    assert notes[peer.GRID_STALL] == (1, 1)
+    ctl.__class__ = RelayCtl                      # the wedge clears
+    shown, opened = peer.update_grid(ctl, PAIR, PAIR, shown, opened,
+                                     said.append, notes)
+    assert notes[peer.GRID_STALL] == (0, 1), "the skipped tick is consumed"
+    shown, opened = peer.update_grid(ctl, PAIR, PAIR, shown, opened,
+                                     said.append, notes)
+    assert peer.GRID_STALL not in notes, notes
+    assert shown is not None and opened is True, "the grid never re-opened"
+
+
+def test_the_back_off_needs_somewhere_to_remember_and_says_so(peer):
+    """`notes=None` is the single-call caller -- `_throttled` reads it the same
+    way. There is nothing to starve without a loop, and inventing storage here
+    would give the two readings of `notes` two different meanings."""
+    said = []
+    shown, opened = peer.update_grid(WedgedGrid(panes()), PAIR, PAIR, None,
+                                     False, said.append, None)
+    assert (shown, opened) == (None, True)
+    assert any("retrying in 0 tick(s)" in m for m in said), said
 
 
 # ---------------------------------------------------------------------------

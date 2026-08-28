@@ -926,6 +926,54 @@ def test_a_dashboard_that_will_not_open_is_reported_and_not_closed(dashboard):
         grid(dashboard, ["alice"], ctl)
     assert "boom" in str(err.value)
     assert ("close",) not in ctl.calls
+    # ⚠️ The companion to the timeout pair below, and the reason they are a
+    # pair: a refusal is the outcome where "would not open" is TRUE and the
+    # close command would be noise. Without this, a fix that printed the
+    # command unconditionally would look like it had said something.
+    assert dashboard.CLOSE_COMMAND not in str(err.value), str(err.value)
+
+
+def test_an_open_that_TIMED_OUT_says_the_grid_may_be_up(dashboard):
+    """🔴 The fourth shape: an indefinite outcome collapsed into a definite
+    negative.
+
+    `Ctl.dashboard` has three outcomes, not two -- it raises when agtermctl
+    cannot be started, answers a status when it ran, and answers `None` when it
+    ran for `SUBPROCESS_TIMEOUT` seconds and was KILLED. The refusal beside it
+    is sound on the measurement that agterm rejects an invalid id BEFORE
+    opening anything; that measurement is about a REFUSAL and says nothing
+    about a timeout, which is the one `not ok` where agterm may have opened the
+    grid and simply not answered. Reported as "would not open", it left agterm's
+    one screen full of cells with nothing saying so and no way to clear it."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), ok=None,
+                  why="agtermctl did not answer within 30s -- a wedged tmux "
+                      "or agterm client will do this")
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice"], ctl)
+    said = str(err.value)
+    assert "wedged" in said, said
+    assert "MAY BE UP" in said, said
+    assert "would not open" not in said, said
+    assert dashboard.CLOSE_COMMAND in said, said
+    # ⚠️ **And it does NOT close.** The close would be a second blocking call
+    # into the same wedge, and with no proof this run opened the grid it would
+    # reach for one that may be somebody else's -- the rule the ownership latch
+    # exists for, at the one moment there is nothing to latch.
+    assert ("close",) not in ctl.calls
+
+
+def test_mru_that_TIMED_OUT_says_the_same_thing(dashboard):
+    """The counterpart, because this is the shape where one side of a pair gets
+    a rule and the other keeps the old one -- and the two have nothing to
+    differ about here: `--mru` asserts no membership, but a grid that may be up
+    is a grid that may be up."""
+    ctl = GridCtl(ok=None, why="agtermctl did not answer within 30s")
+    with pytest.raises(dashboard.DashError) as err:
+        dashboard.main(["--mru"], out=Out(), ctl=ctl, read_line=no_read_line)
+    said = str(err.value)
+    assert "MAY BE UP" in said, said
+    assert dashboard.CLOSE_COMMAND in said, said
+    assert ("close",) not in ctl.calls
 
 
 def test_unresolved_on_STDOUT_is_a_failure_despite_exit_zero(dashboard):
