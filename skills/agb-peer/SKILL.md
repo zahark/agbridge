@@ -141,12 +141,18 @@ disagree with it, ask it something back, or decline. Reply by sending, exactly a
   different conversation with a different person's expectations.
 - **Say who you are talking to.** When you send or receive, mention it in your reply to
   the user, so they can follow a conversation they are only half watching.
-- ⚠️ **If a peer's message makes you start work, say "taking this" BEFORE you start.**
-  MEASURED: two agents read the same diagnosis, both treated it as a work item, and both
-  fixed it — one patch was wasted. A task handoff has an implicit owner and a peer
-  conversation does not, so *"here is what I found"* is a report to one of you and a
-  request to the other, **and both readings are correct**. One line up front is the whole
-  fix, and it is entirely on the side that starts.
+- ⚠️ **If a peer's message makes you start work, say "taking this" before you start — but
+  know what that does and does not buy.** MEASURED: two agents read the same diagnosis,
+  both treated it as a work item, and both fixed it. A task handoff has an implicit owner
+  and a peer conversation does not, so *"here is what I found"* is a report to one of you
+  and a request to the other, **and both readings are correct**.
+  🔴 **It is NOT a lock.** MEASURED again, on the very next occasion: the announcement
+  travels on **the same unordered transport as the work**, so it can land *after* the thing
+  it was meant to prevent — and it did. **Announcing intent helps when the work is slow and
+  the channel is quiet, and does nothing when the work is one tool call.** Restoring a file
+  is one tool call. If you need an actual lock, this transport does not have one; the
+  cheaper move is to make the work idempotent, or to say what you are about to do and *then
+  wait a turn*, which costs a round trip and is usually not worth it.
 
 ## What you cannot do
 

@@ -37,9 +37,18 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   fixed it — one patch was wasted and would have conflicted. ⚠️ **A task handoff has an implicit
   owner; a peer conversation does not**, so *"here is what I found"* is a report to one side and a
   request to the other, and neither is misreading. `skills/agb-peer/SKILL.md` now says: **if a peer's
-  message makes you start work, say "taking this" before you start.** One line, entirely on the side
-  that starts. ⚠️ Same shape as the two agents that stopped on true errors — nothing was wrong at
-  either end, and the gap was *between* them.
+  message makes you start work, say "taking this" before you start.** ⚠️ Same shape as the two agents
+  that stopped on true errors — nothing was wrong at either end, and the gap was *between* them.
+
+  🔴 **And that rule is NOT a lock — measured on the very next occasion, which it failed.** The
+  announcement travels on **the same unordered transport as the work**, so it can land *after* the
+  thing it was meant to prevent, and it did: both agents had already acted. **It helps when the work
+  is slow and the channel is quiet, and does nothing when the work is one tool call.** The two things
+  that do work are making the work idempotent, or announcing and then **waiting a turn** — which
+  costs a round trip and is usually not worth it. ⚠️ Writing a rule that assumed an ordering the
+  transport does not provide, in the same session that established the transport does not provide
+  ordering, is its own instance of the evening's shape: the fact was in hand and the question it
+  applied to was the one nobody asked.
 
 - **🔴 `agb-hangout` stalled on the very first real use, and it was an ORDERING defect — the same
   one as the `agb-peer` usage line, in a section that had just been reviewed.** A user said *"hang
