@@ -2410,7 +2410,39 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
         # a doorbell whose file is missing answers `FETCH_GONE`, which is the
         # documented "already collected" path.
         out.write("%s\n" % (DOORBELL % (ident,),))
-        path = write_chat_file(chat_path(ident, env=env), recipient, flat)
+        # 🔴 **A FAILED WRITE HERE USED TO BE A RAW TRACEBACK.** MEASURED
+        # 2026-08-28: a Codex under a sandbox that made the statedir read-only
+        # got `OSError: [Errno 30] Read-only file system` straight out of
+        # `open()`, with no `agb-peer:` prefix and nothing a caller could
+        # classify.
+        #
+        # ⚠️ It is worth seeing this beside the evening's other reporting
+        # faults, because it fails in the OPPOSITE direction. Those were quiet
+        # -- exit 0 for a dropped message, `queued` for one destroyed a tick
+        # later, a true error that stopped an agent. This one is maximally
+        # LOUD and equally useless: **loud-and-unclassifiable and
+        # quiet-and-plausible are both failures to say what happened in terms
+        # the caller can act on.**
+        #
+        # ⚠️ And the diagnosis names the SHARED CAUSE, which is the thing that
+        # was missing: a sandbox blocks the tmux socket AND the statedir, and
+        # reports them as `Operation not permitted` and `Read-only file
+        # system` -- two strings from two subsystems, neither naming a sandbox.
+        # Reaching the file path at all means the socket already failed, so if
+        # this fails too, one cause has closed both doors.
+        try:
+            path = write_chat_file(chat_path(ident, env=env), recipient, flat)
+        except EnvironmentError as exc:
+            raise PeerError(
+                "tmux was unreachable, so this fell back to the file "
+                "transport -- and that failed too: %s. Both doors are shut by "
+                "one cause: a sandbox that confines writes (Codex's default "
+                "confines them to its workspace) blocks the tmux socket in "
+                "/tmp AND the statedir, reporting each differently. Start the "
+                "agent with access to both, or point $AGB_STATEDIR somewhere "
+                "it may write and give the relay a matching --chat-dir. "
+                "⚠️ The doorbell above named a message that was NOT written."
+                % (exc,))
         out.write("agb-peer: wrote %s\n" % (path,))
         out.write("agb-peer: queued for %s as #%s (via file)\n"
                   % (recipient, ident))

@@ -2417,6 +2417,54 @@ def test_AGB_PEER_FILE_reads_0_as_off(peer, tmp_path):
     assert peer.file_transport_forced({}) is False
 
 
+def test_an_unwritable_chat_dir_is_a_diagnosis_not_a_traceback(peer, tmp_path):
+    """🔴 MEASURED 2026-08-28: a Codex whose sandbox made the statedir
+    read-only got `OSError: [Errno 30] Read-only file system` raw out of
+    `open()` -- no prefix, nothing classifiable.
+
+    ⚠️ Worth seeing beside the evening's other reporting faults because it
+    fails the OPPOSITE way. Those were quiet: exit 0 for a dropped message,
+    `queued` for one destroyed a tick later. This one is maximally loud and
+    equally useless. **Both are failures to say what happened in terms the
+    caller can act on.**
+    """
+    def run(argv):
+        return (1, "", "error connecting to /tmp/tmux-1/default "
+                       "(Operation not permitted)")
+
+    unwritable = tmp_path / "ro"
+    unwritable.mkdir()
+    os.chmod(str(unwritable), 0o500)
+    env = {"TMUX_PANE": "%99", "TMUX": "/no/such/sock,1,99",
+           "AGB_STATEDIR": str(unwritable)}
+    try:
+        with pytest.raises(peer.PeerError) as caught:
+            peer.cmd_send("bob", "hello", run, io.StringIO(), now=1.0, env=env)
+    finally:
+        os.chmod(str(unwritable), 0o700)
+    said = str(caught.value)
+    assert "file transport" in said, said
+    # ⚠️ The shared cause, which is the part that was missing: reaching the
+    # file path at all means the socket already failed, so a failure here means
+    # ONE cause has closed both doors -- and neither errno names it.
+    assert "sandbox" in said, said
+    assert "AGB_STATEDIR" in said, "and a way out"
+    assert "NOT written" in said, "and that the doorbell already printed a lie"
+
+
+def test_a_writable_chat_dir_still_succeeds(peer, tmp_path):
+    """The companion the test above needs: same call, one variable changed.
+    Without it, a `cmd_send` that raised for every file path would pass."""
+    def run(argv):
+        return (1, "", "No such file or directory")
+
+    env = {"TMUX_PANE": "%99", "TMUX": "/no/such/sock,1,99",
+           "AGB_STATEDIR": str(tmp_path)}
+    out = io.StringIO()
+    assert peer.cmd_send("bob", "hello", run, out, now=1.0, env=env) == 0
+    assert "(via file)" in out.getvalue()
+
+
 def test_no_TMUX_at_all_is_not_the_pool_case(peer):
     """We cannot tell, so the caller refuses -- the answer it gave before any
     of this existed."""

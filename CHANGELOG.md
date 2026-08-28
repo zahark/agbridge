@@ -10,6 +10,27 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 One cause, two error strings, and the cause appears in neither — plus the raw traceback that
+  reported the second.** MEASURED: an agent under a sandbox that confines writes to its workspace
+  could use **neither** `agb-peer` transport. The tmux socket in `/tmp` answered `Operation not
+  permitted`; the statedir answered `Read-only file system`. **Two subsystems, two strings, and
+  nothing in either names a sandbox** — so the failures looked unrelated, each was diagnosed locally
+  and correctly, and the shared cause was never named.
+
+  ⚠️ **That is why the first fix landed on a door the same cause had already closed.** Reasoning
+  *"the socket is blocked, therefore use the file"* was sound and never asked whether the file path
+  was reachable. **A fallback needs its precondition checked, not assumed** — and the check is cheap
+  here, because reaching the file path at all means the socket has already failed.
+
+  ⚠️ **And the second failure was a raw `OSError` traceback**, which is worth holding beside the
+  evening's other reporting faults because it fails in the **opposite direction**. Those were quiet —
+  exit 0 for a dropped message, `queued` for one destroyed a tick later, a true error that stopped an
+  agent. This one is maximally **loud** and equally useless. **Loud-and-unclassifiable and
+  quiet-and-plausible are both failures to say what happened in terms the caller can act on.** It is
+  now a `PeerError` that names the shared cause, says a sandbox confining writes blocks *both*, gives
+  `$AGB_STATEDIR` plus a matching `--chat-dir` as the way out, and warns that **the doorbell printed
+  a moment earlier named a message that was never written**.
+
 - **🔴 The `[hangout]` marker commits the SENDER, and the file only ever explained it to the
   receiver.** MEASURED on the first send that actually went out — the opener was:
 
