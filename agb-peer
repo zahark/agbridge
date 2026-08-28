@@ -1677,6 +1677,12 @@ class Ctl(object):
         there is no ownership token, so closing unconditionally would dismiss
         whatever somebody else had up.
 
+        ⚠️ **And that rule gates WHETHER, never WHICH -- it is weaker than it
+        reads, and three docs stated the strong version.** `--close` takes no
+        target, so a latch saying "this run opened a grid" cannot say "this
+        one". A run whose grid was replaced closes the replacement. The code
+        cannot do better; `design.md` §6 carries the sentence that is true.
+
         🔴 **And this RAISES too**, for the same `_spawn` reason spelled out
         above -- which is worse here, because both callers run it from a
         cleanup path where an exception replaces the exit with a traceback out

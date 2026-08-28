@@ -327,7 +327,7 @@ cluster host to agbridge?"* — or invoke it directly with `/agbridge`.
 ## Development
 
 ```sh
-python3 -m pytest tests/ -q          # 2622 tests, no network, no second host, no Mac required
+python3 -m pytest tests/ -q          # no network, no second host, no Mac required
 python3 -m pytest tests/test_hook.py -q
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q
 sh -n install.sh                     # shell syntax check
@@ -339,8 +339,8 @@ before changing anything on the hot path or in the removal logic.
 
 ## Status
 
-**Running end to end against a live agterm**, across two Linux hosts and a Mac. 2622 tests, no
-network or second machine required to run them.
+**Running end to end against a live agterm**, across two Linux hosts and a Mac. The test suite
+needs no network and no second machine to run.
 
 Verified in real use, not just in tests:
 

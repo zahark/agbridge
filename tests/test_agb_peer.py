@@ -1548,7 +1548,7 @@ def test_both_runners_share_the_timing_out_spawner(peer):
 
 
 def test_Ctl_dashboard_answers_UNKNOWN_when_the_tool_was_killed(peer):
-    """🔴 The fourth shape at its source: `_spawn` has THREE outcomes and this
+    """🔴 Shape D at its source: `_spawn` has THREE outcomes and this
     wrapper had two.
 
     A timeout is the one `not ok` where agtermctl RAN and the grid may be up --
@@ -5125,7 +5125,7 @@ def test_a_close_that_FAILS_does_not_record_the_grid_as_shown(peer):
 
 
 # ---------------------------------------------------------------------------
-# A grid call that TIMED OUT -- the fourth shape, on the relay side
+# A grid call that TIMED OUT -- shape D, on the relay side
 #
 # 🔴 An indefinite outcome collapsed into a definite negative, twice over. The
 # latch read "this run definitely opened nothing" from a call that was KILLED

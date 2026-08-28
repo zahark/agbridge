@@ -2558,12 +2558,20 @@ supposed to catch, not commit; it is recorded rather than quietly deleted becaus
 rule is exactly what a future reader will propose.
 
 **Ownership.** agterm has **one** grid and no ownership token — its own help says `--close` closes
-*"the open one"*. So the policy is: **each closes only a grid it opened this run**, tracked by a
-latched flag and cleared only on a close that worked. Neither reaches for a grid it did not open.
-That does not make them safe to run simultaneously and is not meant to: **running both at once is
-documented as unsupported**, whoever opens last wins, because agterm gives us nothing finer to work
-with. Defending against it would mean inventing an ownership token on top of a single global
-resource, in two processes that cannot see each other.
+*"the open one"*. So the policy is: **neither closes a grid unless it opened one this run**, tracked
+by a latched flag and cleared only on a close that worked.
+
+⚠️ **That gates WHETHER, and it cannot gate WHICH — the distinction is the whole of what is true
+here.** The flag records "this run opened a grid at some point"; `--close` takes no target. So a run
+that opened a grid and had it replaced closes the *replacement*. This paragraph used to add "neither
+reaches for a grid it did not open", and three operator-facing copies repeated it without the hedge
+that followed — and it is false in exactly the configuration those copies were about: relay opens R,
+`agb-dashboard` replaces it with D, relay exits and closes D. The code cannot do better, so the
+sentence had to: **running both at once is documented as unsupported**, whoever opens last wins, and
+the loser's grid does not come back — the relay's re-open is gated on its cell set *changing*, so
+once replaced it stays gone until membership or the row ids move. Defending against it would mean
+inventing an ownership token on top of a single global resource, in two processes that cannot see
+each other.
 
 ⚠️ **"Best-effort" is a claim about a call that RAISES, not only about one that fails**, and both
 sides had it wrong in the same way. `Ctl.dashboard` and `Ctl.dashboard_close` return a status when

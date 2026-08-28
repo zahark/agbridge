@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```sh
-python3 -m pytest tests/ -q                                    # full suite (2622 tests, ~80 s)
+python3 -m pytest tests/ -q                                    # full suite, ~80 s
 python3 -m pytest tests/test_hook.py -q                        # one file
 python3 -m pytest tests/test_hook.py::test_beat_refresh_is_throttled -q   # one test
 python3 -m pytest tests/ -q -k "prune and not ssh"             # by expression
@@ -545,45 +545,58 @@ These are not style preferences. Each one has a test, and most were re-learned t
     two scripts end up with the *same class object* — a string comparison alone would pass against
     two loaders that agreed on the name and still built two modules.
 
-### Three shapes that keep coming back
+### Bug shapes that keep coming back
 
-Not new invariants — three *recurring bugs*, each found, fixed, its reason written into a comment at
-its own call site, and then reintroduced somewhere else by the next person. That is the actual
-lesson: **a rule that lives only in a comment where it was learned is not a mechanism.** The
-`agb-peer` / `agb-dashboard` work hit all three, and the counts below are the point: two review
-passes named a dozen, and then *searching for the shape itself* — rather than waiting for the next
-report — found seven more in one pass. Do that search when you touch anything that drives agterm.
+Not new invariants — *recurring bugs*, each found, fixed, its reason written into a comment at its
+own call site, and then reintroduced somewhere else by the next person. That is the actual lesson:
+**a rule that lives only in a comment where it was learned is not a mechanism.** The `agb-peer` /
+`agb-dashboard` work hit every one of them, and how they were found is the transferable part: two
+review passes named a dozen, and then *searching for the shape itself* — rather than waiting for the
+next report — found seven more in one pass. Do that search when you touch anything that drives
+agterm. ⚠️ **No instance counts below, deliberately.** They were kept for a while and each went
+stale the next time somebody found one more; the instances are *named* instead, which is the same
+trade `docs/commands.md`'s throttle rows made after four corrections.
 
 - **A — a user-facing write outside the cleanup guard.** `say` / `out.write` can **raise**:
   `agb-peer relay | head` closes stdout the instant `head` exits. A write between "the grid is up"
   and the `finally` that closes it unwinds *past* the close and orphans it — and agterm has one grid
-  and no ownership token, so an orphan is on everybody's screen. Found **seven** times, the last two
-  outside the grid entirely: on the file transport the *printed* doorbell **is** the send, and it was
-  printed after the file it names; and `write_chat_file` was the one temp+rename writer of four that
-  did not unlink its temp. ⚠️ **Wrap at the boundary, not per call** (`agb-peer._quiet`,
-  `agb-dashboard._Quiet`), or the next report somebody adds is outside again. **Check:** for every
-  cleanup `finally`, is *everything* that can raise between acquiring the resource and arming the
-  guard, guarded? And: **is the write a report, or is it the transport?**
+  and no ownership token, so an orphan is on everybody's screen. The two furthest from that
+  description are the ones worth remembering: on the file transport the *printed* doorbell **is** the
+  send, and it was printed after the file it names; and `write_chat_file` was the one temp+rename
+  writer of four that did not unlink its temp. ⚠️ **Wrap at the boundary, not per call**
+  (`agb-peer._quiet`, `agb-dashboard._Quiet`), or the next report somebody adds is outside again.
+  **Check:** for every cleanup `finally`, is *everything* that can raise between acquiring the
+  resource and arming the guard, guarded? And: **is the write a report, or is it the transport?**
 - **B — state advanced on an incomplete outcome, so it is never retried.** A "have I already done
-  this" gate written after a call that only partly worked. Found **four** times — three on
-  `update_grid`'s `shown` (a failed open, a **partial** one where agterm exits **0** and names the
-  dropped cells on stdout, and a failed *close*), and one on `cmd_send`, where the window-name memo
-  that gates a whole block was written before the `automatic-rename off` pin inside it, so a pin that
-  failed once was never retried and the relay went deaf. **Check:** at every gate assignment, ask
-  which outcomes reach that line. "Returned" is not "succeeded", **exit 0 is not "did everything"**,
-  and a memo must be the **last** write of the block it gates — it records *all of this was done*,
-  not *some of it was tried*.
+  this" gate written after a call that only partly worked. On `update_grid`'s `shown` three ways over
+  — a failed open, a **partial** one where agterm exits **0** and names the dropped cells on stdout,
+  and a failed *close* — and on `cmd_send`, where the window-name memo that gates a whole block was
+  written before the `automatic-rename off` pin inside it, so a pin that failed once was never
+  retried and the relay went deaf. **Check:** at every gate assignment, ask which outcomes reach that
+  line. "Returned" is not "succeeded", **exit 0 is not "did everything"**, and a memo must be the
+  **last** write of the block it gates — it records *all of this was done*, not *some of it was
+  tried*.
 - **C — a rule argued on one side of a branch and not carried to the other.** `agb-dashboard` and
   the relay do the same job with deliberately *different* error policies, which makes a real
-  difference indistinguishable from an omission unless somebody says which it is. Found **eight**
-  times — report by NAME not row id (twice, in one function and its neighbour); the cap after the
-  pane exclusion; the literal close command; *clear every throttle when its condition goes* (twice —
-  it was applied to four throttles and missing from the fifth and sixth); and three docstrings whose
-  claim about **another** function had quietly become false. **Check:** when the two sides differ,
-  the difference owes a sentence saying it is deliberate — and when you change one side, re-read the
-  *counterpart's* comments. ⚠️ A comment stating a fact about code **elsewhere** — how many callers
-  something has, what another function does with a value — is the one that goes stale silently, and
-  is where every instance of this was found.
+  difference indistinguishable from an omission unless somebody says which it is. Report by NAME not
+  row id (in one function and its neighbour); the cap after the pane exclusion; the literal close
+  command; *clear every throttle when its condition goes* (applied to four throttles and missing from
+  two more); and docstrings whose claim about **another** function had quietly become false.
+  **Check:** when the two sides differ, the difference owes a sentence saying it is deliberate — and
+  when you change one side, re-read the *counterpart's* comments. ⚠️ A comment stating a fact about
+  code **elsewhere** — how many callers something has, what another function does with a value — is
+  the one that goes stale silently, and is where every instance of this was found.
+- **D — an indefinite outcome collapsed into a definite negative.** The call has three answers — yes,
+  no, and *nobody knows* — and the code branches twice, so "unknown" is rendered as the no.
+  `Ctl.dashboard` returned `False` for a **timeout**, so `agb-dashboard` announced "would not open"
+  about a grid that may be **up**, and the relay's ownership latch read "this run opened nothing" as
+  if something had proved it. That is invariant 1 (liveness proven, never inferred) and invariant 12
+  ("I could not answer" is not "the answer is nothing") arriving in a new subject, which is why
+  neither caught it. ⚠️ **The fix has a second half**: once *unknown* is a real branch it needs its
+  own **cost**, and the retry that is right for a definite failure is starvation when the failure is
+  a 30-second block. **Check:** at every `if not ok` and every `else`, ask whether it is a **proof**
+  or merely *not the yes* — and when the answer came from a subprocess, a network or another machine,
+  it is almost never a proof.
 
 ## Testing conventions
 
@@ -819,7 +832,7 @@ line, measured at +716 and paid for with the second budget raise. Everything els
 `agb_mac`. ⚠️ **Anything further in `agb` needs prose moved into a sibling docstring or a third
 measured raise** — 63 of the 65 characters that raise left were spent immediately afterwards, when
 widening `cmd_instances`' `except` to `Exception` turned out to be load-bearing (`_load_sibling` loads
-by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`). 2622 tests.
+by path, so a missing `agb_mac` raises `FileNotFoundError`, an `OSError`).
 
 Verified against a live agterm, in this order of confidence: row creation and the returned id,
 `rename`, `status`, `--blink`, `close`, `split`+`type`, click-to-attach reaching the right host and
@@ -945,11 +958,13 @@ appears not to work.
 ## Known gaps
 
 - **What is and is not verified against a live agterm** is above, under "Where the project is".
-  [`docs/agtermctl.md`](docs/agtermctl.md) tags every individual clause. Three clauses stay
-  **ASSUMED** and are fine that way: repeated `rename` (the bridge does it on every update, so a
-  failure would be constant rather than subtle), whether `blink` is sticky or one-shot (it is only
-  ever sent on a transition, so it is correct under either reading), and the spelling of
-  `--auto-reset`, which agbridge never emits.
+  [`docs/agtermctl.md`](docs/agtermctl.md) tags every individual clause, and the ones still
+  **ASSUMED** are enumerated *there* rather than counted here — a count in this file was three when
+  the grid work made it five. They are all fine that way for one reason, which is the thing to check
+  before adding another: **agbridge is correct under either reading of the clause.** Repeated
+  `rename` happens on every update, so a failure would be constant rather than subtle; `blink` is
+  only ever sent on a transition; `--auto-reset` is never emitted; `dashboard --close` with no grid
+  open is cosmetic at both callers.
 - **Three doors to `agtermctl`, deliberately.** `agb_mac._run_command` is the renderer's single
   door; `agb_ops.open_split` and `agb_ops.open_drawer` are the other two, because `agb pane` runs
   on the Mac but lives in `agb_ops`, which never loads `agb_mac`. All obey the same rule: a failure

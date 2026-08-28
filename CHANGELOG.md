@@ -280,6 +280,36 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A grid call that agterm never answered was reported as one that refused — and on the relay it
+  starved the message pump.** `Ctl.dashboard` has three outcomes, not two: it raises when agtermctl
+  cannot be started, answers a status when it ran, and is **killed at the 30 s timeout** when it ran
+  and never came back. Both callers spelled that third one "the dashboard would not open".
+
+  It is the one failure where the grid may well be **up**: the timeout fires against a *wedged*
+  agterm client, and the measured wedge was a view-only client attached to a **dashboard**. So
+  `agb-dashboard` ended a run with agterm's one screen full of cells, nothing saying so, and no close
+  command printed — the exact failure the command exists to prevent, delivered by its own error
+  message. It now says the grid **may be up**, prints `agtermctl dashboard --close`, and deliberately
+  does *not* close: with no proof this run opened the grid, a close reaches for one that may be
+  somebody else's, through the same wedge.
+
+  On `agb-peer relay --dashboard` it was worse in two ways. The ownership latch stayed `False` — a
+  claim of proof that nothing had established — so the exit path walked past a grid the relay may
+  own. And the earlier fix for a *failed* open ("do not record the cells as shown, so the next tick
+  retries") turned a wedge into a 30-second blocking call **every tick**: the grid update runs before
+  the message pass, so at `--interval 2` the pump dropped to roughly one pass in fifteen. That is the
+  one outcome the comment three lines above forbids in as many words; the fix for one bug shape
+  walked in underneath it. The latch is armed pessimistically now, and the retry **backs off**,
+  doubling from one tick to 32 — not "give up for the run", which would cost the grid for a transient
+  wedge, and not every tick, which is the starvation. Any call that *answers*, refusal included,
+  clears the back-off; a refusal is still retried every tick, because it costs nothing.
+
+  ⚠️ **The general shape, recorded in `CLAUDE.md` as shape D** beside the three already there:
+  **an indefinite outcome collapsed into a definite negative.** It is invariant 1 ("liveness is
+  proven, never inferred") and invariant 12 ("I could not answer" is not "the answer is nothing")
+  arriving in a new subject, which is why neither caught it. The check is at every branch on a
+  three-valued result: ask whether the `else` is a *proof* or merely *not the yes*.
+
 > The seven entries below came from **going looking for more of the same three shapes** after the
 > named ones were fixed, rather than from a report. Each is the same defect one function over.
 

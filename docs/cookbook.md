@@ -852,8 +852,10 @@ stdout and exit **0** — `agb-dashboard` reads that, closes the grid again and 
 ⚠️ **A held grid does not follow.** An `agb-refresh` re-mints every row id and leaves dead cells in
 it; close it and open it again. The relay's grid is the one that re-resolves.
 
-⚠️ **Do not run both at once.** agterm has exactly one grid and no way to say whose it is: each
-closes only the grid it opened itself, but whoever opens last wins.
+⚠️ **Do not run both at once.** agterm has exactly one grid and no way to say whose it is. Each
+closes a grid only if it opened one — but `--close` closes *the* open grid, not *that* one, so
+whoever opens last wins and whichever exits first closes whatever is up by then, the other's included.
+The relay does not put its grid back either.
 
 ⚠️ **Not yet run against a live agterm.** agterm's own behaviour here was measured
 ([`agtermctl.md`](agtermctl.md)); agbridge's use of it has tests and no live run.
@@ -872,6 +874,7 @@ The relay's output is the diagnosis. The lines that matter:
 | `… -- keeping the N participant(s) already running` | the roster file could not be read or parsed. **The conversation is unaffected** — fix the file |
 | `the roster is down to 1 participant(s)` | nothing can be delivered until another joins |
 | `alice asked who is here` | an agent ran `agb-peer who`; the roster was sent back to it |
+| `dashboard: ... did not answer within 30s -- a grid MAY be up` | agterm or tmux is wedged. The grid is neither confirmed up nor confirmed down, so the relay assumes it owns one, retries less and less often, and closes it when it exits |
 | `alice sent 'thanks' to relay, which is not 'who'` | something was addressed to the relay that is not a request. Dropped on purpose — see below |
 
 ### An agent can ask who is here

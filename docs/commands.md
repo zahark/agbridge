@@ -1576,13 +1576,18 @@ the run, and that decides its whole error policy: no grid outcome may ever stop 
 | **a failed open, or a PARTIAL one, is RETRIED** | the cell set is recorded as shown only on an open that worked **in full**, so a transient failure is tried again on the next tick. The *message* is throttled instead — one persistent failure says so once, not once per tick. ⚠️ The partial case shipped without this: agterm exits 0, so the cells went down as shown and the `fresh == shown` gate skipped every later tick, leaving the grid partial for the rest of the run |
 | **a `scratch` participant is excluded, and said** | `dashboard: not shown -- carol (scratch); agterm's grid takes only left/right panes`. agterm rejects `:scratch` at **parse time**, so before this a single scratch participant meant `--dashboard` produced no grid at all, for the whole run, with the reason going only into the log |
 | **an excluded participant is not a MISSING one** | it resolved fine; its pane is just not something a grid can show, and it has already been named on its own line. A second line calling it "no row for carol" would be a contradictory diagnosis of one situation, and the wrong one. ⚠️ This row used to say that counting it as missing "would have kept the grid permanently shut" — **false of the code**: `missing` drives one throttled message and gates nothing. That consequence belonged to a *close rule* the plan rejected. `design.md` §6 |
-| **every one of these messages is throttled** | five of them now — missing, excluded, over-the-cap, an open that failed, and one agterm only partly honoured. They run every tick; unthrottled, one typo prints a line per tick for the life of the relay. The throttle dedupes on the message **text**, so a change in *who* is missing still gets through |
+| **every one of these messages is throttled** | ⚠️ **No count here, deliberately** — this row carried one, and it was corrected three times on this branch and went stale a fourth, each time because a later commit added one more throttle. The rule instead: *every* grid line the relay prints runs on every tick, so each is deduped on its message **text**. Unthrottled, one typo prints a line per tick for the life of the relay; deduped on the text, a change in *who* is missing still gets through |
 | **…and every throttle is CLEARED when its condition goes away** | otherwise the throttle that stops a line repeating stops it ever firing again: a participant who leaves the drawer and returns, or a roster that crosses the cap twice, would be dropped in silence the second time. The exclusion note shipped without it — measured: carol in the drawer was reported, left, came back, and the grid dropped her without a word. ⚠️ **So did the alias note, and that one is not in this table**: `_one_name_per_row`'s "alice and bob both resolve to row …" line lives with the resolver, and `update_grid` subtracts its drops from `missing` — so a second, identical collision was throttled *and* the missing line suppressed, and a participant left the grid with nothing said at all. It needs clearing in **two** places: where the collision goes away, and in `_name_notes`, because a name that LEFT is in no later `resolved` for the first one to visit |
+| **an agtermctl that will not ANSWER is not a refusal** | killed at 30 s against a wedged agterm client, which is the one failure where the grid may be **up**. The relay says so, assumes it owns a grid and closes it on the way out — and **backs the retry off**, doubling from one tick to 32. ⚠️ That last part is the fix, not a nicety: the grid update runs *before* the message pass, so a 30-second call every tick starves the pump the grid is an adjunct to. Any call that answers, refusal included, clears the back-off |
 | **an agtermctl that will not START is not fatal** | `Ctl.dashboard` answers with a status when agtermctl *ran* and refused, and **raises** when it cannot be started at all — a removed binary, a `$PATH` an agterm pane did not inherit, `/proc/<pid>/exe (deleted)` after an upgrade. It is said and ignored. Before this it killed the relay mid-delivery |
 
 ⚠️ **Running `agb-peer relay --dashboard` and `agb-dashboard` at the same time is unsupported**, not
-defended against. Whoever opens last wins. Each is honest about the grid *it* opened; agterm gives us
-nothing finer to work with.
+defended against. Whoever opens last wins. ⚠️ **And the latch each keeps records that it opened *a*
+grid, never *which* one** — `agtermctl dashboard --close` closes "the open one" and takes no target,
+so the flag gates *whether* to close and can never gate *what*. Neither closes anything when it
+opened nothing; either will close **whatever is up** if it did, including the other's replacement.
+⚠️ The relay's loss is permanent for the run, too: its re-open is gated on the cell set *changing*,
+so once its grid has been replaced it puts none back until membership or the row ids move.
 
 Open and close it by hand from a terminal outside agterm if you prefer, which is where `agtermctl`
 is being driven from anyway — or use [`agb-dashboard`](#agb-dashboard--watch-several-rows-at-once-by-name),
@@ -2046,6 +2051,7 @@ so it must fail loudly rather than half-succeed. Everything below follows from t
 | a `scratch` participant from a roster | nothing opens, exit 2, **naming the participant** — `drawer (scratch)`, not a row-id prefix: you wrote `drawer=…` and a hex prefix sends you to look up which line to edit. ⚠️ **Deliberately stricter than the relay**, which reports the same exclusion and grids the rest |
 | more than 9 cells after the dedupe | refused **before** `agtermctl dashboard` is called (the `tree --json` has already run, by design). ⚠️ **Counted after the pane exclusion**, so the number is of cells that could actually go in a grid: ten participants of which two are `:scratch` is an eight-cell roster, and the cap used to refuse it with "got 10" while never mentioning the drawer |
 | ⚠️ agterm prints `unresolved: <id>` | 🔴 **the dangerous one.** agterm exits **0**, opens the grid without those cells, and says so on **stdout alone**. This is the one place in the family where the exit status is not trusted: the output is read, the grid is **closed again**, and the run exits 2 |
+| ⚠️ agtermctl does not answer at all | 🔴 **the other dangerous one, and it used to read as a refusal.** The call is killed at 30 s — a wedged tmux or agterm client does this — so whether agterm opened the grid is **unknown**. It says so (`the dashboard MAY BE UP`), prints `agtermctl dashboard --close`, closes **nothing**, and exits 2. A close would be a second blocking call into the same wedge, and with no proof this run opened the grid it would reach for one that may be somebody else's |
 
 ⚠️ **The close-before-exit is not tidiness.** `unresolved:` is printed *after* the grid is already
 up, so refusing and exiting without closing would leave exactly the silently-partial grid this
@@ -2123,9 +2129,13 @@ and this is the one place the two commands genuinely differ in capability.
 `--detach` is the explicit hand-over: it opens, reports, and exits, printing
 `agtermctl dashboard --close` — precisely because after it, nothing else will.
 
-⚠️ **Running this and `agb-peer relay --dashboard` at once is unsupported.** Each closes only a grid
-it opened itself, so neither will steal the other's; but there is one grid, and whoever opens last
-wins.
+⚠️ **Running this and `agb-peer relay --dashboard` at once is unsupported.** There is one grid, and
+whoever opens last wins. Each keeps a latch saying it opened *a* grid — never *which*, because
+`agtermctl dashboard --close` closes "the open one" and there is no way to name one. So neither
+closes anything when it opened nothing, and each closes **whatever is up** if it did: the relay
+replaces a held grid, and this command's hold then closes the relay's. ⚠️ Nor does the relay put its
+own back — its re-open is gated on the cell set *changing*, so a replaced relay grid stays gone until
+membership or the row ids move.
 
 ⚠️ **Not verified against a live agterm.** Every behaviour above is either measured against the
 binary and recorded in [`agtermctl.md`](agtermctl.md), or covered by tests against a fake `Ctl`.

@@ -934,8 +934,7 @@ def test_a_dashboard_that_will_not_open_is_reported_and_not_closed(dashboard):
 
 
 def test_an_open_that_TIMED_OUT_says_the_grid_may_be_up(dashboard):
-    """🔴 The fourth shape: an indefinite outcome collapsed into a definite
-    negative.
+    """🔴 Shape D: an indefinite outcome collapsed into a definite negative.
 
     `Ctl.dashboard` has three outcomes, not two -- it raises when agtermctl
     cannot be started, answers a status when it ran, and answers `None` when it
