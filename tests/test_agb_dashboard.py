@@ -37,6 +37,30 @@ class Out(object):
         self.text += s
 
 
+class Pipe(Out):
+    """An `out` that dies part-way through, the way `| head` makes stdout die.
+
+    ⚠️ **A fake that cannot fail describes a world where the bug cannot
+    happen** -- the same reason `Exploding`'s close RAISES. `agb-dashboard
+    alice | head` closes stdout the instant `head` exits, and the next write
+    raises `BrokenPipeError`; every line printed after the grid goes up was
+    outside any guard, so that exception unwound past the close and the run
+    ended with an orphaned grid. `ok` is how many writes succeed first, which
+    is what lets one test target the cell report and another the hold's own
+    banner.
+    """
+
+    def __init__(self, ok=0):
+        Out.__init__(self)
+        self.ok = ok
+
+    def write(self, s):
+        if self.ok <= 0:
+            raise BrokenPipeError("closed")
+        self.ok -= 1
+        Out.write(self, s)
+
+
 class NoCtl(object):
     """A `Ctl` that fails the test if anything is asked of it.
 
@@ -386,10 +410,20 @@ def test_the_guard_calls_is_handled_rather_than_re_spelling_it(dashboard):
 def test_the_guard_handles_KeyboardInterrupt_in_a_clause_of_its_own():
     """⚠️ `KeyboardInterrupt` is not an `Exception`, so the class-name match
     above cannot see it -- and `Ctrl-C` is the documented way to end the
-    foreground hold Task 5 adds, i.e. an exit rather than a crash."""
+    foreground hold Task 5 adds, i.e. an exit rather than a crash.
+
+    ⚠️ **Scoped to the `__main__` block, like its sibling above**, and it was
+    not: walking the whole tree meant a `KeyboardInterrupt` clause ANYWHERE in
+    the file answered this -- so moving the handler into `hold`, where it would
+    catch the Ctrl-C the hold is required to let propagate, kept the test
+    green. That is exactly the "mutation that MOVES a guard" `CLAUDE.md`
+    names, written into the guard itself.
+    """
     tree = ast.parse(io.open(DASH_PATH, encoding="utf-8").read())
+    main_block = [n for n in tree.body if isinstance(n, ast.If)]
+    assert main_block, "no `if __name__ == \"__main__\":` block found"
     handled = set()
-    for node in ast.walk(tree):
+    for node in ast.walk(main_block[-1]):
         if isinstance(node, ast.ExceptHandler) and isinstance(node.type,
                                                               ast.Name):
             handled.add(node.type.id)
@@ -533,10 +567,13 @@ def test_resolve_selectors_takes_sessions_not_a_ctl(dashboard):
 
 
 def test_a_bare_selector_defaults_to_the_left_pane(dashboard, peer):
-    got, problems = dashboard.resolve_selectors(
+    """⚠️ And the NAME of a bare selector is the selector itself. Every report
+    about a cell has to name it with the word the user wrote -- a row-id prefix
+    is the one thing this command exists to stop people looking up."""
+    got, problems, folded = dashboard.resolve_selectors(
         rows(("AAAA1111", "alice")), ["alice"], peer)
-    assert problems == []
-    assert got == [("AAAA1111", "left")]
+    assert problems == [] and folded == []
+    assert got == [("alice", "AAAA1111", "left")]
 
 
 def test_unresolved_and_ambiguous_are_told_apart(dashboard, peer):
@@ -545,7 +582,7 @@ def test_unresolved_and_ambiguous_are_told_apart(dashboard, peer):
     no-sessions-at-all alike, so telling them apart through it would mean
     string-matching an error message."""
     sessions = rows(("AAAA1111", "api"), ("BBBB2222", "api-refactor"))
-    got, problems = dashboard.resolve_selectors(
+    got, problems, _folded = dashboard.resolve_selectors(
         sessions, ["api", "nobody"], peer)
     assert got == []
     assert len(problems) == 2
@@ -557,10 +594,14 @@ def test_two_selectors_naming_one_cell_are_DEDUPED_not_refused(dashboard, peer):
     """Two ways of naming one row is not a user error; spending two of the nine
     cells on it is the bug. First-seen order is kept."""
     sessions = rows(("AAAA1111", "alice"), ("BBBB2222", "bob"))
-    got, problems = dashboard.resolve_selectors(
+    got, problems, folded = dashboard.resolve_selectors(
         sessions, ["alice", "bob", "AAAA1111", "ALIC"], peer)
     assert problems == []
-    assert got == [("AAAA1111", "left"), ("BBBB2222", "left")]
+    assert got == [("alice", "AAAA1111", "left"), ("bob", "BBBB2222", "left")]
+    # ⚠️ And WHAT was folded comes back, because a silent drop is the worse
+    # bug: the relay reports the identical situation by name, and until this
+    # nothing anywhere said which of two names for one cell had gone.
+    assert folded == [("AAAA1111", "alice"), ("ALIC", "alice")]
 
 
 def test_the_dedupe_key_is_id_AND_pane_not_the_id_alone(dashboard, peer):
@@ -569,11 +610,12 @@ def test_the_dedupe_key_is_id_AND_pane_not_the_id_alone(dashboard, peer):
     by id would silently drop one -- the same missing-cell class this command
     exists to remove."""
     sessions = rows(("AAAA1111", "alice"))
-    got, problems = dashboard.resolve_selectors(
-        sessions, [("alice", "left"), ("alice", "right"), ("alice", "left")],
-        peer)
+    got, problems, folded = dashboard.resolve_selectors(
+        sessions, [("a", "alice", "left"), ("b", "alice", "right"),
+                   ("c", "alice", "left")], peer)
     assert problems == []
-    assert got == [("AAAA1111", "left"), ("AAAA1111", "right")]
+    assert got == [("a", "AAAA1111", "left"), ("b", "AAAA1111", "right")]
+    assert folded == [("c", "a")], "only the third names a cell already taken"
 
 
 # --- the refusals, none of which may call `agtermctl dashboard` ------------
@@ -658,6 +700,89 @@ def test_a_scratch_participant_is_a_SHORTFALL_here(dashboard, tmp_path):
         grid(dashboard, ["--roster", str(roster)], ctl)
     assert "scratch" in str(err.value)
     assert ctl.opened() == []
+
+
+def test_the_excluded_participant_is_named_by_NAME_not_by_row_id(dashboard,
+                                                                 tmp_path):
+    """⚠️ The relay's argued rule, which this side did not carry: *by NAME, not
+    by row id -- the operator wrote `drawer=...:scratch`, and a hex prefix
+    would make them go and look up which participant vanished*. It applies
+    HARDER here, because this REFUSES: the token in the message is the only
+    clue which roster line to edit, and `agb-refresh` re-mints every id, which
+    is the trap the whole command routes around.
+
+    ⚠️ The test that shipped asserted only `"scratch" in str(err.value)`, so
+    the id-prefix spelling passed it. The row id is asserted ABSENT here, which
+    is the half that pins the rule."""
+    roster = tmp_path / "peers"
+    roster.write_text("alice=alice\ndrawer=bob:scratch\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert "drawer (scratch)" in str(err.value), str(err.value)
+    assert "BBBB2222" not in str(err.value), str(err.value)
+
+
+def test_the_cell_CAP_is_counted_after_the_pane_exclusion(dashboard, peer,
+                                                          tmp_path):
+    """⚠️ The order is the diagnosis. Ten participants of which two are in the
+    drawer is EIGHT gridable cells -- a roster one edit from working -- and the
+    cap ran first, so it refused with "shows 9 cells; got 10" and never
+    mentioned the two `:scratch` lines. Two round trips to fix one roster, the
+    second of them chasing a number that was never the problem. The relay
+    applies its cap after the exclusion for the same reason."""
+    assert peer.DASHBOARD_MAX_CELLS == 9, "the boundary moved; so must this"
+    names = ["p%d=agent%d" % (n, n) for n in range(8)]
+    roster = tmp_path / "peers"
+    roster.write_text("\n".join(names + ["d1=agent8:scratch",
+                                         "d2=agent9:scratch"]) + "\n")
+    ctl = GridCtl(rows(*[("ROW%d" % n, "agent%d" % n) for n in range(10)]))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert "d1 (scratch)" in str(err.value), str(err.value)
+    assert "got 10" not in str(err.value), str(err.value)
+    assert ctl.opened() == []
+
+
+def test_the_cap_still_fires_when_nothing_is_excluded(dashboard, peer,
+                                                      tmp_path):
+    """The companion the reorder needs: it differs in the one variable under
+    test, so the assertion above cannot pass against a cap that never runs."""
+    roster = tmp_path / "peers"
+    roster.write_text("\n".join("p%d=agent%d" % (n, n)
+                                for n in range(10)) + "\n")
+    ctl = GridCtl(rows(*[("ROW%d" % n, "agent%d" % n) for n in range(10)]))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert "got 10" in str(err.value), str(err.value)
+    assert str(peer.DASHBOARD_MAX_CELLS) in str(err.value)
+    assert ctl.opened() == []
+
+
+def test_two_names_for_one_cell_are_REPORTED_not_silently_folded(dashboard,
+                                                                 tmp_path):
+    """⚠️ The dedupe is right -- two ways of naming one cell is not a user
+    error, spending two of the nine on it is the bug -- but it was SILENT.
+    A roster is the relay's own membership grammar, and there the identical
+    situation is reported by name (`_one_name_per_row`). Here `carol` was
+    simply not on the screen, with nothing saying which name went."""
+    roster = tmp_path / "peers"
+    roster.write_text("alice=alice\ncarol=alice\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    assert grid(dashboard, ["--roster", str(roster)], ctl, out) == 0
+    assert ctl.opened() == [["AAAA1111:left"]], "the dedupe itself must stand"
+    assert "carol" in out.text and "alice" in out.text, out.text
+    assert "same cell" in out.text, out.text
+
+
+def test_a_grid_with_no_folded_names_says_nothing_about_them(dashboard):
+    """The companion: without it the assertion above passes against a line
+    that can never be printed."""
+    ctl = GridCtl(rows(("AAAA1111", "alice"), ("BBBB2222", "bob")))
+    out = Out()
+    assert grid(dashboard, ["alice", "bob"], ctl, out) == 0
+    assert "same cell" not in out.text, out.text
 
 
 # --- opening, and the strict check on stdout ------------------------------
@@ -794,13 +919,29 @@ def test_the_strict_failure_CLOSES_the_grid_before_exiting(dashboard):
 
 def test_a_close_that_FAILS_is_said_out_loud(dashboard):
     """The grid is still up and nothing else will close it, so the message has
-    to say so rather than read as a tidy refusal."""
+    to say so rather than read as a tidy refusal.
+
+    ⚠️ **And it prints the literal close command**, which it did not: that was
+    reserved for `--detach` and for a failed close in the HOLD, on the argument
+    that this is the moment a user most needs it and least wants to go and look
+    it up. It is the same moment. Two docs said it was printed here already."""
     ctl = GridCtl(rows(("AAAA1111", "alice")), said="unresolved: ZZZZ\n",
                   close=(False, "no such dashboard"))
     with pytest.raises(dashboard.DashError) as err:
         grid(dashboard, ["alice"], ctl)
     assert "STILL UP" in str(err.value)
     assert "no such dashboard" in str(err.value)
+    assert dashboard.CLOSE_COMMAND in str(err.value), str(err.value)
+
+
+def test_a_close_that_WORKS_does_not_print_the_command(dashboard):
+    """The companion: a run that tidied up after itself has nothing for the
+    user to do, and an unconditional command reads as one."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")), said="unresolved: ZZZZ\n")
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["alice"], ctl)
+    assert "closed it again" in str(err.value)
+    assert dashboard.CLOSE_COMMAND not in str(err.value), str(err.value)
 
 
 class Exploding(GridCtl):
@@ -846,7 +987,11 @@ def test_close_grid_never_raises_and_says_why(dashboard):
     """The unit behind both, and the companion that keeps them honest: it must
     still pass a working close through unchanged."""
 
-    class Boom(object):
+    class RaisingClose(object):
+        # ⚠️ Named for what it does rather than `Boom`, which is the module
+        # level reader fake fifty lines below: two different classes of that
+        # name, one shadowing the other inside one function, is a trap for
+        # whoever moves either.
         def dashboard_close(self):
             raise RuntimeError("no agtermctl")
 
@@ -854,7 +999,7 @@ def test_close_grid_never_raises_and_says_why(dashboard):
         def dashboard_close(self):
             return True, ""
 
-    closed, why = dashboard.close_grid(Boom())
+    closed, why = dashboard.close_grid(RaisingClose())
     assert closed is False and "no agtermctl" in why
     assert dashboard.close_grid(Fine()) == (True, "")
 
@@ -1154,3 +1299,123 @@ def test_mru_that_will_not_open_is_refused_and_nothing_is_closed(dashboard):
         dashboard.main(["--mru"], out=Out(), ctl=ctl, read_line=no_read_line)
     assert "no recent sessions" in str(err.value)
     assert ("close",) not in ctl.calls
+
+
+# ---------------------------------------------------------------------------
+# Nothing printed after the grid goes up may orphan it
+#
+# 🔴 SHAPE A, the fourth instance in this area: a user-facing write sitting
+# OUTSIDE the cleanup guard. `agb-dashboard alice | head` closes stdout the
+# moment `head` exits, and every line between `ctl.dashboard(...)` answering ok
+# and the hold's `finally` was unguarded -- so a `BrokenPipeError` unwound past
+# the close, `__main__` reported it as a handled `OSError`, and the run exited
+# with a grid on the only screen agterm has and nothing owning it. Demonstrated
+# with a probe before it was fixed:
+#
+#     BrokenPipeError closed
+#     [('tree',), ('dashboard', ['AAAA1111:left'])]      # opened, never closed
+#
+# `agb-peer` had `_quiet` for the relay's `say`, written for this exact reason,
+# and `close_grid`'s docstring spells it out. The newer file did not carry it.
+# ---------------------------------------------------------------------------
+
+def test_a_lost_stdout_does_not_orphan_the_grid_the_run_opened(dashboard):
+    """The cell report is the first thing written after the grid goes up."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    assert dashboard.main(["alice"], out=Pipe(0), ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert ("close",) in ctl.calls, ctl.calls
+
+
+def test_hold_closes_the_grid_even_if_its_own_BANNER_cannot_be_printed(
+        dashboard):
+    """⚠️ A different write and a separate fix: `hold` printed `HOLD_NOTE`
+    OUTSIDE its own `try`, so the function whose entire job is the close could
+    be aborted before ever reaching it.
+
+    ⚠️ **Driven through `hold` directly, and that is the whole test.** Through
+    `main` the caller has already wrapped `out`, so moving this write back
+    outside the `try` changes nothing observable and the check reads as a pass
+    -- a guard covering the caller's fix instead of this one. `hold`'s contract
+    is "the grid is closed whatever happens", and it may not depend on who
+    called it."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    with pytest.raises(BrokenPipeError):
+        dashboard.hold(Pipe(0), ctl, Reader(""))
+    assert ("close",) in ctl.calls, ctl.calls
+
+
+def test_a_lost_stdout_at_the_HOLD_banner_does_not_orphan_it_either(dashboard):
+    """The same failure through `main`, where the caller's wrapper is what
+    answers -- two mechanisms, deliberately, because they cover different
+    entries: one guards writes `hold` does not control (the cell report,
+    `--detach`'s line, anything added later), the other guards `hold` itself."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    # One successful write -- the cell report -- then the pipe dies on the
+    # hold's banner.
+    assert dashboard.main(["alice"], out=Pipe(2), ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert ("close",) in ctl.calls, ctl.calls
+
+
+def test_a_lost_stdout_does_not_orphan_an_mru_grid(dashboard):
+    """`--mru` opens a grid too, and owns it exactly as much."""
+    ctl = GridCtl()
+    assert dashboard.main(["--mru"], out=Pipe(0), ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert ("close",) in ctl.calls, ctl.calls
+
+
+def test_a_lost_stdout_still_prints_what_it_can_BEFORE_the_pipe_dies(
+        dashboard):
+    """The companion the three above need: a fake that swallowed everything
+    would satisfy them while proving the report is never written at all.
+    `Pipe(1)` takes exactly one line, so the guard is shown to be about the
+    write that RAISES rather than about writing nothing."""
+    out = Pipe(1)
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    assert dashboard.main(["alice"], out=out, ctl=ctl,
+                          read_line=Reader("")) == 0
+    assert "1 cell(s)" in out.text, out.text
+    assert ("close",) in ctl.calls
+
+
+def test_a_write_BEFORE_the_grid_is_up_is_still_fatal(dashboard):
+    """⚠️ The guard is applied at the moment the grid goes up, not to the whole
+    run, and that boundary is the point: before it there is nothing to orphan,
+    and a `--version` or `--help` that cannot be printed has failed. Swallowing
+    those would turn a broken stdout into a silent exit 0."""
+    ctl = NoCtl()
+    with pytest.raises(BrokenPipeError):
+        dashboard.main(["--version"], out=Pipe(0), ctl=ctl)
+
+
+# ---------------------------------------------------------------------------
+# The `peer=None` injection seams, which no test and no caller exercised
+# ---------------------------------------------------------------------------
+
+def test_the_peer_default_loads_the_sibling_for_itself(dashboard, peer):
+    """⚠️ `peer = peer or load_peer()` is in three functions and every test
+    passed one in, so all three defaults were unexecuted code. `agb-peer-setup`
+    exercises its equivalent; this did not. The fixture has already registered
+    the module, so the default resolves to the same object rather than loading
+    a second one."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    out = Out()
+    assert dashboard.main(["--detach", "alice"], out=out, ctl=ctl,
+                          read_line=no_read_line) == 0
+    assert ctl.opened() == [["AAAA1111:left"]]
+    got, problems, folded = dashboard.resolve_selectors(
+        rows(("AAAA1111", "alice")), ["alice"])
+    assert got == [("alice", "AAAA1111", "left")]
+    assert problems == [] and folded == []
+
+
+def test_the_mru_path_loads_the_sibling_for_itself_too(dashboard):
+    """The third seam. `--mru` resolves nothing, so its `peer` is used only for
+    `Ctl` -- which a test passing `ctl` covers over, leaving the line
+    unexecuted."""
+    ctl = GridCtl()
+    assert dashboard.main(["--mru", "--detach"], out=Out(), ctl=ctl,
+                          read_line=no_read_line) == 0
+    assert ctl.opened() == [["--mru"]]

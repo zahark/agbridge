@@ -2540,7 +2540,7 @@ That single distinction decides both error policies, and both are correct *in pl
 | a member that will not resolve | **named, and the rest are gridded** — best-effort, because a cosmetic grid failure must never stop a message | **nothing opens**, exit 2, every problem named |
 | a cell **agterm** drops (`unresolved:` on stdout, exit 0) | **named, and the rest stay gridded** — the same policy, and the relay was blind to this one until it had a reader of its own. ⚠️ **And not recorded as shown**, so the next tick retries: a partial open is an *incomplete* outcome, and its documented cause (a `:right` cell whose split is briefly absent) is transient | **nothing opens**: the grid agterm just put up is **closed again**, then exit 2 |
 | a grid call that **raises** rather than failing | said and ignored; the message pump is what matters | reported, and any grid already up is closed on the way out |
-| a member in the `scratch` pane | excluded and said; it counts as *accounted for*, not missing | a shortfall — nothing opens |
+| a member in the `scratch` pane | excluded and said; it counts as *accounted for*, not missing | a shortfall — nothing opens. ⚠️ **Named by PARTICIPANT NAME on both sides**: the operator wrote `drawer=…`, and a row-id prefix sends them to look up which line to edit — which is what `agb-refresh` re-minting every id makes impossible |
 | more members than agterm's nine cells | the first nine are gridded and the rest **named** | **nothing opens**, exit 2, the cap and the count both given |
 | lifetime | **follows**: re-resolves every tick and re-opens when the cell set moves | one-shot with a foreground hold; `--follow` deferred |
 

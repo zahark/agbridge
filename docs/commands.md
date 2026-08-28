@@ -2041,15 +2041,17 @@ so it must fail loudly rather than half-succeed. Everything below follows from t
 | a selector matches no row | nothing opens, exit 2, the selector is named |
 | a selector matches several | nothing opens, exit 2, and **its matches are listed** — the first five of them, so an over-broad selector against forty rows does not fill the terminal |
 | agterm has no rows at all | its own message, rather than N identical "no row matches" lines — with no rows the answer is about agterm, not about what was typed |
-| two selectors naming **one cell** | **deduped**, not refused. Two ways of naming one cell is not a user error; spending two of the nine on it is the bug |
-| more than 9 cells after the dedupe | refused **before** `agtermctl dashboard` is called (the `tree --json` has already run, by design) |
-| a `scratch` participant from a roster | nothing opens, exit 2, naming it. ⚠️ **Deliberately stricter than the relay**, which reports the same exclusion and grids the rest |
+| two selectors naming **one cell** | **deduped**, not refused, and the fold is **reported by name** — `(carol names the same cell as alice -- shown once)`. Two ways of naming one cell is not a user error; spending two of the nine on it is the bug, and dropping a name in silence is the other one |
+| a `scratch` participant from a roster | nothing opens, exit 2, **naming the participant** — `drawer (scratch)`, not a row-id prefix: you wrote `drawer=…` and a hex prefix sends you to look up which line to edit. ⚠️ **Deliberately stricter than the relay**, which reports the same exclusion and grids the rest |
+| more than 9 cells after the dedupe | refused **before** `agtermctl dashboard` is called (the `tree --json` has already run, by design). ⚠️ **Counted after the pane exclusion**, so the number is of cells that could actually go in a grid: ten participants of which two are `:scratch` is an eight-cell roster, and the cap used to refuse it with "got 10" while never mentioning the drawer |
 | ⚠️ agterm prints `unresolved: <id>` | 🔴 **the dangerous one.** agterm exits **0**, opens the grid without those cells, and says so on **stdout alone**. This is the one place in the family where the exit status is not trusted: the output is read, the grid is **closed again**, and the run exits 2 |
 
 ⚠️ **The close-before-exit is not tidiness.** `unresolved:` is printed *after* the grid is already
 up, so refusing and exiting without closing would leave exactly the silently-partial grid this
 command exists to remove — the headline feature shipping with its own bug. If the close itself
-fails, it says so in capitals and prints the command.
+fails, it says so in capitals **and prints the literal command** — the same thing the foreground
+hold does when its own close fails, and for the same reason: that is the moment you most need it
+and least want to go and look it up. ⚠️ It did not, for as long as this paragraph said it did.
 
 There is **no `--partial`**. Shipping one unrequested would re-introduce the behaviour being removed,
 behind a flag nobody knows to avoid. ⚠️ `--mru` is the one exemption from all of this, and it is not

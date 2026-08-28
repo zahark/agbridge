@@ -4211,11 +4211,14 @@ def _owned_strings(tree):
                 visit(child, child.name)
                 continue
             # ast.Str on 3.6-3.7, ast.Constant from 3.8 -- the floor is 3.6.8
-            # and CI may be newer, so both spellings have to be read. The same
-            # guard in test_agb_dashboard.py already did; this one saw only
-            # `ast.Str`, and on a newer interpreter that is a guard covering
-            # nothing while its non-vacuity assertion still passes on the other
-            # file.
+            # and CI may be newer, so both spellings have to be read. This saw
+            # only `ast.Str`, which on a newer interpreter is a guard covering
+            # nothing at all. ⚠️ The comment here used to say the guard in
+            # `test_agb_dashboard.py` already read both; that stopped being
+            # true when it was replaced by a literal-set comparison, and no
+            # test there reads string literals out of an AST any more. A
+            # cross-reference is a claim about another file and goes stale
+            # silently -- this one is now the only reader of its kind.
             if isinstance(child, ast.Str):
                 owned.setdefault(owner, []).append(child.s)
             elif isinstance(child, ast.Constant) and isinstance(child.value,

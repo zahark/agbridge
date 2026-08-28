@@ -280,6 +280,53 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A lost stdout orphaned the grid `agb-dashboard` had just opened.** `agb-dashboard alice | head`
+  closes stdout the instant `head` exits, and every line printed after the grid went up — the cell
+  report, the hold's own banner — was outside any cleanup guard. The `BrokenPipeError` unwound past
+  the close, `__main__` reported it as a handled `OSError`, and the run exited with a grid on the
+  only screen agterm has and nothing owning it. Demonstrated with a probe rather than argued:
+
+  ```
+  BrokenPipeError closed
+  [('tree',), ('dashboard', ['AAAA1111:left'])]      # opened, never closed
+  ```
+
+  ⚠️ **Two fixes, not one, and they cover different writes.** `out` is wrapped in a writer that
+  cannot raise **at the moment the grid goes up**, so a report added later is covered by
+  construction rather than by the next author remembering; and `hold` prints its banner **inside**
+  its own `try`, because the function whose entire job is the close may not depend on who called it.
+  Writes *before* the grid exists are deliberately still fatal — there is nothing to orphan, and a
+  `--version` that cannot be printed has failed. `agb-peer` grew exactly this guard for the relay's
+  `say` earlier in the same release; this is the fourth instance of the shape.
+
+- **The refusal named an excluded participant by ROW-ID PREFIX**, which is the one thing this
+  command exists to stop people looking up. A roster line is `drawer=<row>:scratch`, and
+  `agb-dashboard` answered `BBBB2222 (scratch)` — an id the operator never wrote and that
+  `agb-refresh` re-mints anyway. It says `drawer (scratch)` now. The relay carries the argued rule
+  verbatim ("by NAME, not by row id — a hex prefix would make them go and look up which participant
+  vanished") and it applies *harder* here, because this refuses: the token in the message is the
+  only clue which roster line to edit. The name was being thrown away at the point the roster was
+  parsed; it is carried on the cell now, in the relay's own `(name, id, pane)` shape.
+
+- **An over-cap roster was diagnosed with a count that was not the problem.** The nine-cell
+  preflight ran *before* the pane exclusion, so ten participants of which two are `:scratch` — an
+  eight-cell roster, one edit from working — refused with "shows 9 cells; got 10" and never
+  mentioned the drawer. Two round trips to fix one roster, the second chasing a number that was
+  never wrong. The cap counts gridable cells now, which is the order the relay already used.
+
+- **Two names for one cell were folded in silence.** The dedupe itself is right — two ways of naming
+  one cell is not a user error, spending two of the nine on it is — but a roster is the relay's own
+  membership grammar, and there the identical situation is reported by name. `carol` was simply not
+  on the screen with nothing saying which name went; it now prints
+  `(carol names the same cell as alice -- shown once)`.
+
+- **The strict path left a grid up without saying how to close it.** When the `unresolved:` refusal
+  cannot close the grid it just caused, it said `AND THE GRID IS STILL UP: <reason>` and stopped
+  there — the literal `agtermctl dashboard --close` was printed only by `--detach` and by a failed
+  close in the foreground hold. That is the same moment, by the same argument (you most need the
+  command and least want to go and look it up), and two docs had been claiming it was printed here
+  for a release.
+
 - **A participant could vanish from the relay's grid with NOTHING saying so — defect 3's exact
   symptom, reached through the code that fixed it.** `_one_name_per_row` throttles its "alice and bob
   both resolve to row AAAA1111" line so a roster nobody fixes does not print it every tick, and that

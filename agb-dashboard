@@ -238,7 +238,7 @@ DEFAULT_PANE = "left"
 
 
 def resolve_selectors(sessions, selectors, peer=None):
-    """`[(want, pane)]` -> `([(id, pane)], [problem, ...])`.
+    """`[(name, want, pane)]` -> `([(name, id, pane)], [problem], [(name, kept)])`.
 
     ⚠️ **It takes `sessions`, not a `ctl`.** One `agtermctl tree --json`,
     fetched once by the caller. Taking the `ctl` would mean one subprocess per
@@ -250,6 +250,16 @@ def resolve_selectors(sessions, selectors, peer=None):
     ambiguous AND agterm-has-no-rows-at-all alike, so telling those apart
     through it would mean string-matching an error message.
 
+    ⚠️ **THE NAME IS CARRIED, and it is not decoration.** A cell knows the word
+    the user wrote for it -- a roster participant name, or the selector itself
+    -- because every report about that cell has to use it. The relay argues the
+    same rule where it names an excluded participant: *by NAME, not by row id;
+    a hex prefix would make them go and look up which participant vanished*.
+    It applies HARDER here, because this command REFUSES, so the token in the
+    message is the operator's only clue which roster line to edit. The shape is
+    deliberately the relay's own `(name, id, pane)` cells, so the two tools
+    report the same thing the same way.
+
     ⚠️ **The dedupe key is `(id, pane)`, NOT the id alone.** `X:left` and
     `X:right` are two legitimate, distinct cells, and a roster may hold
     `alice=<label>` beside `split=<same label>:right`. Deduping by id would
@@ -258,17 +268,23 @@ def resolve_selectors(sessions, selectors, peer=None):
     two ways of naming one cell is not a user error, spending two of the nine
     cells on it is the bug.
 
-    A bare string selector is accepted as `(selector, DEFAULT_PANE)` -- the
-    defaulting rule lives here, with the resolution, rather than being spelled
-    at each call site.
+    ⚠️ **What it deduped is RETURNED, though, because a silent drop is the
+    worse bug.** The relay reports the identical situation by name
+    (`_one_name_per_row`) and refuses to let the second name stand; here the
+    two names are kept and the cell is shown once, so the third value is what
+    stops that being invisible. It is not a `problem`: a problem refuses.
+
+    A bare string selector is accepted as `(selector, selector, DEFAULT_PANE)`
+    -- the defaulting rule lives here, with the resolution, rather than being
+    spelled at each call site.
     """
     peer = peer or load_peer()
-    resolved, problems, seen = [], [], set()
+    resolved, problems, folded, seen = [], [], [], {}
     for item in selectors:
         if isinstance(item, str):
-            want, pane = item, DEFAULT_PANE
+            name, want, pane = item, item, DEFAULT_PANE
         else:
-            want, pane = item
+            name, want, pane = item
         matches = peer.match_sessions(sessions, want)
         if not matches:
             problems.append("%s: no row matches it -- `agb-peer --list` shows "
@@ -282,14 +298,24 @@ def resolve_selectors(sessions, selectors, peer=None):
             continue
         key = (matches[0]["id"], pane)
         if key in seen:
+            folded.append((name, seen[key]))
             continue
-        seen.add(key)
-        resolved.append(key)
-    return resolved, problems
+        seen[key] = name
+        resolved.append((name, key[0], key[1]))
+    return resolved, problems, folded
 
 
 def wanted_from(opts, peer):
-    """What this argv asks to be shown, as `(want, pane)` pairs.
+    """What this argv asks to be shown, as `(name, want, pane)` triples.
+
+    ⚠️ **The participant NAME is kept, and it used to be thrown away here.**
+    A roster line is `carol=<row>:<pane>`; only `<row>` was passed on, so every
+    later report about that cell could name it by row-id prefix at best --
+    which is the one thing this whole command exists not to make people do.
+    `carol` is what the operator typed and what they will search the file for,
+    and it is unique per line where a `<row>` substring need not be. For a
+    positional selector the name IS the selector: the word the user wrote is
+    the best token either way.
 
     The roster is parsed with **`minimum=1`**, not the default 2. agterm
     accepts a one-cell grid (measured), and a one-participant roster is a legal
@@ -299,8 +325,43 @@ def wanted_from(opts, peer):
     if opts["roster"]:
         spec = peer.parse_roster_text(peer.read_roster_file(opts["roster"]),
                                       minimum=1)
-        return [(spec[name][0], spec[name][1]) for name in sorted(spec)]
-    return [(want, DEFAULT_PANE) for want in opts["selectors"]]
+        return [(name, spec[name][0], spec[name][1]) for name in sorted(spec)]
+    return [(want, want, DEFAULT_PANE) for want in opts["selectors"]]
+
+
+class _Quiet(object):
+    """An `out` whose `write` CANNOT RAISE -- for everything printed once the
+    grid is UP.
+
+    🔴 **A user-facing write sitting outside the cleanup guard**, which is the
+    same shape as three earlier bugs in this area and was demonstrated with a
+    probe rather than argued. `agb-dashboard alice | head` closes stdout the
+    instant `head` exits, and the next write raises `BrokenPipeError`. Every
+    line printed between `ctl.dashboard(...)` answering ok and the hold's
+    `finally` was outside any guard, so that exception unwound straight past
+    the close -- `__main__` reports it (a `BrokenPipeError` is an `OSError`, so
+    `is_handled` catches it and exits 1) and the run ends with a grid on the
+    only screen agterm has and nothing owning it:
+
+        BrokenPipeError closed
+        [('tree',), ('dashboard', ['AAAA1111:left'])]      # opened, never closed
+
+    ⚠️ **Applied at the moment the grid goes up, rather than around each
+    call.** A report ADDED later is then covered by construction instead of by
+    the next author remembering -- which is the failure mode itself: `agb-peer`
+    already had `_quiet` for the relay's `say`, written for this exact reason,
+    and the newer file did not carry it. Before that point there is nothing to
+    orphan, and a write that fails there SHOULD be fatal.
+    """
+
+    def __init__(self, out):
+        self.out = out
+
+    def write(self, text):
+        try:
+            self.out.write(text)
+        except Exception:
+            pass
 
 
 def close_grid(ctl):
@@ -343,7 +404,7 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
         # no rows at all the answer is about agterm, not about what was typed.
         raise DashError("agterm reports no sessions at all -- is it running, "
                         "and is a bridge up?", 2)
-    resolved, problems = resolve_selectors(sessions, wanted, peer)
+    resolved, problems, folded = resolve_selectors(sessions, wanted, peer)
     if problems:
         # ⚠️ Refused **without calling `agtermctl dashboard`** -- not without
         # calling agtermctl at all: the `tree --json` above has already run, by
@@ -353,30 +414,50 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
         # to avoid.
         raise DashError("nothing opened -- %d selector(s) did not resolve:"
                         "\n  %s" % (len(problems), "\n  ".join(problems)), 2)
-    if len(resolved) > peer.DASHBOARD_MAX_CELLS:
-        # ⚠️ **After the dedupe**, so two spellings of one cell do not spend
-        # two of the nine. Preflighted rather than left to agterm because every
-        # cell carries an explicit pane, which turns agterm's cap on PANES into
-        # a cap on agents and makes this count exact.
-        raise DashError("agterm's dashboard shows %d cells; got %d"
-                        % (peer.DASHBOARD_MAX_CELLS, len(resolved)), 2)
-    cells, excluded = peer.dashboard_cells(resolved)
+    cells, excluded = peer.dashboard_cells([(r[1], r[2]) for r in resolved])
     if excluded:
         # ⚠️ **A shortfall HERE, unlike in the relay**, where the same exclusion
         # is reported and the grid opens anyway. The relay's grid is an adjunct
         # to carrying messages; this command's entire output is the grid, so a
         # roster naming a `scratch` participant must refuse rather than open one
         # quietly missing them.
+        #
+        # ⚠️ **BY NAME, not by row-id prefix**, which is the relay's argued rule
+        # (`update_grid`) and applies harder here: this refuses, so the token in
+        # the message is the operator's only clue which roster line to edit.
+        # `BBBB2222 (scratch)` sent them to look up an id they never wrote --
+        # and `agb-refresh` re-mints ids, which is the trap the whole command
+        # routes around.
+        away = set(excluded)
         raise DashError("nothing opened -- agterm's grid takes only %s panes, "
                         "and these are elsewhere: %s"
                         % ("/".join(peer.DASHBOARD_PANES),
-                           ", ".join("%s (%s)" % (row[:8], pane)
-                                     for row, pane in excluded)), 2)
+                           ", ".join("%s (%s)" % (name, pane)
+                                     for name, row, pane in resolved
+                                     if (row, pane) in away)), 2)
+    if len(cells) > peer.DASHBOARD_MAX_CELLS:
+        # ⚠️ **After the dedupe**, so two spellings of one cell do not spend
+        # two of the nine. Preflighted rather than left to agterm because every
+        # cell carries an explicit pane, which turns agterm's cap on PANES into
+        # a cap on agents and makes this count exact.
+        #
+        # ⚠️ **And after the EXCLUSION, which it was not**, so the count is of
+        # cells that could actually go in a grid. The relay applies its cap in
+        # this order too. Measured the other way round: ten participants of
+        # which two are `:scratch` -- eight gridable -- refused with "shows 9
+        # cells; got 10" and never mentioned the scratch ones, so fixing the
+        # count was two round trips against a roster that was one edit from
+        # working.
+        raise DashError("agterm's dashboard shows %d cells; got %d"
+                        % (peer.DASHBOARD_MAX_CELLS, len(cells)), 2)
     ok, said, why = ctl.dashboard(cells)
     if not ok:
         # agterm refuses an invalid id and a wholly unresolvable set BEFORE
         # opening anything (measured), so there is no grid to close here.
         raise DashError("the dashboard would not open: %s" % (why,), 2)
+    # 🔴 **From here a grid is UP and this run owns it**, so nothing printed
+    # may be able to abort the path that closes it. See `_Quiet`.
+    out = _Quiet(out)
     missed = peer.unresolved_lines(said)
     if missed:
         # 🔴 **CLOSE FIRST, THEN REFUSE.** agterm prints `unresolved:` *after*
@@ -388,11 +469,26 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
             "agterm opened the grid without every row and said so on stdout: "
             "%s -- %s" % ("; ".join(missed),
                           "closed it again" if closed
-                          else "AND THE GRID IS STILL UP: " + why_close), 2)
+                          # ⚠️ **The literal command, here too.** It was
+                          # printed when the HOLD's close failed and not when
+                          # this one did, on the reasoning that the moment a
+                          # user most needs it is the moment they least want to
+                          # go and look it up -- which is the same moment. Two
+                          # docs claimed it was printed here already.
+                          else "AND THE GRID IS STILL UP (%s). Close it with: "
+                               "%s" % (why_close, CLOSE_COMMAND)), 2)
     named = dict((s["id"], s.get("name")) for s in sessions)
     out.write("agb-dashboard: %d cell(s)\n" % (len(cells),))
-    for row, pane in resolved:
+    for name, row, pane in resolved:
         out.write("  %s %s %s\n" % (row[:8], pane, named.get(row) or ""))
+    for name, kept in folded:
+        # ⚠️ **Said, not silent.** A dedupe is not a shortfall -- two ways of
+        # naming one cell is not a user error -- so it does not refuse. But the
+        # relay reports the identical situation by name, and a roster is its
+        # grammar: without this, `carol` is simply not on the screen and
+        # nothing anywhere says which name went or why.
+        out.write("  (%s names the same cell as %s -- shown once)\n"
+                  % (name, kept))
     return finish(opts, out, ctl, read_line)
 
 
@@ -415,6 +511,8 @@ def run_mru(opts, out, peer=None, ctl=None, read_line=None):
     ok, _said, why = ctl.dashboard(["--mru"])
     if not ok:
         raise DashError("the dashboard would not open: %s" % (why,), 2)
+    # The grid is up and this run owns it -- see `_Quiet`, and `run_grid`.
+    out = _Quiet(out)
     out.write("agb-dashboard: --mru -- agterm chose the rows.\n"
               "  No membership was asserted, so nothing was resolved and\n"
               "  nothing can be reported missing. Name rows to get that check.\n")
@@ -489,15 +587,25 @@ def hold(out, ctl, read_line):
     `KeyboardInterrupt` is then left to propagate: `__main__` already reports
     it as an exit rather than a crash.
     """
-    out.write(HOLD_NOTE)
     try:
+        # ⚠️ **INSIDE the `try`, and it was not.** The caller wraps `out` once
+        # the grid is up, so this is belt and braces there -- but `hold` is the
+        # function whose entire job is the close, and a write of its own
+        # sitting outside its own guard makes that contract depend on who
+        # called it.
+        out.write(HOLD_NOTE)
         try:
             raw = read_line()
         except EOFError:
             # `input()`-shaped readers still work, even though the real one
             # cannot get here.
             raw = ""
-        if raw is None or raw == "":
+        if raw == "":
+            # ⚠️ `is None` was tested here too, and nothing can produce it:
+            # `readline` returns `""`, `input()` raises, and the `Reader` fake
+            # models the first. An unreachable arm is indistinguishable from a
+            # guard that quietly narrows -- the rule this file applied to two
+            # other branches and not to this one.
             out.write("agb-dashboard: stdin ended -- closing the grid\n")
     finally:
         closed, why = close_grid(ctl)
@@ -505,6 +613,14 @@ def hold(out, ctl, read_line):
             out.write("agb-dashboard: the grid would not close (%s)\n"
                       "  IT IS STILL UP. Close it with:\n"
                       "  %s\n" % (why, CLOSE_COMMAND))
+    # ⚠️ **0 even when the close failed, and the asymmetry with the strict
+    # path's exit 2 is deliberate.** There the run FAILED -- it could not show
+    # what was asked for -- and the leftover grid is a second casualty of that.
+    # Here the run did exactly what it was asked: it opened the grid, held it,
+    # and the user ended it. A grid left up is not by itself a failure, which
+    # `--detach` says by being a supported mode that ends the same way. What
+    # the user needs is the warning and the command, in capitals, and that is
+    # printed above.
     return 0
 
 
