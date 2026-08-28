@@ -550,31 +550,40 @@ These are not style preferences. Each one has a test, and most were re-learned t
 Not new invariants — three *recurring bugs*, each found, fixed, its reason written into a comment at
 its own call site, and then reintroduced somewhere else by the next person. That is the actual
 lesson: **a rule that lives only in a comment where it was learned is not a mechanism.** The
-`agb-peer` / `agb-dashboard` grid work hit all three; two review passes over one branch found
-**twelve** instances between them. Check for all three when you touch anything that drives agterm.
+`agb-peer` / `agb-dashboard` work hit all three, and the counts below are the point: two review
+passes named a dozen, and then *searching for the shape itself* — rather than waiting for the next
+report — found seven more in one pass. Do that search when you touch anything that drives agterm.
 
 - **A — a user-facing write outside the cleanup guard.** `say` / `out.write` can **raise**:
   `agb-peer relay | head` closes stdout the instant `head` exits. A write between "the grid is up"
   and the `finally` that closes it unwinds *past* the close and orphans it — and agterm has one grid
-  and no ownership token, so an orphan is on everybody's screen. Found **five** times. ⚠️ **Wrap at
-  the boundary, not per call** (`agb-peer._quiet`, `agb-dashboard._Quiet`), or the next report
-  somebody adds is outside again. **Check:** for every cleanup `finally`, is *everything* that can
-  raise between acquiring the resource and arming the guard, guarded?
+  and no ownership token, so an orphan is on everybody's screen. Found **seven** times, the last two
+  outside the grid entirely: on the file transport the *printed* doorbell **is** the send, and it was
+  printed after the file it names; and `write_chat_file` was the one temp+rename writer of four that
+  did not unlink its temp. ⚠️ **Wrap at the boundary, not per call** (`agb-peer._quiet`,
+  `agb-dashboard._Quiet`), or the next report somebody adds is outside again. **Check:** for every
+  cleanup `finally`, is *everything* that can raise between acquiring the resource and arming the
+  guard, guarded? And: **is the write a report, or is it the transport?**
 - **B — state advanced on an incomplete outcome, so it is never retried.** A "have I already done
-  this" gate written after a call that only partly worked. Found **twice**, both on `update_grid`'s
-  `shown`: a failed open, then a **partial** one — agterm exits **0**, grids the cells it could
-  resolve and names the rest on stdout. The next tick's `fresh == shown` early return then makes a
-  *transient* failure permanent. **Check:** at every gate assignment, ask which outcomes reach that
-  line. "Returned" is not "succeeded", and **exit 0 is not "did everything"**.
+  this" gate written after a call that only partly worked. Found **four** times — three on
+  `update_grid`'s `shown` (a failed open, a **partial** one where agterm exits **0** and names the
+  dropped cells on stdout, and a failed *close*), and one on `cmd_send`, where the window-name memo
+  that gates a whole block was written before the `automatic-rename off` pin inside it, so a pin that
+  failed once was never retried and the relay went deaf. **Check:** at every gate assignment, ask
+  which outcomes reach that line. "Returned" is not "succeeded", **exit 0 is not "did everything"**,
+  and a memo must be the **last** write of the block it gates — it records *all of this was done*,
+  not *some of it was tried*.
 - **C — a rule argued on one side of a branch and not carried to the other.** `agb-dashboard` and
   the relay do the same job with deliberately *different* error policies, which makes a real
-  difference indistinguishable from an omission unless somebody says which it is. Found **five**
-  times — report by NAME not row id; apply the cap after the pane exclusion; print the literal close
-  command; clear every throttle when its condition goes; and a docstring still saying the relay
-  ignores output it had started reading. **Check:** when the two sides differ, the difference owes a
-  sentence saying it is deliberate — and when you change one side, re-read the *counterpart's*
-  comments, because a docstring describing somebody else's behaviour is where the stale claim will
-  be.
+  difference indistinguishable from an omission unless somebody says which it is. Found **eight**
+  times — report by NAME not row id (twice, in one function and its neighbour); the cap after the
+  pane exclusion; the literal close command; *clear every throttle when its condition goes* (twice —
+  it was applied to four throttles and missing from the fifth and sixth); and three docstrings whose
+  claim about **another** function had quietly become false. **Check:** when the two sides differ,
+  the difference owes a sentence saying it is deliberate — and when you change one side, re-read the
+  *counterpart's* comments. ⚠️ A comment stating a fact about code **elsewhere** — how many callers
+  something has, what another function does with a value — is the one that goes stale silently, and
+  is where every instance of this was found.
 
 ## Testing conventions
 
