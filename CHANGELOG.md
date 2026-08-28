@@ -34,6 +34,15 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   message*. That insight never reached the paragraph **above** it, which still gated the opener on
   `who` — same file, adjacent sections, one writer, one pass.
 
+  ⚠️ **That middle point is recorded as a class, not just an instance**, in
+  `docs/backlog/a-true-caveat-can-arm-a-wrongly-ordered-instruction.md`: **a true statement can
+  convert a latent structural defect into a reliable one**, and the clearer the addition the more
+  reliably the bad structure is followed, because the reader now has a *good reason* to do the wrong
+  thing. It is not a regression, not a wrong fix, and it did not touch the defect. The check it
+  leaves: **when you add a caveat to a step, ask what the caveat tells a reader to DO, and whether
+  the step should have been there at all** — writing the warning is the moment you have that step's
+  full context in front of you, and the last moment anybody will look at it.
+
   **Fixed by inverting it**: *send the opener* is now the first and only step, `who` is demoted to
   *If you have no name at all* — explicitly a fallback rather than a step — and the file now says
   what to do while one is outstanding, which was unspecified and is the gap the agent fell into:
