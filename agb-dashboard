@@ -240,6 +240,21 @@ def main(argv, out=None, peer=None, ctl=None, read_line=None):
 DEFAULT_PANE = "left"
 
 
+def asked(name, want):
+    """How a REFUSAL names something the user asked for.
+
+    ⚠️ **The participant name AND the label, because a roster line has both and
+    the operator needs both.** `carol` says which line to edit and is unique
+    per file; `oldrow` says what on that line is wrong. Naming only the label
+    was the defect: two roster lines pointing at one dead label produce two
+    byte-identical refusals that name neither participant, which is the same
+    "go and look up who vanished" the row-id spelling caused. A positional
+    selector is its own name, so it renders unchanged -- the second token would
+    be the first one repeated.
+    """
+    return name if name == want else "%s (%s)" % (name, want)
+
+
 def resolve_selectors(sessions, selectors, peer=None):
     """`[(name, want, pane)]` -> `([(name, id, pane)], [problem], [(name, kept)])`.
 
@@ -291,13 +306,14 @@ def resolve_selectors(sessions, selectors, peer=None):
         matches = peer.match_sessions(sessions, want)
         if not matches:
             problems.append("%s: no row matches it -- `agb-peer --list` shows "
-                            "them" % (want,))
+                            "them" % (asked(name, want),))
             continue
         if len(matches) > 1:
             names = ", ".join(str(s.get("name") or s.get("id"))
                               for s in matches[:5])
             problems.append("%s: matches %d rows (%s) -- use a longer prefix "
-                            "or the row id" % (want, len(matches), names))
+                            "or the row id" % (asked(name, want), len(matches),
+                                               names))
             continue
         key = (matches[0]["id"], pane)
         if key in seen:
@@ -495,10 +511,10 @@ def run_grid(opts, out, peer=None, ctl=None, read_line=None):
     out.write("agb-dashboard: %d cell(s)\n" % (len(cells),))
     for _name, row, pane in resolved:
         # `_name`: the report is the record of what went on the SCREEN, so it
-        # names each cell the way agterm does. The selector that asked for it
-        # is what the REFUSALS use, where the operator has to go and edit
-        # something -- two different questions, deliberately answered with two
-        # different tokens.
+        # names each cell the way agterm does. The REFUSALS name what the
+        # OPERATOR wrote instead -- `asked()`, the participant name and its
+        # label -- because there the answer is a file to go and edit. Two
+        # different questions, deliberately answered with two different tokens.
         out.write("  %s %s %s\n" % (row[:8], pane, named.get(row) or ""))
     for name, kept in folded:
         # ⚠️ **Said, not silent.** A dedupe is not a shortfall -- two ways of
@@ -538,10 +554,12 @@ def run_mru(opts, out, peer=None, ctl=None, read_line=None):
     return finish(opts, out, ctl, read_line)
 
 
-# The literal, copy-pasteable way to close the grid by hand. Printed on the
-# `--detach` path because that run ends with a grid up and nothing owning it,
-# and again when a hold's own close FAILS -- which is the moment a user most
-# needs it and least wants to go and look it up.
+# The literal, copy-pasteable way to close the grid by hand. Printed at THREE
+# sites, which is the count to keep true: the `--detach` path, because that run
+# ends with a grid up and nothing owning it; the hold's own failed close; and
+# the `unresolved:` refusal's failed close. The last two are the same moment by
+# the same argument -- it is when a user most needs the command and least wants
+# to go and look it up -- and for a while only one of them printed it.
 CLOSE_COMMAND = "agtermctl dashboard --close"
 
 # ⚠️ Both facts are things the tool has to SAY, not only document.
@@ -599,6 +617,13 @@ def hold(out, ctl, read_line):
     EOF gives `""` with no newline. Strip first and the two become
     indistinguishable, and the dangerous one silently becomes the harmless one.
 
+    ⚠️ **One write here is NOT inside that guard and cannot be: the failed
+    close warning, which runs in the `finally` itself.** It is covered by the
+    caller wrapping `out` (`_Quiet`), so the end-to-end property holds -- but
+    stated rather than left to be rediscovered, because the sentence above is
+    about the writes `hold` can put inside its own `try`, and that is not all
+    of them.
+
     ⚠️ **The close is in a `finally`, which is the whole point of holding.**
     `Ctrl-C` is the documented way out of a foreground wait and is not an
     `Exception`, so an `except` clause here would miss it and orphan the grid
@@ -652,8 +677,14 @@ def hold(out, ctl, read_line):
 #     `agb_ops` today, so this one has no reachable raiser and is kept
 #     deliberately: `agb-peer-setup`, from the same family, does load it, and a
 #     name absent from this tuple escapes as a traceback rather than a message.
-#   * `OSError` -- `agb.read_config` re-raises every errno except
-#     ENOENT/ENOTDIR, and an unreadable roster is an `OSError` too.
+#   * `OSError` -- ⚠️ **and the two reasons first given for it were both
+#     wrong, while the entry itself is right.** An unreadable roster does NOT
+#     arrive here: `read_roster_file` turns every errno into a `PeerError`
+#     (exit 1, pinned by a test), and nothing on this script's path loads
+#     `agb`, so `agb.read_config` is not a raiser either. The live one is a
+#     write to a dead stdout BEFORE the grid exists -- `agb-dashboard --version
+#     | head -1` -- since a `BrokenPipeError` is an `OSError`. That is the
+#     reason the MRO match below is load-bearing rather than tidy.
 #
 # ⚠️ `IOError` is NOT here: it is an alias of `OSError` in Python 3, so it can
 # never be a class `__name__` and the entry that named it was decoration.

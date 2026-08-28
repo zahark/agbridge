@@ -280,6 +280,60 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+> The seven entries below came from **going looking for more of the same three shapes** after the
+> named ones were fixed, rather than from a report. Each is the same defect one function over.
+
+- **A grid the relay could not CLOSE was recorded as shown, so the close was never retried.** The
+  third incomplete outcome in `update_grid`, beside the failed open and the partial one it already
+  handled: when membership falls to nobody the relay closes its grid, and if that close failed the
+  cell set was advanced anyway — so the next tick took the `fresh == shown` early return and a grid
+  of participants who had left stayed on agterm's one screen for the rest of the run. `shown` is
+  held now and the message throttled, exactly as the other two are.
+
+- **`agb-peer relay` could go deaf with no error anywhere, permanently, after one tmux hiccup.**
+  The first `send` from a pane pins `automatic-rename off` (tmux's default is *on*, and it would
+  otherwise wipe the doorbell) and then memoises the window's base name. The memo is the gate: every
+  later send sees a base and skips the whole block. So the two were in the wrong order — a pin that
+  failed once, which a 30 s timeout against a wedged agterm client will do, was never attempted
+  again, and the consequence is the one written beside it. The memo is the last write now: it
+  records *all of this was done*, not *some of it was tried*.
+
+- **A message could be orphaned in the chat directory for ever by a closed stdout.** On the file
+  transport — an agent on a batch node whose tmux socket the Mac cannot reach — the *printed*
+  doorbell is not a report about the send, it **is** the send: `drain_files` cannot sweep a shared
+  directory (a message carries its recipient, not its sender) so it fetches by name, and the only
+  names it has are the markers on that screen. The file was written first and the doorbell printed
+  after, through three ordinary `stdout` writes that raise on `| head` or a full disk. The doorbell
+  goes first now; the remaining order is the harmless one, because a doorbell whose file is missing
+  is the documented `FETCH_GONE` path.
+
+- **`write_chat_file` left its `.tmp` behind on any failure**, alone among the four temp+rename
+  writers in that file — so an ENOSPC or a `Ctrl-C` mid-write leaves `<id>.msg.tmp` in a *shared*
+  chat directory where nothing collects it and nothing names it.
+
+- **The resolver's throttle was the sixth one with no clear**, and the same defect as the alias note
+  above it. A roster participant whose label matches no row is reported once and then throttled; the
+  note was missing from `_name_notes`, and it can have no in-place clear (only a name that has
+  *never* resolved reaches that throttle, and such a name is in no `resolved` dict to visit). So a
+  participant with a wrong label who leaves the roster and comes back with the same wrong label was
+  reported **nowhere** — and without `--dashboard` that line is the only thing the relay ever says
+  about them.
+
+- **A roster refusal from `agb-dashboard` could name neither line to edit.** Two roster lines
+  pointing at one dead label produced two byte-identical `oldrow: no row matches it` lines — the
+  same "go and look up who vanished" as the row-id spelling, in the function whose own docstring
+  argues against it. A refusal carries both tokens now (`carol (oldrow)`): the participant says
+  which line, the label says what on it is wrong. A positional selector is its own name and renders
+  unchanged.
+
+- **Four comments that had become false**, all of them claims about code somewhere else — the one
+  place this project keeps getting caught. `CLOSE_COMMAND` said it was printed at two sites when the
+  fix above made it three; `HANDLED_ERRORS` gave two reasons for its `OSError` entry, both wrong (an
+  unreadable roster arrives as `PeerError`, and nothing here loads `agb`) while the entry itself is
+  right for a *third* reason; `Ctl.dashboard` said its guard belongs at "every call site", which is
+  wider than the rule and would have argued for guarding a call that cannot orphan anything; and
+  `hold`'s note about writes inside its own `try` did not cover the one write that cannot be.
+
 - **A lost stdout orphaned the grid `agb-dashboard` had just opened.** `agb-dashboard alice | head`
   closes stdout the instant `head` exits, and every line printed after the grid went up — the cell
   report, the hold's own banner — was outside any cleanup guard. The `BrokenPipeError` unwound past

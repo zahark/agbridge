@@ -684,9 +684,22 @@ def write_chat_file(path, recipient, text):
     if not os.path.isdir(directory):
         os.makedirs(directory)
     temp = path + ".tmp"
-    with open(temp, "w") as handle:
-        handle.write(option_value(recipient, text))
-    os.rename(temp, path)
+    # ⚠️ The temp is removed on ANY failure, which the three other temp+rename
+    # writers in this file (`_write_roster_temp`, `write_roster_file`,
+    # `write_draft_file`) all do and this one did not. `BaseException`, not
+    # `Exception`: a `Ctrl-C` or an ENOSPC mid-write would otherwise leave
+    # `<id>.msg.tmp` in a shared chat directory for ever, where nothing
+    # collects it and nothing names it.
+    try:
+        with open(temp, "w") as handle:
+            handle.write(option_value(recipient, text))
+        os.rename(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
     return path
 
 
@@ -922,7 +935,18 @@ def _name_notes(name):
             # can. Without this, a participant who left and came back to the
             # SAME collision is dropped from the grid in silence, because the
             # message text is identical and `missing` subtracts `ALIAS_DROPS`.
-            ("said", ("alias", name)))
+            ("said", ("alias", name)),
+            # ⚠️ The resolver's own throttle, and the SIXTH one -- found by
+            # looking for more of the shape the alias note above was. It has no
+            # other clear and cannot have one: `resolve_all` keeps
+            # `previous[name]` for any name that ever resolved, so only a name
+            # that NEVER did reaches this throttle, and such a name is in no
+            # `resolved` dict for an in-place clear to visit. Left behind, a
+            # participant whose label is wrong, is removed from the roster and
+            # is re-added with the SAME wrong label is reported nowhere at all
+            # -- and without `--dashboard` that line is the only thing the
+            # relay ever says about them.
+            ("said", ("resolve", name)))
 
 
 def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
@@ -1605,10 +1629,14 @@ class Ctl(object):
         a removed binary, a `$PATH` an agterm pane did not inherit, the
         `/proc/<pid>/exe (deleted)` case after an upgrade, EMFILE -- so the
         status is answered only when the tool ran. The guard therefore lives at
-        **every call site**, which is the bug two separate review passes found:
-        the relay died mid-delivery with `agtermctl: [Errno 2]`, and
-        `agb-dashboard` lost the message naming the grid it had left up. Read
-        this line before writing a call that "cannot fail".
+        **every call site where a raise could orphan a grid or kill the message
+        pump** -- which is the bug two separate review passes found: the relay
+        died mid-delivery with `agtermctl: [Errno 2]`, and `agb-dashboard` lost
+        the message naming the grid it had left up. ⚠️ That is narrower than
+        "every call site", deliberately: `agb-dashboard` opens BARE, because a
+        raise there means agtermctl never ran, so there is no grid to orphan
+        and its `__main__` turns the `PeerError` into the documented exit 1.
+        Read this line before writing a call that "cannot fail".
 
         ⚠️ **STDOUT IS RETURNED, and that is the whole reason this is not a
         two-tuple.** agterm exits **0** when only SOME cells resolve, opens the
@@ -1964,11 +1992,22 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
         # thing that crosses. Both the path and the reason are printed, because
         # a fallback nobody is told about is how a message quietly stops
         # arriving.
-        path = write_chat_file(chat_path(ident, env=env), recipient, flat)
         out.write("agb-peer: tmux is unreachable (%s)\n"
                   % (err.strip() or rc,))
-        out.write("agb-peer: wrote %s\n" % (path,))
+        # 🔴 **THE DOORBELL IS PRINTED BEFORE THE FILE IS WRITTEN, and that
+        # order is load-bearing.** On this transport the printed marker is not
+        # a report about the send, it IS the send: `drain_files` cannot sweep
+        # a shared chat directory -- a message carries its recipient but not
+        # its sender -- so it fetches BY NAME, and the only names it ever has
+        # are the ones on this screen (`read_doorbells`). A file whose
+        # doorbell was never printed is therefore unrecoverable, and these are
+        # ordinary stdout writes: `agb-peer send … | head` and a full disk
+        # both raise. The other way round is harmless and already handled --
+        # a doorbell whose file is missing answers `FETCH_GONE`, which is the
+        # documented "already collected" path.
         out.write("%s\n" % (DOORBELL % (ident,),))
+        path = write_chat_file(chat_path(ident, env=env), recipient, flat)
+        out.write("agb-peer: wrote %s\n" % (path,))
         out.write("agb-peer: queued for %s as #%s (via file)\n"
                   % (recipient, ident))
         return 0
@@ -1986,15 +2025,25 @@ def cmd_send(recipient, text, run, out, now=None, env=None):
             raise PeerError("cannot read the window name for %s: %s"
                             % (pane, err.strip() or rc))
         base = base.strip() or "agent"
-        # Remembered so a second send renders `<original> [peer #id]` rather
-        # than `<original> [peer #id1] [peer #id2]`, for ever.
-        tmux(["set", "-p", "-t", pane, OPTION_BASE, base])
         # ⚠️ MEASURED: tmux's global default is `automatic-rename on`. The
         # doorbell survives today only because an explicit `rename-window`
         # turns it off as a SIDE EFFECT -- an undocumented dependency, and if
         # anything ever re-enables it tmux wipes the doorbell and the relay
         # goes deaf with no error anywhere. Pinned explicitly instead.
+        #
+        # ⚠️ **BEFORE the memo below, and the order is the whole point.**
+        # `tmux()` raises on any non-zero rc, including the 30 s `_spawn`
+        # timeout a wedged agterm client produces -- and storing the base
+        # FIRST closes the `if not base:` gate for every later send on that
+        # pane, so a pin that failed once would never be attempted again.
+        # The consequence is the one the paragraph above describes: tmux
+        # renames the window, the doorbell is wiped, and the relay goes deaf
+        # with no error anywhere. The memo is the last write here so that it
+        # records "all of this was done", not "some of it was tried".
         tmux(["set", "-w", "-t", pane, "automatic-rename", "off"])
+        # Remembered so a second send renders `<original> [peer #id]` rather
+        # than `<original> [peer #id1] [peer #id2]`, for ever.
+        tmux(["set", "-p", "-t", pane, OPTION_BASE, base])
     tmux(["set", "-p", "-t", pane, OPTION_PREFIX + ident,
           option_value(recipient, flat)])
     tmux(["rename-window", "-t", pane, doorbell_name(base, ident)])
@@ -2958,7 +3007,21 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
         # Nobody left to show. Closing is the only honest rendering -- agterm
         # has no empty grid -- and it is cleared only on a close that WORKED, so
         # the `finally` still gets its turn if this one did not.
-        opened = not close_grid(ctl, say)
+        #
+        # ⚠️ **AND `shown` IS NOT ADVANCED ON A CLOSE THAT FAILED**, which is
+        # the third incomplete outcome and the one this function did not cover:
+        # a failed open and a partial open both keep `shown` so the next tick
+        # retries, and a failed close is the same kind of unfinished business.
+        # Advanced, it made the next tick take the `fresh == shown` early
+        # return, so a stale grid of departed participants stayed on agterm's
+        # one screen for the rest of the run. The message goes through
+        # `_throttled` for the same reason the open's does -- retrying every
+        # tick means complaining every tick otherwise.
+        if not close_grid(ctl, _throttled(say, notes, ("dash-close",))):
+            return shown, opened
+        opened = False
+        if notes is not None:
+            notes.pop(("said", ("dash-close",)), None)
     return fresh, opened
 
 

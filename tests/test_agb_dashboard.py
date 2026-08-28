@@ -702,6 +702,46 @@ def test_a_scratch_participant_is_a_SHORTFALL_here(dashboard, tmp_path):
     assert ctl.opened() == []
 
 
+def test_a_ROSTER_refusal_names_the_participant_AND_the_label(dashboard,
+                                                              tmp_path):
+    """🔴 Two roster lines pointing at one dead label produced two BYTE-IDENTICAL
+    refusals, naming neither line to edit -- the same "go and look up who
+    vanished" the row-id spelling caused, in the function whose own docstring
+    argues against it. The participant says which line; the label says what on
+    it is wrong, so a refusal carries both."""
+    roster = tmp_path / "peers"
+    roster.write_text("carol=oldrow\ndave=oldrow:right\n")
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    body = str(err.value)
+    assert "carol (oldrow)" in body, body
+    assert "dave (oldrow)" in body, body
+    assert ctl.opened() == []
+
+
+def test_an_ambiguous_ROSTER_line_names_the_participant_too(dashboard,
+                                                            tmp_path):
+    """The other refusal in the same function, which had the identical gap."""
+    roster = tmp_path / "peers"
+    roster.write_text("carol=api\n")
+    ctl = GridCtl(rows(("AAAA1111", "api"), ("BBBB2222", "api-refactor")))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["--roster", str(roster)], ctl)
+    assert "carol (api)" in str(err.value), str(err.value)
+
+
+def test_a_POSITIONAL_selector_is_still_named_once(dashboard):
+    """⚠️ The companion, and the reason `asked()` is a conditional rather than
+    an unconditional pair: a bare selector IS its own name, so the second token
+    would be the first one repeated -- `alice (alice)`."""
+    ctl = GridCtl(rows(("AAAA1111", "alice")))
+    with pytest.raises(dashboard.DashError) as err:
+        grid(dashboard, ["carol"], ctl)
+    assert "carol: no row matches" in str(err.value), str(err.value)
+    assert "carol (carol)" not in str(err.value), str(err.value)
+
+
 def test_the_excluded_participant_is_named_by_NAME_not_by_row_id(dashboard,
                                                                  tmp_path):
     """⚠️ The relay's argued rule, which this side did not carry: *by NAME, not

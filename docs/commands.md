@@ -2020,7 +2020,8 @@ merge them, so preferring one silently would be a guess dressed as a feature.
 
 **Exit codes**, measured rather than intended: **0** the grid opened (`--version` and `--help` too);
 **2** a shortfall *this command* detected — an unresolved or ambiguous selector, no rows at all, too
-many cells, a pane the grid cannot show, or agterm opening a grid short of what was asked for; **1**
+many cells, a pane the grid cannot show, agterm *running and refusing* to open the grid, or agterm
+opening a grid short of what was asked for; **1**
 everything else, which is a usage error (a bad flag, no mode, two modes at once, or no arguments at
 all, which prints the usage) **and also anything the shared `agb-peer` layer refuses** — an unreadable
 or malformed roster, an agtermctl that will not start. ⚠️ Those arrive as `PeerError` and carry *its*
@@ -2038,7 +2039,7 @@ so it must fail loudly rather than half-succeed. Everything below follows from t
 
 | what happens | what you get |
 |---|---|
-| a selector matches no row | nothing opens, exit 2, the selector is named |
+| a selector matches no row | nothing opens, exit 2, the selector is named — and from a roster, **the participant too**: `carol (oldrow): no row matches it`. Two lines pointing at one dead label would otherwise produce two byte-identical refusals naming neither line to edit |
 | a selector matches several | nothing opens, exit 2, and **its matches are listed** — the first five of them, so an over-broad selector against forty rows does not fill the terminal |
 | agterm has no rows at all | its own message, rather than N identical "no row matches" lines — with no rows the answer is about agterm, not about what was typed |
 | two selectors naming **one cell** | **deduped**, not refused, and the fold is **reported by name** — `(carol names the same cell as alice -- shown once)`. Two ways of naming one cell is not a user error; spending two of the nine on it is the bug, and dropping a name in silence is the other one |

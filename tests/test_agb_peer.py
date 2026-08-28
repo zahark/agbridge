@@ -2639,7 +2639,12 @@ LEAVE_CLEARS_NOTES = [
     # has LEFT is in no later `resolved`, so `_one_name_per_row`'s own clear
     # cannot reach it. Left behind, a participant who leaves and comes back to
     # the same collision vanishes from the grid in silence.
-    ("said", ("alias", "bob"))]
+    ("said", ("alias", "bob")),
+    # ⚠️ And the sixth, found by looking for more of the same shape: the
+    # resolver's own throttle for a label nothing answers to. It has no other
+    # clear and cannot have one -- a name that never resolved is in no
+    # `resolved` dict for an in-place pop to visit.
+    ("said", ("resolve", "bob"))]
 
 
 def test_the_per_name_notes_list_is_complete(peer):
@@ -5019,3 +5024,212 @@ def test_a_cell_agterm_drops_TWICE_is_reported_twice(peer):
     ctl.dashboard_out = "unresolved: BBBB2222\n"
     peer.update_grid(ctl, people, people, shown, opened, said.append, notes)
     assert len([m for m in said if "agterm dropped" in m]) == 2, said
+
+
+def test_a_MISRESOLVED_name_that_leaves_and_returns_is_reported_again(peer,
+                                                                      tmp_path):
+    """The sixth throttle, found by looking for more of the alias one's shape.
+
+    `resolve_all` throttles "carol: <label> matches no row" because a roster
+    turns a startup typo into a steady state. Its note was not in
+    `_name_notes`, and it can have no in-place clear: `previous[name]` short
+    circuits any name that ever resolved, so only a name that NEVER did gets
+    here, and such a name is in no `resolved` dict for a clear to visit. Left
+    behind, a participant with a wrong label who leaves and comes back with the
+    SAME wrong label is reported nowhere -- and without `--dashboard` that line
+    is the only thing the relay ever says about them.
+    """
+    path = roster_file(tmp_path,
+                       "alice=AAAA1111\nbob=BBBB2222\ncarol=NOSUCHROW\n")
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222\n")
+        if tick == 2:
+            open(path, "w").write(
+                "alice=AAAA1111\nbob=BBBB2222\ncarol=NOSUCHROW\n")
+    ctl = TickingCtl(panes(), edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=4,
+                   fetch=Fetcher())
+    assert ctl.tick >= 3, "carol never came back"
+    assert out.getvalue().count("carol: ") == 2, out.getvalue()
+
+
+def test_a_PERSISTENT_misresolved_name_is_still_reported_once(peer):
+    """The companion, and the reason the throttle exists at all: a roster
+    nobody fixes must not print the same line every tick for the life of the
+    relay."""
+    out = io.StringIO()
+    ctl = TickingCtl(panes())
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222", "carol=NOSUCHROW"],
+                   500, 8, False, out, ticks=3, fetch=Fetcher())
+    assert ctl.tick >= 2, "one tick only -- the throttle was not exercised"
+    assert out.getvalue().count("carol: ") == 1, out.getvalue()
+
+
+def test_a_close_that_FAILS_does_not_record_the_grid_as_shown(peer):
+    """🔴 The third incomplete outcome `update_grid` did not cover, and the
+    same shape as the two it does: `shown` was advanced after a close that
+    FAILED, so the next tick took the `fresh == shown` early return and a stale
+    grid of participants who had left stayed on agterm's one screen for the
+    rest of the run.
+
+    ⚠️ Driven through `update_grid` directly: a roster is refused below one
+    participant, so `cmd_relay` cannot reach an empty membership by editing
+    one."""
+
+    class NoClose(RelayCtl):
+        def dashboard_close(self):
+            self.closes += 1
+            self.grid_log.append(("close",))
+            return False, "no such dashboard"
+
+    said, notes = [], {}
+    ctl = NoClose(panes())
+    was = (("alice", "AAAA1111", "left"),)
+    shown, opened = peer.update_grid(ctl, {}, {}, was, True, said.append, notes)
+    assert ctl.closes == 1 and opened is True, "the latch must survive"
+    assert shown == was, "a close that failed is not a grid that went away"
+    peer.update_grid(ctl, {}, {}, shown, opened, said.append, notes)
+    assert ctl.closes == 2, "the close was never retried"
+    assert len([m for m in said if "could not close" in m or "no such" in m]) == 1, said
+
+
+# ---------------------------------------------------------------------------
+# `cmd_send`: what survives a failure PART-WAY through
+#
+# Three irreversible things happen here -- a tmux window option is pinned, a
+# base name is memoised, a message is stashed and announced -- and `tmux()`
+# raises on any non-zero rc, including the 30 s `_spawn` timeout a wedged
+# agterm client produces. What matters is which of them a half-run leaves
+# behind, and whether the half that ran can ever be retried.
+# ---------------------------------------------------------------------------
+
+class FailingTmux(object):
+    """A tmux that refuses one particular subcommand and records every call."""
+
+    def __init__(self, refuse, base=""):
+        self.refuse, self.base, self.calls = refuse, base, []
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        if argv[1] == "show-options":
+            return 0, self.base, ""
+        if argv[1] == "display-message":
+            return 0, "claude-alice", ""
+        if self.refuse in argv:
+            return 1, "", "tmux: no"
+        return 0, "", ""
+
+    def subcommands(self):
+        return [c[1] for c in self.calls]
+
+
+def test_the_rename_pin_is_ATTEMPTED_BEFORE_the_base_is_memoised(peer):
+    """🔴 The memo is the gate. `if not base:` skips this whole block on every
+    later send, so a `automatic-rename off` that failed once would never be
+    attempted again -- and the comment beside it records the consequence as
+    measured: tmux renames the window, the doorbell is wiped, and the relay
+    goes deaf with NO ERROR ANYWHERE.
+
+    So the memo has to be the LAST write of the block: it records "all of this
+    was done", not "some of it was tried"."""
+    run = FailingTmux("automatic-rename")
+    with pytest.raises(peer.PeerError):
+        peer.cmd_send("bob", "hi", run, io.StringIO(), now=1.0,
+                      env={"TMUX_PANE": "%9"})
+    # ⚠️ `set`, not merely "mentions the option": the first call of every send
+    # is a `show-options` READ of the same name, so a filter on the option
+    # alone would match the read and pass for the wrong reason.
+    stored = [c for c in run.calls
+              if peer.OPTION_BASE in c and "set" in c]
+    assert stored == [], "the base was memoised over a pin that failed: %r" % (
+        run.calls,)
+
+
+def test_a_clean_send_still_does_BOTH_in_that_order(peer):
+    """The companion the ordering claim needs: without it the assertion above
+    passes against an implementation that never pins at all."""
+    run = FailingTmux("nothing-fails-here")
+    peer.cmd_send("bob", "hi", run, io.StringIO(), now=1.0,
+                  env={"TMUX_PANE": "%9"})
+    flat = [" ".join(c) for c in run.calls]
+    pin = [i for i, c in enumerate(flat) if "automatic-rename" in c]
+    memo = [i for i, c in enumerate(flat) if peer.OPTION_BASE in c and "set" in c]
+    assert pin and memo, flat
+    assert pin[0] < memo[0], flat
+
+
+def test_the_file_transports_DOORBELL_is_printed_before_the_file_exists(peer,
+                                                                       tmp_path):
+    """🔴 On this transport the printed marker is not a report about the send,
+    it IS the send: `drain_files` cannot sweep a shared chat directory, so it
+    fetches BY NAME and the only names it has are the ones on the screen. A
+    file whose doorbell was never printed is unrecoverable -- the exact end
+    state `read_doorbells` records as measured ("orphaned in the chat directory
+    for ever").
+
+    These are ordinary stdout writes and they raise: `agb-peer send … | head`
+    and a full disk both do it. So the doorbell goes first, and the harmless
+    order is the one that is left -- a doorbell whose file is missing answers
+    `FETCH_GONE`, the documented "already collected" path."""
+
+    class DeadPipe(object):
+        def __init__(self, ok):
+            self.ok, self.text = ok, ""
+
+        def write(self, s):
+            if self.ok <= 0:
+                raise BrokenPipeError("closed")
+            self.ok -= 1
+            self.text += s
+
+    run = type("Failing", (LocalRun,), {
+        "__call__": lambda self, argv: (self.calls.append(argv),
+                                        (1, "", "No such file or directory"))[1]})()
+    env = {"TMUX_PANE": "%99", "TMUX": "/no/such/sock,1,99",
+           "AGB_STATEDIR": str(tmp_path)}
+    # One write lands (the "tmux is unreachable" line); the doorbell is next
+    # and dies.
+    out = DeadPipe(1)
+    with pytest.raises(BrokenPipeError):
+        peer.cmd_send("bob", "hello from the pool", run, out, now=1.0, env=env)
+    chat = tmp_path / "chat"
+    left = sorted(p.name for p in chat.iterdir()) if chat.is_dir() else []
+    assert left == [], "a file nothing can ever name was left behind: %r" % (left,)
+
+
+def test_write_chat_file_removes_its_temp_when_the_rename_fails(peer,
+                                                                tmp_path):
+    """⚠️ The three other temp+rename writers in this file all unlink on
+    failure; this one did not, so an ENOSPC or a Ctrl-C mid-write left
+    `<id>.msg.tmp` in a SHARED chat directory for ever, where nothing collects
+    it and nothing names it.
+
+    The rename is made to fail by putting a directory where the file goes,
+    which is a real `OSError` from the real call rather than a patched one."""
+    # ⚠️ In a subdirectory of `tmp_path`, not `tmp_path` itself: the autouse
+    # `fake_home` fixture puts a `home/` there, so a listing of the root would
+    # be asserting about somebody else's directory.
+    chat = tmp_path / "chat"
+    chat.mkdir()
+    target = chat / "abc.msg"
+    target.mkdir()
+    with pytest.raises(OSError):
+        peer.write_chat_file(str(target), "bob", "hello")
+    left = sorted(p.name for p in chat.iterdir())
+    assert left == ["abc.msg"], left
+
+
+def test_write_chat_file_leaves_no_temp_on_the_HAPPY_path_either(peer,
+                                                                 tmp_path):
+    """The companion: without it the assertion above passes against a writer
+    that never creates a temp at all -- and temp+rename is the point, because
+    a torn read is real on NFS."""
+    chat = tmp_path / "chat"
+    chat.mkdir()
+    path = str(chat / "abc.msg")
+    assert peer.write_chat_file(path, "bob", "hello") == path
+    assert sorted(p.name for p in chat.iterdir()) == ["abc.msg"]
+    assert io.open(path).read() == "bob\nhello"
