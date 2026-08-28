@@ -812,8 +812,8 @@ the old file via `--config <the default path>` re-demands `--statedir`. Give it 
 ⚠️ **`VERSION` was deliberately NOT bumped by that change.** It lives at `agb:24`, the only place, and
 the plan's own constraint was that `agb` is not touched (1 character of headroom). A breaking CLI
 change does argue 0.7.0 — but the number decides nothing until a release does, so the entry sits under
-`## Unreleased` at 0.6.0 and the release that ships it picks the number. Recorded so the omission does
-not read as an oversight.
+`## Unreleased` at 0.6.0 and the release that ships it picks the number. ✅ **0.7.0 picked it**, on
+that breaking change, 2026-08-28.
 
 Before it, **a banner when a long-running agent finishes** (`notify_on_completed_after`, on by
 default at 300 s). The threshold is the feature — `completed` fires once per *turn*, so ungated it

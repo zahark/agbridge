@@ -6,7 +6,7 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
-## Unreleased
+## 0.7.0 — 2026-08-28
 
 > ⚠️ **One breaking change**: the Mac installer refuses an install that does not name its instance.
 > Read *Installing after this change* below before upgrading a Mac — and read it **first** if that
@@ -2123,12 +2123,14 @@ keep the `agb pane` code they were *created* with until `agb-refresh` re-mints t
   the default path, which forbids a legitimate shape (adopting an existing file under a name) to
   prevent a deliberate act. Documented rather than closed — and it is exactly why the statedir
   adoption refuses to fire through that route.
-- **`VERSION` is not bumped.** It lives at `agb:24`, the only place it lives, and this change was
-  built under a hard constraint that `agb` is not touched — it has **one character** of headroom
-  against `AGB_PARSE_BUDGET`, and `--print-statedir` landed entirely in `agb_ops`. A breaking CLI
-  change does argue 0.7.0; the number decides nothing until a release does, so this sits under
-  `## Unreleased` at 0.6.0 and the release that ships it picks the number. Recorded so the omission
-  is not read as an oversight.
+- **`VERSION` was not bumped by that change**, deliberately. It lives at `agb:24`, the only place it
+  lives, and the change was built under a hard constraint that `agb` is not touched — `agb` had one
+  character of headroom against `AGB_PARSE_BUDGET` at the time, and `--print-statedir` landed
+  entirely in `agb_ops`. A breaking CLI change does argue 0.7.0; the number decides nothing until a
+  release does, so it sat under `## Unreleased` at 0.6.0. ✅ **This release picked it: 0.7.0**, on
+  that breaking change. (`agb` is 105,269 characters against a budget of 105,300 and a **strict
+  `<`**, so the headroom is now **30**, not one — the budget was raised twice since, each time on a
+  measurement.)
 - **`dist/com.agbridge.plist` was not renamed.** Only the filename misleads — its `@LABEL@`
   placeholder means it already renders every instance's plist, named ones included. Cosmetic, and
   out of scope.
@@ -2150,25 +2152,33 @@ exactly what it claims.
 `relay --dashboard` — the single-grid contention the docs describe. And `session scratch`'s own
 behaviour, unchanged from before.
 
-- **Nothing in `agb-dashboard` has been run against a live agterm, and neither have the
-  `relay --dashboard` fixes.** agterm's own `dashboard` behaviour *was* measured against the binary
-  and is tagged clause by clause in [`docs/agtermctl.md`](docs/agtermctl.md); what has no live run is
-  **agbridge's use of it**. Everything above is covered against a fake `Ctl`. ⚠️ This caveat is in
-  `README.md`, `CLAUDE.md`, `docs/commands.md` and `docs/cookbook.md`, and was missing from **this**
-  file — the one a user actually reads before upgrading, and so the one place the feature read as
-  done.
+### Not verified
 
-  The check worth doing first is **not** the happy path. It is the refusal: a grid agterm opened
-  while printing `unresolved:` on stdout has to be **closed again**, and that close is the step
-  everything here can only assert against a fake. `:right` on a row whose split has closed is the
-  cheapest way to provoke it.
+⚠️ **This section used to say "nothing in `agb-dashboard` has been run against a live agterm",
+directly under a heading saying it had been.** The live run happened and the stale list was not
+pruned, so the file asserted both. What follows is what is *actually* still unverified.
 
-- **The relay's grid following its membership has not been watched either.** A departed
-  participant's cell staying on screen is invisible unless you look for it, which is why two separate
-  enumerations of these fixes in this repo dropped that one.
+- **Two grids contending** — two `agb-dashboard` runs against each other, or one against a live
+  `relay --dashboard`. agterm has **one** grid and no ownership token, so each closes only a grid
+  *it* opened; running both at once is documented as unsupported rather than defended against.
 
-- **`agb-peer-setup` has been run; `agb-dashboard` has not.** Do not read the first as evidence for
-  the second: they share a loader and nothing else.
+- **`relay --dashboard` following its membership.** The live run exercised `agb-dashboard`, which is
+  a **one-shot with a foreground hold**; the relay's grid is the one that re-resolves every tick, and
+  a departed participant's cell staying on screen is invisible unless you look for it. ⚠️ Two
+  separate enumerations of these fixes in this repo dropped exactly this one. **Do not read
+  `agb-dashboard`'s six passing paths as evidence for it** — they are different commands with
+  deliberately opposite error policies.
+
+- **`session scratch`'s own behaviour** — the `[d]` drawer added in 0.3.0. Nobody has watched a
+  drawer open, be hidden, and come back with **the same shell still alive**, which is the entire
+  reason `scratch` was chosen over `overlay`.
+
+- **The composer-clear path end to end.** `\003` was measured to clear a draft with the agent alive,
+  and the *decision* it drives is covered against a fake `Ctl` — but no live delivery has actually
+  false-negatived, cleared, and been retried on the next tick.
+
+- ⚠️ **`agb-peer-setup`, `agb-dashboard` and the `agb-hangout` skill are not installed by
+  `install.sh`.** They are run from the checkout and load `agb-peer` by path from beside themselves.
 
 ## 0.6.0 — 2026-08-01
 

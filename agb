@@ -21,7 +21,7 @@ import os
 import sys
 import time
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 DEFAULT_STATEDIR_NAME = ".agbridge"
 
