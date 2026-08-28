@@ -56,10 +56,20 @@ mid-repaint, before its glyph is drawn, could plausibly read 0 or 1 — and that
 branch that sends an operator looking for a human. Two disagreeing reads now say *repainting*
 instead.
 
-⚠️ **Hypothesised, not sighted.** Nobody has measured a repainting composer reading below 2; it is
-the *shape* that earns the guard. So the guard was made to cost as little as a guard can: one extra
-read, on an already-failing path, on the alarming branch only. Above 2 is a draft, and a draft that
-appears is a draft.
+🔴 **MEASURED, TWICE, ON A HEALTHY LIVE ROW — this was filed as a hypothesis and is not one.** A
+relay log caught its own peer's composer reading **`column 0`** and then **`column 1`**, minutes
+apart, on an agent working perfectly throughout:
+
+```
+cursor at column 0, empty is 2 -- somebody has a draft in it
+cursor at column 1, empty is 2 -- somebody has a draft in it
+```
+
+⚠️ **So without the second read, the below-2 branch would have said "not a composer at all — it
+needs a HUMAN" about a healthy agent, twice.** The two-agreeing-reads guard is the **load-bearing**
+half; the wording change alone would have been actively wrong more often than right. Filed as
+*"the shape earns the guard, not a sighting"* — the sighting arrived within the hour, from a log
+nobody was reading for this.
 
 ⚠️ **And the DECISION is unchanged in every case — we refuse.** Only the sentence differs, which is
 what makes this safe to land with no live run: a wrong reading can now mis-word a refusal and can

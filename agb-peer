@@ -1953,9 +1953,16 @@ def caret_reason(column, again=None):
     needed". That would be a confident, alarming, WRONG diagnosis about a
     perfectly healthy agent, produced by reading at the wrong moment.
 
-    ⚠️ **Hypothesised, not sighted**: nobody has measured a repainting composer
-    reading below 2. The shape is what earns the guard, not a sighting -- so
-    the guard costs one extra read on an already-failing path and nothing else.
+    🔴 **MEASURED, TWICE, ON A HEALTHY LIVE ROW** -- this was filed as a
+    hypothesis and is not one. A relay log caught its own peer's composer
+    reading `column 0` and then `column 1`, minutes apart, on an agent that was
+    working perfectly throughout. **So without the second read this branch
+    would have announced "not a composer at all -- it needs a HUMAN" about a
+    healthy agent**, which is the one case the wording exists for.
+
+    ⚠️ **That makes the two-agreeing-reads guard the load-bearing half, not the
+    caution.** The wording change alone would have been actively wrong more
+    often than it was right.
 
     ⚠️ **Above 2 needs no such care** -- a draft that appears is a draft -- so
     the cost falls only on the branch making the scary claim.

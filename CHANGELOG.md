@@ -10,6 +10,30 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 The repainting-composer caret was filed as a hypothesis and is now MEASURED, twice, on a
+  healthy live row.** A relay log caught its own peer's composer reading **`column 0`** and then
+  **`column 1`**, minutes apart, on an agent working perfectly throughout. ⚠️ **So without the
+  two-agreeing-reads guard, `caret_reason`'s below-2 branch would have announced "not a composer at
+  all — it needs a HUMAN" about a healthy agent, twice** — in the one case the wording exists for.
+  The guard is the **load-bearing** half, not the caution; the wording change alone would have been
+  actively wrong more often than right. Filed as *"the shape earns the guard, not a sighting"*, and
+  the sighting arrived within the hour, from a log nobody was reading for this.
+
+- **🔴 Recorded: four correct behaviours composing into an agent that waits for ever.** Roster
+  reverts → the agent is no longer a participant → its `agb-peer who` cannot be answered → the roster
+  is restored → **the priming rule discards the pending `who` as predating the join** → nothing ever
+  arrives. ⚠️ **No component is wrong**: each of the four is documented, defended in a comment, and
+  three of the four comments explain why the *opposite* behaviour would be a bug. **A composed
+  failure has no faulty component, so every review that examines components passes it.**
+
+  ⚠️ **The stall was diagnosed as transient and was permanent** — *"it will probably recover when the
+  answer arrives"* was wrong in the reassuring direction, because the answer had already been deleted
+  by a correct rule. And it is the strongest argument for the *do not end your turn in silence* rule
+  added the same day: that was written against a **transient** wait as a matter of manners, and turns
+  out to be the only thing between an agent and an unbounded one.
+  `docs/backlog/four-correct-behaviours-composing-into-a-permanent-stall.md` also records why the
+  obvious fix collides with the rule that creates the problem.
+
 - **🔴 A message dropped for an unknown recipient now bounces back to the sender.** `send` printed
   `queued for <name> as #<id>` and exited **0**; a tick later the relay destroyed the message because
   the name was not in the roster, and **the only trace was a line in relay output that no agent can
