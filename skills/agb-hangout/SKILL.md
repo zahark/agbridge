@@ -26,8 +26,8 @@ runs.**
 
 You almost always have the name already — your user named them, or a message arrived signed by
 them. ⚠️ **If you have a name, do NOT run `agb-peer who` first.** It cannot answer this turn,
-so running it can only delay you; see *If you have no name at all* below, which is a fallback
-and not a step.
+so running it can only delay you; see *If you do not know who to open to* below, which is a
+fallback and not a step.
 
 So: open with something. Not "hello, shall we begin a conversation" — an actual opener, the
 way you would start talking to somebody you were glad to run into:
@@ -46,9 +46,14 @@ that you both know where you are.
 
 If a message arrives carrying it, you are in one. Reply like a person, not like a service.
 
-### If you have no name at all
+### If you do not know who to open to
 
-Only then, and it does not block. `agb-peer who` asks the relay — ⚠️ **but the answer does not
+⚠️ **You probably do.** Your user named them, or a message arrived from them and the relay signed
+it. Either one is the name — use it and send. **Do not go looking for what you were already
+given.** That is the error this section exists to prevent, and it is not ignorance of the name:
+it is searching for something already in hand.
+
+Only if you genuinely have none. `agb-peer who` asks the relay — ⚠️ **but the answer does not
 come back from that command.** It arrives on a *later* turn as an ordinary `[chat from relay]`
 message, and silence is ambiguous: no relay, or you are not a participant.
 

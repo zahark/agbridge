@@ -10,6 +10,15 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A peer's report and a peer's request are the same message, and both readings are correct.**
+  MEASURED: two agents read the same diagnosis of a defect, both treated it as a work item, and both
+  fixed it — one patch was wasted and would have conflicted. ⚠️ **A task handoff has an implicit
+  owner; a peer conversation does not**, so *"here is what I found"* is a report to one side and a
+  request to the other, and neither is misreading. `skills/agb-peer/SKILL.md` now says: **if a peer's
+  message makes you start work, say "taking this" before you start.** One line, entirely on the side
+  that starts. ⚠️ Same shape as the two agents that stopped on true errors — nothing was wrong at
+  either end, and the gap was *between* them.
+
 - **🔴 `agb-hangout` stalled on the very first real use, and it was an ORDERING defect — the same
   one as the `agb-peer` usage line, in a section that had just been reviewed.** A user said *"hang
   out with codex — no task, just talk"*. The agent loaded the skill, ran **one** command
