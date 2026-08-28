@@ -108,6 +108,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-peer`'s timeout is now actually a timeout.** `_spawn` killed a timed-out child and then
+  called `communicate()` with **no timeout**, waiting for EOF on the pipes — and a grandchild
+  inherits those pipes, so a command spawning a helper that outlived it blocked that second wait
+  **for ever, with no output**: strictly worse than the timeout it was reaching for. Measured live:
+  `exec sleep 300` returned at 31 s against a 30 s budget, correctly; the same hang one process
+  deeper never returned at all. Now `communicate(timeout=REAP_TIMEOUT)` in its own `try`, with
+  `poll()` rather than `wait()` on the way out — `wait()` would reintroduce the block it avoids.
+  Worst case is `timeout + 5 s`.
+
+  ⚠️ **Bounded is not reaped, deliberately, and the reason the better fix was declined is worth
+  more than the fix.** `start_new_session=True` + `os.killpg` is correct rather than merely bounded —
+  but it **detaches every child from the controlling terminal**, so Ctrl-C at an `agb-peer relay`
+  prompt would stop reaching the subprocess it is running. That is a real regression in the
+  interactive path, paid for a case that is unreachable with today's single-binary `agtermctl`.
+  Recorded at the call site and in the backlog entry, so the next reader does not re-derive it.
+
 - **🔴 Exit 4's stated cost — "one lost message and a loud line" — is wrong, and the correction came
   from connecting two comments already in the same function.** `try_deliver` drops a message whose
   text was typed but could not be verified, on the reasoning that one lost message beats two copies

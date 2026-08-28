@@ -4,6 +4,15 @@
 wedged `agtermctl`. **Not reachable today** — recorded because the failure is silent and the day it
 becomes reachable is a day nobody would think to look here.
 
+> ✅ **FIXED 2026-08-28 — fix 1 of the two below.** `_spawn` now reaps with
+> `communicate(timeout=REAP_TIMEOUT)` (5 s) inside its own `try`, and `poll()` rather than `wait()`
+> on the way out — `wait()` would reintroduce the block it avoids. Worst case is `timeout + 5 s` and
+> a `TIMED_OUT` answer instead of no answer ever. **Fix 2 was declined, and the reason below is
+> incomplete**: see *Why fix 2 was not taken* at the end.
+>
+> The rest of this entry is kept because the measurement and the choice between the two fixes are
+> still the live guidance.
+
 ## What is guaranteed, and what is not
 
 `agb-peer:_spawn` on `TimeoutExpired` does:
@@ -50,3 +59,21 @@ This is shape D from `CLAUDE.md` — an indefinite outcome collapsed into a defi
 in the *mechanism that implements the timeout*, rather than in a caller reading its result. The
 check that finds this class is: **a bounded wait is only bounded if everything holding the pipe is
 what you killed.**
+
+
+## Why fix 2 was not taken — a cost this entry did not name
+
+The entry above recommends fix 2 (`start_new_session=True` + `os.killpg`) as *"correct rather than
+merely bounded"* and notes only that it "changes signal semantics for every caller". That
+understates what changes.
+
+⚠️ **`start_new_session=True` detaches the child from the controlling terminal.** A child in its own
+session no longer receives the terminal's SIGINT — so **Ctrl-C at an `agb-peer relay` prompt would
+stop reaching the subprocess it is currently running.** That is a user-visible regression in the
+interactive path, paid to fix a case that is **unreachable** with today's single-binary `agtermctl`.
+
+So the trade is not "correct versus bounded", it is "correct for a hypothetical grandchild, at the
+cost of interrupt handling that works today". Fix 1 was taken on those grounds. ⚠️ **Revisit if
+`agtermctl` ever grows a helper process** — at which point the case stops being hypothetical and the
+trade genuinely reverses. The check that would notice: `_spawn`'s worst case is
+`timeout + REAP_TIMEOUT`, and a grandchild that survives it is still running with the pipe open.
