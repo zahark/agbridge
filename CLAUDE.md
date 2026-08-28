@@ -545,6 +545,37 @@ These are not style preferences. Each one has a test, and most were re-learned t
     two scripts end up with the *same class object* — a string comparison alone would pass against
     two loaders that agreed on the name and still built two modules.
 
+### Three shapes that keep coming back
+
+Not new invariants — three *recurring bugs*, each found, fixed, its reason written into a comment at
+its own call site, and then reintroduced somewhere else by the next person. That is the actual
+lesson: **a rule that lives only in a comment where it was learned is not a mechanism.** The
+`agb-peer` / `agb-dashboard` grid work hit all three; two review passes over one branch found
+**twelve** instances between them. Check for all three when you touch anything that drives agterm.
+
+- **A — a user-facing write outside the cleanup guard.** `say` / `out.write` can **raise**:
+  `agb-peer relay | head` closes stdout the instant `head` exits. A write between "the grid is up"
+  and the `finally` that closes it unwinds *past* the close and orphans it — and agterm has one grid
+  and no ownership token, so an orphan is on everybody's screen. Found **five** times. ⚠️ **Wrap at
+  the boundary, not per call** (`agb-peer._quiet`, `agb-dashboard._Quiet`), or the next report
+  somebody adds is outside again. **Check:** for every cleanup `finally`, is *everything* that can
+  raise between acquiring the resource and arming the guard, guarded?
+- **B — state advanced on an incomplete outcome, so it is never retried.** A "have I already done
+  this" gate written after a call that only partly worked. Found **twice**, both on `update_grid`'s
+  `shown`: a failed open, then a **partial** one — agterm exits **0**, grids the cells it could
+  resolve and names the rest on stdout. The next tick's `fresh == shown` early return then makes a
+  *transient* failure permanent. **Check:** at every gate assignment, ask which outcomes reach that
+  line. "Returned" is not "succeeded", and **exit 0 is not "did everything"**.
+- **C — a rule argued on one side of a branch and not carried to the other.** `agb-dashboard` and
+  the relay do the same job with deliberately *different* error policies, which makes a real
+  difference indistinguishable from an omission unless somebody says which it is. Found **five**
+  times — report by NAME not row id; apply the cap after the pane exclusion; print the literal close
+  command; clear every throttle when its condition goes; and a docstring still saying the relay
+  ignores output it had started reading. **Check:** when the two sides differ, the difference owes a
+  sentence saying it is deliberate — and when you change one side, re-read the *counterpart's*
+  comments, because a docstring describing somebody else's behaviour is where the stale claim will
+  be.
+
 ## Testing conventions
 
 **Structural guards.** Many tests parse the source with `ast` and assert properties like "`json` is

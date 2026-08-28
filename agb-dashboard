@@ -29,6 +29,9 @@
 # What it shares rather than reimplements: row matching (`match_sessions`), the
 # roster grammar, `dashboard_cells` and the `Ctl` wrapper all stay in
 # `agb-peer`, which remains their single owner. This script loads it by path.
+# ⚠️ `close_grid` is the one thing with the same name on both sides and it is
+# NOT shared -- the two differ in arity and return type for a reason argued at
+# each of them, so read that before merging them.
 #
 # Usage:
 #
@@ -378,6 +381,17 @@ def close_grid(ctl):
     The reason to catch it here rather than at each site is that both need the
     same answer -- "no, and here is why" -- which is what the two-tuple already
     says.
+
+    ⚠️ **`agb-peer` has a `close_grid` too, and this is NOT it.** Same name,
+    different arity and a different return: the relay's takes a `say` and
+    answers a bool, because it has a running loop to report into and a
+    latched ownership flag to clear. This one has neither -- its two callers
+    put the reason inside a `DashError` and inside a printed warning -- so it
+    hands the reason back instead. The file header lists what this script
+    shares rather than reimplements; this is the one that is reimplemented,
+    and it is argued here rather than left for a reader to notice, the way
+    `open_split`/`open_drawer` are. What they share is the REASON to exist,
+    which lives on `Ctl.dashboard_close` where both can see it.
     """
     try:
         return ctl.dashboard_close()
