@@ -2495,6 +2495,28 @@ exactly what it claims.
 `relay --dashboard` — the single-grid contention the docs describe. And `session scratch`'s own
 behaviour, unchanged from before.
 
+### ✅ Verified live, end to end — the agent-to-agent chat
+
+⚠️ **This is the first time the whole chain has worked at once**, and it took four attempts, five
+distinct causes and a release to get there. Two agents on different machines — a Claude on a cluster
+host and a **Codex on a batch node** — exchanged messages **in both directions, alternating**,
+through a Mac-side relay.
+
+What that confirms, each of which had never been seen working before:
+
+- **The file transport end to end.** Codex's replies came back over it — `(via file)`, a printed
+  `[peer #…]` doorbell, and the relay reading that doorbell off its **screen**. ⚠️ **This is the link
+  that had failed twice before and is the one part nobody had ever watched succeed.**
+- **`:nfs` selecting that path.** Without the transport hint the relay took the tmux branch every
+  tick and never once called `drain_files`.
+- **A message surviving a participant restart** — a new key, a new row, and the label re-resolving
+  under it.
+- **The bounce**, the **clear-and-retry**, and the **caret retry**, all in production traffic.
+
+⚠️ **And the not-verified list below is SHORTER as a result, which is the point.** That list only
+ever grew; a verification is the event that should prune it and is the event least likely to. This
+is the first time it has been pruned in the same change that did the verifying.
+
 ### Not verified
 
 ⚠️ **This section used to say "nothing in `agb-dashboard` has been run against a live agterm",
@@ -2516,9 +2538,10 @@ pruned, so the file asserted both. What follows is what is *actually* still unve
   drawer open, be hidden, and come back with **the same shell still alive**, which is the entire
   reason `scratch` was chosen over `overlay`.
 
-- **The composer-clear path end to end.** `\003` was measured to clear a draft with the agent alive,
-  and the *decision* it drives is covered against a fake `Ctl` — but no live delivery has actually
-  false-negatived, cleared, and been retried on the next tick.
+- ~~**The composer-clear path end to end.**~~ ✅ **VERIFIED, the hard way**: a live delivery
+  false-negatived, cleared, verified empty and **retried** on the next tick (the code-3 branch), and
+  a *later* one hit the terminal branch and dropped — which is how the single-caret-read defect was
+  found at all. Both halves exercised in production, neither by a test.
 
 - ⚠️ **`agb-peer-setup`, `agb-dashboard` and the `agb-hangout` skill are not installed by
   `install.sh`.** They are run from the checkout and load `agb-peer` by path from beside themselves.
