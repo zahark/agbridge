@@ -1065,7 +1065,7 @@ def _name_notes(name):
 
 
 def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
-                 say):
+                 say, moved=None):
     """Forget everything pane-specific about names that left or moved.
 
     ⚠️ **A REBIND IS NOT A LEAVE, AND THE DIFFERENCE IS `pending`.** Both change
@@ -1092,9 +1092,24 @@ def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
         if done:
             for entry in [e for e in done if e[0] == name]:
                 done.discard(entry)
-    for name in sorted(rebound):
-        # The new pane may hold anything, including a conversation this name
-        # was never part of, so it is primed exactly like a fresh join.
+    # 🔴 **ONLY A NAME WHOSE PANE ACTUALLY MOVED IS PRIMED.** The reason for
+    # priming is that *the new pane may hold anything, including a conversation
+    # this name was never part of* -- which cannot be true when the pane is the
+    # same one. `moved` defaults to `rebound`, so every existing caller is
+    # unchanged.
+    #
+    # ⚠️ MEASURED 2026-08-28, and it cost a real message. A participant's
+    # roster entry was edited to add a TRANSPORT hint -- same row, same pane,
+    # only `@host` gaining `:nfs`. The binding tuple differed, so it counted as
+    # a rebind, so it was primed, and priming **discarded the very message the
+    # repair existed to deliver**. The edit was the only way to fix delivery
+    # for that participant and was guaranteed to destroy what was pending.
+    #
+    # ⚠️ Forgetting `seen` above is still right for a transport change and is
+    # NOT the harmful half: it makes the doorbell read as new, which is exactly
+    # how the repaired transport picks the message up. Discarding is the half
+    # that had no justification.
+    for name in sorted(rebound if moved is None else moved):
         needs_prime.add(name)
     gone = set(left)
     if not gone:
@@ -3253,9 +3268,15 @@ def cmd_relay(ctl, words, lines, interval, once, out, dashboard=False,
                     joined = set(arrived) - set(spec)
                     rebound = set(name for name in set(spec) & set(arrived)
                                   if spec[name] != arrived[name])
+                    # ⚠️ A binding is (row, pane, target, tmux_target). Only
+                    # the first two say WHICH PANE -- the rest is how to reach
+                    # it. Priming is about the pane, so it must key off the
+                    # pane, not off the tuple.
+                    moved = set(name for name in rebound
+                                if spec[name][:2] != arrived[name][:2])
                     spec = arrived
                     apply_leaves(left, rebound, seen, pending, resolved,
-                                 needs_prime, notes, say)
+                                 needs_prime, notes, say, moved)
                     needs_prime.update(joined)
                     if left or joined or rebound:
                         say("roster: %s" % (", ".join(

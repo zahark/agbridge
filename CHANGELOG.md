@@ -10,6 +10,32 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 Repairing a participant's transport destroyed the message the repair existed to deliver.**
+  MEASURED live: a participant's roster entry was missing its transport hint, so the relay took the
+  tmux branch every tick and **never once called `drain_files`** — two files sat uncollected for
+  hours with the doorbell plainly on screen. Adding `:nfs` fixed the transport **and, on the same
+  tick, discarded the pending message**: the edit registered as a re-join, and priming discards a
+  joiner's mail by design.
+
+  ⚠️ **A roster edit was the only way to fix delivery for that participant, and it was guaranteed to
+  destroy whatever was pending for them.** Same shape as `agb-refresh` detonating the orphaned
+  binding it is the documented fix for — and nastier, because **the discard is correct**: priming
+  exists so a joiner is not delivered an hour of stale backlog.
+
+  ⚠️ **Fixed by asking the right question.** A binding is `(row, pane, target, tmux_target)`; only
+  the first two say *which pane*, the rest is *how to reach it*. Priming is justified by *"the new
+  pane may hold anything, including a conversation this name was never part of"* — which **cannot be
+  true when the pane did not move**. So only a name whose **pane** changed is primed. Forgetting
+  `seen` is still right for a transport change and is not the harmful half: it makes the doorbell
+  read as new, which is exactly how the repaired transport picks the message up.
+
+  ⚠️ **It took three attempts to write a test that caught it, and the first two failures were the
+  harness rather than the code**: the doorbell has to be on the **edited participant's own pane**
+  (priming discards its *outgoing* mail, not the delivery queue), and the edit must not be the one
+  that adds `:nfs` — that moves the drain onto a path the harness does not model, so the scenario
+  under test disappears into the fake. A unit test of `apply_leaves` cannot see any of this, because
+  `moved` is computed at the call site.
+
 - **🔴 One cause, two error strings, and the cause appears in neither — plus the raw traceback that
   reported the second.** MEASURED: an agent under a sandbox that confines writes to its workspace
   could use **neither** `agb-peer` transport. The tmux socket in `/tmp` answered `Operation not

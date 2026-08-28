@@ -3342,6 +3342,48 @@ def test_a_rebind_asks_to_be_primed_again(peer):
     assert needs_prime == {"bob"}
 
 
+def test_a_transport_only_change_is_NOT_primed(peer):
+    """🔴 MEASURED 2026-08-28, and it destroyed a real message.
+
+    A participant's roster entry was edited to add a **transport hint** —
+    same row, same pane, only `@host` gaining `:nfs`. The binding tuple
+    differed, so it counted as a rebind, so it was primed, and priming
+    **discarded the very message the repair existed to deliver.** The edit was
+    the only way to fix delivery for that participant and was guaranteed to
+    destroy what was pending for them.
+
+    ⚠️ Priming is justified by *"the new pane may hold anything"*, which cannot
+    be true when the pane did not move.
+    """
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves(set(), {"bob"}, seen, pending, resolved, needs_prime,
+                      notes, lambda m: None, moved=set())
+    assert needs_prime == set(), "a transport change must not discard its mail"
+    # ⚠️ But `seen` is still forgotten, and that half is RIGHT: it makes the
+    # doorbell read as new, which is exactly how the repaired transport picks
+    # the pending message up.
+    assert "bob" not in seen, seen
+
+
+def test_a_pane_that_really_moved_is_still_primed(peer):
+    """The companion, and the reason `moved` is a separate argument rather than
+    a behaviour change: a genuine rebind must be unaffected."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves(set(), {"bob"}, seen, pending, resolved, needs_prime,
+                      notes, lambda m: None, moved={"bob"})
+    assert needs_prime == {"bob"}
+
+
+def test_moved_defaults_to_rebound_so_old_callers_are_unchanged(peer):
+    """⚠️ Non-vacuity for the two above: every existing caller omits `moved`,
+    so the default has to be the old behaviour or this is a silent change to
+    all of them."""
+    seen, pending, resolved, needs_prime, notes = leave_state(peer)
+    peer.apply_leaves(set(), {"bob"}, seen, pending, resolved, needs_prime,
+                      notes, lambda m: None)
+    assert needs_prime == {"bob"}
+
+
 def test_a_leave_does_not_ask_to_be_primed(peer):
     """The companion: a name that is gone must not be queued for a prime that
     will never resolve."""
@@ -3626,6 +3668,44 @@ def test_a_leavers_queued_mail_is_dropped_and_named_by_the_loop(peer, tmp_path):
     text = out.getvalue()
     assert "ghost is in the roster but has no row yet" in text, text
     assert "ghost left" in text and "#aaa" in text, text
+
+
+def test_a_transport_edit_does_not_discard_pending_mail_through_the_loop(peer, tmp_path):
+    """🔴 End to end, because `moved` is computed at the CALL site and a unit
+    test of `apply_leaves` cannot see it. A mutation that passes
+    `moved = set(rebound)` there is invisible to the unit tests and restores
+    the exact bug.
+
+    MEASURED 2026-08-28: adding a transport hint to a participant's roster
+    entry — same row, same pane, `@host` gaining `:nfs` — counted as a rebind,
+    which primed it, which **discarded the very message the repair existed to
+    deliver.** The edit was the only way to fix delivery for that participant.
+    """
+    path = roster_file(tmp_path, "alice=AAAA1111\nbob=BBBB2222\n")
+    ctl = TickingCtl(panes())
+
+    def edit(tick):
+        if tick == 2:
+            # ⚠️ The doorbell must be on the EDITED participant's OWN pane:
+            # priming discards what is pending to be sent FROM it, not the
+            # relay's delivery queue. That is what was lost live.
+            ctl.current["BBBB2222"] = COMPOSER + bell("bbb")
+            # Same row, same pane -- only the transport target is added.
+            # ⚠️ `@somehost` rather than `@somehost:nfs` on purpose: `:nfs`
+            # moves the drain onto `drain_files`, which this harness does not
+            # model, and the property under test is the PRIMING decision, not
+            # which transport is chosen afterwards.
+            open(path, "w").write("alice=AAAA1111\nbob=BBBB2222@somehost\n")
+    ctl.on_tick = edit
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=4,
+                   fetch=Fetcher(framed(("bbb", "alice", "keep me"))))
+    text = out.getvalue()
+    assert "~bob" in text, "the edit must still register as a rebind: %s" % text
+    assert "predate a join" not in text, \
+        "a transport change must not discard its outgoing mail: %s" % text
+    assert "keep me" in " ".join(t for (_, _, t) in ctl.typed), \
+        "and the message must actually be delivered: %s" % text
 
 
 def test_a_rebind_keeps_its_queued_mail_through_the_loop(peer, tmp_path):
