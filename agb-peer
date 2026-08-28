@@ -1601,6 +1601,13 @@ def pane_argv_field(foreground, flag):
 # file broke it in two places.
 SUBPROCESS_TIMEOUT = 30
 
+# How long `_spawn` waits for the pipes to close AFTER it has killed a timed-out
+# child. Short on purpose: the direct child is already dead, so anything still
+# holding the pipes is a grandchild we did not kill and will not out-wait. This
+# is the difference between a bounded failure and an unbounded hang -- see
+# `_spawn`.
+REAP_TIMEOUT = 5
+
 TIMED_OUT = 124
 
 
@@ -1608,14 +1615,14 @@ def _spawn(argv, timeout):
     """(rc, stdout, stderr). A timeout is an error, not a hang, so the caller
     can say which command stopped responding.
 
-    ⚠️ **"Never blocks for ever" is true only while the command has no
+    ⚠️ **"Never blocks for ever" used to be true only while the command had no
     surviving children, and that is narrower than it sounds.** `kill()` ends
-    the direct child; the `communicate()` after it takes NO timeout and waits
-    for EOF on the pipes. A grandchild inherits those pipes, so if the command
-    spawns a helper that outlives it, the second wait blocks indefinitely --
-    an unbounded hang with no output, which is strictly worse than the timeout
-    it was reaching for, and worse than every case `grid_unknown` was written
-    to report.
+    the direct child; the `communicate()` after it took NO timeout and waited
+    for EOF on the pipes. A grandchild inherits those pipes, so a command that
+    spawns a helper outliving it blocked the second wait indefinitely -- an
+    unbounded hang with no output, strictly worse than the timeout it was
+    reaching for, and worse than every case `grid_unknown` was written to
+    report.
 
     MEASURED live 2026-08-28, both shapes: a wedged `agtermctl` whose hang is
     the direct child (`exec sleep 300`) returned at 31s against a 30s budget,
@@ -1624,11 +1631,20 @@ def _spawn(argv, timeout):
     with the intermediate shell already gone and the grandchild still holding
     the pipe.
 
-    Unreachable with today's `agtermctl`, which is a single binary -- so this
-    is a note, not a defect. It is written down because the failure mode is
-    silent and the day it becomes reachable is the day somebody adds a helper
-    process to a tool this calls, which is not a change anyone would think to
-    check here. `docs/backlog/` carries the two fixes if it ever is.
+    ✅ **Fixed by bounding the reap** (`REAP_TIMEOUT`). The worst case is now
+    `timeout + REAP_TIMEOUT` and a TIMED_OUT answer, instead of no answer ever.
+
+    ⚠️ **Bounded is not reaped, and the difference is deliberate.** A grandchild
+    that outlives the kill keeps running and keeps the pipe; we abandon it
+    rather than wait for it. The alternative -- `start_new_session=True` plus
+    `os.killpg` -- is correct rather than merely bounded, and was NOT taken:
+    it detaches every child from the controlling terminal, so Ctrl-C at an
+    `agb-peer relay` prompt would stop reaching the subprocess it is running.
+    That is a user-visible behaviour change to every caller of this function,
+    traded for a case that is unreachable with today's single-binary
+    `agtermctl`. Revisit it if that ever grows a helper; the reasoning and the
+    measurement are in
+    docs/backlog/a-timeout-is-only-a-timeout-without-grandchildren.md.
     """
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
@@ -1639,7 +1655,13 @@ def _spawn(argv, timeout):
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
-        proc.communicate()
+        try:
+            proc.communicate(timeout=REAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            # The direct child is dead; something else is holding the pipes.
+            # `poll()` reaps the corpse without waiting on them -- calling
+            # `wait()` here would reintroduce the very block this avoids.
+            proc.poll()
         return TIMED_OUT, "", ("%s did not answer within %ss -- a wedged tmux "
                                "or agterm client will do this"
                                % (argv[0], timeout))

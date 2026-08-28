@@ -1564,6 +1564,58 @@ def test_a_normal_command_is_unaffected(peer):
     assert (rc, out) == (0, "hello")
 
 
+def test_spawn_returns_when_a_grandchild_holds_the_pipes(peer, monkeypatch):
+    """🔴 A bounded wait is only bounded if everything holding the pipe is what
+    you killed.
+
+    `_spawn` kills the direct child on timeout and then waits for EOF. A
+    grandchild inherits the pipes, so before `REAP_TIMEOUT` that second wait
+    was unbounded -- measured live: `exec sleep 300` returned at 31 s against a
+    30 s budget, the same hang one process deeper never returned at all.
+
+    ⚠️ Run in a DAEMON THREAD on purpose. A regression here does not make the
+    call slow, it makes it never return -- so asserting on elapsed time would
+    hang the suite instead of failing it, which is the trap `CLAUDE.md` names
+    about `communicate()`. The thread lets the assertion be "did it come back",
+    and a thread that never finishes cannot hold pytest open.
+    """
+    import threading
+    monkeypatch.setattr(peer, "REAP_TIMEOUT", 1)
+    result = {}
+
+    def call():
+        # `sleep 20 &` survives the kill of its parent `sh` and keeps stdout
+        # open. Short enough to leave nothing lingering, far longer than the
+        # 1 s + 1 s this should take.
+        result["v"] = peer._spawn(["sh", "-c", "sleep 20 & sleep 20"], 1)
+
+    worker = threading.Thread(target=call)
+    worker.daemon = True
+    worker.start()
+    worker.join(15)
+    assert not worker.is_alive(), (
+        "_spawn never returned -- the reap after kill() is unbounded again")
+    rc, _out, err = result["v"]
+    assert rc == peer.TIMED_OUT, rc
+    assert "did not answer" in err
+
+
+def test_spawn_still_returns_promptly_with_no_grandchild(peer):
+    """The companion the test above needs: same call, one variable changed.
+
+    Without it, a `_spawn` that returned TIMED_OUT for everything -- or that
+    never reached the kill path at all -- would satisfy the grandchild test.
+    """
+    import time
+    monotonic = getattr(time, "monotonic", time.time)
+    start = monotonic()
+    rc, _out, err = peer._spawn(["sh", "-c", "exec sleep 20"], 1)
+    assert rc == peer.TIMED_OUT, rc
+    assert "did not answer" in err
+    # No grandchild, so the reap is immediate: nowhere near REAP_TIMEOUT.
+    assert monotonic() - start < 10
+
+
 def test_both_runners_share_the_timing_out_spawner(peer):
     import ast
     tree = ast.parse(io.open(PEER_PATH, encoding="utf-8").read())
