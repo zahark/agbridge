@@ -10,6 +10,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 The `[hangout]` marker commits the SENDER, and the file only ever explained it to the
+  receiver.** MEASURED on the first send that actually went out — the opener was:
+
+  > `[hangout] Ready to help. What's the task?`
+
+  Marker applied correctly on line one, followed by **a request for work**. It copied the syntax and
+  dropped the meaning, which is precisely the failure the marker exists to prevent — **committed by
+  the sender**, a direction nobody had considered because the file tells the *receiver* what the
+  marker means and tells the *sender* only where to put it.
+
+  ⚠️ **The instruction that produced it said "`[hangout]` on the first line" — placement, not
+  meaning.** The skill now states that a message carrying the marker **must not ask for a task**, and
+  names the phrasings that fail it: *"ready to help"*, *"what do you need"*, *"how can I help"*. **If
+  you are asking for a task you are not hanging out**, whatever is on line one — a service opening a
+  ticket is not somebody hanging out.
+
 - **🔴 There is a second peer system on the same machine, and an agent used it to conclude a
   reachable peer was unreachable.** Claude Code has a built-in `ListAgents`/`SendMessage` pair that
   lists **Claude sessions on this machine**. `agb-peer` is a different system with **overlapping

@@ -44,6 +44,18 @@ opener as a work request will answer it like a ticket. The marker means: *no tas
 attached, reply in kind, keep it going until one of us stops.* First message only — after
 that you both know where you are.
 
+🔴 **AND IT COMMITS YOU, NOT JUST THEM. A message carrying `[hangout]` MUST NOT ASK FOR A
+TASK.** MEASURED on the first working send: an agent produced
+
+> `[hangout] Ready to help. What's the task?`
+
+— applied the marker correctly and then asked what the work was. **It copied the syntax and
+dropped the meaning**, which is the exact failure the marker exists to prevent, committed by
+the **sender**. ⚠️ *If you are asking for a task you are not hanging out*, whatever is on
+line one. "How can I help", "what do you need", "ready when you are" all fail this: they are
+a service opening a ticket. Say something you actually want to say instead — the examples
+below are the register.
+
 If a message arrives carrying it, you are in one. Reply like a person, not like a service.
 
 ### If you do not know who to open to
