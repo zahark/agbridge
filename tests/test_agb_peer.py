@@ -1046,8 +1046,13 @@ def test_a_message_to_a_stranger_is_dropped_with_a_reason(peer):
     seen, pending = {}, []
     peer.relay_tick(ctl, PEOPLE, seen, pending, 500, ctl.say,
                     Fetcher(framed(("aaa", "carol", "who?"))))
-    assert ctl.typed == [] and pending == []
+    assert ctl.typed == [], "nothing is typed for a stranger THIS tick"
+    assert not [m for _s, m in pending if m.get("to") == "carol"], "dropped"
     assert any("carol" in s for s in ctl.said)
+    # ⚠️ What IS pending is the bounce back to the sender, which lands next
+    # tick. Before it, `alice` was told `queued ... as #id` and exit 0 for a
+    # message that went nowhere, and only this relay's log ever knew.
+    assert [m for who, m in pending if who == peer.RELAY_NAME], pending
 
 
 def test_the_relay_never_types_a_doorbell(peer):
@@ -2561,8 +2566,15 @@ def test_a_message_to_a_name_outside_the_roster_is_still_dropped(peer):
     pending = queued("nobody")
     peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
                     notes={}, members=ROSTER)
-    assert pending == [], "dropped"
+    assert not [m for _s, m in pending if m.get("to") == "nobody"], "dropped"
     assert any("not a participant" in s for s in ctl.said), ctl.said
+    # ⚠️ And the SENDER is told, which is the whole point: `send` printed
+    # `queued ... as #id` and exited 0 a tick ago, and the membership test is
+    # here rather than there.
+    bounce = [m for who, m in pending if who == peer.RELAY_NAME]
+    assert len(bounce) == 1, pending
+    assert bounce[0]["to"] == "alice", bounce
+    assert "NOT delivered" in bounce[0]["text"], bounce
 
 
 def test_without_members_the_resolved_map_still_answers(peer):
@@ -2572,8 +2584,44 @@ def test_without_members_the_resolved_map_still_answers(peer):
     pending = queued("carol")
     peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
                     notes={})
-    assert pending == [], "no roster to consult, so carol is not a participant"
+    assert not [m for _s, m in pending if m.get("to") == "carol"], \
+        "no roster to consult, so carol is not a participant"
     assert any("not a participant" in s for s in ctl.said), ctl.said
+    assert [m for who, m in pending if who == peer.RELAY_NAME], \
+        "the sender is told here too -- members=None must not lose the bounce"
+
+
+def test_the_bounce_is_delivered_to_the_sender_next_tick(peer):
+    """⚠️ Non-vacuity: queueing a bounce proves nothing if it never lands.
+
+    It is queued as an ordinary pending message from `relay`, so the very next
+    drain delivers it into the sender's composer -- which is the only channel
+    that reaches an agent at all.
+    """
+    ctl = RelayCtl(panes())
+    pending = queued("nobody")
+    for _ in range(2):
+        peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                        notes={}, members=ROSTER)
+    typed = " ".join(t[2] for t in ctl.typed)
+    assert "NOT delivered" in typed, ctl.typed
+    assert "[chat from relay]" in typed, "and signed by the relay"
+    assert pending == [], "and then it is done, not requeued for ever"
+
+
+def test_a_bounce_cannot_bounce(peer):
+    """🔴 The loop guard. The bounce is itself a message the drain handles, so
+    a relay whose own name were outside the roster would bounce its bounce,
+    for ever, typing into somebody's composer every tick.
+
+    `sender != RELAY_NAME` is the guard; this is the test that it holds with
+    `relay` deliberately absent from the roster.
+    """
+    ctl = RelayCtl(panes())
+    pending = [(peer.RELAY_NAME, {"id": "m1", "to": "nobody", "text": "hi"})]
+    peer.relay_tick(ctl, PEOPLE, {}, pending, 500, ctl.say, Fetcher(),
+                    notes={}, members=ROSTER)
+    assert pending == [], pending
 
 
 def test_the_hold_complaint_is_throttled(peer):

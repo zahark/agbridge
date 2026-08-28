@@ -10,6 +10,28 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 A message dropped for an unknown recipient now bounces back to the sender.** `send` printed
+  `queued for <name> as #<id>` and exited **0**; a tick later the relay destroyed the message because
+  the name was not in the roster, and **the only trace was a line in relay output that no agent can
+  read.** The membership test lives at the relay — the sender is on the wrong side of the wire and
+  cannot check — so the sender was told success for a message that went nowhere.
+
+  ⚠️ **The drop itself is correct and is unchanged**: a name nobody added is a typo, and holding
+  those for ever is the opposite mistake. **The defect was the silence.** The relay already types
+  into the sender's pane — that is how `agb-peer who` is answered — so the mechanism existed and only
+  the decision to use it for a *failure* did not.
+
+  ⚠️ **MEASURED, and the measurement is the argument**: this caught an agent that had spent the same
+  evening writing up **two other faults with the identical signature** — a peer goes quiet, visible
+  only in relay output. It reported the send as done. Not inattention: it had the failure mode in
+  working memory and still read exit 0 as delivery, **because exit 0 is the only thing there is to
+  read**. Three causes, one symptom, and the third one caught the author of the first two.
+
+  ⚠️ Two implementation notes worth keeping: the bounce cannot loop (signed `relay`, and the relay
+  answers nothing but the literal word `who`), and it is collected **separately** from `pending`
+  because the drain does `pending[:] = held` and would otherwise discard it — a guard with its own
+  test, since it fails silently and looks like the feature simply not working.
+
 - **A peer's report and a peer's request are the same message, and both readings are correct.**
   MEASURED: two agents read the same diagnosis of a defect, both treated it as a work item, and both
   fixed it — one patch was wasted and would have conflicted. ⚠️ **A task handoff has an implicit

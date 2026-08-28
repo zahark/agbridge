@@ -2688,7 +2688,7 @@ def _hold_unresolved(recipient, notes, say):
 
 
 def try_deliver(ctl, sessions, people, sender, message, lines, say,
-                notes=None, members=None):
+                notes=None, members=None, undeliverable=None):
     """One delivery attempt. True = done with it, False = try again next tick.
 
     ⚠️ **A relay must not block.** The direct command waits out a busy peer for
@@ -2731,6 +2731,29 @@ def try_deliver(ctl, sessions, people, sender, message, lines, say,
     members = people if members is None else members
     if recipient not in members:
         say("dropping a message for %r: not a participant" % (recipient,))
+        # 🔴 **AND TELL THE SENDER, because nothing else can.** `send` printed
+        # `queued for <name> as #<id>` and exited 0 a tick ago: the membership
+        # test lives HERE, on the far side of the wire, so the sender is told
+        # success for a message destroyed immediately afterwards and the only
+        # trace is the line above -- which no agent can read.
+        #
+        # ⚠️ MEASURED 2026-08-28: this caught an agent that had spent the
+        # evening writing up two other faults with the identical signature
+        # (a peer goes quiet; visible only in relay output). It reported the
+        # send as done, because exit 0 is the only thing there is to read.
+        #
+        # The relay already types into the sender's pane -- that is how `who`
+        # is answered -- so the mechanism existed and only the decision to use
+        # it for a failure did not. ⚠️ It cannot loop: this is signed
+        # RELAY_NAME, `SKILL.md` says an answer from the relay needs no reply,
+        # and the relay drops anything that is not the single word `who`.
+        if undeliverable is not None and sender != RELAY_NAME:
+            undeliverable.append((RELAY_NAME, {
+                "id": message_id(), "to": sender,
+                "text": "your message to %r was NOT delivered: no participant "
+                        "of that name. Check the spelling with `agb-peer who`, "
+                        "or ask your user. Nothing is queued -- it was dropped."
+                        % (recipient,)}))
         return True
     if recipient not in people:
         return _hold_unresolved(recipient, notes, say)
@@ -2970,6 +2993,9 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
     honest move is to clear them and say how many.
     """
     notes = {} if notes is None else notes
+    # Bounced-back notices for messages the drain destroys. Collected here
+    # rather than appended to `pending`, which the drain overwrites.
+    undeliverable = []
     # Stamped once per tick so `_hold_unresolved` can age a hold by ticks
     # rather than by messages -- see its docstring.
     notes["tick"] = notes.get("tick", 0) + 1
@@ -3020,9 +3046,12 @@ def relay_tick(ctl, people, seen, pending, lines, say, fetch=None,
     audience = people if deliver_to is None else deliver_to
     for sender, message in pending:
         if not try_deliver(ctl, sessions, audience, sender, message, lines, say,
-                           notes, members):
+                           notes, members, undeliverable):
             held.append((sender, message))
-    pending[:] = held
+    # ⚠️ `held` REPLACES `pending`, so a note appended inside `try_deliver`
+    # would be discarded here -- which is why it is collected separately and
+    # merged rather than appended to `pending` directly.
+    pending[:] = held + undeliverable
     return len(pending)
 
 
