@@ -329,6 +329,37 @@ USAGE: agtermctl session type [<text>] [--stdin] [--select] [--pane <pane>] [--t
 `--select`'s constraint is **unchanged** across the two, which is what keeps both consequences below
 true.
 
+### Clearing a composer through `session type` — **MEASURED 2026-08-28**
+
+Three candidates, on throwaway agents in a scratch directory. This matters because a relay that
+types into a composer and cannot verify what it typed leaves a **stranded draft**, and until this
+was measured there was no keystroke known to undo it.
+
+| sequence | result |
+|---|---|
+| **`\003` (Ctrl-C)** | ✅ **clears fully** — a 3500-char draft went from 1468 visible chars to **zero**, both markers gone, **agent alive afterwards** |
+| `\177` (backspace) × N | ✅ reaches the composer and deletes — 10 backspaces removed a 10-char body |
+| `\025` (Ctrl-U), Escape | ❌ no effect at all |
+| 🔴 `\001\013` (Ctrl-A, Ctrl-K) | **TRAP — do not use.** On a 3500-char *wrapped* body it removed both markers but left **1527 characters** behind. It kills to end of **line**, so on a wrapped body it clears *partially* — which is worse than not clearing, because the markers going makes it look like it worked |
+
+⚠️ **The Ctrl-C kill condition is narrower than "never press it twice", and the distinction is the
+whole reason it is usable.** Measured:
+
+| two `\003` … | result |
+|---|---|
+| as **adjacent bytes in one payload** | 🔴 `Process exited. Press any key to close the terminal.` |
+| separated by **1 second** | ✅ agent alive |
+| separated by **3 seconds** | ✅ agent alive |
+
+So it is a **double-tap window, essentially sub-second** — not a count. The rule to code against is
+**never put two `\003` in one payload**, and a relay sending at most one per tick is nowhere near
+it. ⚠️ A rule spelled "never send Ctrl-C twice" would be both wrong and unimplementable; this one is
+a property of a single `session type` call, which is checkable.
+
+⚠️ **Backspace is deterministic where nothing else is** — the sender knows exactly what it typed —
+but only for a body that fully landed. After a *timeout* nobody knows how much arrived, and
+over-backspacing eats **whatever was in the composer before**, which may be a human's draft.
+
 ### ⚠️ `session text` is a RENDERED, ELIDED view — **MEASURED 2026-08-28**
 
 It does not give you the composer's contents. A **3488**-character body typed in with distinct head
@@ -337,13 +368,20 @@ the two **ends** and drops the **middle**.
 
 Two consequences, and they point opposite ways:
 
-- ✅ **Both ends are readable.** A check on the head is as available as one on the tail; the head does
-  not scroll out. `agb-peer`'s tail-only probe was not forced by what is on screen.
+- ✅ **Both ends are readable, and the head is a CONSTANT 104 characters** — measured with numbered
+  8-char tokens at 1024 / 4096 / 8192 / 16384 bytes, two read delays each: the head ran tokens 1–13
+  at **every** size. It does not thin as the body grows and it does not vanish, so a `body[:40]`
+  probe mirroring the existing `body[-40:]` fits comfortably. ⚠️ **But it is bounded at ~104 chars**:
+  no head check can ever see further in than that.
 - ⚠️ **Nothing on screen can see the middle.** Any screen-based verification is structurally blind to
   a body damaged between its ends.
 
-⚠️ **And the view is still SETTLING when it is read.** The same body, delivered identically, read
-back twice: the first read found the tail marker **absent**, a slightly later one found it present.
+⚠️ **And the view is still SETTLING when it is read — but NOT monotonically, which is the part that
+kills the obvious fix.** The same body, delivered identically, read back twice: the first read found
+the tail marker **absent**, a slightly later one found it present. ⚠️ **And the reverse also
+happens**: a 16384-byte body read at **6 s** showed only 30 tokens and **no tail**, while the same
+body at **2 s** showed the tail. A *longer* delay gave a *worse* answer. So the rule is not "wait
+longer" — the view is **unstable**, and any probe needs several reads rather than one late one.
 So a screen check can return a **false negative** on text that arrived perfectly, and any code that
 treats "not on screen" as "not delivered" needs a retry budget rather than one read.
 (`agb-peer` reads `VERIFY_READS = 4` times at 1 s intervals, which is what makes it usually survive

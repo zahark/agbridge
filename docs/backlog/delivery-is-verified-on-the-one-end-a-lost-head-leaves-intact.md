@@ -1,5 +1,26 @@
 # `deliver` verifies the tail, and the failure it exists for eats the head
 
+> ✅ **FIXED 2026-08-28 — both holes, in the order that made it safe.**
+>
+> 1. **A failed verification no longer strands the draft.** `deliver` sends `CLEAR_KEY` (`\003`,
+>    measured to clear a 3500-char draft to zero with the agent alive) and **proves** the composer
+>    empty via the caret. A *verified* clear raises **3** — held, retried next tick — because exit
+>    4's whole reason was "typing it again would leave two copies", and a verified clear removes it.
+>    Anything else still raises **4**, and now says the draft may be stranded.
+> 2. **The probe checks BOTH ENDS** (`probes_for`), now that the head is measured to be a constant
+>    ~104 characters at every size to 16 KB.
+>
+> ⚠️ **The ORDER is the point, and a future reader will be tempted to reverse it.** Requiring both
+> ends makes a false negative *more* likely, because the rendered view is unstable. That was only
+> affordable once being wrong cost one more tick instead of a deaf peer. **Fix 2 alone would have
+> made things worse.**
+>
+> ⚠️ **Still true, and unfixable by this route: nothing on screen can see the MIDDLE.** The composer
+> elides it. A body damaged between its ends passes both probes, and no third probe helps.
+>
+> The rest of this entry is the investigation, kept because most of it is still live guidance — in
+> particular the `pasted` branch, which verifies no content at all and is unreachable from the relay.
+
 **Found live**, 2026-08-28, from a message that arrived in an agent's composer starting
 **mid-sentence**. The peer agent that sent it read `queued … as #id`; the relay read `delivered`.
 Neither end saw anything wrong, and the conversation carried on for two more exchanges before a

@@ -108,6 +108,38 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A failed delivery no longer wedges the peer, and the verification finally checks the end the
+  failure eats.** Two fixes, and **the order is the whole point**:
+
+  1. ⚠️ **`deliver` clears the composer and proves it empty.** A verification that false-negatived
+     used to drop the message *and leave the body in the peer's composer* — so the next message hit
+     `wait_ready`'s caret gate and was held every tick for ever: the peer went deaf while its sender
+     saw `queued` and exit 0. There was no known keystroke to undo it until `\003` was measured
+     (a 3500-char draft cleared to zero, **agent alive**). A **verified** clear raises **3** — held,
+     retried — because exit 4 existed only for "typing it again would leave two copies", and a
+     verified clear removes that reason. An unverified one still raises 4 and now *says* the draft
+     may be stranded. 🔴 Never two `\003` in one payload: adjacent bytes kill the agent, one second
+     apart does not — so the rule is a property of a single call, which is checkable, rather than of
+     history, which is not.
+  2. ✅ **The probe is both ends** (`probes_for`). `deliver` exists against a dialog swallowing
+     keystrokes — which eats the **head** — and probed `body[-40:]`, the **tail**, so it passed on
+     exactly the damage it was written to catch. Now measured safe: the composer renders both ends
+     and elides the middle, and the head it keeps is a **constant ~104 characters** at 1 K, 4 K,
+     8 K and 16 K. The old objection — that a long body's head may have scrolled out — was simply
+     wrong.
+
+  ⚠️ **Fix 2 alone would have made things worse.** Requiring both ends makes a false negative *more*
+  likely, because the rendered view is measurably unstable (a 16 KB body read at 6 s showed **less**
+  than the same body at 2 s — longer is not better, it is unstable). It was only affordable once
+  being wrong cost one more tick instead of a deaf peer.
+
+  ⚠️ **Unfixable by this route, and worth knowing:** nothing on screen can see the **middle**. The
+  composer elides it, so a body damaged between its ends passes both probes and no third probe helps.
+
+  ⚠️ **And one test fixture was the reason the old probe looked sufficient**: it faked the pane as
+  the tail *alone*, a harness simpler than the thing it modelled. It now carries both ends, plus the
+  companion that is the actual defect — a body that lost its head must be refused.
+
 - **🔴 The unbounded reap was in THREE places, and two of them promised in writing that it was not.**
   After fixing `agb-peer._spawn`, searching for the *shape* rather than waiting for the next report
   found the identical `kill()` + untimed `communicate()` in **`agb_mac._run_command`** — whose

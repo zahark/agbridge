@@ -1956,9 +1956,52 @@ VERIFY_READS = 4
 # readers; only the raw-mode one is picky.
 SUBMIT_KEY = "\r"
 
+# What empties a composer we typed into and could not verify. MEASURED
+# 2026-08-28 on a throwaway agent: `\003` cleared a 3500-character draft to
+# zero, both markers gone, agent alive. `\025` and Escape do nothing at all,
+# and `\001\013` (Ctrl-A, Ctrl-K) is a TRAP -- on a wrapped body it kills to
+# end of LINE, removing the markers while leaving 1527 characters behind, which
+# looks exactly like a clear that worked.
+#
+# 🔴 **NEVER PUT TWO OF THESE IN ONE PAYLOAD.** Two `\003` as adjacent bytes
+# kill the agent outright ("Process exited"). Two separated by ONE SECOND are
+# safe, and by three seconds are safe -- so the hazard is a sub-second
+# double-tap window, not a count, and the rule that is actually checkable is
+# about a single `ctl.type` call rather than about history. `docs/agtermctl.md`
+# has the measurements.
+CLEAR_KEY = "\003"
 
-def rendered(before, text, probe):
-    """Did the body we typed actually reach the pane? Compared on its TAIL,
+
+def probes_for(body):
+    """The fragments `rendered` looks for: the body's HEAD and its TAIL.
+
+    ⚠️ **The tail alone was the defect.** `deliver` exists against a dialog
+    swallowing keystrokes, which eats the HEAD -- so a tail-only probe passed
+    on exactly the damage it was written to catch, and a message arrived in
+    somebody's composer starting mid-sentence while both ends read success.
+
+    ✅ **The head is checkable, MEASURED 2026-08-28**: the composer renders the
+    two ends and elides the middle, and the head it keeps is a CONSTANT ~104
+    characters at 1 K, 4 K, 8 K and 16 K. It does not thin as the body grows.
+    The earlier objection -- that a long body's head may have scrolled out of
+    the read window -- was wrong; it never scrolls out. 40 fits inside 104 with
+    room to spare.
+
+    ⚠️ **Nothing here can ever see the MIDDLE**, which the composer elides.
+    That is a structural ceiling on screen-based verification, not a
+    shortcoming of this function -- do not add a third probe expecting it to
+    help.
+
+    ⚠️ Below 80 characters the two ends OVERLAP, so each would match the whole
+    and the pair would prove one thing twice while reading as two.
+    """
+    if len(body) <= 80:
+        return (body,)
+    return (body[:40], body[-40:])
+
+
+def rendered(before, text, probes):
+    """Did the body we typed actually reach the pane? Compared on BOTH ENDS,
     with ALL WHITESPACE STRIPPED from both sides.
 
     ⚠️ Two different things defeat a naive match, and fixing only the first left
@@ -1976,6 +2019,14 @@ def rendered(before, text, probe):
     over a 40-character probe that is not a risk worth a more complicated
     comparison.
 
+    ⚠️ **Requiring BOTH ends makes a false negative MORE likely**, because the
+    rendered view is measurably unstable -- a 16 KB body read at 6 s showed
+    less than the same body at 2 s. That was only affordable once a failed
+    verification stopped stranding the draft: `deliver` clears now and the
+    relay retries, so being wrong costs one more tick instead of a peer that
+    never receives again. **The order those two landed in was not incidental**
+    -- this change on its own would have made things worse.
+
     ⚠️ **`before` is not decoration.** A paste placeholder is evidence only if
     its count went UP -- one earlier long message left in the composer would
     otherwise make every later failure look like a success.
@@ -1984,7 +2035,37 @@ def rendered(before, text, probe):
     was, now = (before or "").lower(), (text or "").lower()
     pasted = any(now.count(mark.lower()) > was.count(mark.lower())
                  for mark in PASTE_MARKS)
-    return "".join(probe.split()) in flat_text or pasted
+    if pasted:
+        return True
+    return all("".join(probe.split()) in flat_text for probe in probes)
+
+
+def clear_composer(ctl, session, pane):
+    """Empty a composer we typed into, and PROVE it is empty. True only then.
+
+    ⚠️ **The proof is the point, not the keystroke.** The caller uses this to
+    decide whether a failed delivery may be retried, and retrying into a
+    composer that still holds the body is the doubling exit 4 exists to
+    prevent. So every uncertain answer -- a send that errored, a cursor that
+    could not be read, a column that is not `EMPTY_COLUMN` -- is `False`.
+
+    🔴 **Exactly ONE `CLEAR_KEY` per call, and never two in a payload.**
+    Measured: two `\003` as adjacent bytes kill the agent outright, while two
+    separated by a second do not. One key in one `ctl.type` is a property of
+    this function that a reader can check; "do not send it twice" would be a
+    property of history, which nobody can.
+    """
+    surface = surface_of(session, pane)
+    if not surface:
+        return False
+    try:
+        ctl.type(session["id"], pane, CLEAR_KEY)
+    except PeerError:
+        # Best-effort by contract: this runs on a path that is already
+        # reporting a failure, and raising here would replace that report.
+        return False
+    column, err = ctl.cursor(surface)
+    return not err and column == EMPTY_COLUMN
 
 
 def deliver(ctl, session, pane, body, send, lines, say):
@@ -1995,15 +2076,24 @@ def deliver(ctl, session, pane, body, send, lines, say):
     and the keystrokes, swallowing them. Seeing our own text on the screen is
     what rules that out, and it is why the Return is a SECOND call.
 
-    🔴 **AND IT IS PROBED AT THE WRONG END.** A dialog swallowing keystrokes
-    eats the HEAD; `probe` is `body[-40:]`, the tail -- so the check passes on
-    exactly the damage it was written to catch, and `rendered`'s `pasted`
-    branch verifies no content at all. Found live from a message that arrived
-    mid-sentence while both ends read success. Not fixed here because probing
-    both ends is not obviously safe (an unpasted long body's head may have
-    scrolled out of the `--lines` window). The measurements, the two holes and
-    the experiment that would settle it:
-    docs/backlog/delivery-is-verified-on-the-one-end-a-lost-head-leaves-intact.md
+⚠️ **A FAILED VERIFICATION USED TO STRAND THE DRAFT, and that was the
+    real cost of exit 4 -- not the lost message.** The body stays in the peer's
+    composer, so the NEXT message hits `wait_ready`'s caret gate and is held,
+    every tick, for ever: the peer goes deaf and the sender sees `queued` and
+    exit 0. `try_deliver`'s "one lost message and a loud line" was costing the
+    rest of the conversation.
+
+    ✅ **So it clears, and the clear decides retryable from terminal.** Exit 4
+    exists because "typing it again would leave two copies"; a **verified**
+    clear removes that reason, so a verified clear raises **3** (held, retried
+    next tick) and anything else raises **4** (dropped) exactly as before.
+
+    ⚠️ **Unknown is folded into "not cleared" HERE ON PURPOSE**, which is the
+    opposite of this file's usual rule -- because the negative is the status
+    quo. Treating "I could not check" as cleared would let it retry into a
+    composer that may still hold the body, which is the doubling exit 4 was
+    written to prevent. Fail-safe and fail-open point the same way only when
+    the safe answer is *do less*, and here it is.
     """
     target = session["id"]
     # Read BEFORE typing, so a paste placeholder left over from an earlier
@@ -2011,7 +2101,7 @@ def deliver(ctl, session, pane, body, send, lines, say):
     # evidence; a placeholder merely being present is not.
     before, _err = ctl.text(target, pane, lines)
     ctl.type(target, pane, body)
-    probe = body[-40:] if len(body) > 40 else body
+    probe = probes_for(body)
     for _attempt in range(VERIFY_READS):
         ctl.sleep(1)
         text, err = ctl.text(target, pane, lines)
@@ -2021,9 +2111,18 @@ def deliver(ctl, session, pane, body, send, lines, say):
         if rendered(before, text, probe):
             break
     else:
-        raise PeerError("typed, but %r never appeared in the peer's pane within "
-                        "%ds, so it was NOT sent. Look at that row before "
-                        "retrying." % (probe, VERIFY_READS), 4)
+        if clear_composer(ctl, session, pane):
+            raise PeerError(
+                "typed, but %s never appeared in the peer's pane within %ds. "
+                "The composer was cleared and verified empty, so nothing was "
+                "sent and nothing was left behind -- retrying."
+                % (" and ".join(repr(p) for p in probe), VERIFY_READS), 3)
+        raise PeerError("typed, but %s never appeared in the peer's pane within "
+                        "%ds, so it was NOT sent -- AND THE COMPOSER COULD NOT "
+                        "BE CLEARED, so a draft may be left in it and this peer "
+                        "may stop receiving. Look at that row."
+                        % (" and ".join(repr(p) for p in probe), VERIFY_READS),
+                        4)
     if not send:
         say("typed, not sent (--no-send). It is sitting in the composer.")
         return

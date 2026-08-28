@@ -334,8 +334,13 @@ def test_text_that_never_rendered_is_never_submitted(peer):
     ctl = FakeCtl(texts=[COMPOSER])
     with pytest.raises(peer.PeerError) as caught:
         peer.deliver(ctl, session(), "left", body, True, 40, lambda m: None)
-    assert caught.value.code == 4
-    assert ctl.typed == [body], "it must not press Return after a failed verify"
+    # ⚠️ 3, not 4, since 2026-08-28: the composer is cleared and the clear is
+    # VERIFIED, which removes the "two copies in the composer" reason exit 4
+    # existed for -- so this is retryable rather than terminal.
+    assert caught.value.code == 3
+    assert peer.SUBMIT_KEY not in ctl.typed, \
+        "it must not press Return after a failed verify"
+    assert peer.CLEAR_KEY in ctl.typed, "and it must not strand the draft"
 
 
 BUSY_SCREEN = "\n\u203a Ask Codex to do anything\n" \
@@ -446,12 +451,44 @@ def test_the_menu_is_armed_with_a_newline_not_the_submit_key(peer):
 
 
 def test_a_wrapped_long_line_still_verifies(peer):
-    # agterm wraps; the whole body is then never a single substring. Matching
-    # on the tail is what keeps a long message from failing verification.
+    """agterm wraps, so the whole body is never a single substring. Matching on
+    fragments is what keeps a long message from failing verification.
+
+    ⚠️ The pane used to be faked as the TAIL ALONE -- a harness simpler than the
+    thing it modelled, and it is what let the tail-only probe look sufficient.
+    MEASURED 2026-08-28: a real composer renders BOTH ends and elides the
+    middle, with the head a constant ~104 characters. The fixture says that now.
+    """
     body = "[chat from alpha] " + ("x" * 200) + "END-OF-MESSAGE"
-    ctl = FakeCtl(texts=[COMPOSER + body[-40:]])
+    ctl = FakeCtl(texts=[COMPOSER + body[:40] + " ... " + body[-40:]])
     peer.deliver(ctl, session(), "left", body, True, 40, lambda m: None)
     assert ctl.typed[-1] == "\r"
+
+
+def test_a_body_that_lost_its_HEAD_is_refused(peer):
+    """🔴 The defect, as a test. A message arrived in a live composer starting
+    MID-SENTENCE while both ends reported success.
+
+    `deliver` exists against a dialog swallowing keystrokes -- which eats the
+    HEAD -- and the probe was `body[-40:]`, the tail. So the check passed on
+    exactly the damage it was written to catch. This is that pane: everything
+    but the head.
+    """
+    body = "[chat from alpha] " + ("x" * 200) + "END-OF-MESSAGE"
+    ctl = FakeCtl(texts=[COMPOSER + body[60:]])
+    with pytest.raises(peer.PeerError):
+        peer.deliver(ctl, session(), "left", body, True, 40, lambda m: None)
+    assert peer.SUBMIT_KEY not in ctl.typed, "a truncated body is not delivered"
+
+
+def test_a_short_body_is_probed_once_not_twice(peer):
+    """⚠️ Below 80 characters the two ends OVERLAP, so a head and a tail probe
+    would each match the whole body -- proving one thing twice while reading in
+    the failure message as two independent checks."""
+    assert peer.probes_for("x" * 200) == ("x" * 40, "x" * 40)
+    assert peer.probes_for("short") == ("short",)
+    assert peer.probes_for("y" * 80) == ("y" * 80,)
+    assert len(peer.probes_for("z" * 81)) == 2
 
 
 # ----------------------------------------------------------------------- main
@@ -1842,10 +1879,114 @@ def test_a_render_that_never_arrives_is_still_refused(peer):
     ctl = SlowRender(panes(), 99, "never")
     with pytest.raises(peer.PeerError) as caught:
         peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert caught.value.code == 4
-    assert [x[2] for x in ctl.typed] == [body], "Return must not be pressed"
+    assert caught.value.code == 3
+    typed = [x[2] for x in ctl.typed]
+    assert peer.SUBMIT_KEY not in typed, "Return must not be pressed"
+    assert typed == [body, peer.CLEAR_KEY], typed
     assert ctl.sleeps == peer.VERIFY_READS, \
         "it must be bounded, not open-ended: %d" % (ctl.sleeps,)
+
+
+def test_an_unclearable_composer_is_still_terminal_and_says_so(peer):
+    """⚠️ The companion the clear-and-retry tests need, and the whole reason
+    `clear_composer` proves rather than assumes.
+
+    If the clear cannot be VERIFIED, retrying would type a second copy into a
+    composer that may still hold the first -- which is the doubling exit 4 was
+    written to prevent. So this stays terminal, and the line has to say the
+    draft may be stranded, because that is what makes the peer go deaf.
+    """
+    class DirtyAfterClear(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            return True
+
+    body = "[chat from alice] hello there"
+    ctl = DirtyAfterClear(panes())
+    ctl.cursors = [99]          # never `EMPTY_COLUMN`: the clear did not take
+    with pytest.raises(peer.PeerError) as caught:
+        peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
+    assert caught.value.code == 4, "an unverified clear must not be retryable"
+    assert "COULD NOT BE CLEARED" in str(caught.value)
+    assert peer.SUBMIT_KEY not in [x[2] for x in ctl.typed]
+
+
+def test_the_clear_is_never_two_keys_in_one_payload(peer):
+    """🔴 MEASURED: two `\003` as ADJACENT BYTES kill the agent outright
+    ("Process exited"), while two separated by one second do not.
+
+    ⚠️ So the hazard is a sub-second double-tap, not a count -- and the rule
+    that is actually checkable is about a single payload rather than about
+    history, which is why it is spelled that way and tested that way. A future
+    "clear harder by sending it twice" is the change this exists to stop.
+    """
+    class Swallowing(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            return True
+
+    ctl = Swallowing(panes())
+    with pytest.raises(peer.PeerError):
+        peer.deliver(ctl, session(), "left", "[chat from alice] hi there",
+                     True, 500, lambda m: None)
+    payloads = [x[2] for x in ctl.typed]
+    assert any(peer.CLEAR_KEY in p for p in payloads), "non-vacuity: it cleared"
+    for payload in payloads:
+        assert payload.count(peer.CLEAR_KEY) <= 1, repr(payload)
+
+
+def test_clear_composer_answers_False_to_every_uncertainty(peer):
+    """⚠️ The one place this file folds "I could not tell" into the negative on
+    purpose, because the negative is the STATUS QUO.
+
+    Everywhere else that collapse is the bug (invariant 1, shape D). Here the
+    `True` branch authorises a RETRY, so an optimistic unknown types a second
+    copy; the `False` branch is exactly today's behaviour. Fail-safe and
+    fail-closed coincide only when the safe answer is to do less.
+    """
+    good = session()
+
+    class Raises(RelayCtl):
+        def type(self, target, pane, text):
+            raise peer.PeerError("agterm said no")
+
+    assert peer.clear_composer(Raises(panes()), good, "left") is False
+
+    class NoCursor(RelayCtl):
+        def cursor(self, surface):
+            return None, "cannot read the cursor"
+
+    assert peer.clear_composer(NoCursor(panes()), good, "left") is False
+
+    # A pane that does not exist on this row at all.
+    assert peer.clear_composer(RelayCtl(panes()), good, "right") is False
+
+    # …and the companion: a clean clear on a real pane answers True, or every
+    # assertion above would hold against a function that returned False always.
+    assert peer.clear_composer(RelayCtl(panes()), good, "left") is True
+
+
+def test_a_cleared_delivery_is_HELD_by_the_relay_not_dropped(peer):
+    """The end-to-end consequence, and the reason the code changed at all.
+
+    `try_deliver` ends `return error.code == 4`, so 3 means *hold and try
+    again next tick* while 4 means *drop*. Before the clear, a verification
+    that false-negatived dropped the message AND left the body in the
+    composer -- so the next message hit `wait_ready`'s caret gate and was held
+    for ever, and the peer went deaf while its sender saw `queued` and exit 0.
+    """
+    class Swallowing(RelayCtl):
+        def type(self, target, pane, text):
+            self.typed.append((target, pane, text))
+            return True
+
+    ctl = Swallowing(panes())
+    said = []
+    done = peer.try_deliver(ctl, {"AAAA1111": session()}, dict(PEOPLE), "bob",
+                            {"id": "m1", "to": "alice", "text": "hello there"},
+                            500, said.append)
+    assert done is False, "a cleared, unsent message must be retried"
+    assert any("cleared" in line for line in said), said
 
 
 def test_a_prompt_render_costs_one_read(peer):
@@ -1899,9 +2040,11 @@ def test_a_stale_codex_placeholder_is_not_evidence_either(peer):
     ctl = Swallowing({"AAAA1111": stale, "BBBB2222": COMPOSER})
     with pytest.raises(peer.PeerError) as caught:
         peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert caught.value.code == 4
-    assert [x[2] for x in ctl.typed] == [body], \
+    assert caught.value.code == 3
+    typed = [x[2] for x in ctl.typed]
+    assert peer.SUBMIT_KEY not in typed, \
         "it must not press Return on a placeholder that was already there"
+    assert typed == [body, peer.CLEAR_KEY], typed
 
 
 def test_the_placeholder_is_matched_whatever_its_case(peer):
@@ -1970,9 +2113,11 @@ def test_a_stale_paste_placeholder_is_not_evidence(peer):
                       "BBBB2222": COMPOSER})
     with pytest.raises(peer.PeerError) as caught:
         peer.deliver(ctl, session(), "left", body, True, 500, lambda m: None)
-    assert caught.value.code == 4
-    assert [x[2] for x in ctl.typed] == [body], \
+    assert caught.value.code == 3
+    typed = [x[2] for x in ctl.typed]
+    assert peer.SUBMIT_KEY not in typed, \
         "it must not press Return on a placeholder that was already there"
+    assert typed == [body, peer.CLEAR_KEY], typed
 
 
 def test_a_held_message_says_its_reason_once(peer):
@@ -2040,7 +2185,7 @@ def test_text_that_truly_never_arrived_is_still_refused(peer):
     with pytest.raises(peer.PeerError) as caught:
         peer.deliver(ctl, session(), "left", "[chat from alice] hello there",
                      True, 500, lambda m: None)
-    assert caught.value.code == 4
+    assert caught.value.code == 3
 
 
 # =========================================================================
