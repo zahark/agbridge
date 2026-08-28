@@ -914,7 +914,15 @@ def prime_joiners(ctl, sessions, needs_prime, people, seen, lines, say,
 def _name_notes(name):
     return (("gone", name), ("menu", name), ("said", name), ("held", name),
             ("prime", name), ("said", ("fetch", name)),
-            ("said", ("read", name)), ("said", ("gone-row", name)))
+            ("said", ("read", name)), ("said", ("gone-row", name)),
+            # ⚠️ The alias throttle, and it shipped missing from this list
+            # while the rule above was written out in full. A name that leaves
+            # the roster is not in `resolved` on any later tick, so
+            # `_one_name_per_row`'s own clear cannot reach it -- only a leave
+            # can. Without this, a participant who left and came back to the
+            # SAME collision is dropped from the grid in silence, because the
+            # message text is identical and `missing` subtracts `ALIAS_DROPS`.
+            ("said", ("alias", name)))
 
 
 def apply_leaves(left, rebound, seen, pending, resolved, needs_prime, notes,
@@ -1589,16 +1597,30 @@ class Ctl(object):
             return None, "cursor returned %r" % (out.strip(),)
 
     def dashboard(self, members):
-        """(ok, out, reason). Best-effort like every other call here: a grid
-        that will not open is a cosmetic failure and must never stop the relay.
+        """(ok, out, reason). Best-effort in the sense that a grid which will
+        not open is a cosmetic failure and must never stop the relay.
+
+        🔴 **"Best-effort" describes the RETURN, not the call: this RAISES.**
+        `_spawn` raises `PeerError` when agtermctl cannot be started at all --
+        a removed binary, a `$PATH` an agterm pane did not inherit, the
+        `/proc/<pid>/exe (deleted)` case after an upgrade, EMFILE -- so the
+        status is answered only when the tool ran. The guard therefore lives at
+        **every call site**, which is the bug two separate review passes found:
+        the relay died mid-delivery with `agtermctl: [Errno 2]`, and
+        `agb-dashboard` lost the message naming the grid it had left up. Read
+        this line before writing a call that "cannot fail".
 
         ⚠️ **STDOUT IS RETURNED, and that is the whole reason this is not a
         two-tuple.** agterm exits **0** when only SOME cells resolve, opens the
         grid without the rest, and names the casualties as `unresolved: <id>`
         on **stdout** only. So a caller that trusts the status gets a grid
         quietly missing the agent it was opened to watch -- and the status is
-        the only thing a caller had, before this. The relay is content to
-        ignore it; `agb-dashboard` is not, and cannot see it any other way.
+        the only thing a caller had, before this. ⚠️ **BOTH callers read it
+        now** (`unresolved_lines`, which says so from the other end): they
+        differ in what they do about it, not in whether they look.
+        `agb-dashboard` refuses and closes; the relay says so, does not record
+        the cells as shown, and retries. This docstring said the relay ignored
+        it for as long as that was true, and went on saying it afterwards.
         """
         rc, out, err = self.run(["dashboard"] + list(members))
         return (rc == 0), (out or ""), ((err or "").strip() or "exit %s" % (rc,))
@@ -1609,6 +1631,12 @@ class Ctl(object):
         ⚠️ Which is why a caller must only ever close a grid **it opened**:
         there is no ownership token, so closing unconditionally would dismiss
         whatever somebody else had up.
+
+        🔴 **And this RAISES too**, for the same `_spawn` reason spelled out
+        above -- which is worse here, because both callers run it from a
+        cleanup path where an exception replaces the exit with a traceback out
+        of the tidy-up. `close_grid` in this file and `close_grid` in
+        `agb-dashboard` are the two wrappers that exist for it.
         """
         rc, _out, err = self.run(["dashboard", "--close"])
         return (rc == 0), ((err or "").strip() or "exit %s" % (rc,))
@@ -2597,6 +2625,18 @@ def _one_name_per_row(resolved, say, notes=None):
             continue
         owner[row] = name
     if notes is not None:
+        # ⚠️ **CLEARED when the collision goes away, like every other throttle
+        # in this file.** It was the one that shipped without a clear, and the
+        # cost is not a missing line: `update_grid` subtracts `ALIAS_DROPS`
+        # from `missing` on the argument that an alias "has already been told",
+        # which is true only the FIRST time. Measured -- bob aliases alice,
+        # the roster is fixed, bob aliases alice again: the second collision is
+        # throttled, `missing` skips bob because he is in the drop set, and a
+        # participant vanishes from the grid with NOTHING saying so. That is
+        # defect 3's exact symptom reached through the new code.
+        for name in resolved:
+            if name not in dropped:
+                notes.pop(("said", ("alias", name)), None)
         # ⚠️ **In `notes`, NOT in the return value.** `resolve_all` ends with
         # `return _one_name_per_row(...)`, so this IS its return value: widening
         # it to a tuple would change `resolve_all`'s shape across eight call
@@ -2894,9 +2934,26 @@ def update_grid(ctl, spec, resolved, shown, opened, say, notes):
         # a partial grid is always marked. Reachable with a documented shape: a
         # `:right` cell whose split has since closed is *unresolved, not an
         # error*. Said and not closed, like every other relay grid outcome.
-        say("dashboard: open" + (
-            " -- but agterm dropped %s" % ("; ".join(dropped),)
-            if dropped else ""))
+        if dropped:
+            # ⚠️ **`shown` IS NOT ADVANCED, for exactly the reason a failed
+            # open does not advance it** -- and it was, three lines below the
+            # comment making that argument. A partial open is an INCOMPLETE
+            # outcome, and the documented cause of one is transient: a `:right`
+            # cell whose split is briefly absent. Recording the cell set as
+            # shown makes the next tick take the `fresh == shown` early return,
+            # so the grid stays partial until the ids or the membership move --
+            # which for a stable roster is the rest of the run. Retried instead,
+            # with the MESSAGE throttled, which is the same trade the failed
+            # open and the missing member both make.
+            _throttled(say, notes, ("dash-dropped",))(
+                "dashboard: open -- but agterm dropped %s"
+                % ("; ".join(dropped),))
+            return shown, opened
+        if notes is not None:
+            # Cleared on a clean open, like every other throttle here: a cell
+            # agterm drops, recovers and drops again must say so twice.
+            notes.pop(("said", ("dash-dropped",)), None)
+        say("dashboard: open")
     elif opened:
         # Nobody left to show. Closing is the only honest rendering -- agterm
         # has no empty grid -- and it is cleared only on a close that WORKED, so
@@ -2924,6 +2981,16 @@ def close_grid(ctl, say):
     ownership flag and closed again on the way out, which by then may be
     somebody else's grid. What the caller asked is whether the grid is gone;
     only `dashboard_close` can answer that, and only it is asked here.
+
+    ⚠️ **`agb-dashboard` has a `close_grid` too, and the duplication is
+    deliberate** -- argued here rather than left for a reader to notice, the
+    way `open_split`/`open_drawer` are. It answers `(closed, why)` and takes no
+    `say`, because that script has no running loop to report into: its two
+    callers put the reason inside a `DashError` and inside a printed warning
+    respectively. Merging them would mean handing this one a formatter to make
+    the other's message, which is more coupling than the six shared lines are
+    worth. What they DO share is the reason to exist at all -- `_spawn` raises
+    -- and that lives on `Ctl.dashboard_close`, where both can see it.
     """
     say = _quiet(say)
     try:

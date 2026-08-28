@@ -2634,7 +2634,12 @@ def test_a_drop_to_one_participant_is_announced_not_refused(peer, tmp_path):
 LEAVE_CLEARS_NOTES = [
     ("gone", "bob"), ("menu", "bob"), ("said", "bob"), ("held", "bob"),
     ("prime", "bob"), ("said", ("fetch", "bob")), ("said", ("read", "bob")),
-    ("said", ("gone-row", "bob"))]
+    ("said", ("gone-row", "bob")),
+    # ⚠️ The alias throttle, added late and for a measured reason: a name that
+    # has LEFT is in no later `resolved`, so `_one_name_per_row`'s own clear
+    # cannot reach it. Left behind, a participant who leaves and comes back to
+    # the same collision vanishes from the grid in silence.
+    ("said", ("alias", "bob"))]
 
 
 def test_the_per_name_notes_list_is_complete(peer):
@@ -4663,6 +4668,66 @@ def test_the_alias_drop_set_is_rebuilt_not_accumulated(peer):
     assert notes[peer.ALIAS_DROPS] == set()
 
 
+def test_an_alias_that_is_FIXED_AND_REMADE_is_reported_twice(peer):
+    """🔴 A participant vanishing from the grid with NOTHING saying so, which
+    is defect 3's exact symptom reached through the code that fixed it.
+
+    This was the fifth throttle in the file and the only one that shipped with
+    no clear, while `docs/commands.md` said every throttle is cleared when its
+    condition goes away. The cost is not a missing line: `update_grid`
+    subtracts `ALIAS_DROPS` from `missing` on the argument that an alias has
+    already been told, which is true only the FIRST time -- so on the second
+    collision the alias line is throttled AND the missing line is suppressed.
+
+    MEASURED before the fix: tick 1 said "alice and bob both resolve to row
+    AAAA1111"; tick 3, after the roster was fixed and broken again, said
+    nothing at all."""
+    said, notes = [], {}
+    alice = ("AAAA1111", "left", None, None)
+    bob = ("BBBB2222", "left", None, None)
+    peer._one_name_per_row({"alice": alice, "bob": alice}, said.append, notes)
+    assert ("said", ("alias", "bob")) in notes, "the throttle never fired"
+    peer._one_name_per_row({"alice": alice, "bob": bob}, said.append, notes)
+    assert ("said", ("alias", "bob")) not in notes, notes
+    peer._one_name_per_row({"alice": alice, "bob": alice}, said.append, notes)
+    assert len([m for m in said if "both resolve to row" in m]) == 2, said
+
+
+def test_a_PERSISTENT_alias_is_still_reported_only_once(peer):
+    """The companion the clear needs, and the reason the throttle exists: a
+    roster nobody fixes must not print the same line every tick for the life of
+    the relay. Differs from the test above in the one variable under test."""
+    said, notes = [], {}
+    alice = ("AAAA1111", "left", None, None)
+    for _ in range(3):
+        peer._one_name_per_row({"alice": alice, "bob": alice}, said.append,
+                               notes)
+    assert len([m for m in said if "both resolve to row" in m]) == 1, said
+
+
+def test_an_alias_that_LEAVES_and_returns_is_reported_again(peer, tmp_path):
+    """⚠️ The half `_one_name_per_row`'s own clear CANNOT reach, and the reason
+    the note also belongs in `_name_notes`: a name that has left the roster is
+    in no later `resolved`, so the loop that pops the note never visits it.
+    Only `apply_leaves` can, and its list was written out with the rule spelled
+    in full and this note missing from it."""
+    path = roster_file(tmp_path,
+                       "alice=AAAA1111\nbob=AAAA1111\ncarol=BBBB2222\n")
+
+    def edit(tick):
+        if tick == 1:
+            open(path, "w").write("alice=AAAA1111\ncarol=BBBB2222\n")
+        if tick == 2:
+            open(path, "w").write(
+                "alice=AAAA1111\nbob=AAAA1111\ncarol=BBBB2222\n")
+    ctl = TickingCtl(panes(), edit)
+    out = io.StringIO()
+    peer.cmd_relay(ctl, [], 500, 8, False, out, roster=path, ticks=4,
+                   dashboard=True, fetch=Fetcher())
+    assert ctl.tick >= 3, "bob never got back to aliasing alice"
+    assert out.getvalue().count("both resolve to row") == 2, out.getvalue()
+
+
 def test_resolve_all_still_returns_a_plain_dict(peer):
     """The other half of the note above: the reason the drop set went into
     `notes` at all is that this shape may not move."""
@@ -4889,3 +4954,65 @@ def test_a_dropped_cell_does_NOT_close_the_relays_grid(peer):
                    io.StringIO(), dashboard=True, fetch=Fetcher())
     assert ctl.grid_log == [("open", ["AAAA1111:left", "BBBB2222:left"]),
                             ("close",)], ctl.grid_log
+
+
+def test_a_PARTIAL_open_is_RETRIED_on_the_next_tick(peer):
+    """🔴 A transient partial open that was never retried, three lines below
+    the comment arguing that a failed one must be.
+
+    `shown` is the "do not re-open the same cells" gate, and a partial open is
+    an INCOMPLETE outcome: agterm exits 0, grids what it could resolve, and
+    names the rest on stdout. The documented cause is transient -- a `:right`
+    cell whose split is briefly absent -- so recording those cells as shown
+    means the next tick takes the `fresh == shown` early return and the grid
+    stays partial until the ids or the membership move, which for a stable
+    roster is the rest of the run."""
+    out = io.StringIO()
+    ctl = TickingCtl(panes())
+    ctl.dashboard_out = "unresolved: BBBB2222\n"
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8, False, out,
+                   ticks=3, dashboard=True, fetch=Fetcher())
+    assert ctl.tick >= 2, "one tick only -- the retry was not exercised"
+    assert len(ctl.dashboards) >= 2, ctl.grid_log
+
+
+def test_a_PERSISTENT_partial_open_is_said_ONCE_not_per_tick(peer):
+    """The companion the retry needs, and the same trade the failed open makes:
+    retrying every tick means complaining every tick unless the message is
+    throttled."""
+    out = io.StringIO()
+    ctl = TickingCtl(panes())
+    ctl.dashboard_out = "unresolved: BBBB2222\n"
+    peer.cmd_relay(ctl, ["alice=AAAA1111", "bob=BBBB2222"], 500, 8, False, out,
+                   ticks=3, dashboard=True, fetch=Fetcher())
+    assert out.getvalue().count("agterm dropped") == 1, out.getvalue()
+
+
+def test_a_cell_agterm_drops_TWICE_is_reported_twice(peer):
+    """The clear on the new throttle, for the reason every other one here has
+    it: a cell that is dropped, recovers and is dropped again must say so
+    twice, or the throttle that stops a line repeating stops it ever firing.
+
+    ⚠️ Driven through `update_grid` directly -- making agterm drop a cell,
+    stop, and drop it again through `cmd_relay` needs a ctl whose stdout
+    changes on a schedule, to say one thing about a dict."""
+    said, notes = [], {}
+    ctl = RelayCtl(panes())
+    people = {"alice": ("AAAA1111", "left", None, None),
+              "bob": ("BBBB2222", "left", None, None)}
+    ctl.dashboard_out = "unresolved: BBBB2222\n"
+    shown, opened = peer.update_grid(ctl, people, people, None, False,
+                                     said.append, notes)
+    assert ("said", ("dash-dropped",)) in notes, "the throttle never fired"
+    ctl.dashboard_out = ""
+    shown, opened = peer.update_grid(ctl, people, people, shown, opened,
+                                     said.append, notes)
+    assert ("said", ("dash-dropped",)) not in notes, notes
+    # ⚠️ The membership has to MOVE for the third open to happen at all: a
+    # clean open records its cells, and `fresh == shown` is the gate that stops
+    # the relay re-opening an unchanged grid every tick. Without this the test
+    # would assert the clear on a call that never reaches the drop at all.
+    people = dict(people, carol=("CCCC3333", "left", None, None))
+    ctl.dashboard_out = "unresolved: BBBB2222\n"
+    peer.update_grid(ctl, people, people, shown, opened, said.append, notes)
+    assert len([m for m in said if "agterm dropped" in m]) == 2, said

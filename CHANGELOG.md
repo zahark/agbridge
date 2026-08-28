@@ -280,6 +280,39 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A participant could vanish from the relay's grid with NOTHING saying so — defect 3's exact
+  symptom, reached through the code that fixed it.** `_one_name_per_row` throttles its "alice and bob
+  both resolve to row AAAA1111" line so a roster nobody fixes does not print it every tick, and that
+  note was the one throttle in the file that shipped with no clear. The cost is not a missing line:
+  `update_grid` subtracts the alias drops from `missing` on the argument that an alias *has already
+  been told*, which is true only the first time. Measured — bob aliases alice (said), the roster is
+  fixed, bob aliases alice again: the second collision is throttled **and** the missing line is
+  suppressed, so the grid quietly shows one agent where two were asked for.
+
+  ⚠️ **It needed clearing in two places, not one, and the second is the one that is easy to miss.**
+  `_one_name_per_row` clears the note for every name that resolved *and was not dropped* — but a
+  participant who **leaves the roster** appears in no later `resolved` at all, so that loop can never
+  reach it. Only `apply_leaves` can, and the note was missing from `_name_notes`, whose own comment
+  spells out the rule ("a list, not a pattern, and it has to grow when a new per-name note appears").
+  `docs/commands.md` had already promised that every throttle is cleared when its condition goes
+  away.
+
+- **A grid agterm opened only PARTIALLY was never retried.** `update_grid` records the cell set as
+  shown so the relay does not re-open an unchanged grid every tick — and it recorded it after an open
+  in which agterm had said `unresolved: <id>` on stdout and left those cells out. The next tick then
+  took the `fresh == shown` early return, so a **transient** partial open (the documented cause is a
+  `:right` cell whose split is briefly absent) stayed partial until the row ids or the membership
+  moved, which for a stable roster is the rest of the run. It is retried now, with the message
+  throttled — the same trade a failed open and a missing member both already made, three lines above
+  the comment that argued it.
+
+- **`Ctl.dashboard`'s docstring told the next caller the opposite of what the code does.** It said
+  the relay was content to ignore agterm's `unresolved:` output; the relay grew a reader for it in
+  this same release, and `unresolved_lines`' own docstring says there are two callers. Both `Ctl`
+  grid methods now also say out loud that they **raise** — "best-effort" describes the return, not
+  the call, and a caller reading only the first line is the bug two review passes found on both sides
+  of this branch.
+
 - **`agb-dashboard`'s own cleanup could destroy the message it exists to print.** Both places it
   closes a grid assumed `Ctl.dashboard_close` returns a two-tuple; it *raises* when agtermctl cannot
   be started at all. On the strict path that meant the error naming the still-up partial grid was

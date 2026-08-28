@@ -2538,7 +2538,7 @@ That single distinction decides both error policies, and both are correct *in pl
 |---|---|---|
 | what the user asked for | a conversation; the grid is a convenience | the grid, as the primary effect |
 | a member that will not resolve | **named, and the rest are gridded** — best-effort, because a cosmetic grid failure must never stop a message | **nothing opens**, exit 2, every problem named |
-| a cell **agterm** drops (`unresolved:` on stdout, exit 0) | **named, and the rest stay gridded** — the same policy, and the relay was blind to this one until it had a reader of its own | **nothing opens**: the grid agterm just put up is **closed again**, then exit 2 |
+| a cell **agterm** drops (`unresolved:` on stdout, exit 0) | **named, and the rest stay gridded** — the same policy, and the relay was blind to this one until it had a reader of its own. ⚠️ **And not recorded as shown**, so the next tick retries: a partial open is an *incomplete* outcome, and its documented cause (a `:right` cell whose split is briefly absent) is transient | **nothing opens**: the grid agterm just put up is **closed again**, then exit 2 |
 | a grid call that **raises** rather than failing | said and ignored; the message pump is what matters | reported, and any grid already up is closed on the way out |
 | a member in the `scratch` pane | excluded and said; it counts as *accounted for*, not missing | a shortfall — nothing opens |
 | more members than agterm's nine cells | the first nine are gridded and the rest **named** | **nothing opens**, exit 2, the cap and the count both given |
