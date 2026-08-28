@@ -48,6 +48,38 @@ not be determined afterwards whether it rendered and was closed or never rendere
 nothing until somebody resolves that label**, and every resolve in that window happened to land on
 the live row.
 
+## 🔴 Inert litter and armed litter look identical in the map
+
+**Measured 2026-08-28**, both sides of the wire, while four more dead bindings accumulated in front
+of the two agents watching — the first time this was observed happening rather than found afterwards.
+
+Two independent properties, and **they are on opposite sides of the wire**:
+
+| property | decides | visible in the rows map? | visible in the statedir? |
+|---|---|---|---|
+| `done` vs `bound` | whether anything **sweeps** it | ✅ yes | no |
+| key still **alive** | whether `agb-refresh` **re-mints** it | ❌ **no** | ✅ yes |
+
+- `done` + row gone → `close-done` **tries**, fails, prints `close by hand`. Visible, and
+  sweepable-in-principle.
+- `bound` + row gone → `close-done` does not even consider it. **Invisible.**
+
+⚠️ **And the danger runs the opposite way to the visibility.** Four `hangout-*` bindings left over
+from a single evening's restarts are all `done`, and their keys are **dead** — reaped when the pids
+died, confirmed absent from the statedir. `agb-refresh` cannot re-mint what no longer beats, so they
+are **inert**. The one entry that matters is `bound`, and its key is **alive and beating** (measured:
+pid up, beat 6 s old) — so a refresh *will* re-mint it, as a second row with a duplicate label.
+**Armed.**
+
+🔴 **So a cleanup tool reading only the map cannot tell inert litter from armed litter**, and the
+map's own `done`/`bound` marking points the wrong way: the noisy, sweepable, visible entries are the
+harmless ones, and the quiet invisible one is the hazard. **The discriminator is whether the key is
+still in the feed**, which is on the *agent host's* side and is not something `agb-refresh` reads.
+
+⚠️ That is a harder problem than the one `close-done` fails at, and it is the reason the "make
+`agb-refresh` refuse" idea below is not simply a matter of counting labels: the refusal must be
+conditioned on liveness, and liveness lives somewhere else.
+
 ## What to do about it, in order
 
 1. **Before running `agb-refresh` on an instance, check that no orphaned binding's label duplicates a

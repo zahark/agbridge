@@ -46,6 +46,16 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   for a while — invisible because **a duplicate label costs nothing until somebody resolves that
   label**, and every resolve in that window landed on the live row.
 
+  🔴 **And inert litter looks identical to armed litter in the map.** Measured on both sides while
+  four more dead bindings accumulated in front of the two agents watching: the `done`/`bound` marking
+  decides whether anything *sweeps* an entry, but whether the key is **still alive in the feed**
+  decides whether `agb-refresh` *re-mints* it — and that is on the agent host's side, invisible to
+  the Mac-side tool. ⚠️ **The two point opposite ways**: four leftover `hangout-*` bindings are
+  `done` with **dead** keys, so they are noisy, sweepable and **inert**; the single dangerous entry
+  is `bound` with a **live, beating** key, so it is invisible to `close-done` and **armed**. A
+  cleanup reading only the map cannot tell them apart, which is a harder problem than the one
+  `close-done` already fails at.
+
   `docs/backlog/the-repair-for-orphaned-bindings-is-what-detonates-them.md` has the measurements, the
   ordering to follow before refreshing, and why both obvious fixes need a decision rather than a
   patch.
