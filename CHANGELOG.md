@@ -106,6 +106,40 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   one still offering to re-render it. That refusal also said "which config uses" — with a hole where
   the instance name goes — on every run that did not type one.
 
+### Fixed
+
+- **A message can arrive with its head missing while both ends report success — recorded, not yet
+  fixed.** A peer agent's message landed in a composer starting mid-sentence; the sender read
+  `queued … as #id`, the relay read `delivered`, and the conversation ran two more exchanges before
+  a human noticed the reply did not answer the question. ⚠️ **The transport was measured and
+  exonerated**: the tmux pane option this comment called *"the message, 3 KB, exact"* actually holds
+  **16336 bytes** on tmux 3.5a, and 16337 is **refused** (`command too long`, rc 1) with the previous
+  value retained — so `cmd_send` raises rather than losing anything, and `show-options -p` renders
+  the value on one line with both ends intact. The comment is corrected in place; being five times
+  under, with nothing said about the failure mode, is what sent the first investigation at the wrong
+  half of the wire.
+
+  ⚠️ **What makes it silent is `deliver`, and the sharp part is that its check is blind to the
+  failure it exists for.** Its own docstring says the verification is there because *a permission
+  dialog can appear between the cursor check and the keystrokes, swallowing them* — swallowing the
+  **leading** ones — and the probe is `body[-40:]`, the **tail**, which a lost head leaves intact.
+  Beneath that, `rendered`'s `pasted` branch verifies no content at all: a long injection becomes
+  `[Pasted text #1 …]`, the body is not on screen, and the branch confirms only that *a* paste of
+  *some* length happened — so the messages most likely to be damaged are the ones whose content is
+  never checked. Until this is fixed, `delivered` means "a tail arrived, or something was pasted".
+  Why the head is lost is still unknown and needs a live agterm;
+  `docs/backlog/delivery-is-verified-on-the-one-end-a-lost-head-leaves-intact.md` has the
+  measurements, both holes, the experiment that would settle it, and why probing both ends is not
+  the obvious safe repair.
+
+- **`peer_busy` now names compaction as the second reason its two gates are not redundant.** A peer
+  mid-autocompact reported `active` while the screen read `composer` — the pane genuinely looks
+  ready to type into, and the hook-derived status is the only thing between a message and an agent
+  that would drop it. The docstring justified two gates with the permission-dialog case alone, and a
+  single example reads like *the* reason rather than like *a* case of it. The general rule, now
+  written down: the screen can look typeable while the agent cannot receive, and the screen is the
+  half that cannot tell.
+
 ### Added
 
 - **`agb-hangout` — a skill for two agents talking with no task attached.** `agb-peer` carries

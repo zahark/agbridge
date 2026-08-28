@@ -478,6 +478,15 @@ def peer_busy(status):
     it -- the mode check cannot, and the cursor check would be measuring the
     dialog's caret.
 
+    ⚠️ **And the dialog is not the only instance -- COMPACTION is a second
+    one, observed 2026-08-28.** A peer mid-autocompact reported `active` while
+    `classify` read `composer`: the pane genuinely looks ready to type into,
+    and this gate is again the only thing between a message and an agent that
+    would drop it. Worth naming because the docstring justified two gates with
+    one example, and an example reads like the reason rather than like a case
+    of it -- the general rule is that the screen can look typeable while the
+    agent cannot receive, and the screen is the half that cannot tell.
+
     ⚠️ What it is NOT. `idle` is emitted by the bridge alone, for a feed that
     went quiet and for a removed agent -- so it means "no current information",
     not "ready", and it is allowed through for that reason: refusing it would
@@ -539,7 +548,17 @@ def compose(message, sender):
 # includes it:
 #
 #   window name:  claude [peer #k3n9x2]        <- always visible, never scrolls
-#   tmux option:  @agbpeer_msg_k3n9x2          <- the message, 3 KB, exact
+#   tmux option:  @agbpeer_msg_k3n9x2          <- the message, exact
+#
+# ⚠️ **MEASURED, tmux 3.5a: the ceiling is 16336 bytes and it is LOUD.** This
+# said "3 KB" for months, which is five times under, and said nothing about
+# what happens past it -- so a truncated message was blamed on this transport
+# first. A `set-option -p` value of 16337 bytes is REFUSED (`command too
+# long` / `failed to send command`, rc 1), the option keeps its previous
+# value, and `cmd_send`'s `tmux()` helper raises on the non-zero rc. Below
+# that, `show-options -p` renders it on one line with head and tail intact.
+# **This path cannot lose a message quietly.** The one that can is `deliver`
+# -- see docs/backlog/delivery-is-verified-on-the-one-end-a-lost-head-leaves-intact.md.
 #
 # The relay reads the status bar on a tick it already makes for mode detection,
 # so watching costs nothing. Only when the id CHANGES does it reach for the
@@ -1908,6 +1927,16 @@ def deliver(ctl, session, pane, body, send, lines, say):
     fail -- it is that a permission dialog can appear between the cursor check
     and the keystrokes, swallowing them. Seeing our own text on the screen is
     what rules that out, and it is why the Return is a SECOND call.
+
+    🔴 **AND IT IS PROBED AT THE WRONG END.** A dialog swallowing keystrokes
+    eats the HEAD; `probe` is `body[-40:]`, the tail -- so the check passes on
+    exactly the damage it was written to catch, and `rendered`'s `pasted`
+    branch verifies no content at all. Found live from a message that arrived
+    mid-sentence while both ends read success. Not fixed here because probing
+    both ends is not obviously safe (an unpasted long body's head may have
+    scrolled out of the `--lines` window). The measurements, the two holes and
+    the experiment that would settle it:
+    docs/backlog/delivery-is-verified-on-the-one-end-a-lost-head-leaves-intact.md
     """
     target = session["id"]
     # Read BEFORE typing, so a paste placeholder left over from an earlier
