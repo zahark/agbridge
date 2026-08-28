@@ -601,6 +601,23 @@ trade `docs/commands.md`'s throttle rows made after four corrections.
   fanning out into four callers that each guessed differently reads as four unrelated bugs —
   `docs/backlog/one-timeout-four-callers-four-different-guesses.md` is the worked example, and three
   of its four are still open.
+- **G — an ABSENCE read as a negative, when the thing that would have produced evidence was
+  removed or was never able to speak.** Two instances, one evening, and they look unrelated until
+  you notice both are silence being trusted.
+  ⚠️ **A check that DEGRADES in response to its own success.** A leak scan run with a shorter
+  pattern than usual — a term dropped because the last several diffs had been clean — came back
+  green on a diff full of internal names. **Making the pass rate an input to the check means the
+  instrument gets weaker exactly as the evidence for weakening it accumulates, and it is
+  self-reinforcing: every green run afterwards is further reason to trust it.** Distinct from every
+  other instrument in this list, which were wrong from the start; this one *was* correct and
+  *became* incorrect through use. **Check:** never weaken a check citing its own pass rate — that
+  is the one justification that cannot be evidence. Applies to trimmed grep patterns, loosened
+  timeouts, quarantined flaky tests, and softened assertions alike.
+  ⚠️ **And "nobody has reported it" is not evidence, when the party holding the evidence has no
+  symptom.** The nested-label collision breaks the **shorter**, earlier-named agent while the `_2`
+  one keeps working — so the person who caused it is the person whose agent is fine, and nothing
+  draws their attention to it. **Check:** before reading a lack of reports as a lack of problem, ask
+  who would have to notice, and whether that party experiences anything at all.
 - **F — reasoning from the function you have OPEN to a claim about the function you have not.**
   Diagnosed by a peer agent about its own two errors in one evening, which is why it is stated as a
   tell rather than as an instance. **"Both gates miss the trust prompt"**: read `peer_busy`'s
