@@ -601,6 +601,20 @@ trade `docs/commands.md`'s throttle rows made after four corrections.
   fanning out into four callers that each guessed differently reads as four unrelated bugs —
   `docs/backlog/one-timeout-four-callers-four-different-guesses.md` is the worked example, and three
   of its four are still open.
+- **E — a document asserting a thing and its negation, where BOTH halves were true when written.**
+  Not a stale comment: nobody was wrong, and there was never a moment when one person held both
+  statements. `CHANGELOG.md`'s 0.7.0 section opened *"`agb-dashboard` has now been run against a
+  real agterm — all six paths pass"* and, four paragraphs down **inside the same section**, said
+  *"Nothing in `agb-dashboard` has been run against a live agterm."* The second was accurate the day
+  it was written; a live run made it false; and the good news landed in a different section, written
+  by a **different agent**. It survived every test run because nothing executes a changelog.
+  ⚠️ **The general form is a list that only ever gets LONGER** — *"Not verified"*, *"Known gaps"*,
+  *"still ASSUMED"*, all three of which are in this repo. **The verification is the event that should
+  prune the list, and it is the event least likely to**: whoever ran the test writes it up somewhere
+  else and has no reason to open the file where the doubt was recorded. **Check:** when you verify
+  something, grep for where it was previously doubted *before* writing up that it works — and give
+  any such list a reader whose job is to shorten it. The only one this repo had was **cutting a
+  release**, which is the sole task that makes somebody read a section top to bottom.
 
 ## Testing conventions
 
