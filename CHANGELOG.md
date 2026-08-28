@@ -108,6 +108,37 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **🔴 Two measurements now disagree about what makes Claude Code collapse an injection into
+  `[Pasted text #1]`, and the discriminator is written down rather than guessed.** `COMPOSER_GLYPHS`'
+  comment has said **843 characters** — a length — since it was written. Re-measured on a fresh
+  composer: 800 / 900 / 3500 / **8000** raw bytes showed the body **in full**, head and tail, **no
+  placeholder at any size**; the same bodies wrapped in `\033[200~ … \033[201~` collapsed at **900**.
+  On that reading the trigger is **bracketed paste**, a framing, and length is irrelevant. The two
+  are not obviously reconcilable — the 843 figure was a *live symptom* through this file's own
+  delivery path, not a lab result. ⚠️ **The one difference not controlled for**: `ctl.type` passes
+  the body as a plain **argv element**, while the re-measurement drove **`--stdin`**. If agtermctl
+  brackets one and not the other, both are right about different commands and only the argv form is
+  on our path. Neither figure should be quoted as settled until that is run.
+
+  ⚠️ **Consequence if the new reading holds: the paste theory of the lost head dies.** Nothing in
+  this repo wraps anything in bracketed paste, so a relay-delivered body would arrive as ordinary
+  typed text, land in full, and never reach `rendered`'s `pasted` branch — making that hole real but
+  unreachable from the relay, leaving the tail-probe hole fully live, and leaving the lost head with
+  no mechanism again.
+
+- **❌ The leading candidate fix for the verify-nothing branch is dead: Claude's placeholder carries
+  no count.** A 3500-byte paste renders exactly `❯ [Pasted text #1]` and `paste again to expand` —
+  nothing numeric anywhere on the pane. The `NNNN chars` form is **Codex's** alone, and the docstring
+  had them looking like two spellings of one thing. So "verify the body against the placeholder's own
+  count" is unavailable on the Claude side.
+
+- **A candidate positive signal for the trust-prompt hole, from the same run: bracketed paste.** A
+  composer answers it visibly (`[Pasted text #1]` / `paste again to expand`); a select-list modal has
+  no such affordance. ⚠️ **The property that makes it better than matching the prompt's wording is
+  that a paste is CONTENT, not a keystroke** — so the probe cannot answer the prompt it is probing,
+  and it fails *closed* where a wording match fails *open*. Needs its own measurement first: does an
+  **empty** `\033[200~\033[201~` produce any visible change?
+
 - **`agtermctl session type` measured: no size limit to 64 KB, byte-exact — and the obvious way to
   test that gives the wrong answer.** This doc carried no length clause at all, which is what let
   the transport stay a suspect for a truncated message. Measured against a raw-mode reader run as an

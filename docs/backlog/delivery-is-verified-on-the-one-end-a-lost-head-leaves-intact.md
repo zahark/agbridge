@@ -75,11 +75,35 @@ since ~3.5 KB is squarely in collapse territory, **the paste placeholder is the 
 than a dialog.** That also means hole 2 above is not merely the wider hole, it is very likely *the*
 hole: the message became a placeholder, and the branch that fires for placeholders checks nothing.
 
-**Still open**, and it needs a real composer:
+❌ **The leading candidate fix is DEAD — measured 2026-08-28.** Claude's placeholder carries **no
+count at all**: a 3500-byte paste renders exactly two lines, `❯ [Pasted text #1]` and `paste again
+to expand`, with nothing numeric anywhere on the pane. The `NNNN chars` form is **Codex's** alone.
+So "verify the body against the placeholder's own count" is unavailable on the Claude side, and
+hole 2 needs a different answer.
 
-- Whether the placeholder's own `+N lines` / `NNNN chars` count matches the body — because if it
-  does, it is a cheap content-length check for exactly the case where there is no content on screen,
-  and the fix follows from it.
+🔴 **And the same run put the whole paste theory in doubt.** On a fresh composer, 800 / 900 / 3500 /
+**8000** raw bytes showed the body **in full**, head and tail, **no placeholder at any size**; only
+bodies wrapped in `\033[200~ … \033[201~` collapsed, and those at 900. On that reading the trigger
+is **bracketed paste, not length** — and since nothing in this repo wraps anything in bracketed
+paste (grepped: no `200~` anywhere in `agb-peer`, `agb-dashboard` or `agb-peer-setup`), a
+relay-delivered body would arrive as ordinary typed text, land in full, and **never reach the
+`pasted` branch at all.** Hole 2 would then be real but unreachable from the relay, hole 1 (the tail
+probe) would remain fully live, and **the lost head would have no mechanism again.**
+
+⚠️ **But that contradicts a measurement already in the tree, and the contradiction is not resolved.**
+`COMPOSER_GLYPHS`' comment records Claude collapsing at **843 characters** — observed through this
+file's own delivery path, as a live symptom (the verification refused to press Return), not as a lab
+result. Both cannot be right as stated.
+
+**The one difference not controlled for**, and it is the next experiment: `ctl.type` passes the body
+as a plain **argv element** — `agtermctl session type <text> --target … --pane …` — while the
+re-measurement drove **`--stdin`**. If agtermctl brackets one form and not the other, both
+measurements are right about different commands, and **only the argv form is on our path**. Until
+that is run, neither the 843 figure nor "no placeholder to 8 KB" should be quoted as settled.
+
+**Still open:**
+
+- The argv-vs-`--stdin` discriminator above. It decides whether hole 2 is reachable at all.
 - Where in the composer the head goes, and from what size.
 
 ## Why it is not fixed here

@@ -59,3 +59,20 @@ the mechanism that already exists for reading hazards off a pane. Two reasons to
 
 That second question is a design change with a real cost on the other side, which is why it is
 written down rather than guessed at.
+
+## A candidate positive signal: bracketed paste
+
+Proposed 2026-08-28, from the placeholder experiment, and it is the right **shape** even if it turns
+out not to work: **a composer answers bracketed paste and a modal does not.** Wrapping a body in
+`\033[200~ … \033[201~` makes Claude Code draw `[Pasted text #1]` / `paste again to expand` — a
+composer-specific, *visible* response. A select-list dialog has no such affordance.
+
+⚠️ **The property that makes it better than a wording match is that a paste is CONTENT, not a
+keystroke** — so the probe cannot answer the prompt it is probing. A text match on the trust
+prompt's wording fails *open* when the wording changes; this fails *closed*, because no response
+means no evidence of a composer.
+
+It needs its own measurement before anything is built on it: does an **empty** `\033[200~\033[201~`
+produce any visible change at all? If it does, there is a zero-content probe. If it does not, the
+probe has to carry a body, and a probe that types something into a pane you are unsure about is a
+different proposition entirely.

@@ -138,8 +138,34 @@ MENU_MARKER = "[enter] attach"
 # for the day the interrupt-vs-queue difference actually bites.
 COMPOSER_GLYPHS = ("❯", "›")
 
-# ⚠️ Both agents COLLAPSE a long, fast injection into a placeholder -- so the
-# body is simply not on the screen to verify against. MEASURED: Claude at 843
+# 🔴 **TWO MEASUREMENTS DISAGREE ABOUT WHAT TRIGGERS THE PLACEHOLDER, and the
+# discriminator is named below rather than guessed at.** This comment has said
+# "843 characters" since it was written -- a LENGTH. Re-measured 2026-08-28 on
+# a fresh composer: 800 / 900 / 3500 / **8000** raw bytes through
+# `agtermctl session type` showed the body IN FULL, head and tail, **no
+# placeholder at any size**; the same bodies wrapped in `\033[200~ … \033[201~`
+# collapsed at **900**. On that reading the trigger is BRACKETED PASTE, a
+# framing, and length has nothing to do with it.
+#
+# ⚠️ The two are not obviously reconcilable, because the 843 figure was itself
+# observed through this file's own delivery path -- the verification refused to
+# press Return, which is a live symptom and not a lab result. **The one
+# difference not controlled for: `ctl.type` passes the body as a plain ARGV
+# element (`session type <text> --target …`), while the re-measurement drove
+# `--stdin`.** If agtermctl brackets one form and not the other, both
+# measurements are right about different commands, and only the argv form is
+# on our path. That is the experiment; until it is run, neither figure should
+# be quoted as settled.
+#
+# ⚠️ **And Claude's placeholder carries NO COUNT** -- measured the same day:
+# a 3500-byte paste renders exactly `❯ [Pasted text #1]` and `paste again to
+# expand`, nothing numeric anywhere on the pane. The `NNNN chars` form below is
+# CODEX's alone. So "verify the body against the placeholder's own count" is
+# unavailable on the Claude side, which was the leading candidate fix for
+# `rendered`'s verify-nothing branch.
+#
+# Both agents COLLAPSE a long, fast injection into a placeholder -- so the
+# body is simply not on the screen to verify against. Claude at 843
 # characters draws `❯ [Pasted text #1]` / `paste again to expand`, and Return
 # submitted it fine; Codex at 1461 draws `› [Pasted Content 1461 chars]`. The
 # Return was never the problem; the verification was, and it refused to press
