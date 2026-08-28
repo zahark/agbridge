@@ -387,6 +387,28 @@ treats "not on screen" as "not delivered" needs a retry budget rather than one r
 (`agb-peer` reads `VERIFY_READS = 4` times at 1 s intervals, which is what makes it usually survive
 this.)
 
+### 🔴 A relay's output is a VIEWPORT, not a log — `grep` over it is not a record
+
+**Observed 2026-08-28**, twice in one evening, by an operator reading a running relay's terminal.
+Both times a `grep` over that buffer was taken as evidence about the past and was not:
+
+- **counting deliveries that had already scrolled away** — the buffer holds what fits, so an absence
+  means *"not on screen"*, never *"did not happen"*;
+- **a wait-loop matching a failure line that was already there** from an earlier attempt, so the
+  loop returned instantly and reported a fresh failure that was historical.
+
+⚠️ **The two failure directions are opposite and both look like an answer.** Scrolled-away content
+reads as *nothing happened*; retained content reads as *it happened just now*. Neither can be
+distinguished from the buffer alone, because **a viewport has no timestamps and no beginning.**
+
+⚠️ **This is why a relay finding needs the relay's own line, quoted, at the moment it is read** —
+and why *"I grepped and saw N"* is not a measurement. If a count matters, capture the stream to a
+file and count the file; if an event's *time* matters, nothing in a terminal buffer can supply it.
+
+⚠️ And it composes badly with the caret limit below: an operator who cannot poll fast enough to see a
+transient, and cannot trust the buffer to have retained it, has **no observer at all** outside the
+process making the change.
+
 ### 🔴 A polled caret can see a STABLE state and never a TRANSIENT one
 
 **Measured 2026-08-28**, as a *negative* result, and worth as much as the positive ones because both
