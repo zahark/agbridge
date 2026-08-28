@@ -2102,6 +2102,12 @@ Enter, EOF and `Ctrl-C` all close it — the close is in a `finally`, because `C
 documented way out of a foreground wait and is not an `Exception`, so an `except` would miss it and
 orphan the grid the hold exists to own.
 
+⚠️ **And neither does a lost stdout.** `agb-dashboard alice | head` closes stdout the instant `head`
+exits, and the next write raises — so everything printed *after* the grid goes up goes through a
+writer that cannot raise, or the exception unwinds past the close and leaves a grid nobody owns.
+Writes *before* the grid exists stay fatal on purpose: there is nothing to orphan yet, and a
+`--version` that could not be printed has failed.
+
 ⚠️ **Run it from a terminal OUTSIDE agterm.** That is the condition the measurement holds under: with
 a grid up, an external terminal stayed fully responsive and a blocking read returned on Enter
 (CONFIRMED 2026-08-27). A grid **cell** is read-only to the keyboard, which is a different claim, and
