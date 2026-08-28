@@ -108,6 +108,29 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **✅ Verified live: the label/cwd collision line.** On a real relay, in the shape the bug actually
+  takes — bound first so the previous binding existed, *then* collided. One line, both rivals named,
+  printed **once across ~21 ticks**, and diagnosable without being told: the rival's *label* is
+  nothing like the selector, so a reader can see the match came from the **cwd**. ⚠️ **The clearing
+  half was checked in both directions too** — closing the rival made it resolve silently, and a
+  *different* rival printed again naming the **new** one rather than replaying a cached string.
+  ⚠️ And the **before** was captured as a negative control, which is what makes the after mean
+  anything: the same harness on the previous commit stayed silent *through an explicit re-resolve
+  that reprinted the whole binding table*, printing the id it would have printed on success —
+  byte-identical output whether the resolve succeeded or fell back.
+
+- **The trust-prompt report was corrected: there are three gates, not two, and the third was never
+  evaluated.** It named `classify` and `peer_busy`. `wait_ready` also runs `pane_busy` and then the
+  **caret** (`column == EMPTY_COLUMN`) — and a trust prompt is a **select list**, not a text input,
+  so its caret has little reason to sit where an empty composer's does. ⚠️ **If it does not, the
+  entry's premise is wrong** and the hole is a documentation defect rather than a delivery one; if
+  it reports 2, the hole is real and *worse* than described, having survived three gates. One
+  `surface cursor` reading settles it and nobody has taken it. ⚠️ **The general lesson is why the
+  entry keeps its name and its content**: an enumeration of defences in a bug report is itself a
+  claim, and this one came from the two gates whose *docstrings discuss each other* — the caret check
+  is argued in `wait_ready`'s body and was invisible to a reader following the argument rather than
+  the code.
+
 - **A failed delivery no longer wedges the peer, and the verification finally checks the end the
   failure eats.** Two fixes, and **the order is the whole point**:
 
@@ -294,7 +317,8 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   bug loses the **head**: a harness whose failure signature does not match the symptom is measuring
   something else. Both are in `docs/agtermctl.md` now, the trap recorded beside the result.
 
-- **🔴 Both delivery gates miss Claude Code's startup trust prompt.** Observed live: *"Is this a
+- **🔴 Delivery gates miss Claude Code's startup trust prompt — and the report of it was itself
+  short by one gate.** Observed live: *"Is this a
   project you created or one you trust?"* renders `❯`, a `COMPOSER_GLYPH` — so `classify` calls a
   blocking modal `MODE_COMPOSER`, and because it appears **before the agent has ever run a turn**
   the hook-derived status is `-` rather than `active`, so `peer_busy` passes it too. ⚠️ This is
@@ -305,7 +329,7 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   message here plausibly **answers the prompt**. Recorded rather than patched, because a
   wording-match fails *open* and the general form — a modal wearing the composer's chrome — will
   keep coming back in a new costume:
-  `docs/backlog/both-gates-miss-the-startup-trust-prompt.md`.
+  `docs/backlog/the-gates-that-miss-the-startup-trust-prompt.md`.
 
 - **The double-delivery item is CONFIRMED, with sender-side proof.**
   `a-timed-out-session-type-is-retried-and-can-double-deliver.md` was found by search and said "Not

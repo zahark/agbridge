@@ -51,6 +51,29 @@ own plan, its own tests, and thought about what it breaks for anyone deliberatel
 
 Two smaller things worth doing either way — ✅ **both done, 2026-08-28:**
 
+> ✅ **VERIFIED LIVE 2026-08-28**, by a peer agent on a real relay, in the shape the bug actually
+> takes — bound first so `previous` was populated, *then* collided. The line, verbatim:
+>
+> ```
+> agb-peer: alpha: 'collidebot' matches 2 rows (collidebot · workdir · %1, otherbot · collidebot · %2)
+>           -- use a longer prefix or the row id -- keeping the row resolved earlier
+> ```
+>
+> One line; both rivals named; **printed once across ~21 ticks** with the collision standing. And
+> diagnosable without being told: the second row's *label* is `otherbot`, nothing like the selector,
+> so a reader can see the match came from the **cwd** component.
+>
+> ⚠️ **The clearing half was verified too, in both directions** — closing the rival made it resolve
+> cleanly with no output, and introducing a *different* rival printed again naming the **new** one
+> (`otherbot2`) rather than replaying a stale cached string. A throttle that never cleared would
+> leave a fixed collision reported for ever; one that cleared too eagerly would spam. Neither.
+>
+> ⚠️ **And the BEFORE was captured as a negative control**, which is what makes the after mean
+> something: the same harness on the previous commit was silent for 12+ ticks — and stayed silent
+> *through an explicit re-resolve* that reprinted the whole binding table, printing the id it would
+> have printed on success. **Byte-identical output whether the resolve succeeded or fell back.**
+> That is the indistinguishability, stated better than this entry originally stated it.
+
 - ✅ **The relay says why.** `resolve_all`'s fallback kept the previous binding **silently**; it now
   reports the reason through `_throttled`, and `resolve` already names the rival rows, so the line
   is what tells an operator the collision is a **cwd** rather than a second label. ⚠️ The silence was

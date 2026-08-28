@@ -6,10 +6,36 @@ exist to prevent exactly this are individually blind to it.
 
 ## The two gates, and why each one misses
 
-`try_deliver` will not type into a peer unless **both** agree it is safe:
+🔴 **THIS ENTRY SAYS "BOTH GATES" AND THERE ARE THREE — the third was never evaluated, and it is
+the one most likely to catch this.** Corrected 2026-08-28, from the code rather than a measurement:
+`wait_ready` runs `peer_busy` (status), then `pane_busy` (screen text), then the **cursor column**.
+
+| gate | what it asks | verdict on the trust prompt |
+|---|---|---|
+| `classify(text)` | is `COMPOSER_GLYPHS = ("❯", "›")` on the pane? | ❌ misses — the prompt draws `❯` |
+| `peer_busy(status)` | is the agent `active`/`blocked`? | ❌ misses — it has never run a turn, so the status is `-` |
+| `pane_busy(text)` | is a `BUSY_MARKS` string on the pane? | ❌ misses — the prompt's wording is not one |
+| **`ctl.cursor(surface) == EMPTY_COLUMN`** | **is the caret where an empty composer's is (column 2)?** | ⚠️ **UNMEASURED** |
+
+⚠️ **The fourth is the interesting one and nobody looked.** `EMPTY_COLUMN = 2` was measured for an
+empty *Claude composer*; the trust prompt is a **select list**, not a text input, so its caret has
+little reason to sit in the same place. If it does not, `wait_ready` already refuses and **this
+entry's premise is wrong** — the hole would be a documentation defect rather than a delivery one.
+If it does report 2, the hole is real and worse than described, because it survives three gates.
+
+**One command settles it**: `agtermctl surface cursor` against a pane sitting at the trust prompt.
+Until that is run, treat everything below as *conditional on the caret reading 2*.
+
+⚠️ And the general lesson stands either way, which is why it is not deleted: **an enumeration of
+defences in a bug report is itself a claim, and this one was short by one.** The count came from the
+two gates whose *docstrings discuss each other*; the cursor check is argued in `wait_ready`'s body
+and was invisible to a reader following the argument rather than the code.
+
+`try_deliver` will not type into a peer unless **all** agree it is safe:
 
 - `classify(text)` — reads the pane and looks for `COMPOSER_GLYPHS = ("❯", "›")`.
 - `peer_busy(status)` — reads the agent's own hook-reported state and refuses `active` / `blocked`.
+- `pane_busy(text)` / the caret — see the table above.
 
 Claude Code's startup trust prompt — *"Is this a project you created or one you trust?"* — **renders
 `❯`**. So:
