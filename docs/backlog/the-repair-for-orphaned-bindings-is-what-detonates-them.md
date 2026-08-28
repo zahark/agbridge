@@ -80,6 +80,32 @@ still in the feed**, which is on the *agent host's* side and is not something `a
 `agb-refresh` refuse" idea below is not simply a matter of counting labels: the refusal must be
 conditioned on liveness, and liveness lives somewhere else.
 
+## ⚠️ And ARMED is not DANGEROUS — a third split, measured 2026-08-28
+
+Both sides counted, six orphaned-`bound` bindings on one instance:
+
+| binding | key in the statedir? | consequence of `agb-refresh` |
+|---|---|---|
+| 3 of them | **absent** — already reaped | **inert**: nothing to re-mint |
+| `glc_toucan_integ` | **alive**, beating | **armed → a REPAIR**: a live agent with no row gets one back |
+| `glc_nesher_be_branch_2` | **alive**, beating | **armed → a REPAIR** |
+| `agbridge-public` | **alive**, beating | 🔴 **armed → an OUTAGE**: it duplicates a live row's label |
+
+🔴 **So the command is not dangerous; it is dangerous for exactly ONE entry and beneficial for two.**
+Two live agents are sitting with no row at all right now, and `agb-refresh` is precisely what gives
+them one. Framing it as "the repair detonates the litter" was true of the entry that prompted this
+file and wrong as a general statement — **the hazard is not re-minting, it is re-minting into a
+duplicate label.**
+
+The full test therefore has **three** questions, on two sides of the wire, and only the last is about
+danger:
+
+1. is the binding orphaned? *(the rows map, Mac side)*
+2. is its key still beating? *(the statedir, agent side)* — decides **inert vs armed**
+3. **does its label duplicate a live row's?** *(the tree, Mac side)* — decides **repair vs outage**
+
+⚠️ Nobody was asking question 3 until three armed entries turned up and two of them were harmless.
+
 ## What to do about it, in order
 
 1. **Before running `agb-refresh` on an instance, check that no orphaned binding's label duplicates a
