@@ -17,6 +17,11 @@ __pycache__/
 .DS_Store
 .nfs*
 
+# patches carried in from another machine (git am, then delete). At the repo
+# ROOT only: a patch here is a transfer artifact, and `git add -A` swept one
+# into a commit that was pushed before anyone looked at the diffstat.
+/*.patch
+
 # local runtime state (never commit live bridge state)
 /state/
 *.local
