@@ -4956,16 +4956,31 @@ def test_a_binding_forgotten_under_a_running_bridge_is_re_minted_at_once(
     assert mac.load_rows(str(rows_file)).row_for("aaaa1111") == second
 
 
-def test_an_unchanged_map_costs_a_tick_nothing(bridge, rows_file):
+def test_an_unchanged_map_costs_a_tick_nothing(bridge, mac, rows_file,
+                                               monkeypatch):
     """The companion: no edit elsewhere, no re-mint -- and no rewrite of the
-    map, which would otherwise happen every two seconds for ever."""
+    map, which would otherwise happen every two seconds for ever.
+
+    Writes are COUNTED, not inferred from the inode: a temp+rename rewrite on
+    a filesystem that reuses a freed inode at once keeps the same number, and
+    an inode check passed against a bridge rewriting its map on every batch.
+    """
     b = bridge()
     b.upsert(wire("aaaa1111"))
-    inode = os.stat(str(rows_file)).st_ino
+    writes = []
+    real = mac.agb.atomic_write
+
+    def counting(path, *args, **kwargs):
+        writes.append(path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(mac.agb, "atomic_write", counting)
     b.tick()
     b.tick()
     assert len(b.run.news()) == 1
-    assert os.stat(str(rows_file)).st_ino == inode
+    assert writes == []
+    _forget_elsewhere(mac, rows_file, "aaaa1111")   # positive control: the
+    assert writes                                    # counter does see writes
 
 
 def test_a_re_mint_raises_no_new_row_banner(bridge, mac, rows_file):

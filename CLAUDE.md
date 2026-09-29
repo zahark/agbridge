@@ -755,6 +755,11 @@ environment — several are version- or mount-specific.
   stderr's handler cannot raise and so cannot change an exit status. `--print-mac-id` is the exception
   and does not generalise: `valid_mac_id` refuses anything outside an ASCII alphabet.
 - **`os.utime` accepts an `O_RDONLY` fd**, which saves a second `LOOKUP` on the hot path.
+- **A temp+rename rewrite can come back with the SAME inode number** — measured on this host's
+  `/tmp` (overlayfs, where pytest's `tmp_path` lives): successive rewrites alternated between two
+  numbers, so after an even count the file looked untouched. An "inode unchanged, so nothing was
+  rewritten" assertion passed against a bridge rewriting its map on every batch, and only a mutation
+  check caught it. Count the writes (wrap `agb.atomic_write`) instead.
 - **`/proc/<pid>/exe` returns `…/tmux (deleted)`** after the binary is upgraded under a running
   process. It still passes a naive basename check, then fails to exec. Strip the suffix and require
   `os.access(X_OK)`, with a `$PATH` fallback.
