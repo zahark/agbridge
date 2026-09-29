@@ -982,15 +982,37 @@ def test_pane_never_reads_the_shared_statedir(all_trees):
     assert reachable & forbidden == set()
 
 
-def test_pane_removes_nothing_and_writes_nothing(all_trees):
-    """It is a viewer. The only side effect it may have is a child ssh."""
+PANE_WRITER = "pane_mark_quit"
+
+
+def test_pane_removes_nothing_and_writes_nothing_but_its_quit_marker(
+        all_trees):
+    """It is a viewer. Its side effects are a child ssh and ONE file: the quit
+    marker an explicit quit word leaves beside the config, so agterm's
+    `session.closed` hook can tell `q` from a dismissal.
+
+    The writer is excluded BY NAME and everything else reachable is held to the
+    old rule, so a second writer fails here. Non-vacuous: the writer must be
+    reachable, or excluding it would exclude nothing.
+    """
     funcs, reachable = pane_reachable(all_trees)
-    for name in reachable:
+    assert PANE_WRITER in reachable
+    without = dict(funcs)
+    del without[PANE_WRITER]
+    reachable = conftest.reachable_from(without, "run_pane")
+    assert "pane_attach" in reachable
+    for name in reachable - set([PANE_WRITER]):
         made = conftest.calls(funcs[name])
         for forbidden in ("unlink", "rename", "utime", "mkdir", "makedirs"):
             assert ("os", forbidden) not in made, (name, forbidden)
         assert "atomic_write" not in [attr for _base, attr in made], name
         assert "write_in_place" not in [attr for _base, attr in made], name
+    # And the writer writes only its marker: the path comes from
+    # `pane_requit_path`, beside the config, never from the statedir.
+    made = set(attr for _base, attr in conftest.calls(funcs[PANE_WRITER]))
+    assert "pane_requit_path" in made
+    for forbidden in ("statedir", "state_path", "record_path", "rows_path"):
+        assert forbidden not in made
 
 
 EXEC_NAMES = ("execv", "execve", "execvp", "execvpe", "execl", "execle",
@@ -1258,3 +1280,67 @@ def test_the_drawer_says_so_when_agtermctl_is_missing(ops, monkeypatch):
     assert "agtermctl is not on PATH" in text
     # The message must not name the split when `[d]` was pressed.
     assert "the split" not in text
+
+
+# ---------------------------------------------------------------------------
+# the quit marker: `q` is not a dismissal
+# ---------------------------------------------------------------------------
+#
+# agterm closes a session when its command exits, so leaving this prompt used
+# to take a live agent's row with it. An explicit quit word now leaves
+# `<config dir>/requit/<key>`, and agterm's `session.closed` hook
+# (`agb forget-rows --closed`) re-mints only a row that left one.
+
+def _config(tmp_path):
+    path = tmp_path / "inst" / "config"
+    path.parent.mkdir()
+    path.write_text("")
+    return str(path)
+
+
+@pytest.mark.parametrize("word", ["q", "quit", "exit", "Q"])
+def test_a_quit_word_leaves_a_marker_beside_the_config(ops, tmp_path, word):
+    """Through `run_pane`, so the wiring from the row's own `--config` to the
+    marker is what is tested, not a hand-passed callback."""
+    config = _config(tmp_path)
+    out = Out()
+    assert ops.run_pane(args() + ["--config", config], out=out,
+                        ask=Ask(word), run=Run()) == 0
+    assert os.path.exists(ops.pane_requit_path(KEY, config))
+    assert ops.PANE_QUIT_BACK in out.text
+
+
+def test_eof_leaves_no_marker(ops, tmp_path):
+    """The companion. EOF is what a pane gets when its row is closed by hand,
+    and that is a dismissal: a marker here would bring the row straight back."""
+    config = _config(tmp_path)
+    out = Out()
+    assert ops.run_pane(args() + ["--config", config], out=out, ask=Ask(),
+                        run=Run()) == 0
+    assert not os.path.exists(os.path.dirname(
+        ops.pane_requit_path(KEY, config)))
+    assert ops.PANE_QUIT_GONE in out.text
+
+
+def test_a_marker_that_cannot_be_written_still_quits(ops, tmp_path):
+    """Best effort: failing to write costs the row, which is what quitting cost
+    before the marker existed -- never the prompt."""
+    blocker = tmp_path / "inst"
+    blocker.write_text("a file where the config directory should be")
+    config = str(blocker / "config")
+    out = Out()
+    assert ops.pane_attach(["ssh", "box2"], out, ask=Ask("q"), run=Run(),
+                           on_quit=lambda: ops.pane_mark_quit(KEY, config)) == 0
+    assert ops.PANE_QUIT_GONE in out.text
+
+
+def test_the_marker_is_where_the_bridge_side_reads_it(ops, mac, tmp_path,
+                                                      fake_home):
+    """Cross-file agreement (invariant 14): `agb_ops` never loads `agb_mac`,
+    so each spells the path. Compared as outputs, for a named instance and for
+    the default one, not only as the two constants."""
+    assert ops.PANE_REQUIT_DIR == mac.REQUIT_DIR
+    config = _config(tmp_path)
+    assert ops.pane_requit_path(KEY, config) == mac.requit_path(KEY, config)
+    assert ops.pane_requit_path(KEY) == mac.requit_path(KEY)
+    assert ops.pane_requit_path(KEY).startswith(str(fake_home))

@@ -1761,6 +1761,30 @@ PANE_PROMPT = "[enter] attach   [s] split   [d] drawer   [q] quit > "
 
 PANE_QUIT_WORDS = ("q", "quit", "exit")
 
+# Leaving the prompt ends this command, and agterm closes a session whose
+# command exits -- so a quit word used to take a live agent's row with it. This
+# marker says the close that follows is a QUIT, not a dismissal: `agb
+# forget-rows --closed`, run by agterm's `session.closed` hook, forgets the
+# binding only for a row that left one, and the running bridge re-mints it.
+#
+# Only an explicit quit word writes it, never EOF: a pane hung up because its
+# row was closed by hand must read as the dismissal it is. Never removed here --
+# the reader consumes it, and this module unlinks nothing but its own probe
+# (`tests/test_doctor.py`); one file per key, rewritten, bounds what a Mac
+# without the hook can accumulate. ⚠️ Cross-file agreement (invariant 14):
+# this is `agb_mac.REQUIT_DIR`, and this module never loads `agb_mac`.
+PANE_REQUIT_DIR = "requit"
+
+PANE_QUIT_BACK = (
+    "leaving -- nothing here changes any agent's state. agterm closes this row "
+    "as the prompt exits; with agterm's session.closed hook installed the "
+    "bridge re-creates it within seconds, otherwise agb-refresh does "
+    "(docs/commands.md).")
+
+PANE_QUIT_GONE = (
+    "leaving -- nothing here changes any agent's state. agterm closes this row "
+    "as the prompt exits, and agb-refresh brings it back.")
+
 PANE_SPLIT_WORDS = ("s", "shell", "split")
 
 # `shell` deliberately stays with the SPLIT. The prompt's label changed from
@@ -2155,7 +2179,31 @@ def pane_wait(prompt):
     return line.strip()
 
 
-def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None):
+def pane_requit_path(key, config=None):
+    """`<config dir>/requit/<key>` -- `agb_mac.requit_path`, spelled here."""
+    return os.path.join(os.path.dirname(config or agb.config_path()),
+                        PANE_REQUIT_DIR, key)
+
+
+def pane_mark_quit(key, config=None):
+    """Leave the quit marker for `key`; True when it was written.
+
+    Best effort: a marker that cannot be written costs the row, which is
+    exactly what quitting cost before the marker existed.
+    """
+    if not agb.valid_key(key or ""):
+        return False
+    path = pane_requit_path(key, config)
+    try:
+        agb._mkdir_owned(os.path.dirname(path))
+        agb.atomic_write(path, "")
+    except (agb.AgbError, OSError):
+        return False
+    return True
+
+
+def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None,
+                on_quit=None):
     """Prompt, attach, and come **back** here when the attach ends.
 
     `subprocess.call` in a loop is the whole point of the function: `os.exec*`
@@ -2200,8 +2248,9 @@ def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None):
             out.flush()
             continue
         if answer is None or answer.lower() in PANE_QUIT_WORDS:
-            out.write("leaving the row as it is -- nothing here changes any "
-                      "agent's state\n")
+            # `answer is not None` is the EOF rule above `PANE_REQUIT_DIR`.
+            back = answer is not None and on_quit is not None and on_quit()
+            out.write((PANE_QUIT_BACK if back else PANE_QUIT_GONE) + "\n")
             out.flush()
             return 0
         code = run(argv)
@@ -2359,8 +2408,10 @@ def run_pane(argv, out=None, ask=None, run=None, config=None):
     ssh_argv = pane_ssh_argv(target, opts["tmux"], opts["pane"], jump)
     out.write("    attach: %s\n" % (pane_display(ssh_argv),))
     out.flush()
+    config_file = opts.get("config")
     return pane_attach(ssh_argv, out, ask, run,
-                       split_shell_line(target, opts.get("cwd"), jump))
+                       split_shell_line(target, opts.get("cwd"), jump),
+                       on_quit=lambda: pane_mark_quit(opts["key"], config_file))
 
 
 # ==========================================================================

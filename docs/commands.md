@@ -897,6 +897,7 @@ one, is what the sweeps removed.
 ```
 agb forget-rows [--key <key>]... [--all] [--config <path>] [--rows <path>]
                 [--placements <path>] [--launch-agents <dir>] [--no-close] [--dry-run]
+agb forget-rows --closed <row> [--config <path>] [--launch-agents <dir>] [--dry-run]
 ```
 
 Drops `key → row` bindings so the next snapshot re-creates the rows. The recovery for **agterm
@@ -914,6 +915,7 @@ having forgotten its rows** — closed, reset or reinstalled — while the map s
 | `--launch-agents <dir>` | `~/Library/LaunchAgents` | where to look for instances. Says where to **look**, not which one to act on, so it does not narrow |
 | `--no-close` | off | leave agterm's sessions open. They become duplicates as soon as the bridge mints fresh rows, so this is for the case where you are about to close them yourself |
 | `--dry-run` | off | name the bindings and change nothing |
+| `--closed <row>` | — | agterm has **already closed** this row: the `session.closed` hook's entry point. Different rules from the rest of this command — see *`--closed`* below |
 
 ⚠️ **A run naming no map is REFUSED, and names `--all`. This is the one command that does not default
 to every instance**, and the reason is *not* that it closes rows — `agb-refresh` closes every row it
@@ -978,7 +980,61 @@ that existed then. After upgrading the Mac's files, `agb-refresh` is what gets r
 code; nothing refreshes a running row in place.
 
 Stop the bridge first — it holds the map in memory and merges-then-writes on every save.
-`agb-refresh` does the whole sequence.
+`agb-refresh` does the whole sequence. ⚠️ Since `--closed`, a running bridge also re-reads the map
+whenever another process has changed it (checked every op batch, so within about two seconds), and
+re-mints at once any **bound** row that edit forgot. Stopping it first is still the safe order for a
+bulk forget; it is no longer the only way an edit reaches it.
+
+### `--closed` — agterm's `session.closed` hook
+
+⚠️ **Prototype, not verified against a live agterm.** Written against agterm's documented hook
+contract (`docs/agtermctl.md` → *Event hooks*), which has not been run on a Mac yet.
+
+agterm closes a session when its command exits, so typing `q` at a row's `agb pane` prompt used to
+take a **live** agent's row with it until `agb-refresh`. With this line in
+`~/.config/agterm/hooks.conf` (then File ▸ Reload Hooks, or `agtermctl hooks reload`):
+
+```
+on session.closed ~/.local/bin/agb forget-rows --closed "$AGT_SESSION_ID"
+```
+
+the row comes back by itself within a couple of seconds. agterm runs the line for **every** session
+it closes; what happens depends on the entry holding that row:
+
+| entry | what happens | why |
+|---|---|---|
+| none, in any instance | nothing, exit 0 | agterm has sessions that are not ours |
+| `[done]` | forgotten | the agent is gone and now so is its row. `close-done` cannot clear this one: its `session close` fails on a row that is already gone, so it keeps the entry |
+| bound, and `agb pane` quit it within `REQUIT_WINDOW` (60 s) | forgotten; the running bridge re-mints the row, with no new-row banner | leaving a prompt is not a decision to lose a live agent's row |
+| bound, anything else | **kept** — the row stays gone until `agb-refresh`, as before | closing a row by hand dismisses it. Re-minting every closed row was rejected for that reason (`CHANGELOG.md`, *A row agterm has forgotten is written to once*) |
+
+How `q` is told apart from a close by hand: on an explicit `q`/`quit`/`exit`, `agb pane` leaves
+`<config dir>/requit/<key>` before it exits. **EOF writes nothing** — a pane hung up because its row
+was closed by hand must read as the dismissal it is — so Ctrl-D at the prompt dismisses too. A marker
+vouches for **one** close and is consumed, so a row re-minted after `q` and then closed by hand stays
+closed.
+
+It **sweeps** like `--key`: the hook is one line for every instance on the Mac, and the marker is
+read beside the instance that holds the row. It never calls `agtermctl`.
+
+Exit status is what agterm turns into a banner (one per hook, until it next succeeds), so non-zero is
+kept for what is actually wrong:
+
+- an empty or malformed id — `$AGT_SESSION_ID` was not set, i.e. the hook contract is not the one
+  this was written against;
+- a map that could not be read, when no readable map held the row — "not found" would be a guess;
+- `--closed` beside `--key` or `--all`.
+
+Limitations, all prototype-grade:
+
+- **The re-minted row lands in its remembered workspace**, not necessarily where it was: a bridge
+  reads `placements` once, at startup, so a row dragged since then comes back in the configured
+  workspace.
+- **Without the hook, `q` costs the row exactly as before** — and leaves a zero-byte marker nothing
+  reads, one per key, overwritten on the next quit.
+- **What `session.closed` does around an agterm quit, a relaunch, and undo is unmeasured.** A close
+  with no marker is kept either way, so the worst case of a wrong assumption there is today's
+  behaviour, not a lost binding.
 
 ## `agb-refresh` — Mac, a convenience
 

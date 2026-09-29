@@ -4728,3 +4728,302 @@ def test_the_configured_fields_reach_both_agtermctl_calls(bridge, mac):
     renames = [c for c in b.run.agterm() if c[1:3] == ["session", "rename"]]
     assert renames, b.run.agterm()
     assert renames[0][3] == "build · %24"
+
+
+# ---------------------------------------------------------------------------
+# agterm's `session.closed` hook: `agb forget-rows --closed <row>`
+# ---------------------------------------------------------------------------
+#
+# agterm runs the hook for every session it closes. The handler forgets a
+# `[done]` entry, forgets a BOUND one only when `agb pane` left a fresh quit
+# marker, and keeps a bound one otherwise (closing by hand dismisses). The
+# running bridge notices the edit at its next op batch and re-mints what a
+# quit forgot (`RowRenderer._sync_rows`).
+
+def _closed_map(mac, tmp_path):
+    """A config, and beside it a map holding one bound and one `[done]` row."""
+    config = str(tmp_path / "inst" / "config")
+    os.makedirs(os.path.dirname(config))
+    rows = mac.RowMap(mac.rows_path(config))
+    rows.bind("aaaa1111", "ROW-1", "build · box2")
+    rows.bind("bbbb2222", "ROW-2", "docs · box2")
+    rows.unbind("bbbb2222")
+    rows.save(force=True)
+    return config
+
+
+def _closed(mac, config, row, *extra):
+    out = _RowOut()
+    rc = mac.run_forget_rows(["--config", config, "--closed", row]
+                             + list(extra), out=out)
+    return rc, out.text, mac.load_rows(mac.rows_path(config))
+
+
+def test_key_for_finds_a_bound_and_a_done_entry(mac):
+    rows = mac.RowMap()
+    rows.bind("aaaa1111", "ROW-1")
+    rows.bind("bbbb2222", "ROW-2")
+    rows.unbind("bbbb2222")
+    assert rows.key_for("ROW-1") == "aaaa1111"
+    assert rows.key_for("ROW-2") == "bbbb2222"
+    assert rows.key_for("ROW-9") is None
+
+
+def test_a_done_row_closed_in_agterm_is_forgotten(mac, tmp_path):
+    """`close-done` cannot clear this entry: its `session close` fails on a row
+    that is already gone, and it keeps the entry. The hook can."""
+    config = _closed_map(mac, tmp_path)
+    rc, text, rows = _closed(mac, config, "ROW-2")
+    assert rc == 0
+    assert not rows.known("bbbb2222")
+    assert rows.row_for("aaaa1111") == "ROW-1"       # the neighbour is untouched
+    assert "[done]" in text
+
+
+def test_a_bound_row_closed_by_hand_is_kept(mac, tmp_path):
+    """Closing a row by hand dismisses it -- the rule this does not change."""
+    config = _closed_map(mac, tmp_path)
+    rc, text, rows = _closed(mac, config, "ROW-1")
+    assert rc == 0
+    assert rows.row_for("aaaa1111") == "ROW-1"
+    assert "kept aaaa1111" in text
+
+
+def test_a_bound_row_whose_prompt_was_quit_is_forgotten(mac, ops, tmp_path):
+    """The companion of the test above, differing only in the marker."""
+    config = _closed_map(mac, tmp_path)
+    assert ops.pane_mark_quit("aaaa1111", config)
+    marker = mac.requit_path("aaaa1111", config)
+    assert os.path.exists(marker)
+
+    rc, text, rows = _closed(mac, config, "ROW-1")
+
+    assert rc == 0
+    assert not rows.known("aaaa1111")
+    assert rows.done_entries() == [("bbbb2222", "ROW-2")]
+    assert not os.path.exists(marker)                 # consumed
+    assert "prompt was quit" in text
+
+
+def test_a_stale_quit_marker_vouches_for_nothing_and_is_removed(mac, ops,
+                                                                tmp_path):
+    config = _closed_map(mac, tmp_path)
+    assert ops.pane_mark_quit("aaaa1111", config)
+    marker = mac.requit_path("aaaa1111", config)
+    old = time.time() - mac.REQUIT_WINDOW - 5
+    os.utime(marker, (old, old))
+
+    rc, _text, rows = _closed(mac, config, "ROW-1")
+
+    assert rc == 0
+    assert rows.row_for("aaaa1111") == "ROW-1"
+    assert not os.path.exists(marker)
+
+
+def test_a_quit_marker_vouches_for_one_close_only(mac, ops, tmp_path):
+    """`q`, the row comes back, then the new row is closed BY HAND inside the
+    window: that second close is a dismissal and must stay one."""
+    config = _closed_map(mac, tmp_path)
+    assert ops.pane_mark_quit("aaaa1111", config)
+    rc, _text, rows = _closed(mac, config, "ROW-1")
+    assert rc == 0 and not rows.known("aaaa1111")
+
+    rows.bind("aaaa1111", "ROW-7")                    # what the bridge re-mints
+    rows.save(force=True)
+    rc, text, rows = _closed(mac, config, "ROW-7")
+
+    assert rc == 0
+    assert rows.row_for("aaaa1111") == "ROW-7"
+    assert "kept aaaa1111" in text
+
+
+def test_dry_run_forgets_nothing_and_keeps_the_marker(mac, ops, tmp_path):
+    config = _closed_map(mac, tmp_path)
+    assert ops.pane_mark_quit("aaaa1111", config)
+    rc, text, rows = _closed(mac, config, "ROW-1", "--dry-run")
+    assert rc == 0
+    assert rows.row_for("aaaa1111") == "ROW-1"
+    assert os.path.exists(mac.requit_path("aaaa1111", config))
+    assert "would forget aaaa1111" in text
+
+
+def test_a_row_no_map_holds_is_quiet_success(mac, tmp_path):
+    """agterm has sessions that are not ours, and it runs the hook for every
+    one of them: a non-zero exit here would banner on every ordinary close."""
+    config = _closed_map(mac, tmp_path)
+    rc, text, rows = _closed(mac, config, "ROW-9")
+    assert rc == 0
+    assert "not an agbridge row" in text
+    assert rows.row_for("aaaa1111") == "ROW-1"
+    assert rows.done_entries() == [("bbbb2222", "ROW-2")]
+
+
+def test_an_unreadable_map_is_not_read_as_not_ours(mac, tmp_path):
+    """"I could not answer" is not "the answer is nothing" (bug shape D). An
+    error is what makes agterm say so, once, as a banner."""
+    config = str(tmp_path / "inst" / "config")
+    os.makedirs(os.path.dirname(config))
+    with open(mac.rows_path(config), "w") as handle:
+        handle.write("this is not a row map\n")
+    with pytest.raises(mac.agb.AgbError) as excinfo:
+        mac.run_forget_rows(["--config", config, "--closed", "ROW-1"],
+                            out=_RowOut())
+    assert "could not be" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("argv", [
+    ["--closed", ""],
+    ["--closed", "x" * 500],
+    ["--closed", "ROW-1", "--key", "aaaa1111"],
+    ["--closed", "ROW-1", "--all"],
+])
+def test_a_bad_closed_invocation_is_refused(mac, tmp_path, argv):
+    """An empty id means `$AGT_SESSION_ID` was not set -- the hook contract is
+    not the one this was written against -- and that has to be LOUD."""
+    config = _closed_map(mac, tmp_path)
+    with pytest.raises(mac.agb.AgbError):
+        mac.run_forget_rows(["--config", config] + argv, out=_RowOut())
+    rows = mac.load_rows(mac.rows_path(config))
+    assert rows.row_for("aaaa1111") == "ROW-1"
+
+
+def test_closed_never_asks_agterm_anything(mac, ops, tmp_path):
+    """The row is already gone: that is the premise. Non-vacuous because the
+    entry really was forgotten by the same run."""
+    config = _closed_map(mac, tmp_path)
+    assert ops.pane_mark_quit("aaaa1111", config)
+    runner = Runner()
+    mac.run_forget_rows(["--config", config, "--closed", "ROW-1"],
+                        out=_RowOut(), run=runner)
+    assert not mac.load_rows(mac.rows_path(config)).known("aaaa1111")
+    assert runner.calls == []
+
+
+def test_closed_sweeps_and_reads_the_marker_beside_the_instance_that_has_it(
+        mac, ops, tmp_path, instance_config):
+    """Like `--key`, `--closed` names WHAT, not WHERE: the hook is one line in
+    agterm's `hooks.conf` for every instance on the Mac. The marker is read
+    beside the instance that holds the row -- a marker beside the other one
+    must not vouch for it."""
+    default = instance_config()
+    hostb = instance_config("hostb")
+    _bound_map(mac, mac.rows_path(default), "aaaa1111", "ROW-1")
+    _bound_map(mac, mac.rows_path(hostb), "bbbb2222", "ROW-3")
+    agents = _agents_dir(tmp_path)
+    _instance_plist(agents, "com.agbridge", default)
+    _instance_plist(agents, "com.agbridge.hostb", hostb)
+    assert ops.pane_mark_quit("bbbb2222", default)        # the WRONG instance
+
+    out = _RowOut()
+    rc = mac.run_forget_rows(["--closed", "ROW-3",
+                              "--launch-agents", str(agents)], out=out)
+    assert rc == 0
+    assert mac.load_rows(mac.rows_path(hostb)).row_for("bbbb2222") == "ROW-3"
+
+    assert ops.pane_mark_quit("bbbb2222", hostb)          # the right one
+    rc = mac.run_forget_rows(["--closed", "ROW-3",
+                              "--launch-agents", str(agents)], out=_RowOut())
+    assert rc == 0
+    assert not mac.load_rows(mac.rows_path(hostb)).known("bbbb2222")
+    assert mac.load_rows(mac.rows_path(default)).row_for("aaaa1111") == "ROW-1"
+
+
+# -- the running bridge ------------------------------------------------------
+
+def _forget_elsewhere(mac, path, key):
+    """What `forget-rows` does to the map from another process."""
+    other = mac.load_rows(str(path))
+    assert other.forget(key)
+    other.save(force=True)
+
+
+def test_a_binding_forgotten_under_a_running_bridge_is_re_minted_at_once(
+        bridge, mac, rows_file):
+    """Not at the agent's next report, which for an idle agent is hours."""
+    b = bridge()
+    b.upsert(wire("aaaa1111"))
+    first = b.rows.row_for("aaaa1111")
+    assert first is not None and len(b.run.news()) == 1
+
+    _forget_elsewhere(mac, rows_file, "aaaa1111")
+    b.tick()
+
+    assert len(b.run.news()) == 2
+    second = b.rows.row_for("aaaa1111")
+    assert second not in (None, first)
+    assert ("active", second, False) in b.run.statuses()
+    assert second in [target for _title, target in b.run.renames()]
+    assert mac.load_rows(str(rows_file)).row_for("aaaa1111") == second
+
+
+def test_an_unchanged_map_costs_a_tick_nothing(bridge, rows_file):
+    """The companion: no edit elsewhere, no re-mint -- and no rewrite of the
+    map, which would otherwise happen every two seconds for ever."""
+    b = bridge()
+    b.upsert(wire("aaaa1111"))
+    inode = os.stat(str(rows_file)).st_ino
+    b.tick()
+    b.tick()
+    assert len(b.run.news()) == 1
+    assert os.stat(str(rows_file)).st_ino == inode
+
+
+def test_a_re_mint_raises_no_new_row_banner(bridge, mac, rows_file):
+    """This agent was on screen a moment ago; it did not arrive. The second
+    key is the positive control -- without it, a harness that could never
+    banner at all would pass."""
+    b = _past_quiet(bridge())
+    b.upsert(wire("aaaa1111"))
+    assert len(_notifies(b)) == 1                     # a real arrival: banner
+
+    _forget_elsewhere(mac, rows_file, "aaaa1111")
+    b.tick()
+
+    assert len(b.run.news()) == 2
+    assert len(_notifies(b)) == 1
+
+
+def test_a_done_entry_forgotten_elsewhere_is_not_re_minted(bridge, mac,
+                                                          rows_file):
+    """`close-done` and `--closed` forget `[done]` entries: agents that are
+    gone. Nothing comes back."""
+    b = bridge()
+    b.upsert(wire("aaaa1111"))
+    b.remove("aaaa1111")
+    _forget_elsewhere(mac, rows_file, "aaaa1111")
+    b.tick()
+    assert len(b.run.news()) == 1
+    assert not b.rows.known("aaaa1111")
+
+
+def test_a_stale_bridge_does_not_re_mint(bridge, mac, rows_file):
+    """`[?]` is the truth while the feed is gone; the snapshot after the
+    reconnect re-mints the row anyway, inside its quiet window."""
+    b = bridge()
+    b.upsert(wire("aaaa1111"))
+    b.stale()
+    _forget_elsewhere(mac, rows_file, "aaaa1111")
+    b.renderer([])
+    assert len(b.run.news()) == 1
+
+
+def test_the_map_signature_is_taken_under_the_lock_by_save(mac, mac_tree,
+                                                         rows_file):
+    """What `_sync_rows` compares against. Taken inside `save`, or a write by
+    the other process landing between our unlock and our stat would be
+    recorded as ours and never merged."""
+    rows = mac.load_rows(str(rows_file))
+    assert rows.sig is None
+    rows.bind("aaaa1111", "ROW-1")
+    rows.save()
+    assert rows.sig == mac._file_sig(str(rows_file)) is not None
+    # Structurally: the `_file_sig` call sits in the `try` whose `finally`
+    # releases the lock, not after it.
+    save = conftest.functions(mac_tree)["save"]
+    guarded = [node for node in ast.walk(save)
+               if isinstance(node, ast.Try) and node.finalbody
+               and "_rows_unlock" in [a for _b, a in conftest.calls(
+                   ast.Module(body=node.finalbody))]]
+    assert len(guarded) == 1
+    body = ast.Module(body=guarded[0].body)
+    assert "_file_sig" in [attr for _base, attr in conftest.calls(body)]

@@ -618,10 +618,14 @@ def test_only_one_function_unlinks_a_session(all_trees):
     # `_unlink_quiet` is the primitive; `atomic_write`, `link_idx` and
     # `probe_atomicity` clean up their own temps, which are files they created
     # microseconds earlier and which no other process can observe.
+    # `take_quit_marker` consumes the Mac-local `requit/<key>` marker `agb
+    # pane` leaves beside the config: it vouches for ONE close, and a marker
+    # left in place would re-mint a row the user then closed by hand. It is
+    # not a session file, and the loop below holds it to that.
     assert unlinkers == set(
         ["_unlink_quiet", "atomic_write", "link_idx", "reap_entry",
          "sweep_idx", "sweep_err_logs", "sweep_debris", "probe_atomicity",
-         "prune_remove"])
+         "prune_remove", "take_quit_marker"])
 
     # Exactly two functions may unlink a **session**, and they are gated by the
     # two different things a session can be ended by. The rest are named above

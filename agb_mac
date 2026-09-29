@@ -825,6 +825,40 @@ def rows_path(config=None):
     return os.path.join(os.path.dirname(config or agb.config_path()), "rows")
 
 
+def requit_path(key, config=None):
+    """`<config dir>/requit/<key>`: the mark `agb pane` leaves on `q`.
+
+    Beside the config, like `rows`, so an instance's markers are found by the
+    same one-path derivation as its map (invariant 12).
+    """
+    return os.path.join(os.path.dirname(config or agb.config_path()),
+                        REQUIT_DIR, key)
+
+
+def take_quit_marker(key, config=None, now=None, consume=True):
+    """Did `agb pane` quit this key's row just now? Consumes the marker.
+
+    True only for a marker younger than `REQUIT_WINDOW`. Any marker for the key
+    is removed either way, so it vouches for at most ONE close: without that, a
+    row re-minted after `q` and then closed by hand inside the window would come
+    straight back, and the dismissal would silently not happen.
+
+    `os.stat` is right here and wrong in `agb`: this is a Mac-local file under
+    `~/.config`, stamped by this machine's own clock, not a statedir entry an
+    NFS attribute cache can serve stale (constraint #6).
+    """
+    path = requit_path(key, config)
+    try:
+        written = os.stat(path).st_mtime
+    except OSError:
+        return False
+    if consume:
+        agb._unlink_quiet(path)
+    if now is None:
+        now = time.time()
+    return abs(now - written) <= REQUIT_WINDOW
+
+
 def valid_row_id(row):
     if not row or len(row) > ROW_ID_MAX:
         return False
@@ -934,6 +968,23 @@ def read_rows_file(path, warn=None):
     return entries
 
 
+def _file_sig(path):
+    """(inode, size, mtime_ns) of `path`, or None if it cannot be stat'ed.
+
+    The inode is what makes this reliable: every writer of the map goes
+    through `atomic_write`, whose rename gives each version a new inode, so two
+    writes inside one mtime tick with equal sizes still differ. `os.stat` is
+    fine for the same reason as in `take_quit_marker` -- a Mac-local file.
+    """
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
 def _rows_lock(path):
     """Hold the map's read-modify-write against the other writer. fd, or None.
 
@@ -982,7 +1033,8 @@ def _rows_unlock(fd):
 class RowMap(object):
     """key -> (row id, bound?, last title), bijection enforced on every bind."""
 
-    __slots__ = ("path", "entries", "loaded", "dropped", "touched", "dirty")
+    __slots__ = ("path", "entries", "loaded", "dropped", "touched", "dirty",
+                 "sig")
 
     def __init__(self, path=None, entries=()):
         self.path = path
@@ -991,6 +1043,9 @@ class RowMap(object):
         self.dropped = set()         # what *we* removed, so a merge cannot undo it
         self.touched = set()         # what *we* changed, so a merge cannot undo it
         self.dirty = False
+        # `_file_sig` of the file as THIS process last wrote it, taken under
+        # the lock (see `save`). None until the first save.
+        self.sig = None
         for entry in entries:
             kind, key, row = entry[:3]
             title = entry[3] if len(entry) > 3 else ""
@@ -1002,6 +1057,20 @@ class RowMap(object):
 
     def known(self, key):
         return key in self.entries
+
+    def key_for(self, row):
+        """The key holding `row`, bound or `[done]`, or None.
+
+        `bind` refuses a second key for a row, so at most one entry matches.
+        `[done]` entries count: a `[done]` row closed by hand is what
+        `forget-rows --closed` exists to clear, because `close-done` cannot --
+        its `session close` fails on a row that is already gone, and it keeps
+        the entry and says "close by hand" about a row that was.
+        """
+        for key, entry in self.entries.items():
+            if entry[0] == row:
+                return key
+        return None
 
     def row_for(self, key):
         entry = self.entries.get(key)
@@ -1151,6 +1220,10 @@ class RowMap(object):
                     raise
                 agb._mkdir_owned(os.path.dirname(self.path))
                 agb.atomic_write(self.path, payload)
+            # Under the lock, or a write by the other process landing between
+            # our unlock and our stat would be recorded as ours and never
+            # merged: `RowRenderer._sync_rows` compares against this.
+            self.sig = _file_sig(self.path)
         finally:
             _rows_unlock(lock)
         self.dirty = False
@@ -1472,6 +1545,23 @@ def refresh_recipe(config=None):
 # one broken `agtermctl` would silently stop the bridge from painting anything
 # at all, which is far worse than the noise this replaces.
 ROW_GONE_TEXT = "no such session"
+
+# A row closed by `q` at its `agb pane` prompt, as opposed to by hand. agterm
+# closes a session when its command exits (docs/agtermctl.md), so leaving the
+# prompt took the row with it while the agent carried on -- the typed-`quit`
+# half the CHANGELOG left open when it chose dismissal. `agb pane` leaves
+# `<config dir>/requit/<key>` on an explicit quit word, and `forget-rows
+# --closed` (agterm's `session.closed` hook) forgets a BOUND entry only when
+# that marker vouches for the close; a close with no marker is a dismissal, as
+# before. ⚠️ Cross-file agreement (invariant 14): `agb_ops.PANE_REQUIT_DIR`
+# writes the marker, and `agb_ops` never loads this file.
+REQUIT_DIR = "requit"
+
+# How long a marker vouches for the close after it. The hook normally runs
+# within a second of the prompt exiting; the slack is agterm's per-hook queue
+# (`agb-refresh` closing thirty rows is thirty queued runs of the same line).
+# A marker is consumed on use, so this bounds only one no hook ever read.
+REQUIT_WINDOW = 60.0
 
 # The title carries the beat age only once the beat is **late**. A beat is
 # refreshed every `agb.BEAT_INTERVAL` by whoever can prove the agent is alive,
@@ -1838,6 +1928,7 @@ class RowRenderer(object):
             # is the burst. Arming here rather than at construction makes the
             # window independent of how long ssh took to connect.
             self.quiet_until = self.clock() + NEW_ROW_QUIET
+        self._sync_rows()
         for op, payload in ops:
             try:
                 self._render_op(op, payload)
@@ -1853,6 +1944,39 @@ class RowRenderer(object):
             self._warn("cannot persist the row map: %s" % (exc,))
         self._forget_unmapped()
         return None
+
+    def _sync_rows(self):
+        """Fold in another process's edit to the map NOW, not at our next save.
+
+        `save` already merges, but only when this process has something of its
+        own to write -- and on an idle farm that is never, so an entry
+        `forget-rows` dropped under a running bridge stayed bound in memory and
+        was simply written back later. Checked once per op batch, and the feed
+        sends a batch or a tick every `agb.FEED_POLL_INTERVAL`, so the bridge
+        hears about an edit within a couple of seconds.
+
+        A BOUND key the merge removed is re-minted at once from its last wire
+        record, rather than at the agent's next report -- which for an idle
+        agent can be hours. Only bound keys: a `[done]` entry forgotten
+        elsewhere (`close-done`, `forget-rows --closed`) is an agent that is
+        gone, and there is nothing to bring back. Not while stale: `[?]` is the
+        truth then, and the snapshot after the reconnect re-mints it anyway.
+        No new-row banner -- this agent was already on screen a moment ago.
+        """
+        path = self.rows.path
+        if not path or _file_sig(path) == self.rows.sig:
+            return
+        before = self.rows.bound_keys()
+        try:
+            self.rows.save(force=True)
+        except (agb.AgbError, OSError) as exc:
+            self._warn("cannot re-read the row map: %s" % (exc,))
+            return
+        for key in before:
+            session = self.seen.get(key)
+            if self.rows.known(key) or session is None or self.stale:
+                continue
+            self._render_upsert(session, announce=False)
 
     def _forget_unmapped(self):
         """Drop per-key memory for keys the row map no longer holds.
@@ -2017,7 +2141,7 @@ class RowRenderer(object):
 
     # -- the ops ----------------------------------------------------------
 
-    def _render_upsert(self, session):
+    def _render_upsert(self, session, announce=True):
         if not isinstance(session, dict):
             return
         key = session.get("key")
@@ -2038,7 +2162,7 @@ class RowRenderer(object):
                            "[done] and is now bound to it once more" % (key,))
             else:
                 row = self._create_row(session)
-                if row is not None:
+                if row is not None and announce:
                     self._notify_new_row(row, session)
             if row is None:
                 return
@@ -3183,15 +3307,16 @@ FORGET_FLAGS = {"--dry-run": "dry_run", "--no-close": "no_close",
                 "--all": "all"}
 FORGET_VALUE_ARGS = {"--rows": "rows", "--key": "key",
                      "--placements": "placements", "--config": "config",
-                     "--launch-agents": "launch_agents"}
+                     "--launch-agents": "launch_agents", "--closed": "closed"}
 
 
 def parse_forget_args(argv):
-    """`forget-rows [--all] [--key K]... [--rows P] [--placements P]
-    [--config P] [--launch-agents D] [--no-close] [--dry-run]`."""
+    """`forget-rows [--all] [--key K]... [--closed ROW] [--rows P]
+    [--placements P] [--config P] [--launch-agents D] [--no-close]
+    [--dry-run]`."""
     opts = {"rows": None, "keys": [], "dry_run": False, "all": False,
             "no_close": False, "placements": None, "config": None,
-            "launch_agents": None}
+            "launch_agents": None, "closed": None}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -3251,6 +3376,8 @@ def run_forget_rows(argv, out=None, run=None):
     if run is None:
         run = _run_command
     opts = parse_forget_args(argv)
+    if opts["closed"] is not None:
+        return _forget_closed(opts, out)
     if names_a_map(opts):
         if opts["all"]:
             # One line either way, and this is the safe one: `--all` says every
@@ -3296,6 +3423,88 @@ def run_forget_rows(argv, out=None, run=None):
     if len(held) < len(set(opts["keys"])):
         worst = sweep_status(worst, 1)
     return worst
+
+
+def _forget_closed(opts, out, now=None):
+    """`forget-rows --closed <row>` -- agterm's `session.closed` hook.
+
+    agterm runs this for EVERY session it closes, ours or not, so a row that no
+    instance holds is the ordinary answer and exits 0. A non-zero exit makes
+    agterm post a banner (`hooks.conf`'s failure rule), which is kept for what
+    is actually wrong: an empty or malformed id -- the hook contract is not
+    what this was written against -- or a map that could not be read, where
+    "not found" would be a guess (bug shape D).
+
+    What happens to the entry holding the row:
+
+    * `[done]` -> forgotten. The agent is gone and now so is its row, and
+      `close-done` cannot clear this one (see `RowMap.key_for`).
+    * bound, with a fresh quit marker from `agb pane` -> forgotten, and the
+      running bridge re-mints the row (`RowRenderer._sync_rows`). Leaving a
+      prompt is not a decision to lose a live agent's row.
+    * bound, no marker -> KEPT. Closing a row by hand dismisses it; that rule is
+      unchanged, and the CHANGELOG entry "A row agterm has forgotten is written
+      to once" says why re-minting every closed row was rejected.
+
+    Never calls `session close`: the row is already gone -- that is the premise.
+    """
+    row = opts["closed"]
+    if opts["keys"] or opts["all"]:
+        raise agb.AgbError(
+            "forget-rows: --closed names a row agterm has already closed; it "
+            "does not combine with --key or --all")
+    if not valid_row_id(row):
+        raise agb.AgbError(
+            "forget-rows: --closed: not a usable agterm row id: %r" % (row,))
+    if names_a_map(opts):
+        swept = [(None, None)]
+    else:
+        swept = sweep_targets(opts, "forget-rows", out) or [(None, None)]
+    unreadable = []
+    for label, config in swept:
+        one = dict(opts)
+        if config is not None:
+            one["config"] = config
+        config, rows_file, _places = instance_paths(one)
+        entries = read_rows_file(rows_file)
+        if entries is None:
+            unreadable.append(rows_file)
+            continue
+        rows = RowMap(rows_file, entries)
+        key = rows.key_for(row)
+        if key is None:
+            continue
+        where = label or rows_file
+        bound = rows.entries[key][1]
+        quit_ = bound and take_quit_marker(key, config, now,
+                                           consume=not opts["dry_run"])
+        if bound and not quit_:
+            out.write("forget-rows: kept %s (row %s) in %s -- closed by "
+                      "hand, which dismisses it; agb-refresh brings it back\n"
+                      % (key, row, where))
+            out.flush()
+            return 0
+        why = ("its prompt was quit, so the bridge re-creates the row" if bound
+               else "a [done] row closed in agterm")
+        if opts["dry_run"]:
+            out.write("forget-rows: would forget %s (row %s) in %s -- %s\n"
+                      % (key, row, where, why))
+            out.flush()
+            return 0
+        rows.forget(key)
+        rows.save(force=True)
+        out.write("forget-rows: forgot %s (row %s) in %s -- %s\n"
+                  % (key, row, where, why))
+        out.flush()
+        return 0
+    if unreadable:
+        raise agb.AgbError(
+            "forget-rows: row %s is in no map that could be read, and %s "
+            "could not be -- it may be there" % (row, ", ".join(unreadable)))
+    out.write("forget-rows: no instance holds row %s -- not an agbridge row\n"
+              % (row,))
+    out.flush()
+    return 0
 
 
 def _forget_rows_one(opts, out, run, sweeping=False):

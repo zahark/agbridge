@@ -475,7 +475,7 @@ These are not style preferences. Each one has a test, and most were re-learned t
     `scratch on` always goes first). Recorded in `docs/agtermctl.md` and mutation-tested.
     `session scratch --command` is **deliberately unused**: it respawns an already-open scratch, so
     a second `[d]` would destroy a shell in use.
-14. **Eight cross-file agreements have no single source of truth, and all fail silently.** `agb` is
+14. **Nine cross-file agreements have no single source of truth, and all fail silently.** `agb` is
     Python under a character cap; `install.sh` and `agb-refresh` are POSIX sh; none of the three can
     import the others, so each spells the shared value itself.
     - **The default config path is spelled three times** — `agb.config_path()`, `install.sh`'s
@@ -535,6 +535,12 @@ These are not style preferences. Each one has a test, and most were re-learned t
       this list did not contain it; adding `agb-dashboard` as the third speller is what made the
       dangling citation worth fixing rather than deleting.
 
+    - **The quit-marker path `<config dir>/requit/<key>` is spelled twice** —
+      `agb_ops.PANE_REQUIT_DIR`/`pane_requit_path`, which `agb pane` writes on `q`, and
+      `agb_mac.REQUIT_DIR`/`requit_path`, which `forget-rows --closed` reads. `agb_ops` never loads
+      `agb_mac`, and `agb` has no characters to spare for a shared helper. A disagreement raises
+      nothing: every quit reads as a dismissal, and `q` quietly goes back to costing the row.
+
     The first two are pinned by `tests/test_install_pkg.py` — the path agreement compares the
     resolved strings, the validator agreement compares the `case` **patterns**, not the bodies — the
     third by `tests/test_agb_refresh.py`, the fourth and fifth beside the first two in
@@ -543,7 +549,9 @@ These are not style preferences. Each one has a test, and most were re-learned t
     test files, each comparing the substituted value against `agb.own_host()` itself. The eighth is
     pinned by `tests/test_agb_dashboard.py`, which compares all three constants **and** asserts the
     two scripts end up with the *same class object* — a string comparison alone would pass against
-    two loaders that agreed on the name and still built two modules.
+    two loaders that agreed on the name and still built two modules. The ninth is pinned by
+    `tests/test_pane.py`, which compares the two functions' **outputs** for a named instance and for
+    the default one, not only the two constants.
 
 ### Bug shapes that keep coming back
 

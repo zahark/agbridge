@@ -8,6 +8,42 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ## Unreleased
 
+### Added
+
+- **Typing `q` at a row's prompt no longer costs a live agent its row — once agterm's
+  `session.closed` hook is installed.** agterm closes a session when its command exits, so
+  `q`/`quit`/`exit` at the `agb pane` prompt destroyed the row while the agent kept running, and it
+  stayed gone until `agb-refresh`; the prompt meanwhile said *"leaving the row as it is"*. An
+  explicit quit word now leaves `<config dir>/requit/<key>`, and one line in
+  `~/.config/agterm/hooks.conf` —
+
+  ```
+  on session.closed ~/.local/bin/agb forget-rows --closed "$AGT_SESSION_ID"
+  ```
+
+  — forgets that binding, and the running bridge re-mints the row within about two seconds, with no
+  new-row banner.
+
+  ⚠️ **A close by hand still dismisses.** 0.5.0 rejected re-minting every closed row (*A row agterm
+  has forgotten is written to once*) because closing a row is how you dismiss it. The marker is what
+  lets `q` and ⌘W be told apart, so neither rule had to give. EOF writes no marker, because a pane
+  whose row was closed by hand reaches EOF too; a marker vouches for one close and is consumed.
+
+  Two things came with it. **A `[done]` row closed by hand is now forgotten** by the same hook —
+  `close-done` could never clear one: its `session close` fails on a row that is already gone, and
+  it kept the entry and said *close by hand*. And **a running bridge re-reads its map whenever
+  another process changes it**, instead of at its own next write — which on an idle farm was never,
+  so `forget-rows` under a running bridge re-minted nothing until the agent next reported.
+
+### Not verified
+
+- **`forget-rows --closed` has never run against a live agterm.** It is built on agterm's
+  documented `hooks.conf` contract (0.30.0+), read from the docs on a Linux host; which environment
+  variable carries the id, and whether `session.closed` fires when a session's *command* exits, are
+  **ASSUMED**. `docs/agtermctl.md` → *Event hooks* has a one-line capture hook to run on the Mac
+  first. A wrong assumption fails toward today's behaviour: every close reads as "not an agbridge
+  row", and `q` costs the row as before.
+
 ### Fixed
 
 - **🔴 `clear_composer` read the caret ONCE, and condemned a healthy row for it.** Observed live on
