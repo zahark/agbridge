@@ -987,8 +987,9 @@ bulk forget; it is no longer the only way an edit reaches it.
 
 ### `--closed` — agterm's `session.closed` hook
 
-⚠️ **Prototype, not verified against a live agterm.** Written against agterm's documented hook
-contract (`docs/agtermctl.md` → *Event hooks*), which has not been run on a Mac yet.
+✅ **Verified live 2026-09-30** for `q`, ⌘W, Ctrl-D, a session that is not ours and a `[done]` row —
+the run is recorded in `docs/agtermctl.md` → *Event hooks*. Still unmeasured: an agterm quit or
+relaunch, undo of a close, and closes made by `agtermctl session close`.
 
 agterm closes a session when its command exits, so typing `q` at a row's `agb pane` prompt used to
 take a **live** agent's row with it until `agb-refresh`. With this line in
@@ -998,7 +999,10 @@ take a **live** agent's row with it until `agb-refresh`. With this line in
 on session.closed ~/.local/bin/agb forget-rows --closed "$AGT_SESSION_ID"
 ```
 
-the row comes back by itself within a couple of seconds. agterm runs the line for **every** session
+the row comes back by itself within a couple of seconds. ⚠️ `q` has to reach the **prompt**: in an
+attached row it goes through ssh into the agent's tmux pane instead, so detach first (`C-b d`).
+
+agterm runs the line for **every** session
 it closes; what happens depends on the entry holding that row:
 
 | entry | what happens | why |
@@ -1025,14 +1029,15 @@ kept for what is actually wrong:
 - a map that could not be read, when no readable map held the row — "not found" would be a guess;
 - `--closed` beside `--key` or `--all`.
 
-Limitations, all prototype-grade:
+Limitations:
 
 - **The re-minted row lands in its remembered workspace**, not necessarily where it was: a bridge
   reads `placements` once, at startup, so a row dragged since then comes back in the configured
   workspace.
 - **Without the hook, `q` costs the row exactly as before** — and leaves a zero-byte marker nothing
   reads, one per key, overwritten on the next quit.
-- **What `session.closed` does around an agterm quit, a relaunch, and undo is unmeasured.** A close
+- **What `session.closed` does around an agterm quit, a relaunch, undo, and `agtermctl session
+  close` is unmeasured.** A close
   with no marker is kept either way, so the worst case of a wrong assumption there is today's
   behaviour, not a lost binding.
 

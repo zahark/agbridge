@@ -296,7 +296,7 @@ Then on the Mac: delete the `host_<name>` line from the config, and `agb close-d
 | symptom | cause | fix |
 |---|---|---|
 | all rows `[?]` | the feed is not talking — VPN, ssh, or the cluster | check `agb doctor`'s beat; `ssh <feed host> true` |
-| a row vanished after you typed `exit` | agterm destroys a session when its command exits, and `exit`/`q` ends `agb pane` | `agb-refresh` brings it back. To have it come back by itself, add `on session.closed ~/.local/bin/agb forget-rows --closed "$AGT_SESSION_ID"` to `~/.config/agterm/hooks.conf` (agterm ≥ 0.30.0; ⚠️ prototype, unverified live — `docs/commands.md` → *`--closed`*). A row closed by hand still stays gone |
+| a row vanished after you typed `exit` | agterm destroys a session when its command exits, and `exit`/`q` ends `agb pane` | `agb-refresh` brings it back. To have it come back by itself, add `on session.closed ~/.local/bin/agb forget-rows --closed "$AGT_SESSION_ID"` to `~/.config/agterm/hooks.conf` (agterm ≥ 0.30.0; verified live 2026-09-30, unreleased — `docs/commands.md` → *`--closed`*). A row closed by hand still stays gone. ⚠️ `q` must be typed at the **prompt**: in an attached row it goes to the agent, so detach (`C-b d`) first |
 | rows gone after closing/reinstalling agterm | agterm lost its sessions; the map still names them | `agb-refresh` |
 | duplicate rows | a previous refresh forgot bindings without closing the old rows | `agb-refresh` (it closes before forgetting), which sweeps every instance. To do one only: `agb-refresh --instance <name>`, or `--config <path>` for an install that has no instance name |
 | not sure which instances this Mac has, or one seems to be missing from a sweep | a plist outside `~/Library/LaunchAgents`, or a job that was never rendered | `agb instances`. A job is swept iff its label is in the `com.agbridge` space **or** its `ProgramArguments` runs `<…>/agb bridge` |
@@ -520,7 +520,7 @@ If a config change appears to have been ignored, this is why.
 - **agterm closes a session when its command exits.** So `q`/`quit`/`exit` at the `agb pane` prompt
   destroys the row of a live agent. The bridge notices (`no such session`), says so **once**, and
   stops writing to it — the binding is kept, so the row stays gone until `agb-refresh`. The
-  exception is agterm's `session.closed` hook (`agb forget-rows --closed`, a prototype): with it,
+  exception is agterm's `session.closed` hook (`agb forget-rows --closed`, unreleased): with it,
   a row left by `q` comes back by itself, and one closed by hand still stays gone.
 - **`idle` renders as no glyph**, and agents never report `idle` — only the bridge does, for `[?]`
   (feed quiet) and `[done]` (agent gone). A blank row is one of those, or a row not yet painted.

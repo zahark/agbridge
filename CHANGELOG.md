@@ -37,12 +37,13 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Not verified
 
-- **`forget-rows --closed` has never run against a live agterm.** It is built on agterm's
-  documented `hooks.conf` contract (0.30.0+), read from the docs on a Linux host; which environment
-  variable carries the id, and whether `session.closed` fires when a session's *command* exits, are
-  **ASSUMED**. `docs/agtermctl.md` → *Event hooks* has a one-line capture hook to run on the Mac
-  first. A wrong assumption fails toward today's behaviour: every close reads as "not an agbridge
-  row", and `q` costs the row as before.
+- **`forget-rows --closed` around an agterm quit, a relaunch, an undo, or `agtermctl session
+  close`.** The five everyday paths were run live on 2026-09-30 — `q` re-creates the row, ⌘W and
+  Ctrl-D dismiss it, a session that is not ours is ignored, a `[done]` row leaves the map — which
+  confirmed that `$AGT_SESSION_ID` is the row id and that `session.closed` fires when a row's
+  *command* exits. The four above are unmeasured (`docs/agtermctl.md` → *Event hooks* has a capture
+  hook for them); a close without a quit marker is kept in every one, so a wrong assumption costs
+  today's behaviour, not a binding.
 
 ### Fixed
 

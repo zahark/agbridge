@@ -652,11 +652,11 @@ story". `agterm.com/commands` said it returns a batch and exits, so that objecti
 **wrong** with a ✅. The binary says the original objection was **right**. The rule that follows is
 in `CLAUDE.md`: run it on the Mac before designing against it.
 
-## Event hooks (`hooks.conf`) — **ASSUMED**, agterm ≥ 0.30.0
+## Event hooks (`hooks.conf`) — agterm ≥ 0.30.0, the `session.closed` path **CONFIRMED live 2026-09-30**
 
-*Read 2026-09-30 from agterm's `site/docs.html` at 0.33.1, from a Linux host. **Nothing here has
-been run on the Mac.** `agb forget-rows --closed` (`docs/commands.md`) is built on it, as a
-prototype.*
+*Contract read 2026-09-30 from agterm's `site/docs.html` at 0.33.1. Run on the Mac the same day,
+through `agb forget-rows --closed` (`docs/commands.md`); agterm's version was not captured in that
+run, so this is dated rather than versioned.*
 
 agterm 0.30.0 added `~/.config/agterm/hooks.conf`: `on <kind> <shell...>`, one line per hook, applied
 with File ▸ Reload Hooks or `agtermctl hooks reload`. It gives the `session.closed` that the shelved
@@ -675,31 +675,45 @@ is no stream to keep alive and no cursor to lose. What the docs say, near-verbat
 - **Failures**: a non-zero exit *"posts one banner per hook until that hook next succeeds"*.
 - **Loops**: a hook that emits the kind it listens to triggers itself; nothing detects it.
 
-What `forget-rows --closed` relies on, each **ASSUMED**:
+What `forget-rows --closed` relies on:
 
-| # | Assumption | If it is wrong |
-|---|---|---|
-| 1 | `$AGT_SESSION_ID` of a `session.closed` is the id `session new` printed — the row id in our map | nothing is ever found: every close is "not an agbridge row", exit 0, and `q` costs the row as before. Silent — check with the capture below |
-| 2 | `session.closed` fires when a session closes because its **command exited** (`q` at the prompt), not only on a close by hand | same as 1, for the `q` case only |
-| 3 | it fires for closes made by `agtermctl session close` too (`agb-refresh`, `close-done`) | harmless either way: those commands forget what they close themselves |
-| 4 | an empty `$AGT_SESSION_ID` means the contract changed | the handler refuses an empty id, which agterm shows as a banner — the loud direction on purpose |
+| # | Claim | Status | If it is wrong |
+|---|---|---|---|
+| 1 | `$AGT_SESSION_ID` of a `session.closed` is the id `session new` printed — the row id in our map | **CONFIRMED** — tests A, B, D, E below each found the right entry by it, and C's id was correctly not ours | nothing is ever found: every close is "not an agbridge row", exit 0, and `q` costs the row as before. Silent |
+| 2 | `session.closed` fires when a session closes because its **command exited** (`q` at the prompt), not only on a close by hand | **CONFIRMED** — test A | same as 1, for the `q` case only |
+| 3 | it fires for closes made by `agtermctl session close` too (`agb-refresh`, `close-done`) | ASSUMED | harmless either way: those commands forget what they close themselves |
+| 4 | an empty `$AGT_SESSION_ID` means the contract changed | ASSUMED — never seen | the handler refuses an empty id, which agterm shows as a banner — the loud direction on purpose |
 
-**Unmeasured, and worth measuring before relying on any of it**: whether `session.closed` fires for
-every session when agterm **quits**, whether a **relaunch** that restores Live sessions keeps their
-ids, and what **undo** of a close does (the docs mention undo re-emitting `remote.opened`). A close
-without a quit marker is kept in every case, so a wrong answer costs today's behaviour, never a
-binding.
+**The live run, 2026-09-30**, with the hook line from `docs/commands.md` and its output appended to a
+log. Keys and row ids replaced with placeholders:
 
-**Capture first** — the project's standing rule. On the Mac, add this line, reload, and exercise
-each case: `q` at a row's prompt, ⌘W on a row, `agb close-done`, quit and relaunch agterm, undo a
-close:
+| | What was done | What the handler logged | What the sidebar did |
+|---|---|---|---|
+| A | `q` at a live agent's `agb pane` prompt | `forgot <key> (row <id>) in <label> -- its prompt was quit, so the bridge re-creates the row` | the row came back within seconds |
+| B | ⌘W on the row A had just re-created | `kept <key> (row <id>) in <label> -- closed by hand, which dismisses it; agb-refresh brings it back` | stayed gone |
+| C | ⌘W on a plain `agtermctl session new` session | `no instance holds row <id> -- not an agbridge row` | — |
+| D | Ctrl-D at a live agent's prompt | `kept <key> (row <id>) in <label> -- closed by hand, …` | stayed gone |
+| E | ⌘W on a `[done]` row (an `agb-tmux -- sleep 20` whose entry had been reaped) | `forgot <key> (row <id>) in <label> -- a [done] row closed in agterm` | stayed gone, and left the map |
+
+⚠️ **Found on the way: `q` only reaches `agb pane` at its prompt.** The first attempt at A typed
+`q` into the *agent*, because the row was attached — the prompt exists only while detached, so the
+keystroke went through ssh into tmux. Detach first (`C-b d`). Nothing in the tool can see this
+mistake, and at an agent's input line `q` is a perfectly good message.
+
+**Still unmeasured**: whether `session.closed` fires for every session when agterm **quits**,
+whether a **relaunch** that restores Live sessions keeps their ids, what **undo** of a close does
+(the docs mention undo re-emitting `remote.opened`), and claim 3 above. The event JSON on stdin was
+not recorded either; the handler does not read it. A close without a quit marker is kept in every
+case, so a wrong answer costs today's behaviour, never a binding.
+
+**To measure those**, add this line, reload, and exercise the case:
 
 ```
 on session.closed d="$HOME/agb-capture"; mkdir -p "$d"; f="$d/closed.$(date +%s).$$"; { env | grep '^AGT_'; cat; } > "$f"
 ```
 
-Then compare each file's `AGT_SESSION_ID` with the row ids in `~/.config/agbridge/<name>/rows`, and
-record the JSON verbatim here before promoting any line of this section to **CONFIRMED**.
+Then compare each file's `AGT_SESSION_ID` with the row ids in `~/.config/agbridge/<name>/rows` taken
+**before** the case (`agb-refresh` re-mints every id), and record the JSON verbatim here.
 
 ## What agbridge does not use yet
 
@@ -721,7 +735,7 @@ entry says what it would buy so the next reader does not have to re-derive it.*
 
 | Command | What it would buy |
 |---|---|
-| ⚠️ **`events`** — *control-event stream* | **Exists from agterm v0.16.0; usable only as a long-lived stream.** Full findings in "What `agtermctl events` actually does" above. Would give live `session.closed` and `tree.changed`; would **not** give restart detection or catch-up, because no run id is obtainable. Design work is done and shelved in `docs/plans/blocked/20260731-agb-events-feedback-loop.md`. ⚠️ **`hooks.conf` (0.30.0) now delivers `session.closed` with no stream** — see *Event hooks* above; `forget-rows --closed` uses it, as a prototype. |
+| ⚠️ **`events`** — *control-event stream* | **Exists from agterm v0.16.0; usable only as a long-lived stream.** Full findings in "What `agtermctl events` actually does" above. Would give live `session.closed` and `tree.changed`; would **not** give restart detection or catch-up, because no run id is obtainable. Design work is done and shelved in `docs/plans/blocked/20260731-agb-events-feedback-loop.md`. ⚠️ **`hooks.conf` (0.30.0) now delivers `session.closed` with no stream** — see *Event hooks* above; `forget-rows --closed` uses it, confirmed live 2026-09-30. |
 | ✅ **`session new --wait`** — *hold the row open after its command exits* | **CONFIRMED live 2026-08-24**: a row whose `--command` failed appeared and vanished instantly with nothing to read; `--wait` held it open showing `exec: tmux: not found`, which was the whole diagnosis. Used as a *diagnostic* here, not by the bridge — the three open questions below are still open for `_create_row`. **Found 2026-08-06** in the re-captured `--help`; not present in the 2026-07-30 one. *"With `--command`, hold the session open after the command exits (press any key to close)."* That is the row-destroying bug below, addressed by one flag in `_create_row`'s `args` — far cheaper than `session restore`, and the two are not alternatives: `--wait` stops the row **dying**, `restore` brings its command **back**. ⚠️ Read off help text, untested, and three things need answering before it is a plan. Does "press any key to close" leave a row that looks alive but runs nothing, which is worse than a gone row? What does `agb-refresh` see when it closes such a row? And it fires for *every* exit, not just a typed `quit` — including `agb pane` dying for a real reason, which is a case we currently find out about. |
 | ⚠️ **`session restore`** — *pin the command a pane re-runs* | **The claim that used to sit here was wrong, and wrong in the direction that would have got the wrong fix built.** It read: *"this is the **structural fix** for a row dying when its command exits, which is what `q`/`quit`/`exit` at the `agb pane` prompt does today"*. `--help` on 0.24.0 says the opposite — *"The override is written now and consumed on the **NEXT launch** — it never touches the running session."* So it fixes only the **restart** half (rows come back alive after an agterm restart instead of as dead panes, the other half of the reboot story in `docs/cookbook.md`); a live row destroyed by a typed `quit` is gone and restore cannot bring it back. That half still points at `session new --wait`, above. Full capture and the three new constraints — sticky, gated on a setting, world-readable via `tree` — in "Re-surveyed against the installed binary", below. |
 | **`session move`** — *relocate a session to another workspace* | `agb-refresh` currently **destroys and recreates** rows and restores their workspace from `placements`. `move` would let it keep the row and put it back instead — fewer moving parts, and row ids would survive a refresh. **CONFIRMED 0.24.0**, and it does more than the survey said: `--target` is **repeatable** (one call for a batch), `--to up\|down\|top\|bottom` reorders within a workspace, and `--after`/`--before` place relative to an anchor session that *carries its own workspace* — relocate and position in one shot. The second half is a capability agbridge has never had: deterministic row **order**, e.g. grouped by host. |
