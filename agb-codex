@@ -89,7 +89,7 @@
 #     the process whose death should reap the row, even when the agent itself
 #     ends up running on another machine.
 #
-#   agb-codex                  # session named after the current directory
+#   agb-codex                  # session codex-<current directory's name>
 #   agb-codex api-refactor     # session named explicitly
 #   agb-codex -d api-refactor  # start it detached, with a row already showing
 #   agb-codex api-refactor -- --model gpt-5.6-terra
@@ -106,7 +106,8 @@ usage() {
     cat >&2 <<'EOF'
 usage: agb-codex [-d] [-n] [name] [-- <codex args>...]
 
-  name           tmux session name (default: the current directory's name)
+  name           tmux session name, used exactly as given
+                 (default: codex-<the current directory's name>)
   --             everything after this is passed to `codex`
 
   -d, --detach   start it in the background and return immediately. The row
@@ -278,7 +279,12 @@ else
         || die "codex is not installed or not on \$PATH"
 fi
 
-[ -n "$name" ] || name=$(basename "$(pwd)")
+# The DEFAULT name carries this launcher's prefix; a name you typed is used
+# exactly. Unprefixed, agb-claude, agb-codex and agb-tmux started in one
+# directory all chose that directory's name, so the second one ATTACHED to
+# the first instead of starting. It also stops a default label equalling its
+# own cwd's basename, which a peer selector matches against too.
+[ -n "$name" ] || name=codex-$(basename "$(pwd)")
 name=$(sanitize "$name")
 [ -n "$name" ] || die "the name is empty after removing characters tmux cannot address"
 

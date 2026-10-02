@@ -473,3 +473,40 @@ def test_no_custom_is_documented_in_help(wrapper):
     code, _out, err = wrapper.run(["--help"])
     assert code == 0
     assert "-n, --no-custom" in err
+
+
+# ---------------------------------------------------------------------------
+# The default session name carries the launcher's prefix
+# ---------------------------------------------------------------------------
+
+def _session(argv):
+    return argv[argv.index("-s") + 1]
+
+
+@pytest.mark.parametrize("args,inside",
+                         [([], False), ([], True), (["-d"], False)])
+def test_the_default_name_carries_the_launchers_prefix(wrapper, args, inside):
+    """Unprefixed, agb-claude, agb-codex and agb-tmux started in one directory
+    all chose that directory's name, so the second one ATTACHED to the first
+    instead of starting -- only one of them could ever exist there."""
+    wrapper.run(args, inside_tmux=inside)
+    want = "codex-" + os.path.basename(wrapper.cwd)
+    assert _session(wrapper.new_session()[0]) == want
+
+
+def test_rerunning_bare_attaches_to_its_own_prefixed_session(wrapper):
+    """The existence probe and the attach must use the prefixed name too, or a
+    bare re-run starts a duplicate instead of rejoining."""
+    want = "=codex-" + os.path.basename(wrapper.cwd)
+    wrapper.run([], has_session=True)
+    probes = [c for c in wrapper.calls() if c[:1] == ["has-session"]]
+    assert probes, wrapper.calls()
+    assert all(c[-1] == want for c in probes), probes
+    assert wrapper.calls()[-1] == ["attach-session", "-t", want]
+
+
+def test_a_typed_name_is_used_exactly(wrapper):
+    """Only the default is prefixed. A name you typed is the name you get, so
+    a session started before the prefix existed is still reachable by name."""
+    wrapper.run(["api-refactor"])
+    assert _session(wrapper.new_session()[0]) == "api-refactor"

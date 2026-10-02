@@ -25,7 +25,7 @@
 # `unknown`, deliberately, so the relay will never type into it. That is the
 # right answer: a shell would execute what it was sent.
 #
-#   agb-tmux                  # session named after the current directory
+#   agb-tmux                  # session tmux-<current directory's name>
 #   agb-tmux api-refactor     # session named explicitly
 #   agb-tmux -d api-refactor  # start it detached, with a row already showing
 #   agb-tmux build -- make -j8
@@ -41,7 +41,8 @@ usage() {
     cat >&2 <<'EOF'
 usage: agb-tmux [-d] [name] [-- <command>...]
 
-  name           tmux session name (default: the current directory's name)
+  name           tmux session name, used exactly as given
+                 (default: tmux-<the current directory's name>)
   --             the command to run (default: $SHELL)
 
   -d, --detach   start it in the background and return immediately. The row
@@ -109,7 +110,12 @@ command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
 # makes this useful as "a farm shell I can click on from the sidebar".
 [ $# -gt 0 ] || set -- "${SHELL:-/bin/sh}"
 
-[ -n "$name" ] || name=$(basename "$(pwd)")
+# The DEFAULT name carries this launcher's prefix; a name you typed is used
+# exactly. Unprefixed, agb-claude, agb-codex and agb-tmux started in one
+# directory all chose that directory's name, so the second one ATTACHED to
+# the first instead of starting. It also stops a default label equalling its
+# own cwd's basename, which a peer selector matches against too.
+[ -n "$name" ] || name=tmux-$(basename "$(pwd)")
 name=$(sanitize "$name")
 [ -n "$name" ] || die "the name is empty after removing characters tmux cannot address"
 

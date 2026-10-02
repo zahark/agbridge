@@ -64,6 +64,11 @@ whitespace or `·`. That is nearly right but not quite: **the pane id does** —
 one row above. It is a poor answer (fragile, and only present when `row_fields` includes `pane`) but
 the design is not airtight-stuck.
 
+⚠️ **Partly mitigated, 2026-10-02, not fixed.** The launchers now prefix their *default* session
+name (`claude-<dir>`, `codex-<dir>`, `tmux-<dir>`), so a bare launch is no longer labelled with the
+very basename every row started in that directory carries as its cwd. A typed name, or an agent not
+started through a launcher, can still collide exactly as above.
+
 ## The fix worth considering
 
 Add a tier to `match_sessions` between id-prefix and whole-title: **match the label component

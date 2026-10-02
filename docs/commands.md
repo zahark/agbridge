@@ -1414,7 +1414,7 @@ tmux session**, which is what makes the resulting row attachable.
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `name` | the current directory's name | tmux session name. `.`, `:` and spaces become `-`, because tmux cannot address them as a target |
+| `name` | `claude-<current directory's name>` | tmux session name, used exactly as typed. `.`, `:` and spaces become `-`, because tmux cannot address them as a target. Only the **default** carries a prefix — `codex-` for `agb-codex`, `tmux-` for `agb-tmux` — so the three launchers started in one directory get three sessions instead of the second attaching to the first |
 | `-d`, `--detach` | off | start it in the background and return immediately. The row is there either way |
 | `--greet <text>` | none | an opening prompt for `-d` to send. **Not sent by default** — the row no longer needs one. Refused without `-d`, where it would be silently ignored |
 | `-n`, `--no-custom` | off | ignore [`AGB_CLAUDE_CUSTOM`](#agb_claude_custom--the-claude-command-line-replaced-wholesale) for this run and start plain `claude`, exactly as if the variable were unset |

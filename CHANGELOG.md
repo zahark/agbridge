@@ -56,6 +56,22 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb-claude`, `agb-codex` and `agb-tmux` started in the same directory now get three sessions,
+  not one.** Each defaulted the tmux session name to the directory's name, so the second launcher
+  found that session already there and **attached to the first one's agent** instead of starting
+  its own — a Claude and a Codex side by side in one checkout was impossible without naming one by
+  hand. The default is now `claude-<dir>`, `codex-<dir>` or `tmux-<dir>`. A name you type is still
+  used exactly, with no prefix.
+
+  It also removes the commonest case of a label colliding with another row's **cwd** (see the
+  cookbook): a bare launch used to be labelled with exactly the basename every other row started
+  there carries in its title.
+
+  ⚠️ **Upgrading: a bare re-run no longer rejoins a session started before this change.** In a
+  directory `proj` with an old session `proj` running, `agb-claude` now starts `claude-proj` beside
+  it. Rejoin the old one by name — `agb-claude proj` — and update any `agb-peer` roster entry that
+  names a bare-launched agent by its old label once that agent is restarted.
+
 - **🔴 `clear_composer` read the caret ONCE, and condemned a healthy row for it.** Observed live on
   the row carrying this project's own conversation: the relay reported *"the composer could not be
   cleared, so a draft may be left in it and this peer may stop receiving"* about a peer that was

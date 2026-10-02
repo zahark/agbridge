@@ -42,7 +42,7 @@
 # ends the row sits at its last state until `agb prune`. Liveness is proven,
 # never inferred -- nothing will tidy it up for you.
 #
-#   agb-claude                  # session named after the current directory
+#   agb-claude                  # session claude-<current directory's name>
 #   agb-claude api-refactor     # session named explicitly
 #   agb-claude -d api-refactor  # start it detached, with a row already showing
 #   agb-claude api-refactor -- --model opus
@@ -59,7 +59,8 @@ usage() {
     cat >&2 <<'EOF'
 usage: agb-claude [-d] [-n] [name] [-- <claude args>...]
 
-  name           tmux session name (default: the current directory's name)
+  name           tmux session name, used exactly as given
+                 (default: claude-<the current directory's name>)
   --             everything after this is passed to `claude`
 
   -d, --detach   start it in the background and return immediately. The row
@@ -232,7 +233,12 @@ else
         || die "claude is not installed or not on \$PATH"
 fi
 
-[ -n "$name" ] || name=$(basename "$(pwd)")
+# The DEFAULT name carries this launcher's prefix; a name you typed is used
+# exactly. Unprefixed, agb-claude, agb-codex and agb-tmux started in one
+# directory all chose that directory's name, so the second one ATTACHED to
+# the first instead of starting. It also stops a default label equalling its
+# own cwd's basename, which a peer selector matches against too.
+[ -n "$name" ] || name=claude-$(basename "$(pwd)")
 name=$(sanitize "$name")
 [ -n "$name" ] || die "the name is empty after removing characters tmux cannot address"
 

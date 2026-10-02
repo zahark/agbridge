@@ -138,7 +138,7 @@ ln -s ~/agbridge/agb-claude ~/bin/agb-claude
 
 ```sh
 agb-claude api-refactor       # new named session, or re-attach if it exists
-agb-claude                    # named after the current directory
+agb-claude                    # named claude-<current directory>; agb-codex uses codex-<dir>
 agb-claude docs -- --model opus   # everything after `--` goes to claude
 agb-claude work -- --resume <session-id>   # options need the `--`
 agb-claude -d review          # background; the row is minted before Claude even starts
