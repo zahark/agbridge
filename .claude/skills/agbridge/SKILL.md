@@ -372,7 +372,8 @@ agb-codex -d pool -- --model gpt-5.6
 
 ⚠️ `{}` splices **verbatim** — the wrapper cannot know whether it sits inside quotes, so it cannot
 quote for you. Only `[A-Za-z0-9._:/=+@,-]` is spliced; anything else is refused, as is `--greet`.
-Without `{}`, `--` args are refused rather than appended somewhere guessed at.
+Without `{}`, `--` args are refused rather than appended somewhere guessed at. `-n` (`--no-custom`)
+ignores the variable for one run — plain `claude`/`codex` here, exactly as if it were unset.
 
 ⚠️ **For Claude on ANOTHER machine you also need `{env}`**, and this is the one that bites:
 

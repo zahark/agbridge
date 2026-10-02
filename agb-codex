@@ -77,9 +77,9 @@
 #
 # Three consequences, each with a refusal or a comment behind it:
 #
-#   * `--` passthrough args and `--greet` are REFUSED while it is set. This
-#     wrapper cannot know which word of an opaque command line is the agent, so
-#     it has nowhere honest to append. Put them inside the variable.
+#   * `--greet` is REFUSED while it is set, and so are `--` args unless the
+#     value has a `{}` to put them in. This wrapper cannot know which word of an
+#     opaque command line is the agent, so it has nowhere honest to append.
 #   * it is EMBEDDED in the command tmux is given, never inherited. A session
 #     created against an already-running tmux server takes its environment from
 #     the SERVER's, plus `update-environment` -- so a variable exported in your
@@ -93,6 +93,7 @@
 #   agb-codex api-refactor     # session named explicitly
 #   agb-codex -d api-refactor  # start it detached, with a row already showing
 #   agb-codex api-refactor -- --model gpt-5.6-terra
+#   agb-codex -n work          # plain codex, whatever AGB_CODEX_CUSTOM says
 #
 # Everything after `--` is passed through to `codex` untouched.
 
@@ -103,7 +104,7 @@ die()  { printf 'agb-codex: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat >&2 <<'EOF'
-usage: agb-codex [-d] [name] [-- <codex args>...]
+usage: agb-codex [-d] [-n] [name] [-- <codex args>...]
 
   name           tmux session name (default: the current directory's name)
   --             everything after this is passed to `codex`
@@ -112,14 +113,19 @@ usage: agb-codex [-d] [name] [-- <codex args>...]
                  appears either way -- it is minted before Codex starts.
   --greet <text> send an opening prompt. Only with -d, and NOT sent by
                  default: the row no longer needs one to exist.
+  -n, --no-custom
+                 ignore AGB_CODEX_CUSTOM for this run: start plain `codex`,
+                 exactly as if the variable were unset.
 
   -h, --help     this message
 
 Environment:
   AGB_CODEX_CUSTOM  a shell command line run INSTEAD of `codex`, eval'ed inside
                     the session -- for starting the agent through a scheduler,
-                    a container or a pool launcher. While it is set, `--` args
-                    and --greet are refused: put them inside the variable.
+                    a container or a pool launcher. `{}` is where this
+                    invocation's `--` arguments are spliced; without it they
+                    are refused. --greet is refused either way. --no-custom
+                    ignores it.
 
 Re-running with the same name ATTACHES to the existing session rather than
 starting a second agent in it.
@@ -183,11 +189,12 @@ subst() {
 # or broken `agb` costs a row and never a Codex.
 PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec codex "$@"'
 
-name=""; detach=no; greet=""
+name=""; detach=no; greet=""; nocustom=no
 while [ $# -gt 0 ]; do
     case $1 in
         -h|--help) usage; exit 0 ;;
         -d|--detach) detach=yes; shift ;;
+        -n|--no-custom) nocustom=yes; shift ;;
         --greet)   [ $# -gt 1 ] || die "--greet needs a value"
                    greet=$2; shift 2 ;;
         --)        shift; break ;;
@@ -208,7 +215,16 @@ done
 #   {env}  the identity a remotely-launched agent must report, so that its
 #          hooks land on the row this wrapper already minted
 #
+# --no-custom empties it before anything reads it, so every check below takes
+# the default path. It exists because the variable is usually exported once,
+# for the launcher used most, and clearing it for one run otherwise means
+# `AGB_CODEX_CUSTOM= agb-codex ...` -- which csh-family shells cannot spell
+# without `env` -- or an `unset` that outlives the run.
 custom=${AGB_CODEX_CUSTOM:-}
+if [ "$nocustom" = yes ] && [ -n "$custom" ]; then
+    say "agb-codex: --no-custom: ignoring AGB_CODEX_CUSTOM; a new session runs codex"
+    custom=""
+fi
 if [ -n "$custom" ]; then
     [ -z "$greet" ] \
         || die "AGB_CODEX_CUSTOM is set, so --greet has nowhere to go: it is prose, so it always needs quoting, and {} splices verbatim. Put the opening prompt inside the variable."

@@ -463,3 +463,68 @@ def test_the_remote_row_caveat_is_documented_loudly(wrapper):
     assert "DIFFERS FROM CODEX" in head
     assert "second row" in head
     assert "agb prune" in head
+
+
+# --------------------------------------------------------------------------
+# --no-custom -- the variable ignored for one run. It is usually exported once,
+# for the launcher used most; clearing it per run otherwise means
+# `AGB_CLAUDE_CUSTOM= agb-claude`, which csh-family shells cannot spell without
+# `env`. Every test here sets the variable, because a flag that ignores
+# something absent proves nothing.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("flag", ["--no-custom", "-n"])
+def test_no_custom_starts_plain_claude_where_the_variable_would_not(wrapper, flag):
+    """Two runs that differ only in the flag. Without the companion, a flag
+    that was parsed and then never consulted would pass. Both spellings, since
+    each is its own `case` pattern and can be dropped on its own."""
+    wrapper.run(["-d", "one"], custom=NESTED)
+    wrapper.run(["-d", "two", flag], custom=NESTED)
+    used, ignored = [[w for w in call if "agb hook" in w][0]
+                     for call in wrapper.new_session()]
+    assert "eval exec" in used and "submit" in used, used
+    assert ignored.endswith('exec claude "$@"'), ignored
+    assert "submit" not in ignored and "AGB_HOST=" not in ignored, ignored
+
+
+def test_no_custom_is_accepted_after_the_name(wrapper):
+    code, _out, err = wrapper.run(["-d", "bot", "--no-custom"], custom=NESTED)
+    assert code == 0, err
+    assert wrapper.premint().endswith('exec claude "$@"')
+
+
+def test_no_custom_lifts_every_refusal_the_variable_imposes(wrapper):
+    """With the variable ignored, arguments go to claude as positionals again:
+    no `{}` needed, nothing outside the verbatim set refused, and --greet has
+    somewhere to go. Each of these is refused in the same run without it."""
+    code, _out, err = wrapper.run(
+        ["-d", "bot", "--no-custom", "--greet", "say OK",
+         "--", "--model", "opus", "hello world"],
+        custom='submit -I "claude"')
+    assert code == 0, err
+    assert wrapper.new_session()[0][-4:] == [
+        "--model", "opus", "hello world", "say OK"]
+
+
+def test_no_custom_does_not_check_the_launcher_it_is_ignoring(wrapper):
+    """A launcher missing on THIS machine is exactly when you want the local
+    agent, so it must not stand in the way of the flag."""
+    code, _out, err = wrapper.run(["-d", "bot", "--no-custom"],
+                                  custom="nosuchlauncher -I x")
+    assert code == 0, err
+    assert "nosuchlauncher" not in err
+
+
+def test_no_custom_says_what_it_ignored_and_only_when_there_was_something(wrapper):
+    _code, out, _err = wrapper.run(["-d", "one", "--no-custom"], custom=NESTED)
+    assert "--no-custom: ignoring AGB_CLAUDE_CUSTOM" in out, out
+    code, out, err = wrapper.run(["-d", "two", "--no-custom"])
+    assert code == 0, err
+    assert "AGB_CLAUDE_CUSTOM" not in out, out
+
+
+def test_no_custom_is_documented_in_help(wrapper):
+    code, _out, err = wrapper.run(["--help"])
+    assert code == 0
+    assert "-n, --no-custom" in err

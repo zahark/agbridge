@@ -35,6 +35,15 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   another process changes it**, instead of at its own next write — which on an idle farm was never,
   so `forget-rows` under a running bridge re-minted nothing until the agent next reported.
 
+- **`agb-claude -n` and `agb-codex -n` (`--no-custom`) ignore `AGB_CLAUDE_CUSTOM` /
+  `AGB_CODEX_CUSTOM` for one run.** The variable is usually exported once, for the launcher used
+  most, so a single local agent otherwise meant `AGB_CLAUDE_CUSTOM= agb-claude …` — which csh-family
+  shells cannot spell without `env` — or an `unset` that outlived the run. The flag empties the
+  variable before anything reads it, so everything behaves as if it were unset: `--` args go to the
+  agent as positionals with no `{}` and no verbatim-character refusal, `--greet` works, and the
+  local `claude`/`codex` must be on `$PATH` while the ignored launcher need not be. It prints one
+  line naming what it ignored, and nothing when the variable was not set.
+
 ### Not verified
 
 - **`forget-rows --closed` around an agterm quit, a relaunch, an undo, or `agtermctl session

@@ -1312,7 +1312,7 @@ change its mind.
 ## `agb-codex [name]` — farm, a convenience
 
 ```
-agb-codex [-d] [name] [--greet <text>] [-- <codex args>...]
+agb-codex [-d] [name] [--greet <text>] [-n] [-- <codex args>...]
 ```
 
 `agb-claude` for Codex, and a near-copy of it deliberately — the two are expected to diverge (Codex
@@ -1354,6 +1354,11 @@ The value is a **shell command line**, not a program name: it is `eval`ed, so it
 honoured. That is what lets the agent be an *argument* to the launcher (`-I "codex --yolo"`) rather
 than the program being run — and word-splitting it instead would hand the launcher `"codex` and
 `--yolo`, which no downstream error message would explain.
+
+**`-n` (`--no-custom`) ignores the variable for one run** — plain `codex`, exactly as if it were unset, so
+`--` args, `--greet` and the local `codex` check all work as they do without it. The variable is
+usually exported once, for the launcher you use most; without the flag, one local run means
+`AGB_CODEX_CUSTOM= agb-codex …`, which csh-family shells cannot spell without `env`.
 
 ### The two placeholders
 
@@ -1401,7 +1406,7 @@ pane, so a peer started this way is reachable exactly as far as the pane is.
 ## `agb-claude [name]` — farm, a convenience
 
 ```
-agb-claude [name] [-- <claude args>...]
+agb-claude [-d] [name] [--greet <text>] [-n] [-- <claude args>...]
 ```
 
 Not part of `agb` — a separate POSIX-sh script beside it. It starts Claude Code inside a **named
@@ -1412,6 +1417,7 @@ tmux session**, which is what makes the resulting row attachable.
 | `name` | the current directory's name | tmux session name. `.`, `:` and spaces become `-`, because tmux cannot address them as a target |
 | `-d`, `--detach` | off | start it in the background and return immediately. The row is there either way |
 | `--greet <text>` | none | an opening prompt for `-d` to send. **Not sent by default** — the row no longer needs one. Refused without `-d`, where it would be silently ignored |
+| `-n`, `--no-custom` | off | ignore [`AGB_CLAUDE_CUSTOM`](#agb_claude_custom--the-claude-command-line-replaced-wholesale) for this run and start plain `claude`, exactly as if the variable were unset |
 | `--` | — | everything after it is passed to `claude` untouched. **Required for anything starting with `-`**: `agb-claude --resume <id>` is refused, `agb-claude work -- --resume <id>` is not |
 
 ### The row is minted before Claude starts
@@ -1426,8 +1432,8 @@ tmux new-session … sh -c 'AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exe
 
 ### `AGB_CLAUDE_CUSTOM` — the claude command line, replaced wholesale
 
-The same seam as `AGB_CODEX_CUSTOM`, with the same two placeholders — and one difference that is the
-whole reason `{env}` exists.
+The same seam as `AGB_CODEX_CUSTOM`, with the same two placeholders and the same `-n` (`--no-custom`) to
+ignore it for one run — and one difference that is the whole reason `{env}` exists.
 
 ```sh
 export AGB_CLAUDE_CUSTOM='submit -q big -I "{env} claude {}"'

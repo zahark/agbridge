@@ -46,6 +46,7 @@
 #   agb-claude api-refactor     # session named explicitly
 #   agb-claude -d api-refactor  # start it detached, with a row already showing
 #   agb-claude api-refactor -- --model opus
+#   agb-claude -n work          # plain claude, whatever AGB_CLAUDE_CUSTOM says
 #
 # Everything after `--` is passed through to `claude` untouched.
 
@@ -56,7 +57,7 @@ die()  { printf 'agb-claude: %s\n' "$*" >&2; exit 1; }
 
 usage() {
     cat >&2 <<'EOF'
-usage: agb-claude [-d] [name] [-- <claude args>...]
+usage: agb-claude [-d] [-n] [name] [-- <claude args>...]
 
   name           tmux session name (default: the current directory's name)
   --             everything after this is passed to `claude`
@@ -65,6 +66,9 @@ usage: agb-claude [-d] [name] [-- <claude args>...]
                  appears either way -- it is minted before Claude starts.
   --greet <text> send an opening prompt. Only with -d, and NOT sent by
                  default: the row no longer needs one to exist.
+  -n, --no-custom
+                 ignore AGB_CLAUDE_CUSTOM for this run: start plain `claude`,
+                 exactly as if the variable were unset.
 
   -h, --help     this message
 
@@ -74,6 +78,7 @@ Environment:
                      arguments are spliced; `{env}` becomes AGB_HOST and
                      AGB_AGENT_PID=none, which a Claude on ANOTHER machine
                      needs or it mints a second row. --greet is refused.
+                     --no-custom ignores it.
 
 Re-running with the same name ATTACHES to the existing session rather than
 starting a second agent in it.
@@ -138,11 +143,12 @@ subst() {
 # or broken `agb` costs a row and never a Claude.
 PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"'
 
-name=""; detach=no; greet=""
+name=""; detach=no; greet=""; nocustom=no
 while [ $# -gt 0 ]; do
     case $1 in
         -h|--help) usage; exit 0 ;;
         -d|--detach) detach=yes; shift ;;
+        -n|--no-custom) nocustom=yes; shift ;;
         --greet)   [ $# -gt 1 ] || die "--greet needs a value"
                    greet=$2; shift 2 ;;
         --)        shift; break ;;
@@ -163,7 +169,16 @@ done
 #   {env}  the identity a remotely-launched agent must report, so that its
 #          hooks land on the row this wrapper already minted
 #
+# --no-custom empties it before anything reads it, so every check below takes
+# the default path. It exists because the variable is usually exported once,
+# for the launcher used most, and clearing it for one run otherwise means
+# `AGB_CLAUDE_CUSTOM= agb-claude ...` -- which csh-family shells cannot spell
+# without `env` -- or an `unset` that outlives the run.
 custom=${AGB_CLAUDE_CUSTOM:-}
+if [ "$nocustom" = yes ] && [ -n "$custom" ]; then
+    say "agb-claude: --no-custom: ignoring AGB_CLAUDE_CUSTOM; a new session runs claude"
+    custom=""
+fi
 if [ -n "$custom" ]; then
     [ -z "$greet" ] \
         || die "AGB_CLAUDE_CUSTOM is set, so --greet has nowhere to go: it is prose, so it always needs quoting, and {} splices verbatim. Put the opening prompt inside the variable."
