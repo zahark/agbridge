@@ -1631,8 +1631,7 @@ def sweep_idx(sd, host, live_keys, now):
     3. an entry younger than `SWEEP_IDX_GRACE` is kept -- the same race, for an
        agent whose pid could not be resolved and which therefore cannot be
        proven alive either;
-    4. otherwise it is dropped when its key **positively** no longer exists, or
-       when its anchor is proven dead.
+    4. otherwise it is dropped when its key **positively** no longer exists.
 
     A corrupt idx file is *kept*: constraint #8 makes a failed read "no
     information", and `bind_key` re-mints over one anyway.
@@ -1663,15 +1662,12 @@ def sweep_idx(sd, host, live_keys, now):
             continue
         if not grace_elapsed(now, st.st_mtime, SWEEP_IDX_GRACE):
             continue
-        key_gone = rec["key"] not in live_keys
-        anchor_dead = idx_anchor_liveness(
-            idx_kind(tag), spid, tag) == LIVENESS_DEAD
-        if not key_gone and not anchor_dead:
+        if rec["key"] in live_keys:
             continue
         _unlink_quiet(path)
         dropped.append(name)
-        breadcrumb(sd, rec["key"], "sweep: dropped idx %s (%s)" % (
-            name, "key is gone" if key_gone else "anchor is dead"), host)
+        breadcrumb(sd, rec["key"], "sweep: dropped idx %s (key gone)" % name,
+                   host)
     return dropped
 
 

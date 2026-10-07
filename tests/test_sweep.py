@@ -553,19 +553,31 @@ def test_the_tmux_anchor_predicate_only_answers_to_esrch(agb):
         agb.LIVENESS_UNKNOWN
 
 
-def test_a_non_tmux_idx_entry_with_a_dead_anchor_is_dropped(agb, sd):
-    """Isolating the anchor predicate from the key check: the key still exists
-    (the entry has no pid, so it can never be proven dead), but the *anchor*
-    names a process that is provably gone."""
+def test_a_non_tmux_idx_entry_with_a_dead_anchor_is_kept_when_key_alive(agb, sd):
+    """A live key protects the idx regardless of anchor liveness.  Cross-machine
+    inherited $TMUX makes the anchor appear dead on the farm node, but the
+    session is real -- dropping the idx would cause the agent to remint a new key
+    and create a duplicate row."""
     dead_pid, dead_start = conftest.dead_agent()
     key = write_session(agb, sd, HOST, "a3f9c1e0", None, None)
     path = write_idx(agb, sd, HOST, dead_pid, "p%d" % (dead_start,), key,
                      None, None, age=600)
 
-    assert agb.sweep_host(sd, HOST)["idx"] == [os.path.basename(path)]
-    assert not exists(path)
+    assert agb.sweep_host(sd, HOST)["idx"] == []
+    assert exists(path)
     # ...and the session it pointed at is untouched: no pid, no proof, no reap.
     assert exists(agb.state_path(sd, key, HOST))
+
+
+def test_a_non_tmux_idx_entry_with_a_dead_anchor_and_gone_key_is_dropped(agb, sd):
+    """When the key is gone, the idx is dropped regardless of anchor state."""
+    dead_pid, dead_start = conftest.dead_agent()
+    write_session(agb, sd, HOST, "a3f9c1e0", None, None)  # different session; not bound to idx
+    path = write_idx(agb, sd, HOST, dead_pid, "p%d" % (dead_start,), "deadbeef00000000",
+                     None, None, age=600)
+
+    assert agb.sweep_host(sd, HOST)["idx"] == [os.path.basename(path)]
+    assert not exists(path)
 
 
 def test_a_non_tmux_idx_entry_with_a_live_anchor_is_kept(agb, sd):

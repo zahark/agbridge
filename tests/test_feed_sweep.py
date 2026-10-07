@@ -649,8 +649,9 @@ def test_only_one_function_unlinks_a_session(all_trees):
 def test_the_debris_reapers_never_call_the_liveness_authority_themselves(
         agb_tree):
     """`idx/`, `err/` and `*.tmp.*` are not sessions, and their removal must not
-    look like an adjudication: only `sweep_idx` consults liveness at all, and it
-    does so through the shared predicate rather than through a second rule."""
+    look like an adjudication: `sweep_idx` uses `proof_of_life` to protect a
+    freshly-bound entry but does not adjudicate by anchor liveness -- a live key
+    is sufficient to keep the idx, and a gone key is sufficient to drop it."""
     funcs = conftest.functions(agb_tree)
     for name in ("sweep_err_logs", "sweep_debris"):
         made = set(attr for _base, attr in conftest.calls(funcs[name]))
@@ -659,7 +660,6 @@ def test_the_debris_reapers_never_call_the_liveness_authority_themselves(
 
     made = set(attr for _base, attr in conftest.calls(funcs["sweep_idx"]))
     assert "proof_of_life" in made
-    assert "idx_anchor_liveness" in made
     assert "reap_entry" not in made
 
 
