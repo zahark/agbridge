@@ -155,7 +155,7 @@ Your sidebar then reads something like:
 **Click the row that wants you**, then choose at the prompt:
 
 ```
-[enter] attach   [s] split   [d] drawer   [q] quit >
+[enter] attach   [s] split   [d] drawer   [q] leave (row stays) >
 ```
 
 - **Enter** — attach to the agent's own tmux pane. `Ctrl-b d` detaches and returns you here, so you

@@ -688,7 +688,7 @@ The interpreter is spelled out because `agb` has no shebang and is not executabl
 `agb pane` row command would simply never run.
 
 `agb pane` prints the agent's identity, then prompts
-(`[enter] attach   [s] split   [d] drawer   [q] quit > `), and attaches only if you ask it to:
+(`[enter] attach   [s] split   [d] drawer   [q] leave (row stays) > `), and attaches only if you ask it to:
 
 ```sh
 ssh -t [-J jump] <target> \
@@ -770,7 +770,8 @@ Five details, each measured rather than assumed:
   was permanently status-only for an agent that *was* in tmux. The session name is still preferred
   when there is one: it survives the pane's death, and a pane id does not. Only a record with
   **neither** is status-only, which is exactly identity tiers 2 and 3. ⚠️ A status-only row's
-  `agb pane` still **holds its prompt** (`[s] split [d] drawer [q] quit`): it used to print the
+  `agb pane` still **holds its prompt** (`[s] split [d] drawer [q] close row`, where `q`
+  dismisses: there is nothing to re-attach to): it used to print the
   notice and exit, and agterm closes a session whose command exits, so every such row vanished
   about a second after the bridge created it (measured 2026-10-08).
 - **`select-window` as well as `select-pane`**, superseding the first draft. On tmux 3.5a,

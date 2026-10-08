@@ -1323,6 +1323,33 @@ def test_a_quit_word_leaves_a_marker_beside_the_config(ops, tmp_path, word):
     assert ops.PANE_QUIT_BACK in out.text
 
 
+def test_q_closes_a_status_only_row_for_good(ops, tmp_path):
+    """Nothing to re-attach to, so `q` is a dismissal: no marker, and the
+    session.closed hook keeps the row gone. Asked for 2026-10-08, after `q`
+    on such a row kept bringing it back."""
+    config = _config(tmp_path)
+    out, ask = Out(), Ask("q")
+    assert ops.run_pane([KEY, "--host", HOST, "--config", config], out=out,
+                        ask=ask, run=Run()) == 0
+    assert ask.prompts == [ops.PANE_STATUS_PROMPT]
+    assert "[q] close row" in ops.PANE_STATUS_PROMPT
+    assert not os.path.exists(os.path.dirname(
+        ops.pane_requit_path(KEY, config)))
+    assert ops.PANE_QUIT_GONE in out.text
+
+
+def test_an_attachable_row_says_q_keeps_it_and_how_to_close_it(ops):
+    out = Out()
+    ops.run_pane(args(), out=out, ask=Ask(), run=Run())
+    assert ops.PANE_CLOSE_HINT in out.text
+    assert "Cmd-W" in ops.PANE_CLOSE_HINT
+    assert "(row stays)" in ops.PANE_PROMPT
+    # agb-peer recognises an unattached row by this prefix (MENU_MARKER).
+    assert ops.PANE_PROMPT.startswith("[enter] attach")
+    for text in (ops.PANE_PROMPT, ops.PANE_STATUS_PROMPT, ops.PANE_CLOSE_HINT):
+        text.encode("ascii")
+
+
 def test_eof_leaves_no_marker(ops, tmp_path):
     """The companion. EOF is what a pane gets when its row is closed by hand,
     and that is a dismissal: a marker here would bring the row straight back."""

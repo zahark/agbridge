@@ -27,7 +27,7 @@ PEER_PATH = os.path.join(REPO_ROOT, "agb-peer")
 # the fix. See conftest.PEER_MODULE.
 
 
-MENU = "  [enter] attach   [s] split   [d] drawer   [q] quit > "
+MENU = "  [enter] attach   [s] split   [d] drawer   [q] leave (row stays) > "
 COMPOSER = "\n❯ \n  auto mode on\n[host:claude*   14:05]\n"
 
 

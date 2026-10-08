@@ -931,7 +931,7 @@ pane has **two modes**, and the same bytes mean different things in each:
 
 | mode | what receives the text |
 |---|---|
-| unattached | `agb pane`'s `sys.stdin.readline()` — the `[enter] attach   [s] split   [d] drawer   [q] quit >` prompt |
+| unattached | `agb pane`'s `sys.stdin.readline()` — the `[enter] attach   [s] split   [d] drawer   [q] leave (row stays) >` prompt |
 | attached | the pty running `ssh -t … tmux attach-session`, hence the remote agent's composer |
 
 ⚠️ **agbridge cannot tell you which**, and that is deliberate: attaching, detaching and scrolling

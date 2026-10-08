@@ -65,6 +65,13 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`q` at a row's prompt now says what it does, and closes a status-only row.** `[q] quit` read as
+  "close this row", and on an attachable row the row came straight back — by design, so leaving
+  the prompt never costs a live agent its row. The prompt now reads `[q] leave (row stays)`, with a
+  line above it naming Cmd-W as the way to close the row for good. On a status-only row there is
+  nothing to come back to, so its prompt is `[q] close row` and `q` leaves no re-create marker:
+  agterm's `session.closed` hook treats it as a close by hand.
+
 - **A status-only row no longer disappears a second after it is created.** For an agent recorded
   with neither a tmux session nor a pane (a `claude` started outside tmux), `agb pane` printed
   *no attach target* and exited — and agterm closes a session whose command exits. So the row was

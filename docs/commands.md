@@ -395,7 +395,7 @@ state of an install with no config file.
 ### The prompt
 
 ```
-[enter] attach   [s] split   [d] drawer   [q] quit >
+[enter] attach   [s] split   [d] drawer   [q] leave (row stays) >
 ```
 
 | Key | Effect |
@@ -403,7 +403,7 @@ state of an install with no config file.
 | **enter** | `ssh -t <target> 'tmux select-window -t %N ; tmux select-pane -t %N ; exec tmux attach-session -t <session>'`. Runs in a **loop**, not `exec`: detaching returns to this prompt instead of closing the row's terminal. A non-zero exit is reported and prompted again rather than being fatal |
 | **s** / `shell` / `split` | opens agterm's split pane **beside** this one and starts `ssh -t [-J <jump>] <target> 'cd <cwd> && exec $SHELL -l'` in it. Both panes belong to the same row |
 | **d** / `drawer` / `scratch` | the same shell in agterm's scratch **drawer**, which overlays this pane rather than taking width from it. Hidden, it stays alive; `[d]` brings it back |
-| **q** / `quit` / `exit`, or EOF | leaves without attaching. Changes nothing about the agent |
+| **q** / `quit` / `exit`, or EOF | leaves without attaching. Changes nothing about the agent. On an attachable row `q` **keeps the row** — it comes back within seconds (the `session.closed` hook); **Cmd-W closes it for good**, and a line above the prompt says so. On a status-only row (no tmux session or pane) the prompt is `[s] split   [d] drawer   [q] close row`, and `q` dismisses it like Cmd-W, there being nothing to re-attach to |
 
 Both keys are two `agtermctl` calls in a fixed order — `session split on` then
 `session type --pane right`, or `session scratch on` then `session type --pane scratch`, always

@@ -1757,13 +1757,21 @@ def run_prune(argv, out=None, ask=None, run=None):
 # reachable only through box #2, which is `jump_host`. `ssh_target_for` is
 # shared with `prune --via-ssh` because the question is identical.
 
-PANE_PROMPT = "[enter] attach   [s] split   [d] drawer   [q] quit > "
+PANE_PROMPT = "[enter] attach   [s] split   [d] drawer   [q] leave (row stays) > "
+
+# `[q] quit` read as "close this row", and the row then came straight back (the
+# requit rule below). Said once, above the prompt, because a message printed
+# on the way out vanishes with the session. ASCII: a 3.6 stdout with no locale
+# cannot encode the Command glyph.
+PANE_CLOSE_HINT = "close:  Cmd-W closes this row for good; [q] only leaves this prompt"
 
 # A status-only row has nothing to attach, but it must still HOLD its session:
 # agterm closes a session whose command exits, so returning after the notice
 # removed the row about a second after the bridge created it, and the bridge
 # then kept a binding to a row that no longer existed. Measured 2026-10-08.
-PANE_STATUS_PROMPT = "[s] split   [d] drawer   [q] quit > "
+# `q` here CLOSES: there is nothing to re-attach to, so no requit marker is
+# left and agterm's session.closed hook treats it as a close by hand.
+PANE_STATUS_PROMPT = "[s] split   [d] drawer   [q] close row > "
 
 PANE_STATUS_ONLY = "nothing to attach: this row is status only"
 
@@ -2423,10 +2431,12 @@ def run_pane(argv, out=None, ask=None, run=None, config=None):
     else:
         ssh_argv = pane_ssh_argv(target, opts["tmux"], opts["pane"], jump)
         out.write("    attach: %s\n" % (pane_display(ssh_argv),))
+        out.write("    " + PANE_CLOSE_HINT + "\n")
         out.flush()
     return pane_attach(ssh_argv, out, ask, run,
                        split_shell_line(target, opts.get("cwd"), jump),
-                       on_quit=lambda: pane_mark_quit(opts["key"], config_file))
+                       on_quit=None if ssh_argv is None else
+                       lambda: pane_mark_quit(opts["key"], config_file))
 
 
 # ==========================================================================
