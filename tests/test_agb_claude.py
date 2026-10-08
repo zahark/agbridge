@@ -52,6 +52,7 @@ def wrapper(tmp_path):
 
     class Wrapper(object):
         cwd = str(work)
+        agb = str(binder / "agb")
 
         def run(self, args, inside_tmux=False, has_session=False,
                 custom=None):
@@ -92,7 +93,7 @@ def wrapper(tmp_path):
 
         def premint(self):
             call = self.new_session()[0]
-            return [w for w in call if "agb hook" in w][0]
+            return [w for w in call if " hook completed" in w][0]
 
         def run_premint(self):
             """Execute the command tmux was handed and return the launcher's
@@ -260,7 +261,7 @@ def test_greet_needs_a_value(wrapper):
 def _premint(argv):
     """The inner `sh -c` script tmux is told to run."""
     for word in argv:
-        if "agb hook" in word:
+        if " hook completed" in word:
             return word
     return ""
 
@@ -273,7 +274,7 @@ def test_every_launch_path_mints_the_row_first(wrapper, args):
     appears on that path."""
     wrapper.run(args)
     argv = wrapper.new_session()[0]
-    assert "agb hook" in _premint(argv), argv
+    assert " hook completed" in _premint(argv), argv
 
 
 def test_the_premint_runs_inside_the_new_session(wrapper):
@@ -284,7 +285,7 @@ def test_the_premint_runs_inside_the_new_session(wrapper):
     argv = wrapper.new_session()[0]
     # The hook is part of the command tmux is asked to RUN...
     assert "new-session" in argv
-    assert "agb hook" in _premint(argv)
+    assert " hook completed" in _premint(argv)
     # ...and the wrapper never runs `agb` itself. This is the assertion that
     # matters: hooking here would be the obvious simplification, it would
     # appear to work, and every row would point at the terminal you launched
@@ -340,7 +341,7 @@ def test_a_broken_agb_costs_a_row_and_never_a_claude(wrapper):
     wrapper.run(["work"])
     script = _premint(wrapper.new_session()[0])
     assert "&&" not in script, script
-    assert script.index("agb hook") < script.index("exec claude")
+    assert script.index(" hook completed") < script.index("exec claude")
 
 
 # --------------------------------------------------------------------------
@@ -450,7 +451,8 @@ def test_the_premint_is_unchanged_by_a_custom_command(wrapper):
     wrapper.run(["-d", "bot"], custom=NESTED)
     premint = wrapper.premint()
     assert premint.startswith("h=${AGB_HOST:-$(uname -n)}; AGB_LAUNCH="), premint
-    assert "; export AGB_LAUNCH; AGB_AGENT_PID=$$ agb hook completed" in premint
+    assert ("; export AGB_LAUNCH; AGB_AGENT_PID=$$ '%s' hook completed"
+            % wrapper.agb) in premint, premint
     assert "&&" not in premint and "2>/dev/null" in premint, premint
     assert wrapper.agb_calls() == [], wrapper.agb_calls()
 
@@ -498,7 +500,7 @@ def test_no_custom_starts_plain_claude_where_the_variable_would_not(wrapper, fla
     each is its own `case` pattern and can be dropped on its own."""
     wrapper.run(["-d", "one"], custom=NESTED)
     wrapper.run(["-d", "two", flag], custom=NESTED)
-    used, ignored = [[w for w in call if "agb hook" in w][0]
+    used, ignored = [[w for w in call if " hook completed" in w][0]
                      for call in wrapper.new_session()]
     assert "eval exec" in used and "submit" in used, used
     assert ignored.endswith('exec claude "$@"'), ignored

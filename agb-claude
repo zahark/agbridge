@@ -144,13 +144,25 @@ subst() {
 # Best-effort by construction: `;` not `&&`, and stderr discarded, so a missing
 # or broken `agb` costs a row and never a Claude.
 #
+# ⚠️ `agb` is resolved HERE and run by that path, not looked up by the
+# session's shell. That shell's PATH is yours or the tmux server's, and it need
+# not carry the install's bin dir -- run by its full path this script works
+# without it -- so the premint failed, the 2>/dev/null hid "agb: not found",
+# and -d still said "the row is there now". Found that way, on a host whose
+# login PATH had ~/local/bin and not ~/.local/bin. The fallback is install.sh's
+# DEFAULT_BINDIR; neither found is a warning below, never a refusal.
+AGB=$(command -v agb 2>/dev/null) || AGB=
+[ -n "$AGB" ] || [ ! -x "$HOME/.local/bin/agb" ] || AGB=$HOME/.local/bin/agb
+agbq=$(printf '%s' "${AGB:-agb}" | sed "s/'/'\\\\''/g")
+HOOK="AGB_AGENT_PID=\$\$ '$agbq' hook completed 2>/dev/null; "
+
 # MARK exports `AGB_LAUNCH=<host>/<pid>`, the opt-in that hooks installed with
 # `install-hooks --launched-only` require. `$$` is the pid `exec` hands to
 # Claude, so the marker names exactly this agent: a farm job or a headless
 # `claude -p` that inherits it resolves another host or pid and is not tracked.
 # The host is `own_host()`'s resolution again (CLAUDE.md invariant 14).
 MARK='h=${AGB_HOST:-$(uname -n)}; AGB_LAUNCH=${h%%.*}/$$; export AGB_LAUNCH; '
-PREMINT=$MARK'AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"'
+PREMINT=$MARK$HOOK'exec claude "$@"'
 
 name=""; detach=no; greet=""; nocustom=no
 while [ $# -gt 0 ]; do
@@ -223,7 +235,7 @@ if [ -n "$custom" ]; then
     # args every launch site below still forwards, and the environment does not
     # survive the trip into a session on an already-running tmux server.
     esc=$(printf '%s' "$custom" | sed "s/'/'\\\\''/g")
-    PREMINT="${MARK}AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
+    PREMINT="${MARK}${HOOK}eval exec '$esc'"
 fi
 
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
@@ -240,6 +252,7 @@ else
     command -v claude >/dev/null 2>&1 \
         || die "claude is not installed or not on \$PATH"
 fi
+[ -n "$AGB" ] || say "agb-claude: WARNING agb is not on \$PATH or in ~/.local/bin, so no row is minted now; Claude's hooks make one at its first prompt" >&2
 
 # The DEFAULT name carries this launcher's prefix; a name you typed is used
 # exactly. Unprefixed, agb-claude, agb-codex and agb-tmux started in one
@@ -272,7 +285,11 @@ if [ "$detach" = yes ]; then
             sh -c "$PREMINT" agb-claude "$@"
         say "agb-claude: started '$name' detached"
     fi
-    say "agb-claude: the row is there now; attach from agterm, or with"
+    if [ -n "$AGB" ]; then
+        say "agb-claude: the row is there now; attach from agterm, or with"
+    else
+        say "agb-claude: no row until Claude's first prompt; attach with"
+    fi
     say "            tmux attach -t $name"
     # ⚠️ In a directory Claude has not been trusted in before, it stops on
     # "Is this a project you trust?" and waits -- so nothing is submitted, no

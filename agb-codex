@@ -188,7 +188,19 @@ subst() {
 #
 # Best-effort by construction: `;` not `&&`, and stderr discarded, so a missing
 # or broken `agb` costs a row and never a Codex.
-PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec codex "$@"'
+#
+# ⚠️ `agb` is resolved HERE and run by that path, not looked up by the
+# session's shell. That shell's PATH is yours or the tmux server's, and it need
+# not carry the install's bin dir -- run by its full path this script works
+# without it -- so the premint failed, the 2>/dev/null hid "agb: not found",
+# and -d still said "the row is there now". Found that way, on a host whose
+# login PATH had ~/local/bin and not ~/.local/bin. The fallback is install.sh's
+# DEFAULT_BINDIR; neither found is a warning below, never a refusal.
+AGB=$(command -v agb 2>/dev/null) || AGB=
+[ -n "$AGB" ] || [ ! -x "$HOME/.local/bin/agb" ] || AGB=$HOME/.local/bin/agb
+agbq=$(printf '%s' "${AGB:-agb}" | sed "s/'/'\\\\''/g")
+HOOK="AGB_AGENT_PID=\$\$ '$agbq' hook completed 2>/dev/null; "
+PREMINT=$HOOK'exec codex "$@"'
 
 name=""; detach=no; greet=""; nocustom=no
 while [ $# -gt 0 ]; do
@@ -261,7 +273,7 @@ if [ -n "$custom" ]; then
     # args every launch site below still forwards, and the environment does not
     # survive the trip into a session on an already-running tmux server.
     esc=$(printf '%s' "$custom" | sed "s/'/'\\\\''/g")
-    PREMINT="AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
+    PREMINT="${HOOK}eval exec '$esc'"
 fi
 
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"
@@ -278,6 +290,7 @@ else
     command -v codex >/dev/null 2>&1 \
         || die "codex is not installed or not on \$PATH"
 fi
+[ -n "$AGB" ] || say "agb-codex: WARNING agb is not on \$PATH or in ~/.local/bin, so this session gets no row" >&2
 
 # The DEFAULT name carries this launcher's prefix; a name you typed is used
 # exactly. Unprefixed, agb-claude, agb-codex and agb-tmux started in one
@@ -310,7 +323,11 @@ if [ "$detach" = yes ]; then
             sh -c "$PREMINT" agb-codex "$@"
         say "agb-codex: started '$name' detached"
     fi
-    say "agb-codex: the row is there now; attach from agterm, or with"
+    if [ -n "$AGB" ]; then
+        say "agb-codex: the row is there now; attach from agterm, or with"
+    else
+        say "agb-codex: no row (see the warning above); attach with"
+    fi
     say "            tmux attach -t $name"
     # ⚠️ Codex has no "is this a project you trust?" prompt to get stuck on,
     # which is the one thing that makes -d fragile for Claude. What it has

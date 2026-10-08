@@ -110,7 +110,7 @@ def test_a_given_command_is_what_runs(wrapper):
 def test_it_execs_whatever_it_was_given_not_an_agent(wrapper):
     wrapper.run(["-d", "bot", "--", "make"])
     call = wrapper.new_session()[0]
-    premint = [w for w in call if "agb hook" in w][0]
+    premint = [w for w in call if " hook completed" in w][0]
     assert "exec claude" not in premint and "exec codex" not in premint, premint
 
 
@@ -122,25 +122,25 @@ def test_every_launch_path_mints_the_row_first(wrapper):
                      (["bot"], {"inside_tmux": True})):
         wrapper.run(args, **kw)
     for call in wrapper.new_session():
-        assert any("agb hook completed" in w for w in call), call
+        assert any(" hook completed" in w for w in call), call
 
 
 def test_the_premint_runs_inside_the_new_session(wrapper):
     wrapper.run(["-d", "bot"])
     assert wrapper.agb_calls() == [], wrapper.agb_calls()
-    assert any("agb hook" in w for w in wrapper.new_session()[0])
+    assert any(" hook completed" in w for w in wrapper.new_session()[0])
 
 
 def test_the_premint_carries_its_own_pid_and_execs(wrapper):
     wrapper.run(["-d", "bot"])
-    premint = [w for w in wrapper.new_session()[0] if "agb hook" in w][0]
+    premint = [w for w in wrapper.new_session()[0] if " hook completed" in w][0]
     assert "AGB_AGENT_PID=$$" in premint, premint
     assert premint.strip().split(";")[-1].strip().startswith("exec "), premint
 
 
 def test_a_broken_agb_costs_a_row_and_never_your_command(wrapper):
     premint = [w for w in (wrapper.run(["-d", "bot"]),
-                           wrapper.new_session()[0])[1] if "agb hook" in w][0]
+                           wrapper.new_session()[0])[1] if " hook completed" in w][0]
     assert "&&" not in premint and "2>/dev/null" in premint, premint
 
 

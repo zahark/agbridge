@@ -60,6 +60,7 @@ def wrapper(tmp_path):
 
     class Wrapper(object):
         cwd = str(work)
+        agb = str(binder / "agb")
 
         def run(self, args, inside_tmux=False, has_session=False,
                 no_codex=False, custom=None):
@@ -107,7 +108,7 @@ def wrapper(tmp_path):
 
         def premint(self):
             call = self.new_session()[0]
-            return [w for w in call if "agb hook" in w][0]
+            return [w for w in call if " hook completed" in w][0]
 
         def run_premint(self):
             """Actually execute the command tmux was handed, and return the
@@ -153,7 +154,7 @@ def test_every_launch_path_mints_the_row_first(wrapper):
                      (["bot"], {"inside_tmux": True})):
         wrapper.run(args, **kw)
     for call in wrapper.new_session():
-        assert any("agb hook completed" in w for w in call), call
+        assert any(" hook completed" in w for w in call), call
 
 
 def test_the_premint_runs_inside_the_new_session(wrapper):
@@ -161,7 +162,7 @@ def test_the_premint_runs_inside_the_new_session(wrapper):
     pane would mint a row for the CALLER's pane."""
     wrapper.run(["-d", "bot"])
     assert wrapper.agb_calls() == [], wrapper.agb_calls()
-    assert any("agb hook" in w for w in wrapper.new_session()[0])
+    assert any(" hook completed" in w for w in wrapper.new_session()[0])
 
 
 def test_the_premint_carries_its_own_pid_so_codex_adopts_the_row(wrapper):
@@ -170,7 +171,7 @@ def test_the_premint_carries_its_own_pid_so_codex_adopts_the_row(wrapper):
     row. Dropping either the pid or the `exec` gives two rows."""
     wrapper.run(["-d", "bot"])
     call = wrapper.new_session()[0]
-    premint = [w for w in call if "agb hook" in w][0]
+    premint = [w for w in call if " hook completed" in w][0]
     assert "AGB_AGENT_PID=$$" in premint, premint
     assert premint.strip().split(";")[-1].strip().startswith("exec "), premint
 
@@ -179,14 +180,14 @@ def test_the_premint_state_is_completed_not_active(wrapper):
     """A session at an empty prompt is waiting for you. `active` would claim it
     is working and blink a transition that never happened."""
     call = (wrapper.run(["-d", "bot"]), wrapper.new_session()[0])[1]
-    premint = [w for w in call if "agb hook" in w][0]
-    assert "agb hook completed" in premint and "agb hook active" not in premint
+    premint = [w for w in call if " hook completed" in w][0]
+    assert " hook completed" in premint and " hook active" not in premint
 
 
 def test_a_broken_agb_costs_a_row_and_never_a_codex(wrapper):
     """`;` not `&&`, and stderr discarded."""
     call = (wrapper.run(["-d", "bot"]), wrapper.new_session()[0])[1]
-    premint = [w for w in call if "agb hook" in w][0]
+    premint = [w for w in call if " hook completed" in w][0]
     assert "&&" not in premint, premint
     assert "2>/dev/null" in premint, premint
 
@@ -308,9 +309,10 @@ def test_the_premint_is_unchanged_by_a_custom_command(wrapper):
     running on another machine."""
     wrapper.run(["-d", "bot"], custom=CUSTOM)
     premint = wrapper.premint()
-    assert premint.startswith("AGB_AGENT_PID=$$ agb hook completed"), premint
+    assert premint.startswith(
+        "AGB_AGENT_PID=$$ '%s' hook completed" % wrapper.agb), premint
     assert "&&" not in premint and "2>/dev/null" in premint, premint
-    assert "agb hook active" not in premint, premint
+    assert " hook active" not in premint, premint
     assert wrapper.agb_calls() == [], wrapper.agb_calls()
 
 
@@ -410,7 +412,7 @@ def test_no_custom_starts_plain_codex_where_the_variable_would_not(wrapper, flag
     each is its own `case` pattern and can be dropped on its own."""
     wrapper.run(["-d", "one"], custom=NESTED)
     wrapper.run(["-d", "two", flag], custom=NESTED)
-    used, ignored = [[w for w in call if "agb hook" in w][0]
+    used, ignored = [[w for w in call if " hook completed" in w][0]
                      for call in wrapper.new_session()]
     assert "eval exec" in used and "submit" in used, used
     assert ignored.endswith('exec codex "$@"'), ignored

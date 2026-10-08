@@ -6,6 +6,24 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
+## Unreleased
+
+### Fixed
+
+- **`agb-claude -d` printed *"the row is there now"*, but no row appeared** when `agb` was not on
+  the `PATH` of the shell that ran it. The pre-mint runs inside the new tmux session and looked up a
+  bare `agb` through that session's `PATH`. That `PATH` is the caller's or the tmux server's, and
+  nothing requires it to include `install.sh`'s bin dir: a launcher started by its full path
+  (`~/agbridge/agb-claude`) works without it. The lookup failed, `2>/dev/null` hid the
+  `agb: not found`, and the launcher still announced the row. It was found on a host whose login
+  `PATH` had `~/local/bin` but not `~/.local/bin`, and it looked like a bridge problem. All three
+  launchers (`agb-claude`, `agb-codex`, `agb-tmux`) now resolve `agb` themselves, from `command -v agb`
+  or else `~/.local/bin/agb`, and give the pre-mint that path. If neither has it, the
+  launcher **warns and still starts the agent**, because a missing `agb` costs a row and never the
+  agent. `-d` then no longer claims a row. With no pre-mint, a Claude gets its row from its own hooks
+  at its first prompt (the hook command in `settings.json` is already absolute). A Codex or a plain
+  shell fires no hooks, so it gets no row at all.
+
 ## 0.8.0 — 2026-10-08
 
 ### Added

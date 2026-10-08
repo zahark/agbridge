@@ -1432,8 +1432,16 @@ Claude has not been trusted in, *never*, because it stops on *"Is this a project
 submits nothing. So the session's own shell hooks first and then `exec`s Claude:
 
 ```sh
-tmux new-session … sh -c 'AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"' …
+tmux new-session … sh -c 'AGB_AGENT_PID=$$ '<agb>' hook completed 2>/dev/null; exec claude "$@"' …
 ```
+
+⚠️ **`<agb>` is the path the launcher resolved**, the same in all three launchers:
+`command -v agb`, else `~/.local/bin/agb` (`install.sh`'s default `--bin-dir`). It is not a name
+left for the pane's shell to look up. That shell's `PATH` is yours or the tmux server's, and it need
+not include the bin dir: a launcher run by its full path works without it. When it did not, the
+pre-mint failed, `2>/dev/null` hid the `agb: not found`, and `-d` still printed *the row is there
+now*. If neither place has `agb`, the launcher warns on stderr and starts the agent anyway. A Claude
+then gets its row from its own hooks at its first prompt; a Codex or a plain shell gets no row.
 
 ### `AGB_CLAUDE_CUSTOM` — the claude command line, replaced wholesale
 
