@@ -1759,6 +1759,14 @@ def run_prune(argv, out=None, ask=None, run=None):
 
 PANE_PROMPT = "[enter] attach   [s] split   [d] drawer   [q] quit > "
 
+# A status-only row has nothing to attach, but it must still HOLD its session:
+# agterm closes a session whose command exits, so returning after the notice
+# removed the row about a second after the bridge created it, and the bridge
+# then kept a binding to a row that no longer existed. Measured 2026-10-08.
+PANE_STATUS_PROMPT = "[s] split   [d] drawer   [q] quit > "
+
+PANE_STATUS_ONLY = "nothing to attach: this row is status only"
+
 PANE_QUIT_WORDS = ("q", "quit", "exit")
 
 # Leaving the prompt ends this command, and agterm closes a session whose
@@ -2220,8 +2228,9 @@ def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None,
     if run is None:
         import subprocess
         run = subprocess.call
+    prompt = PANE_PROMPT if argv is not None else PANE_STATUS_PROMPT
     while True:
-        answer = ask(PANE_PROMPT)
+        answer = ask(prompt)
         if answer is not None and answer.lower() in PANE_SPLIT_WORDS:
             if split_line is None:
                 out.write("    no shell target recorded for this row\n")
@@ -2253,6 +2262,10 @@ def pane_attach(argv, out, ask=None, run=None, split_line=None, ctl=None,
             out.write((PANE_QUIT_BACK if back else PANE_QUIT_GONE) + "\n")
             out.flush()
             return 0
+        if argv is None:
+            out.write("    " + PANE_STATUS_ONLY + "\n")
+            out.flush()
+            continue
         code = run(argv)
         if code:
             out.write("ssh exited %s -- nothing was attached\n" % (code,))
@@ -2398,17 +2411,19 @@ def run_pane(argv, out=None, ask=None, run=None, config=None):
                 # The indent belongs here, not in the string -- every other
                 # line of this block is written the same way.
                 out.write("    " + warning + "\n")
+    config_file = opts.get("config")
     if not (opts["tmux"] or opts["pane"]):
         # Only the non-tmux identity tiers land here now: plain ssh on machine
         # #3 and the session-leader fallback record neither field. A pane with
         # no session name is attachable (see `pane_remote_command`).
+        # ⚠️ Still prompts: see PANE_STATUS_PROMPT for why returning is wrong.
         out.write("    " + PANE_NO_ATTACH + "\n")
         out.flush()
-        return 0
-    ssh_argv = pane_ssh_argv(target, opts["tmux"], opts["pane"], jump)
-    out.write("    attach: %s\n" % (pane_display(ssh_argv),))
-    out.flush()
-    config_file = opts.get("config")
+        ssh_argv = None
+    else:
+        ssh_argv = pane_ssh_argv(target, opts["tmux"], opts["pane"], jump)
+        out.write("    attach: %s\n" % (pane_display(ssh_argv),))
+        out.flush()
     return pane_attach(ssh_argv, out, ask, run,
                        split_shell_line(target, opts.get("cwd"), jump),
                        on_quit=lambda: pane_mark_quit(opts["key"], config_file))

@@ -769,7 +769,10 @@ Five details, each measured rather than assumed:
   environment could not run tmux produced a record with a live `pane` and a null `tmux`, and the row
   was permanently status-only for an agent that *was* in tmux. The session name is still preferred
   when there is one: it survives the pane's death, and a pane id does not. Only a record with
-  **neither** is status-only, which is exactly identity tiers 2 and 3.
+  **neither** is status-only, which is exactly identity tiers 2 and 3. ⚠️ A status-only row's
+  `agb pane` still **holds its prompt** (`[s] split [d] drawer [q] quit`): it used to print the
+  notice and exit, and agterm closes a session whose command exits, so every such row vanished
+  about a second after the bridge created it (measured 2026-10-08).
 - **`select-window` as well as `select-pane`**, superseding the first draft. On tmux 3.5a,
   `select-pane -t %N` makes the pane active *inside its own window* but leaves the session's active
   **window** where it was — so two agents in two windows of one session would both attach to

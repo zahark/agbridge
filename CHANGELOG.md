@@ -65,6 +65,13 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **A status-only row no longer disappears a second after it is created.** For an agent recorded
+  with neither a tmux session nor a pane (a `claude` started outside tmux), `agb pane` printed
+  *no attach target* and exited — and agterm closes a session whose command exits. So the row was
+  removed almost as soon as the bridge made it, the bridge kept a binding to nothing, and every
+  `agb-refresh` repeated it. It now holds a `[s] split [d] drawer [q] quit` prompt like any other
+  row; split and drawer still open a shell on the agent's host in its directory.
+
 - **`agb close-done` forgets a `[done]` row agterm no longer has.** It dropped an entry only when
   `session close` succeeded, so a row already closed by hand — or lost when agterm restarted — failed
   with `no such session` and stayed in the map, and every later run printed the same `close by hand`

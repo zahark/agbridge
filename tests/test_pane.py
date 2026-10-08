@@ -842,8 +842,21 @@ def test_an_agent_with_no_tmux_target_is_told_so_and_nothing_is_attached(ops):
                       config={})
     assert rc == 0
     assert run.calls == []
-    assert ask.prompts == []
     assert "no attach target" in out.text
+    assert out.text.count(ops.PANE_STATUS_ONLY) == 2
+
+
+def test_a_status_only_row_holds_its_session_until_quit(ops):
+    """agterm closes a session whose command exits, so returning after the
+    notice removed every status-only row about a second after the bridge made
+    it. Measured 2026-10-08: five live agents' rows, gone on every refresh."""
+    out, run, ask = Out(), Run(), Ask("", "q")
+    rc = ops.run_pane([KEY, "--host", HOST], out=out, ask=ask, run=run,
+                      config={})
+    assert rc == 0
+    assert ask.prompts == [ops.PANE_STATUS_PROMPT] * 2
+    assert "[enter] attach" not in ask.prompts[0]
+    assert run.calls == []
 
 
 def test_the_degraded_path_still_prints_the_identity(ops):
