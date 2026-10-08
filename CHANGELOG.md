@@ -65,6 +65,13 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Fixed
 
+- **`agb close-done` forgets a `[done]` row agterm no longer has.** It dropped an entry only when
+  `session close` succeeded, so a row already closed by hand — or lost when agterm restarted — failed
+  with `no such session` and stayed in the map, and every later run printed the same `close by hand`
+  line again: hundreds of them after a mass prune. `no such session` (the narrow text the bridge
+  already trusts) now counts as closed and is reported as `already gone`. Any other failure still
+  keeps the entry.
+
 - **A farm job that inherited `$TMUX` no longer re-mints its row every sweep.** The tmux server pid
   in an inherited `$TMUX` belongs to the submitting machine, so on the farm node it read as dead, and
   `sweep_idx` dropped any idx whose anchor was dead *even while its key was alive*. The next hook

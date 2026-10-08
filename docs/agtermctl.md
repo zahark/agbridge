@@ -587,10 +587,11 @@ farm side. The alternative considered and not taken was a *dismissed* set — a 
 suppressed until its agent stops reporting — which gives both behaviours at the price of one more
 piece of per-process state. If dismissal is ever wanted, that is the door.
 
-⚠️ **`agb close-done` cannot clear an entry whose row is already gone.** It only drops an entry whose
-`session close` *succeeded*, so a `[done]` row you closed by hand leaves a permanent entry that no
-command touches. Two were sitting in a live rows map when this was found. Reacting to
-`session.closed` fixes it as a side effect.
+⚠️ **`agb close-done` used to be unable to clear an entry whose row was already gone.** It dropped an
+entry only when `session close` *succeeded*, so a `[done]` row closed by hand left a permanent entry
+that every run failed on again — two in a live map when this was found, hundreds on 2026-10-08. It
+now reads `no such session` as already closed and forgets the entry. Reacting to `session.closed`
+still clears it sooner, at the moment of the close.
 
 **`session restore` is the structural fix** and is not yet used: it pins the command a pane re-runs,
 which would let a row survive its command exiting at all. See the menu below.

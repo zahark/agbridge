@@ -652,8 +652,9 @@ agb close-done [--rows PATH] [--config PATH] [--dry-run]
 a **separate short-lived command**, not `agb bridge --close-done`. Both the row map and `agtermctl`
 are local to the Mac, so it needs no IPC with the running bridge — and a `bridge` subcommand would
 start a **second long-lived launchd-owned bridge** just to close some rows. A row is forgotten only
-if `agtermctl` says it was closed; otherwise it stays in the map and is printed as "close by hand",
-which is also the recorded degradation if `session close` turns out not to exist.
+if `agtermctl` says it was closed or answers `no such session` (already closed by other means);
+otherwise it stays in the map and is printed as "close by hand", which is also the recorded
+degradation if `session close` turns out not to exist.
 
 **"Bound rows are never touched" is checked twice** — once against the map this process loaded, and
 once against the map **on disk immediately before each close**. `close-done` reads the map once and

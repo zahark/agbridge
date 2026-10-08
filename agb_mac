@@ -1063,9 +1063,9 @@ class RowMap(object):
 
         `bind` refuses a second key for a row, so at most one entry matches.
         `[done]` entries count: a `[done]` row closed by hand is what
-        `forget-rows --closed` exists to clear, because `close-done` cannot --
-        its `session close` fails on a row that is already gone, and it keeps
-        the entry and says "close by hand" about a row that was.
+        `forget-rows --closed` clears at the moment of the close. (`close-done`
+        now forgets one too, on agterm's `no such session`, but only when it
+        is next run.)
         """
         for key, entry in self.entries.items():
             if entry[0] == row:
@@ -3617,6 +3617,8 @@ def run_close_done(argv, run=None, out=None):
     in the map and is printed, so the operator is told what to close by hand
     rather than left with an orphan row nothing remembers. That is also the
     documented degradation if `session close` turns out not to exist at all.
+    The one failure that forgets is `no such session` (`ROW_GONE_TEXT`): the
+    row is already closed, and keeping the entry only made it fail again.
 
     "Bound rows are never touched" is checked twice -- once against the map this
     process loaded, and once against the map on disk immediately before each
@@ -3676,6 +3678,7 @@ def _close_done_one(opts, run, out):
         out.flush()
         return 0
     closed = 0
+    gone = 0
     for key, row in done:
         if opts["dry_run"]:
             out.write("would close %s (row %s)\n" % (key, row))
@@ -3693,13 +3696,22 @@ def _close_done_one(opts, run, out):
             rows.forget(key)
             closed += 1
             out.write("closed %s (row %s)\n" % (key, row))
+        elif ROW_GONE_TEXT in (err or ""):
+            # agterm already lost the row (closed by hand, agterm restarted),
+            # which is the outcome this command wants. Keeping the entry made
+            # every later run fail on it again, for ever.
+            rows.forget(key)
+            gone += 1
+            out.write("already gone %s (row %s)\n" % (key, row))
         else:
             warn("cannot close row %s for %s: %s"
                  % (row, key, err.strip() or "exit %s" % (rc,)))
             out.write("close by hand: %s (row %s)\n" % (key, row))
     rows.save()
     if not opts["dry_run"]:
-        out.write("close-done: closed %d of %d\n" % (closed, len(done)))
+        out.write("close-done: closed %d of %d%s\n" % (
+            closed, len(done),
+            "; forgot %d agterm no longer had" % (gone,) if gone else ""))
     out.flush()
     return 0
 

@@ -1685,6 +1685,28 @@ def test_close_done_keeps_a_row_it_could_not_close(mac, rows_file):
     assert "close by hand: aaaa1111" in out.text
 
 
+def test_close_done_forgets_a_row_agterm_no_longer_has(mac, rows_file):
+    """`no such session` means the row is already closed -- the outcome this
+    command wants. Keeping the entry made every run fail on it again; measured
+    2026-10-08 as hundreds of `close by hand` lines on every run."""
+    rows = mac.load_rows(str(rows_file))
+    rows.bind("aaaa1111", "ROW-1")
+    rows.unbind("aaaa1111")
+    rows.bind("bbbb2222", "ROW-2")
+    rows.save()
+
+    out = Out()
+    runner = Runner(fail=("close",), err="error: no such session: ROW-1\n")
+    assert mac.run_close_done(["--rows", str(rows_file)], run=runner,
+                              out=out) == 0
+    after = mac.load_rows(str(rows_file))
+    assert after.done_entries() == []
+    assert after.bound_keys() == ["bbbb2222"]
+    assert "already gone aaaa1111" in out.text
+    assert "close by hand" not in out.text
+    assert "forgot 1 agterm no longer had" in out.text
+
+
 def test_close_done_dry_run_closes_nothing(mac, rows_file):
     rows = mac.load_rows(str(rows_file))
     rows.bind("aaaa1111", "ROW-1")

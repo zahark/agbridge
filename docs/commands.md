@@ -291,7 +291,9 @@ sweep**; a plist that is not ours and cannot be read is ignored, exactly as `agb
 ignores it.
 
 Only `[done]` entries are touched; a bound row is never closed. A row is forgotten only if
-`agtermctl` reports it closed — otherwise it stays in the map and is printed as "close by hand".
+`agtermctl` reports it closed, or answers `no such session` (the row is already gone, so the entry
+is forgotten and printed as "already gone") — otherwise it stays in the map and is printed as
+"close by hand".
 
 **It says which map it is acting on, on every run**, before anything else including the `--dry-run`
 exit:
@@ -1011,7 +1013,7 @@ it closes; what happens depends on the entry holding that row:
 | entry | what happens | why |
 |---|---|---|
 | none, in any instance | nothing, exit 0 | agterm has sessions that are not ours |
-| `[done]` | forgotten | the agent is gone and now so is its row. `close-done` cannot clear this one: its `session close` fails on a row that is already gone, so it keeps the entry |
+| `[done]` | forgotten | the agent is gone and now so is its row. Without the hook, the next `close-done` clears it: `no such session` is read as already closed |
 | bound, and `agb pane` quit it within `REQUIT_WINDOW` (60 s) | forgotten; the running bridge re-mints the row, with no new-row banner | leaving a prompt is not a decision to lose a live agent's row |
 | bound, anything else | **kept** — the row stays gone until `agb-refresh`, as before | closing a row by hand dismisses it. Re-minting every closed row was rejected for that reason (`CHANGELOG.md`, *A row agterm has forgotten is written to once*) |
 
