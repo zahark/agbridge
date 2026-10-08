@@ -6,7 +6,7 @@ this project most of the reasons are a failure somebody actually hit.
 Versions are `agb`'s `VERSION`, which both installers probe (`agb <version>`) before writing
 anything. The wire protocol has not changed since 0.2.0: any farm host works with any Mac.
 
-## Unreleased
+## 0.8.0 — 2026-10-08
 
 ### Added
 
@@ -18,6 +18,12 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   naming the pid they `exec`, and a gated hook records only the agent the marker names. ⚠️ **It is
   bound to host and pid on purpose**: a plain flag is inherited by every job the agent submits, the
   same way `$TMUX` was. Off by default; existing installs are unchanged.
+
+  ⚠️ **What it costs.** A `claude` typed by hand gets no row — not even inside an `agb-tmux` shell,
+  whose pid is the shell's, not the agent's. An agent started by a launcher from *before* this
+  release carries no `AGB_LAUNCH`, so it keeps its row only while it runs with the hooks it loaded
+  at startup; restart it through the new `agb-claude`. A deliberately remote agent needs
+  `AGB_CLAUDE_CUSTOM`'s `{env}`, which now adds `AGB_LAUNCH=<host>/-`.
 
 - **Typing `q` at a row's prompt no longer costs a live agent its row — once agterm's
   `session.closed` hook is installed.** agterm closes a session when its command exits, so
