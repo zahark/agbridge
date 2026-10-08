@@ -187,6 +187,30 @@ def test_the_command_is_the_documented_shape_word_for_word(ops):
         "/opt/agb/agb", "hook", "active"]
 
 
+def test_launched_only_bakes_the_switch_into_the_command(ops):
+    """Baked in like the statedir, so the hot path still opens no config."""
+    import shlex
+
+    command = ops.hook_command("/bin/python3", "/opt/agb/agb", "/nfs/state",
+                               "active", True)
+    assert shlex.split(command) == [
+        "AGB_STATEDIR=/nfs/state", "AGB_LAUNCHED_ONLY=1", "/bin/python3",
+        "-S", "-E", "/opt/agb/agb", "hook", "active"]
+
+
+def test_switching_launched_only_on_and_off_replaces_rather_than_stacks(
+        install, settings_file):
+    code, out = install("--launched-only")
+    assert code == 0 and "--launched-only" in out
+    on = commands_of(read_json(settings_file.path), "Stop")
+    assert len(on) == 1 and "AGB_LAUNCHED_ONLY=1 " in on[0]
+
+    code, out = install()
+    assert code == 0 and "every Claude Code run" in out
+    off = commands_of(read_json(settings_file.path), "Stop")
+    assert len(off) == 1 and "AGB_LAUNCHED_ONLY" not in off[0]
+
+
 def test_the_interpreter_is_an_absolute_path_and_never_bare_python3(ops, sd,
                                                                     agb_path):
     """Constraint #14. Hooks run in a minimal non-interactive environment, so a

@@ -3713,3 +3713,19 @@ def test_every_install_sh_line_citation_points_at_what_it_claims():
                 continue          # this file's own table and regex, not a cite
             total += len(_CITATION_RE.findall(body))
     assert total == len(INSTALL_SH_CITATIONS), total
+
+
+def test_farm_launched_only_reaches_the_hook_command(run_sh, tmp_path):
+    argv = _farm(tmp_path, **{"--bin-dir": str(tmp_path / "bin")})
+    code, out, err = run_sh(argv + ["--launched-only"])
+    assert code == 0, err
+    text = (tmp_path / "settings.json").read_text()
+    assert "AGB_LAUNCHED_ONLY=1 " in text
+
+
+def test_launched_only_is_refused_for_the_mac_role(run_sh, mac_args,
+                                                   tmp_path):
+    """The mac role writes no hooks, so the flag would be a silent no-op."""
+    code, _out, err = run_sh(mac_args() + ["--launched-only"])
+    assert code != 0
+    assert "--launched-only" in err and "farm" in err

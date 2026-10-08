@@ -140,6 +140,7 @@ farm -- write ~/.config/agbridge/config and merge the hooks into
   --bin-dir <dir>            where `agb` and `agb-refresh` go (default ~/.local/bin)
   --no-wrapper               do not write the `agb` wrapper or link agb-refresh
   --no-hooks                 write the config only
+  --launched-only            track only agents started by agb-claude/agb-tmux
   --dry-run                  say what would happen; write nothing
 EOF
 }
@@ -375,7 +376,7 @@ esac
 dest=""; python=""; config=""; statedir=""; macid=""; feedhost=""
 remotepath=""; remotepython=""; jumphost=""; hosts=""; agentsdir=""
 logdir=""; launchpath=""; label=""; farm=""; settings=""; agbpath=""
-load=yes; hooks=yes; dry=no; probe=yes; bindir=""; wrapper=yes; instance=""
+load=yes; hooks=yes; launched=no; dry=no; probe=yes; bindir=""; wrapper=yes; instance=""
 # `probe_farmhost` reads it before it writes it (the once-only guard), and
 # `set -u` would kill the script on the unset name rather than ask the question.
 farmhost=""
@@ -435,6 +436,7 @@ while [ $# -gt 0 ]; do
         --agb) need $# "$1" "${2:-}"; agbpath=$2; shift 2 ;;
         --no-load) load=no; shift ;;
         --no-hooks) hooks=no; shift ;;
+        --launched-only) launched=yes; shift ;;
         --no-probe) probe=no; shift ;;
         --bin-dir) need $# "$1" "${2:-}"; bindir=$2; shift 2 ;;
         --no-wrapper) wrapper=no; shift ;;
@@ -509,6 +511,10 @@ if [ "$instance" = auto ]; then
     instance_ok "$farmhost" " -- read back from $feedhost, which is what --instance auto asked it"
     instance=$farmhost
     say "instance: auto -> $instance (read back from $feedhost)"
+fi
+
+if [ "$launched" = yes ] && [ "$role" != farm ]; then
+    die "--launched-only is for the farm role only: it changes the hook command in ~/.claude/settings.json on the host that runs agents, and the mac role installs no hooks"
 fi
 
 if [ -n "$instance" ]; then
@@ -1030,6 +1036,7 @@ role_farm() {
         set -- install-hooks --python "$python" --agb "$agbpath"
         if [ -n "$statedir" ]; then set -- "$@" --statedir "$statedir"; fi
         if [ -n "$settings" ]; then set -- "$@" --settings "$settings"; fi
+        if [ "$launched" = yes ]; then set -- "$@" --launched-only; fi
         if [ "$dry" = yes ]; then set -- "$@" --dry-run; fi
         run_agb "$python" "$agbpath" "$@" || die "install-hooks failed"
     fi

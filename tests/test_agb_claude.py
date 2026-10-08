@@ -449,9 +449,26 @@ def test_an_empty_variable_is_the_default_path(wrapper):
 def test_the_premint_is_unchanged_by_a_custom_command(wrapper):
     wrapper.run(["-d", "bot"], custom=NESTED)
     premint = wrapper.premint()
-    assert premint.startswith("AGB_AGENT_PID=$$ agb hook completed"), premint
+    assert premint.startswith("h=${AGB_HOST:-$(uname -n)}; AGB_LAUNCH="), premint
+    assert "; export AGB_LAUNCH; AGB_AGENT_PID=$$ agb hook completed" in premint
     assert "&&" not in premint and "2>/dev/null" in premint, premint
     assert wrapper.agb_calls() == [], wrapper.agb_calls()
+
+
+def test_the_premint_exports_a_marker_naming_the_exec_d_pid(wrapper):
+    """`--launched-only` hooks track an agent only when AGB_LAUNCH is
+    `<host>/<its pid>`. `$$` is the pid `exec` hands to Claude; a bare flag
+    would be inherited by every farm job the agent submits."""
+    wrapper.run(["-d", "bot"])
+    premint = wrapper.premint()
+    assert "AGB_LAUNCH=${h%%.*}/$$; export AGB_LAUNCH;" in premint, premint
+    assert premint.index("export AGB_LAUNCH") < premint.index("exec claude")
+
+
+def test_env_carries_a_pid_less_marker_for_the_remote_agent(wrapper):
+    wrapper.run(["-d", "bot"], custom=NESTED)
+    assert "AGB_AGENT_PID=none AGB_LAUNCH=" in wrapper.premint()
+    assert "/- claude" in wrapper.premint()
 
 
 def test_the_remote_row_caveat_is_documented_loudly(wrapper):

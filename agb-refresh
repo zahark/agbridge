@@ -85,7 +85,7 @@ EOF
 }
 
 # The same rule, and the same words, as `install.sh`'s `instance_ok`
-# (install.sh:189): a name is a launchd label component, a plist FILENAME, a log
+# (install.sh:190): a name is a launchd label component, a plist FILENAME, a log
 # directory and a config DIRECTORY, so `.` and `/` are refused outright -- there
 # is no spelling of a `..` segment or a leading dot. The two validators have to
 # agree, because a name this one accepts and the installer refuses names a plist
@@ -1154,7 +1154,7 @@ plist="$agentsdir/$label.plist"
 uid=$(id -u)
 
 # WHICH CONFIG. An explicit `--config` wins, exactly as it does in `install.sh`
-# (install.sh:540-541) -- but with none given, ASK THE PLIST rather than rebuild the
+# (install.sh:546-547) -- but with none given, ASK THE PLIST rather than rebuild the
 # path by convention.
 #
 # ⚠️ `--instance hostb` does NOT imply `<config dir>/hostb/config`.

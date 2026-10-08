@@ -21,7 +21,7 @@
 #          cannot know whether {} sits inside quotes, so it cannot quote for
 #          you: an argument outside [A-Za-z0-9._:/=+@,-] is refused rather than
 #          mangled, and `--greet` (prose, always needs quoting) stays refused.
-#   {env}  `AGB_HOST=<this host> AGB_AGENT_PID=none`.
+#   {env}  `AGB_HOST=<this host> AGB_AGENT_PID=none AGB_LAUNCH=<this host>/-`.
 #
 # ⚠️ **{env} IS NOT OPTIONAL FOR A REMOTE LAUNCHER, AND THIS IS WHERE CLAUDE
 # DIFFERS FROM CODEX.** Codex fires no agbridge hooks, so a pre-minted row is
@@ -76,9 +76,10 @@ usage: agb-claude [-d] [-n] [name] [-- <claude args>...]
 Environment:
   AGB_CLAUDE_CUSTOM  a shell command line run INSTEAD of `claude`, eval'ed
                      inside the session. `{}` is where this invocation's `--`
-                     arguments are spliced; `{env}` becomes AGB_HOST and
-                     AGB_AGENT_PID=none, which a Claude on ANOTHER machine
-                     needs or it mints a second row. --greet is refused.
+                     arguments are spliced; `{env}` becomes AGB_HOST,
+                     AGB_AGENT_PID=none and AGB_LAUNCH, which a Claude on
+                     ANOTHER machine needs or it mints a second row (or, with
+                     --launched-only hooks, none). --greet is refused.
                      --no-custom ignores it.
 
 Re-running with the same name ATTACHES to the existing session rather than
@@ -142,7 +143,14 @@ subst() {
 #
 # Best-effort by construction: `;` not `&&`, and stderr discarded, so a missing
 # or broken `agb` costs a row and never a Claude.
-PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"'
+#
+# MARK exports `AGB_LAUNCH=<host>/<pid>`, the opt-in that hooks installed with
+# `install-hooks --launched-only` require. `$$` is the pid `exec` hands to
+# Claude, so the marker names exactly this agent: a farm job or a headless
+# `claude -p` that inherits it resolves another host or pid and is not tracked.
+# The host is `own_host()`'s resolution again (CLAUDE.md invariant 14).
+MARK='h=${AGB_HOST:-$(uname -n)}; AGB_LAUNCH=${h%%.*}/$$; export AGB_LAUNCH; '
+PREMINT=$MARK'AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec claude "$@"'
 
 name=""; detach=no; greet=""; nocustom=no
 while [ $# -gt 0 ]; do
@@ -208,14 +216,14 @@ if [ -n "$custom" ]; then
     # error: the remote agent reports a host nothing has a mapping for, and you
     # get a SECOND row instead of the one this wrapper minted.
     agbhost=${AGB_HOST:-$(uname -n)}
-    custom=$(subst "$custom" '{env}' "AGB_HOST=${agbhost%%.*} AGB_AGENT_PID=none")
+    custom=$(subst "$custom" '{env}' "AGB_HOST=${agbhost%%.*} AGB_AGENT_PID=none AGB_LAUNCH=${agbhost%%.*}/-")
     custom=$(subst "$custom" '{}' "$spliced")
     # Embedded as a single-quoted literal rather than passed as a positional or
     # left in the environment. Positionals would collide with the passthrough
     # args every launch site below still forwards, and the environment does not
     # survive the trip into a session on an already-running tmux server.
     esc=$(printf '%s' "$custom" | sed "s/'/'\\\\''/g")
-    PREMINT="AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
+    PREMINT="${MARK}AGB_AGENT_PID=\$\$ agb hook completed 2>/dev/null; eval exec '$esc'"
 fi
 
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed or not on \$PATH"

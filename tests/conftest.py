@@ -480,7 +480,7 @@ def fake_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     for name in ("AGB_STATEDIR", "AGB_HOST", "AGB_HOST_LOCAL", "AGB_AGENT_PID",
-                 "TMUX", "TMUX_PANE"):
+                 "AGB_LAUNCH", "AGB_LAUNCHED_ONLY", "TMUX", "TMUX_PANE"):
         monkeypatch.delenv(name, raising=False)
     return home
 

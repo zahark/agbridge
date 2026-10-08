@@ -261,7 +261,7 @@ def refresh(tmp_path):
             `--instance <name> --config <elsewhere>` leaves behind.
 
             ⚠️ The value is XML-ESCAPED here, exactly as `install.sh`'s `rep()`
-            escapes it (`xml_escape`, install.sh:354) -- so a test names the
+            escapes it (`xml_escape`, install.sh:355) -- so a test names the
             real path and this renders what the installer would have written.
             Without it a test for `&` in a config path would have to spell
             `&amp;` itself, which asserts on a plist nobody could have produced
@@ -564,7 +564,7 @@ def test_an_explicit_config_still_beats_the_instance_sugar(refresh):
     """The mirror of the `--label` test above, and it needs its own.
 
     `--instance` fills in a config only when none was given, exactly as
-    `install.sh` does it (install.sh:540-541) -- so an install whose config lives
+    `install.sh` does it (install.sh:546-547) -- so an install whose config lives
     somewhere the convention does not name can still be repaired by naming both.
     Made unconditional, the sugar would silently redirect the forget to a path
     that may not even exist, and `forget-rows` answers "the map is already
@@ -4401,7 +4401,7 @@ def test_a_custom_label_instance_is_not_reported_as_the_default_one(refresh):
     so it may not call a custom-label instance "(default)".
 
     `install.sh mac --label <anything>` puts no shape rule on a label
-    (`install.sh:432`), so `weird.label` is a real install and the sweep is
+    (`install.sh:433`), so `weird.label` is a real install and the sweep is
     required to visit it. The name shown is read back out of the label, and the
     fall-through used to answer "(default)" for every label outside the
     `com.agbridge` space -- so a bare run reported TWO default instances, one of

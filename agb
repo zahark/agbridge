@@ -957,6 +957,9 @@ def resolve_identity(sd=None, want_tmux=True):
         sd = statedir()
     host = own_host()
     agent_pid, starttime = resolve_agent()
+    if os.environ.get("AGB_LAUNCHED_ONLY") and os.environ.get(
+            "AGB_LAUNCH") != "%s/%s" % (host, _opt_field(agent_pid)):
+        return None
     anchor = resolve_anchor(host, agent_pid, starttime)
     key, minted = bind_key(sd, anchor, agent_pid, starttime)
     ident = Identity(key=key, minted=minted, host=host, anchor=anchor,
@@ -1998,6 +2001,8 @@ def cmd_hook(argv):
                 state, "|".join(AGENT_STATES)))
             return 0
         ident = resolve_identity(sd)
+        if ident is None:
+            return 0
         key = ident.key
         if ident.minted:
             breadcrumb(sd, key, "minted key for %s (pid %s, cwd %s)" % (

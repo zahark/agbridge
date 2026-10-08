@@ -1020,3 +1020,57 @@ def test_session_files_are_not_group_readable(agb, agent):
                  agb.record_path(sd, ident.key, HOST),
                  agb.marker_path(sd, HOST)):
         assert stat.S_IMODE(os.stat(path).st_mode) == agb.FILE_MODE
+
+
+# ---------------------------------------------------------------------------
+# `--launched-only` -- AGB_LAUNCH must name this very agent
+# ---------------------------------------------------------------------------
+#
+# Measured 2026-10-07: an agent in a tmux pane submitted `claude` farm jobs that
+# inherited `$TMUX`, and each job became a row on a host nobody can attach to.
+# Opt-in by a bare flag would have leaked the same way, so the marker carries
+# the host and the pid of the agent it was minted for.
+
+def sessions_written(agb, sd):
+    return os.listdir(agb.session_dir(sd, HOST)) \
+        if os.path.isdir(agb.session_dir(sd, HOST)) else []
+
+
+def test_without_the_switch_every_agent_is_tracked(agb, agent):
+    assert agb.cmd_hook(["active"]) == 0
+    assert sessions_written(agb, agent)
+
+
+@pytest.mark.parametrize("launch", [
+    None,                                   # a plain `claude`
+    "%s/%d" % (HOST, PID + 1),              # a child of a launched agent
+    "farm01/%d" % (PID,),                   # inherited across machines
+    "%s/-" % (HOST,),                       # pid-less marker, resolvable agent
+])
+def test_launched_only_skips_an_agent_the_marker_does_not_name(
+        agb, agent, monkeypatch, launch):
+    monkeypatch.setenv("AGB_LAUNCHED_ONLY", "1")
+    if launch is not None:
+        monkeypatch.setenv("AGB_LAUNCH", launch)
+    assert agb.resolve_identity(agent) is None
+    assert agb.cmd_hook(["active"]) == 0
+    assert sessions_written(agb, agent) == []
+    assert not os.listdir(agb.idx_dir(agent))
+
+
+def test_launched_only_tracks_the_agent_the_marker_names(agb, agent,
+                                                         monkeypatch):
+    monkeypatch.setenv("AGB_LAUNCHED_ONLY", "1")
+    monkeypatch.setenv("AGB_LAUNCH", "%s/%d" % (HOST, PID))
+    assert agb.cmd_hook(["active"]) == 0
+    assert sessions_written(agb, agent)
+
+
+def test_launched_only_tracks_a_remote_env_launch(agb, agent, monkeypatch):
+    """`agb-claude`'s `{env}`: AGB_HOST names the submitting host and the pid
+    is deliberately unknown, so the marker is `<host>/-`."""
+    monkeypatch.setenv("AGB_LAUNCHED_ONLY", "1")
+    monkeypatch.setenv("AGB_AGENT_PID", "none")
+    monkeypatch.setenv("AGB_LAUNCH", "%s/-" % (HOST,))
+    assert agb.cmd_hook(["active"]) == 0
+    assert sessions_written(agb, agent)

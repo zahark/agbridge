@@ -603,7 +603,7 @@ one line either way. See [`tmux.md`](tmux.md).
 ## `agb install-hooks` — farm, once per host
 
 ```
-agb install-hooks [--settings P] [--statedir P] [--python P] [--agb P] [--dry-run]
+agb install-hooks [--settings P] [--statedir P] [--python P] [--agb P] [--launched-only] [--dry-run]
 ```
 
 | Flag | Default | Meaning |
@@ -612,7 +612,10 @@ agb install-hooks [--settings P] [--statedir P] [--python P] [--agb P] [--dry-ru
 | `--statedir <path>` | `$AGB_STATEDIR` → config → `~/.agbridge` | baked into the hook command as `AGB_STATEDIR=…`, which is what lets the hot path skip the config read. Must be absolute |
 | `--python <path>` | `sys.executable` — the interpreter running this command | baked into the hook command. Must be absolute, existing and executable, and must resolve at the *same* absolute path on every host that runs hooks (printed as a note, never guessed at) |
 | `--agb <path>` | the `agb` beside the running one | which `agb` the hook command names. Must be absolute |
+| `--launched-only` | off | track only agents started by `agb-claude` or `agb-tmux`. Baked into the hook command as `AGB_LAUNCHED_ONLY=1`; re-running without it switches back to tracking every Claude Code run |
 | `--dry-run` | off | print the whole report — what was verified, removed, kept — and write nothing |
+
+**`--launched-only`** exists because every `claude` that loads `~/.claude/settings.json` hooks, and on a shared `$HOME` that is every farm job, subagent and headless `claude -p` you start: each became a row on a host nothing can attach to, which only `agb prune` could remove. The launchers export `AGB_LAUNCH=<host>/<pid>`, naming the pid they `exec` the agent as, and a gated hook records an agent only when the marker names *that* agent. ⚠️ A bare flag would not do: a child or a farm job inherits the variable, exactly as farm jobs inherited `$TMUX`, so it must fail to match rather than be absent. `agb-claude`'s `{env}` adds `AGB_LAUNCH=<host>/-` for a deliberately remote agent. A `claude` typed by hand — even inside an `agb-tmux` shell — gets no row.
 
 Paths are `expanduser`'d. Before writing anything it **runs** `<python> -S -E <agb> version` and
 requires `agb <VERSION>` back: a hook command is installed only once it has been executed, because a

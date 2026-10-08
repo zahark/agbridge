@@ -10,6 +10,15 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
 
 ### Added
 
+- **`install.sh farm --launched-only` / `agb install-hooks --launched-only`: rows only for agents
+  you started with `agb-claude` or `agb-tmux`.** The hooks live in `~/.claude/settings.json`, so on
+  a shared `$HOME` every `claude` hooked — farm jobs, subagents, headless `claude -p` runs — and each
+  became a pid-less row on a farm host: nothing could attach to it, nothing could prove it dead, and
+  one agent submitting jobs produced hundreds. The launchers now export `AGB_LAUNCH=<host>/<pid>`
+  naming the pid they `exec`, and a gated hook records only the agent the marker names. ⚠️ **It is
+  bound to host and pid on purpose**: a plain flag is inherited by every job the agent submits, the
+  same way `$TMUX` was. Off by default; existing installs are unchanged.
+
 - **Typing `q` at a row's prompt no longer costs a live agent its row — once agterm's
   `session.closed` hook is installed.** agterm closes a session when its command exits, so
   `q`/`quit`/`exit` at the `agb pane` prompt destroyed the row while the agent kept running, and it
@@ -55,6 +64,12 @@ anything. The wire protocol has not changed since 0.2.0: any farm host works wit
   today's behaviour, not a binding.
 
 ### Fixed
+
+- **A farm job that inherited `$TMUX` no longer re-mints its row every sweep.** The tmux server pid
+  in an inherited `$TMUX` belongs to the submitting machine, so on the farm node it read as dead, and
+  `sweep_idx` dropped any idx whose anchor was dead *even while its key was alive*. The next hook
+  found no idx and minted a new key: 57 rows from one agent on one host. An idx is now dropped only
+  when its key is gone; anchor liveness is no longer consulted.
 
 - **`agb-claude`, `agb-codex` and `agb-tmux` started in the same directory now get three sessions,
   not one.** Each defaulted the tmux session name to the directory's name, so the second launcher

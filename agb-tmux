@@ -89,7 +89,11 @@ sanitize() {
 #
 # Best-effort by construction: `;` not `&&`, and stderr discarded, so a missing
 # or broken `agb` costs a row and never your command.
-PREMINT='AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec "$@"'
+#
+# AGB_LAUNCH is the opt-in `install-hooks --launched-only` hooks require; it
+# names this pid, so `agb-tmux claude` is tracked and a claude merely typed in
+# an agb-tmux shell (a child, another pid) is not. See agb-claude's MARK.
+PREMINT='h=${AGB_HOST:-$(uname -n)}; AGB_LAUNCH=${h%%.*}/$$; export AGB_LAUNCH; AGB_AGENT_PID=$$ agb hook completed 2>/dev/null; exec "$@"'
 
 name=""; detach=no
 while [ $# -gt 0 ]; do

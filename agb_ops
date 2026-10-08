@@ -2866,7 +2866,15 @@ AGR_PROGRAM = "agr"
 BACKUP_SUFFIX = ".agb.bak"
 
 INSTALL_VALUE_ARGS = ("--settings", "--statedir", "--python", "--agb")
-INSTALL_FLAGS = {"--dry-run": "dry_run"}
+INSTALL_FLAGS = {"--dry-run": "dry_run", "--launched-only": "launched_only"}
+
+# Baked into the command by `--launched-only`, like the statedir: the hook then
+# records an agent only when `$AGB_LAUNCH` (exported by agb-claude/agb-tmux as
+# `<host>/<pid of the shell that execs the agent>`) names that very agent. Any
+# `claude` merely *inheriting* the variable -- a farm job, a headless child --
+# resolves another host or pid and is skipped. An env flag alone would leak to
+# them exactly the way `$TMUX` did.
+LAUNCHED_ONLY_VAR = "AGB_LAUNCHED_ONLY"
 
 INSTALL_PORTABILITY_NOTE = (
     "the interpreter must resolve to a working python at this **same absolute "
@@ -2888,7 +2896,7 @@ def settings_path():
     return os.path.join(agb.home_dir(), ".claude", SETTINGS_BASENAME)
 
 
-def hook_command(python, agb_path, sd, state):
+def hook_command(python, agb_path, sd, state, launched_only=False):
     """The exact command string installed for one state. Pure: a string test.
 
     Every word is `shlex.quote`d, because this string is re-split by a shell: a
@@ -2897,9 +2905,10 @@ def hook_command(python, agb_path, sd, state):
     divergence the whole tool is against.
     """
     import shlex
-    return "%s=%s %s -S -E %s hook %s" % (
-        STATEDIR_VAR, shlex.quote(sd), shlex.quote(python),
-        shlex.quote(agb_path), shlex.quote(state))
+    return "%s=%s %s%s -S -E %s hook %s" % (
+        STATEDIR_VAR, shlex.quote(sd),
+        "%s=1 " % (LAUNCHED_ONLY_VAR,) if launched_only else "",
+        shlex.quote(python), shlex.quote(agb_path), shlex.quote(state))
 
 
 def command_words(command):
@@ -3238,7 +3247,7 @@ def probe_hook_command(python, agb_path, run=None):
 
 def parse_install_args(argv):
     """`install-hooks [--settings P] [--statedir P] [--python P] [--agb P]
-    [--dry-run]`.
+    [--launched-only] [--dry-run]`.
 
     Hand-rolled (constraint #3). `--settings` is not a convenience: it is the
     seam that keeps the test suite off the developer's real, live
@@ -3246,7 +3255,7 @@ def parse_install_args(argv):
     cannot reach.
     """
     opts = {"settings": None, "statedir": None, "python": None, "agb": None,
-            "dry_run": False}
+            "dry_run": False, "launched_only": False}
     rest = list(argv)
     while rest:
         arg = rest.pop(0)
@@ -3336,7 +3345,8 @@ def run_install_hooks(argv, out=None, run=None):
     probe_argv = probe_hook_command(python, agb_path, run)
     commands = {}
     for _event, _matcher, state in HOOK_EVENTS:
-        commands[state] = hook_command(python, agb_path, sd, state)
+        commands[state] = hook_command(python, agb_path, sd, state,
+                                       opts["launched_only"])
 
     settings, previous = read_settings(path)
     merged, removed, kept = merge_hooks(settings, commands)
@@ -3369,6 +3379,9 @@ def run_install_hooks(argv, out=None, run=None):
         else:
             out.write("statedir: %s -- NOT ready: %s (the first hook will try "
                       "again)\n" % (sd, exc))
+    out.write("tracks:   %s\n" % (
+        "only agents started by agb-claude/agb-tmux (--launched-only)"
+        if opts["launched_only"] else "every Claude Code run on this host"))
     for event, matcher, state in HOOK_EVENTS:
         out.write("hook:     %s%s -> %s\n" % (
             event, "[%s]" % (matcher,) if matcher else "", state))
